@@ -1,11 +1,7 @@
 //! Terminal I/O stays with the runtime after the sandbox stops, until its
 //! retained output and frontend handoff no longer need it.
-use crate::{
-    engine::EVENTS,
-    screen::Matcher,
-    server_log::ServerLog,
-    terminal::Terminal,
-};
+use crate::{engine::EVENTS, screen::Matcher, server_log::ServerLog, terminal::Terminal};
+use goblins_protocol::contract;
 use goblins_runtime::{
     Event, TerminalId, TerminalStatus,
     terminal::{self, Call, Condition},
@@ -59,11 +55,11 @@ struct Entry {
 }
 
 fn matched(line: String, cut: bool) -> Value {
-    let mut result = json!({"status":"matched","line":line});
-    if cut {
-        result["truncated"] = json!(true);
-    }
-    result
+    json!(contract::TerminalWaitMatchedResult {
+        status: contract::TerminalWaitMatchedResultStatus::Matched,
+        line,
+        truncated: cut.then_some(true)
+    })
 }
 /// The answer to a wait of a terminal that has ended.
 fn exit_result(entry: &mut Entry, wait: &Wait) -> Value {
@@ -79,11 +75,13 @@ fn exit_result(entry: &mut Entry, wait: &Wait) -> Value {
         .screen()
         .map(|s| s.last_lines(lines))
         .unwrap_or_default();
-    let mut result = json!({"status":"exited","code":code,"signal":signal,"text":text});
-    if cut {
-        result["truncated"] = json!(true);
-    }
-    result
+    json!(contract::TerminalWaitExitedResult {
+        status: contract::TerminalWaitExitedResultStatus::Exited,
+        code,
+        signal,
+        text,
+        truncated: cut.then_some(true)
+    })
 }
 
 impl Entry {
@@ -129,7 +127,9 @@ impl Entry {
             } else if let Some((line, cut)) = found {
                 Some(matched(line, cut))
             } else if now >= wait.deadline {
-                Some(json!({"status":"timeout"}))
+                Some(json!(contract::TerminalWaitTimeoutResult {
+                    status: contract::TerminalWaitTimeoutResultStatus::Timeout
+                }))
             } else {
                 None
             };
@@ -290,7 +290,7 @@ impl Terminals {
                     entry
                         .io
                         .input(&bytes)
-                        .map(|()| json!({"accepted":true}))
+                        .map(|()| json!(contract::ServerStopResult { accepted: true }))
                         .map_err(|e| e.to_string()),
                 )
             }

@@ -149,6 +149,29 @@ impl Response for TerminalCloseReply {
     }
 }
 
+impl Response for TerminalReadReply {
+    const SCHEMA: &'static str = "TerminalReadReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            text: value.get("text").and_then(Value::as_str).map(str::to_owned),
+        })
+    }
+}
+
+impl Response for TerminalWaitReply {
+    const SCHEMA: &'static str = "TerminalWaitReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        let text = |name| value.get(name).and_then(Value::as_str).map(str::to_owned);
+        Ok(Self {
+            status: text("status"),
+            line: text("line"),
+            text: text("text"),
+            code: value.get("code").and_then(Value::as_i64),
+            signal: value.get("signal").and_then(Value::as_i64),
+        })
+    }
+}
+
 /// Serde structs also accept arrays. Results use schema object shapes, including
 /// nested records, while request decoding deliberately retains positional forms.
 /// This guard checks containers, required presence and union discriminants;
@@ -495,6 +518,160 @@ mod tests {
 
     fn fixtures() -> Value {
         serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap()
+    }
+
+    #[test]
+    fn terminal_io_generated_params_keep_legacy_order_and_defaults() {
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Read {
+            session: String,
+            terminal: String,
+            #[serde(default)]
+            source: Option<String>,
+            #[serde(default)]
+            lines: Option<usize>,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Send {
+            session: String,
+            terminal: String,
+            #[serde(default)]
+            text: Option<String>,
+            #[serde(default)]
+            keys: Vec<String>,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wait {
+            session: String,
+            terminal: String,
+            #[serde(default, rename = "match")]
+            text: Option<String>,
+            #[serde(default)]
+            regex: Option<String>,
+            #[serde(default)]
+            exit: Option<bool>,
+            #[serde(default)]
+            timeout: Option<u64>,
+            #[serde(default)]
+            lines: Option<usize>,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Target {
+            session: String,
+            terminal: String,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Resize {
+            session: String,
+            terminal: String,
+            rows: u16,
+            cols: u16,
+        }
+        fn compare<T: DeserializeOwned + Serialize, H: Method, S: Method>(case: &Value) {
+            let scoped = |value: Value| -> Option<Value> {
+                let mut map = match value {
+                    Value::Null => serde_json::Map::new(),
+                    Value::Object(map) if !map.contains_key("session") => map,
+                    _ => return None,
+                };
+                map.insert("session".into(), serde_json::json!("a"));
+                Some(Value::Object(map))
+            };
+            let value = case["params"].clone();
+            let member = case["endpoint"] == "sandbox";
+            let old = if member {
+                scoped(value.clone()).and_then(|v| serde_json::from_value::<T>(v).ok())
+            } else {
+                serde_json::from_value::<T>(value.clone()).ok()
+            };
+            let new = if member {
+                decode_params::<S>(value)
+                    .ok()
+                    .and_then(|p| params_value::<S>(p).ok())
+                    .and_then(scoped)
+            } else {
+                decode_params::<H>(value)
+                    .ok()
+                    .and_then(|p| params_value::<H>(p).ok())
+            };
+            assert_eq!(new.is_some(), old.is_some(), "{case}");
+            assert_eq!(new.is_some(), case["decoded"].as_bool().unwrap(), "{case}");
+            if let (Some(old), Some(new)) = (old, new) {
+                if case["method"] == "terminals.send" {
+                    assert!(new["keys"].is_array());
+                }
+                assert_eq!(
+                    serde_json::to_value(old).unwrap(),
+                    serde_json::to_value(serde_json::from_value::<T>(new).unwrap()).unwrap(),
+                    "{case}"
+                );
+            }
+        }
+        for case in fixtures()["terminal_io_parameter_cases"]
+            .as_array()
+            .unwrap()
+        {
+            match case["method"].as_str().unwrap() {
+                "terminals.read" => {
+                    compare::<Read, host::TerminalsRead, sandbox::TerminalsRead>(case)
+                }
+                "terminals.send" => {
+                    compare::<Send, host::TerminalsSend, sandbox::TerminalsSend>(case)
+                }
+                "terminals.wait" => {
+                    compare::<Wait, host::TerminalsWait, sandbox::TerminalsWait>(case)
+                }
+                "terminals.detach" => {
+                    compare::<Target, host::TerminalsDetach, host::TerminalsDetach>(case)
+                }
+                "terminals.resize" => {
+                    compare::<Resize, host::TerminalsResize, host::TerminalsResize>(case)
+                }
+                _ => panic!("unexpected corpus method"),
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_read_wait_replies_keep_independent_legacy_fields() {
+        assert!(
+            TerminalReadReply::decode(serde_json::json!({"text":7}))
+                .unwrap()
+                .text
+                .is_none()
+        );
+        assert!(
+            TerminalReadReply::decode(Value::Null)
+                .unwrap()
+                .text
+                .is_none()
+        );
+        for case in fixtures()["terminal_io_result_cases"].as_array().unwrap() {
+            if case["method"] != "terminals.wait" {
+                continue;
+            }
+            let value = &case["result"];
+            let reply = TerminalWaitReply::decode(value.clone()).unwrap();
+            assert_eq!(
+                reply.status.as_deref(),
+                value.get("status").and_then(Value::as_str)
+            );
+            assert_eq!(
+                reply.line.as_deref(),
+                value.get("line").and_then(Value::as_str)
+            );
+            assert_eq!(
+                reply.text.as_deref(),
+                value.get("text").and_then(Value::as_str)
+            );
+            assert_eq!(reply.code, value.get("code").and_then(Value::as_i64));
+            assert_eq!(reply.signal, value.get("signal").and_then(Value::as_i64));
+        }
     }
 
     #[test]

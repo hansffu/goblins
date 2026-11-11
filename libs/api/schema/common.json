@@ -1495,18 +1495,10 @@
           "x-json-integer": true
         },
         "rows": {
-          "type": "integer",
-          "format": "uint16",
-          "minimum": 0,
-          "maximum": 65535,
-          "x-json-integer": true
+          "$ref": "#/definitions/TerminalDimension"
         },
         "cols": {
-          "type": "integer",
-          "format": "uint16",
-          "minimum": 0,
-          "maximum": 65535,
-          "x-json-integer": true
+          "$ref": "#/definitions/TerminalDimension"
         },
         "attached": {
           "type": "boolean"
@@ -3583,6 +3575,585 @@
       },
       "required": [],
       "additionalProperties": true
+    },
+    "TerminalReadSource": {
+      "type": "string",
+      "enum": [
+        "visible",
+        "recent"
+      ]
+    },
+    "TerminalLines": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 1,
+      "maximum": 5000,
+      "x-json-integer": true
+    },
+    "TerminalTimeout": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "maximum": 3600000,
+      "x-json-integer": true
+    },
+    "TerminalSendText": {
+      "type": "string",
+      "x-max-bytes": 65536
+    },
+    "TerminalRegex": {
+      "type": "string",
+      "description": "Compiled by the existing Rust regex validator with a 256 KiB compiled-size limit; JSON Schema does not implement Rust regex syntax or compilation."
+    },
+    "TerminalKey": {
+      "type": "string",
+      "anyOf": [
+        {
+          "minLength": 1,
+          "maxLength": 1,
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
+        },
+        {
+          "pattern": "^(?:[eE][nN][tT][eE][rR]|[tT][aA][bB]|[eE][sS][cC]|[bB][aA][cC][kK][sS][pP][aA][cC][eE]|[sS][pP][aA][cC][eE]|[uU][pP]|[dD][oO][wW][nN]|[lL][eE][fF][tT]|[rR][iI][gG][hH][tT]|[hH][oO][mM][eE]|[eE][nN][dD]|[pP][aA][gG][eE][uU][pP]|[pP][aA][gG][eE][dD][oO][wW][nN]|[iI][nN][sS][eE][rR][tT]|[dD][eE][lL][eE][tT][eE]|[sS][hH][iI][fF][tT]\\+[tT][aA][bB]|[fF]1|[fF]2|[fF]3|[fF]4|[fF]5|[fF]6|[fF]7|[fF]8|[fF]9|[fF]10|[fF]11|[fF]12)$",
+          "not": {
+            "pattern": "[^A-Za-z0-9+]"
+          }
+        },
+        {
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[cC][tT][rR][lL]\\+[a-zA-Z]$"
+        },
+        {
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^[aA][lL][tT]\\+[!-~]$"
+        }
+      ]
+    },
+    "TerminalKeys": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/definitions/TerminalKey"
+      }
+    },
+    "HostTerminalReadParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalReadSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lines": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalLines"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "session",
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "HostTerminalSendParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalSendText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "keys": {
+          "$ref": "#/definitions/TerminalKeys",
+          "default": []
+        }
+      },
+      "required": [
+        "session",
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "HostTerminalWaitParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        },
+        "match": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "regex": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalRegex"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "exit": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalTimeout"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lines": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalLines"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "session",
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "MemberTerminalReadParams": {
+      "type": "object",
+      "properties": {
+        "terminal": {
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalReadSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lines": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalLines"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "MemberTerminalSendParams": {
+      "type": "object",
+      "properties": {
+        "terminal": {
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalSendText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "keys": {
+          "$ref": "#/definitions/TerminalKeys",
+          "default": []
+        }
+      },
+      "required": [
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "MemberTerminalWaitParams": {
+      "type": "object",
+      "properties": {
+        "terminal": {
+          "type": "string"
+        },
+        "match": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "regex": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalRegex"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "exit": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalTimeout"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lines": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalLines"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "HostTerminalResizeParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        },
+        "rows": {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        "cols": {
+          "$ref": "#/definitions/TerminalDimension"
+        }
+      },
+      "required": [
+        "session",
+        "terminal",
+        "rows",
+        "cols"
+      ],
+      "additionalProperties": false
+    },
+    "TerminalReadResult": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "x-max-bytes": 262144
+        },
+        "alternate_screen": {
+          "type": "boolean"
+        },
+        "rows": {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        "cols": {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        "truncated": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        }
+      },
+      "required": [
+        "text",
+        "alternate_screen",
+        "rows",
+        "cols"
+      ],
+      "additionalProperties": true
+    },
+    "TerminalWaitMatchedResult": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "matched"
+          ]
+        },
+        "line": {
+          "type": "string",
+          "x-max-bytes": 4096
+        },
+        "truncated": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "line"
+      ],
+      "additionalProperties": true
+    },
+    "TerminalWaitTimeoutResult": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "timeout"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "additionalProperties": true
+    },
+    "TerminalWaitExitedResult": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "exited"
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int32",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int32",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": "string",
+          "x-max-bytes": 262144
+        },
+        "truncated": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "code",
+        "signal",
+        "text"
+      ],
+      "additionalProperties": true
+    },
+    "TerminalWaitResult": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalWaitMatchedResult"
+        },
+        {
+          "$ref": "#/definitions/TerminalWaitTimeoutResult"
+        },
+        {
+          "$ref": "#/definitions/TerminalWaitExitedResult"
+        }
+      ]
+    },
+    "TerminalReadReply": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "TerminalWaitReply": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int64",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int64",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -3618,7 +4189,10 @@
     "terminal-records": "Terminal records expose id, nullable name, display label, host/agent origin, Unix-millisecond started_at, rows/cols and attached. IDs increase per session and are never reused; list orders started terminals oldest first, including host and agent origins. Creation answers only after Spawned; pending creates do not appear in lists. Listed records remain until the program ends. Snapshots retain their domain record bridge until C15.",
     "terminal-creation": "Host create accepts ordered positional parameters session,argv,cwd,env,name,rows,cols,notify or a closed named object; only session is required. Sandbox create/list/close accept a closed named object or null-as-empty, never positional arrays, and may never supply session. The existing sandbox relay derives the session from the connection and preserves policy/refusal ordering. Host notify=true is rejected before command/name/size validation; sandbox notify may request an exit notice. Size defaults independently to 40 rows and 120 columns. Command/name/size, target/policy/init, capacity and uniqueness checks precede canonical init encoding and spawn transfer.",
     "terminal-close": "Close requests cancellation of the terminal process group and returns accepted=true. The entry remains until exit. Sandbox callers can close only agent-created terminals; host-created ones return -32009. An explicit close suppresses exit notices; disconnect while creating does not cancel the already requested terminal. Existing lifecycle/notice ownership stays handwritten.",
-    "terminal-cli-fallbacks": "Current terminal producers are precise. Legacy create CLI results read only a string id, otherwise print ?. List readers iterate only an array terminals, treat other envelopes as empty, and normalize each item independently: string identity/display fields or absent, attached only a JSON boolean, rows/cols rendered as their original JSON values (missing means null). Close readers ignore their result. Named client normalization profiles retain these behaviors around generated DTOs, including malformed fields and non-object results."
+    "terminal-cli-fallbacks": "Current terminal producers are precise. Legacy create CLI results read only a string id, otherwise print ?. List readers iterate only an array terminals, treat other envelopes as empty, and normalize each item independently: string identity/display fields or absent, attached only a JSON boolean, rows/cols rendered as their original JSON values (missing means null). Close readers ignore their result. Named client normalization profiles retain these behaviors around generated DTOs, including malformed fields and non-object results.",
+    "terminal-io-parameters": "Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Multi-character key names are ASCII-lowercased before modifier processing: alt+X sends ESC+x; a single-character X keeps its case. Alt modifiers accept only ASCII graphic characters (! through ~), excluding space.",
+    "terminal-io-results": "Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.",
+    "terminal-io-ownership": "Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist."
   },
   "x-envelope-schemas": {
     "Id": {
@@ -4125,6 +4699,330 @@
       ],
       "minItems": 2,
       "maxItems": 2
+    },
+    "HostTerminalReadParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalReadSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalLines"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 4
+    },
+    "HostTerminalSendParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalSendText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "$ref": "#/definitions/TerminalKeys",
+          "default": []
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 4
+    },
+    "HostTerminalWaitParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalRegex"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalTimeout"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalLines"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 7
+    },
+    "HostTerminalResizeParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        }
+      ],
+      "minItems": 4,
+      "maxItems": 4
+    }
+  },
+  "x-request-constraints": {
+    "HostTerminalSendParams": {
+      "anyOf": [
+        {
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "required": [
+            "keys"
+          ],
+          "properties": {
+            "keys": {
+              "type": "array",
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    },
+    "HostTerminalWaitParams": {
+      "anyOf": [
+        {
+          "required": [
+            "match"
+          ],
+          "properties": {
+            "match": {
+              "type": "string",
+              "minLength": 1
+            },
+            "regex": {
+              "type": "null"
+            },
+            "exit": {
+              "enum": [
+                null,
+                false
+              ]
+            }
+          }
+        },
+        {
+          "required": [
+            "regex"
+          ],
+          "properties": {
+            "regex": {
+              "type": "string"
+            },
+            "match": {
+              "type": "null"
+            },
+            "exit": {
+              "enum": [
+                null,
+                false
+              ]
+            }
+          }
+        },
+        {
+          "required": [
+            "exit"
+          ],
+          "properties": {
+            "exit": {
+              "enum": [
+                true
+              ]
+            },
+            "match": {
+              "type": "null"
+            },
+            "regex": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "MemberTerminalSendParams": {
+      "anyOf": [
+        {
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "required": [
+            "keys"
+          ],
+          "properties": {
+            "keys": {
+              "type": "array",
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    },
+    "MemberTerminalWaitParams": {
+      "anyOf": [
+        {
+          "required": [
+            "match"
+          ],
+          "properties": {
+            "match": {
+              "type": "string",
+              "minLength": 1
+            },
+            "regex": {
+              "type": "null"
+            },
+            "exit": {
+              "enum": [
+                null,
+                false
+              ]
+            }
+          }
+        },
+        {
+          "required": [
+            "regex"
+          ],
+          "properties": {
+            "regex": {
+              "type": "string"
+            },
+            "match": {
+              "type": "null"
+            },
+            "exit": {
+              "enum": [
+                null,
+                false
+              ]
+            }
+          }
+        },
+        {
+          "required": [
+            "exit"
+          ],
+          "properties": {
+            "exit": {
+              "enum": [
+                true
+              ]
+            },
+            "match": {
+              "type": "null"
+            },
+            "regex": {
+              "type": "null"
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -83,7 +83,7 @@ pub fn check(
         | "permissions.request"
         | contract::sandbox::TerminalsCreate::NAME => 16384,
         // A terminal takes up to 64 KiB of text to type.
-        "terminals.send" => goblins_protocol::messages::MAX_REQUEST,
+        contract::sandbox::TerminalsSend::NAME => goblins_protocol::messages::MAX_REQUEST,
         _ => 4096,
     };
     if !messaging(method) && method != "communications.list" && body_bytes > limit {
@@ -135,9 +135,9 @@ pub fn check(
             | "host.cancel"
             | contract::sandbox::TerminalsCreate::NAME
             | contract::sandbox::TerminalsList::NAME
-            | "terminals.read"
-            | "terminals.send"
-            | "terminals.wait"
+            | contract::sandbox::TerminalsRead::NAME
+            | contract::sandbox::TerminalsSend::NAME
+            | contract::sandbox::TerminalsWait::NAME
             | contract::sandbox::TerminalsClose::NAME
     ) {
         return Err(Refusal::Policy {
@@ -292,9 +292,9 @@ pub fn check(
         // never names a goblin, so it reaches only the caller's own.
         contract::sandbox::TerminalsCreate::NAME => Some(Operation::Exec),
         contract::sandbox::TerminalsList::NAME
-        | "terminals.read"
-        | "terminals.send"
-        | "terminals.wait"
+        | contract::sandbox::TerminalsRead::NAME
+        | contract::sandbox::TerminalsSend::NAME
+        | contract::sandbox::TerminalsWait::NAME
         | contract::sandbox::TerminalsClose::NAME => None,
         "raids.create" => {
             let Raid { raid: _raid } = parse(&call.params)?;

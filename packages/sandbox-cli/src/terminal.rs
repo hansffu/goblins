@@ -115,15 +115,13 @@ pub fn run(command: TerminalCommand) -> Result<i32, String> {
             source,
             lines,
         } => {
-            let mut params = json!({"terminal":terminal});
-            if let Some(source) = source {
-                params["source"] = json!(source);
-            }
-            if let Some(lines) = lines {
-                params["lines"] = json!(lines);
-            }
-            let read = call("terminals.read", params)?;
-            println!("{}", read["text"].as_str().unwrap_or_default());
+            let params = contract::MemberTerminalReadParams {
+                terminal,
+                source,
+                lines,
+            };
+            let read = call_typed::<contract::sandbox::TerminalsRead>(params)?;
+            println!("{}", read.text.as_deref().unwrap_or_default());
         }
         TerminalCommand::Send {
             terminal,
@@ -141,20 +139,24 @@ pub fn run(command: TerminalCommand) -> Result<i32, String> {
             timeout,
             lines,
         } => {
-            let mut params = json!({"terminal":terminal});
-            match (text, regex, exit) {
-                (Some(text), None, false) => params["match"] = json!(text),
-                (None, Some(regex), false) => params["regex"] = json!(regex),
-                (None, None, true) => params["exit"] = json!(true),
+            let (match_, regex, exit) = match (text, regex, exit) {
+                (Some(text), None, false) => (Some(text), None, None),
+                (None, Some(regex), false) => (None, Some(regex), None),
+                (None, None, true) => (None, None, Some(true)),
                 _ => return Err("give one of --match, --regex and --exit".into()),
-            }
-            if let Some(timeout) = timeout {
-                params["timeout"] = json!(timeout);
-            }
-            if let Some(lines) = lines {
-                params["lines"] = json!(lines);
-            }
-            return Ok(report(&terminal, &call("terminals.wait", params)?));
+            };
+            let params = contract::MemberTerminalWaitParams {
+                terminal: terminal.clone(),
+                match_,
+                regex,
+                exit,
+                timeout,
+                lines,
+            };
+            return Ok(report(
+                &terminal,
+                &call_typed::<contract::sandbox::TerminalsWait>(params)?,
+            ));
         }
         TerminalCommand::Close { terminal } => {
             call_typed::<contract::sandbox::TerminalsClose>(
@@ -166,24 +168,25 @@ pub fn run(command: TerminalCommand) -> Result<i32, String> {
 }
 
 fn send(terminal: String, text: Option<String>, keys: Vec<String>) -> Result<(), String> {
-    let mut params = json!({"terminal":terminal,"keys":keys});
-    if let Some(text) = text {
-        params["text"] = json!(text);
-    }
-    call("terminals.send", params).map(drop)
+    let params = contract::MemberTerminalSendParams {
+        terminal,
+        keys,
+        text,
+    };
+    call_typed::<contract::sandbox::TerminalsSend>(params).map(drop)
 }
 
 /// Print what a wait found: the exit code is 0 for a match or an exit, 1 for
 /// a timeout.
-fn report(terminal: &str, result: &Value) -> i32 {
-    match result["status"].as_str() {
+fn report(terminal: &str, result: &contract::TerminalWaitReply) -> i32 {
+    match result.status.as_deref() {
         Some("matched") => {
-            println!("{}", result["line"].as_str().unwrap_or_default());
+            println!("{}", result.line.as_deref().unwrap_or_default());
             0
         }
         Some("exited") => {
-            println!("{}", result["text"].as_str().unwrap_or_default());
-            let how = match (result["code"].as_i64(), result["signal"].as_i64()) {
+            println!("{}", result.text.as_deref().unwrap_or_default());
+            let how = match (result.code, result.signal) {
                 (Some(code), _) => format!("with code {code}"),
                 (None, Some(signal)) => format!("from signal {signal}"),
                 (None, None) => "with no status".into(),
@@ -203,6 +206,12 @@ mod tests {
     use super::*;
     #[test]
     fn a_wait_exits_0_on_a_match_or_an_exit_and_1_on_a_timeout() {
+        let report = |terminal: &str, wire: &Value| {
+            super::report(
+                terminal,
+                &contract::TerminalWaitReply::decode(wire.clone()).unwrap(),
+            )
+        };
         assert_eq!(report("t1", &json!({"status":"matched","line":"done"})), 0);
         assert_eq!(
             report(

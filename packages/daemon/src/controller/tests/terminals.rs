@@ -862,3 +862,27 @@ fn terminal_list_keeps_retained_ids_and_releases_agent_name_selectors() {
     assert_eq!(d.resolve_session("friendly").unwrap(), "b");
     assert_eq!(ask(&mut d, "terminals.list", json!(["friendly"]))["result"], json!({"terminals":[]}));
 }
+
+#[test]
+fn generated_io_contract_corpus_keeps_runtime_validation_and_refusal_behavior() {
+    let _no_forks = unix::no_forks();
+    let fixtures: Value = serde_json::from_str(include_str!("../../../../../libs/api/schema/fixtures.json")).unwrap();
+    for case in fixtures["terminal_io_parameter_cases"].as_array().unwrap() {
+        let (mut d, _events, received) = goblin();
+        create(&mut d, &received, json!({"session":"a"}));
+        let method = case["method"].as_str().unwrap();
+        if method == "terminals.detach" {
+            d.sessions.get_mut("a").unwrap().terminals.entries[0].record.attached = true;
+        }
+        let role = if case["endpoint"] == "host" { Role::Host } else { Role::Sandbox("a".into()) };
+        let (mut c, _peer) = connection(role);
+        c.id = d.number();
+        c.initialized = true;
+        call(&mut d, &mut c, method, case["params"].clone());
+        let accepted = c.waiting.is_some() || frame(&mut c).get("result").is_some();
+        assert_eq!(accepted, case["runtime"].as_bool().unwrap(), "{case}");
+        if !accepted {
+            assert!(received.lock().unwrap().is_empty(), "refused input reached runtime: {case}");
+        }
+    }
+}

@@ -221,22 +221,24 @@ The CLI retains its legacy display fallbacks through generated normalized fields
 
 Reads what a terminal shows.
 
-- Input :: ={"session", "terminal", "source", "lines"}=. =source= is =visible= (the default), the screen's rows, or =recent=, the last =lines= lines of scrollback and screen with soft-wrapped rows joined into one line; on the alternate screen =recent= is the alternate screen like =visible=. =lines= defaults to 100 and is at most 5,000. Trailing blank lines are dropped.
+- Input :: ={"session", "terminal", "source", "lines"}=. =source= is =visible= (the default), the screen's rows, or =recent=, the last =lines= lines of scrollback and screen with soft-wrapped rows joined into one line; on the alternate screen =recent= is the alternate screen like =visible=. =lines= defaults to 100 and is 1–5,000 when supplied. Missing/null =source= selects visible, and missing/null =lines= uses the default. The host positional form is =[session, terminal, source, lines]= with two through four elements. Unknown named fields are refused. Trailing blank lines are dropped.
 - Output :: ={"text", "alternate_screen", "rows", "cols"}=, and ={"truncated": true}= when =text= was cut. =text= keeps the newest lines up to 256 KiB.
 
 *** =terminals.send=
 
-Types into a terminal: =text=, then =keys=.
+Types into a terminal: =text=, then =keys=. The host positional form is =[session, terminal, text, keys]= with two through four elements. Missing/null =text= means no text; even an empty string is supplied text. =keys= defaults to =[]=; null is refused. A string text or a nonempty keys list is required, and every key is validated before sending anything. Named fields are closed.
 
-- Input :: ={"session", "terminal", "text", "keys"}=. At least one of them is required. =text= is at most 64 KiB (and the request frame at most 64 KiB, so the longest text that fits is shorter), wrapped in bracketed-paste markers when the program enabled bracketed paste. =keys= has at most 64 names: =enter=, =tab=, =esc=, =backspace=, =space=, =up=, =down=, =left=, =right=, =home=, =end=, =pageup=, =pagedown=, =insert=, =delete=, =f1=–=f12=, =shift+tab=, =ctrl+X= (a letter) and =alt+X= (a printable ASCII character), or an entry of exactly one character that is not a control character (=g=, =A=, =:=; a Unicode scalar value other than C0, DEL and C1 controls), which is typed as that keystroke, never wrapped in bracketed-paste markers, with its case kept; cursor keys follow the cursor mode the program set. An unknown name, such as a longer entry that is not a key name (=gg=), refuses the whole call with =-32602=.
+- Input :: ={"session", "terminal", "text", "keys"}=. At least one of them is required. =text= is at most 64 KiB (and the request frame at most 64 KiB, so the longest text that fits is shorter), wrapped in bracketed-paste markers when the program enabled bracketed paste. =keys= has at most 64 names: =enter=, =tab=, =esc=, =backspace=, =space=, =up=, =down=, =left=, =right=, =home=, =end=, =pageup=, =pagedown=, =insert=, =delete=, =f1=–=f12=, =shift+tab=, =ctrl+X= (a letter) and =alt+X= (an ASCII graphic character, =!= through =~=; space is excluded), or an entry of exactly one character that is not a control character (=g=, =A=, =:=; a Unicode scalar value other than C0, DEL and C1 controls), which is typed as that keystroke, never wrapped in bracketed-paste markers, with its case kept; cursor keys follow the cursor mode the program set. An unknown name, such as a longer entry that is not a key name (=gg=), refuses the whole call with =-32602=. Multi-character names are ASCII-lowercased before modifier processing, so =alt+X= emits ESC followed by lowercase =x=. A single-character =X= retains uppercase.
 - Output :: ={"accepted": true}=. =-32009= when the program has ended or its input is full.
 
 *** =terminals.wait=
 
 Waits until a line matches, or the terminal's program exits. The reply arrives when it does; the connection serves no other call meanwhile, and a connection that closes cancels its wait. At most 16 waits are in progress per goblin (=-32010=).
 
-- Input :: ={"session", "terminal", "match", "regex", "exit", "timeout", "lines"}=. Exactly one of =match= (a literal substring), =regex= (a Rust =regex= pattern; a pattern that compiles past a size limit is refused with =-32602=) and =exit= (=true=). =match= and =regex= test each line of the visible screen and of the last =lines= recent lines (default 100), at once and again after each output, so output already there matches; the newest matching line is reported. =timeout= is milliseconds, default 30,000, at most 3,600,000.
+- Input :: ={"session", "terminal", "match", "regex", "exit", "timeout", "lines"}=. Exactly one of =match= (a literal substring), =regex= (a Rust =regex= pattern; a pattern that compiles past a size limit is refused with =-32602=) and =exit= (=true=). =match= and =regex= test each line of the visible screen and of the last =lines= recent lines (default 100), at once and again after each output, so output already there matches; the newest matching line is reported. =timeout= is milliseconds, default 30,000, from zero through 3,600,000. Missing/null =timeout= uses the default, and missing/null =lines= uses 100 for matching or 50 for exit output; supplied =lines= is 1–5,000. Missing/null condition fields are absent; =exit=false= is compatible with match/regex. The host positional form is =[session, terminal, match, regex, exit, timeout, lines]= with two through seven elements; unknown fields are refused.
 - Output :: ={"status": "matched", "line"}= (=line= cut to 4 KiB, with ={"truncated": true}= when cut), ={"status": "timeout"}=, or, when the terminal exits first, ={"status": "exited", "code", "signal", "text"}= with =code= and =signal= null when unknown and =text= the last =lines= recent lines (default 50, newest up to 256 KiB, with =truncated=). A wait whose condition matches in the terminal's final state when it exits reports the match.
+
+The CLI independently reads string text/status/line and signed 64-bit code/signal fields, preserving valid fields beside malformed or missing ones. A read with no usable text prints an empty line. A wait with unknown/missing status reports timeout and exits 1; matched/exited statuses exit 0 and retain their old text/status defaults. Non-object legacy results use the same fallbacks. Send, detach and resize clients ignore successful result bodies; current producers still follow their precise schemas.
 
 *** =terminals.close=
 
@@ -247,7 +249,7 @@ Ends a terminal's program the way a withdrawn exec is cancelled: its process gro
 
 *** =terminals.detach=
 
-Ends the frontend's attachment from elsewhere, like =sessions.detach=. The terminal keeps running; the stream stays reserved until the frontend closes its end.
+The host positional form is =[session, terminal]= with exactly two elements and no unknown named fields. Ends the frontend's attachment from elsewhere, like =sessions.detach=. The terminal keeps running; the stream stays reserved until the frontend closes its end.
 
 - Input :: ={"session", "terminal"}=
 - Output :: ={"accepted": true}=; =-32009= when nothing is attached.
@@ -256,14 +258,14 @@ Ends the frontend's attachment from elsewhere, like =sessions.detach=. The termi
 
 Resizes a terminal's PTY and screen.
 
-- Input :: ={"session", "terminal", "rows", "cols"}=, each 1–500.
+- Input :: ={"session", "terminal", "rows", "cols"}= or =[session, terminal, rows, cols]=. All fields are required and unknown named fields are refused; =rows= and =cols= are each 1–500 and are validated before target resolution.
 - Output :: ={"accepted": true}=
 
 *** Terminals on the sandbox endpoint
 
 A goblin reaches its own terminals with =terminals.create=, =terminals.list=, =terminals.read=, =terminals.send=, =terminals.wait= and =terminals.close= on the sandbox endpoint (=terminals= is in the sandbox's =features=). They are the host endpoint's methods with the same parameters, results and limits, except that no call names a goblin: a call with a =session= is refused with =-32602=, and the goblin is the caller's, so another goblin's terminals cannot be reached or even told apart from missing ones (=-32004=). =terminals.attach=, =terminals.detach= and =terminals.resize= do not exist there (=-32601=). A request is at most 4 KiB, except =terminals.create= (16 KiB) and =terminals.send= (64 KiB, the request body limit). As for =sessions.exec=, a configuration that refuses exec refuses =terminals.create=. A wait holds its connection, which serves no other call meanwhile; a connection that closes cancels its wait, and a goblin has at most 16 waits in all, the host's included.
 
-Sandbox =terminals.create=, =terminals.list= and =terminals.close= take named objects only; =null= is treated as ={}=, and arrays are refused even when empty. Create has no required fields, list takes none, and close requires =terminal=. Their generated endpoint contracts retain this distinction from host positional forms and the caller-derived session authority.
+All six sandbox =terminals.*= methods take named objects only; =null= is treated as ={}=, and arrays are refused even when empty. Create has no required fields, list takes none, and close requires =terminal=. Their generated endpoint contracts retain this distinction from host positional forms and the caller-derived session authority.
 
 - Authority :: the goblin can list, read, send to and wait on all of its terminals, those the human created (origin =host=) included, and create new ones, whose origin is =agent=. It can close only terminals with origin =agent=: closing a =host= terminal is refused with =-32009= and a message saying that only the human can close it.
 - =terminals.create= also takes =notify= (a boolean, default false; refused on the host endpoint). With it, the daemon puts one operation notice from =goblins= in the goblin's inbox when the terminal's program exits, whether or not the goblin's configuration has an agent integration. A program that was ended by =terminals.close=, or by the goblin stopping, sends none. The notice is the operation notice of an outcome with =message.operation= ={"request": "SESSION-tN", "kind": "terminal", "subject": LABEL, "status": "exited", "message"}= (=request= is the goblin's session ID and the terminal's ID joined by =-=, which names it for good as an ID is not reused in a goblin's run), where =message= is =exit code N= or =killed by signal N=, then the last 20 lines of the terminal's screen at the end, cut to 4 KiB with the newest lines kept (a cut starts with =…=). The notice body says =terminal LABEL exited=, then =message=. The daemon asks the supervisor to report the exit when it starts the terminal, as a wait that exists from the start and counts toward no limit, so a program that exits at once still sends its notice.

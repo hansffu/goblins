@@ -15,6 +15,20 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_terminal_io_contract_constraints_and_precise_results(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["terminal_io_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params(case["endpoint"],case["method"],case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params(case["endpoint"],case["method"],case["params"])
+        for case in fixtures["terminal_io_result_cases"]:
+            for endpoint in ("host","sandbox") if case["method"] not in ("terminals.detach","terminals.resize") else ("host",):
+                reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+                self.assertTrue(contract.validate_reply(endpoint,case["method"],reply,compatibility=True))
+                if case["valid"]:self.assertTrue(contract.validate_reply(endpoint,case["method"],reply))
+                else:
+                    with self.assertRaises(ValidationError):contract.validate_reply(endpoint,case["method"],reply)
+
     def test_terminal_contract_corpora_and_endpoint_parameter_forms(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["terminal_parameter_cases"]:
@@ -262,6 +276,60 @@ class ContractTests(unittest.TestCase):
 
 
 class HistoricalClientTests(unittest.TestCase):
+    def terminal_io_cli_cases(self, member=False):
+        target=["t1"] if member else ["a","t1"]
+        base={} if member else dict(session="a")
+        base["terminal"]="t1"
+        cases=[
+            (["read",*target],"read",base,{"text":"hello"},0,"hello\n",""),
+            (["read",*target,"--source","recent","--lines","7"],"read",dict(base,source="recent",lines=7),None,0,"\n",""),
+            (["read",*target],"read",base,{"text":7},0,"\n",""),
+            (["send",*target,"--text",""],"send",dict(base,text="",keys=[]),[],0,"",""),
+            (["send",*target,"--keys","g","A","ctrl+c"],"send",dict(base,keys=["g","A","ctrl+c"]),None,0,"",""),
+            (["run",*target,"echo hi"],"send",dict(base,text="echo hi",keys=["enter"]),[],0,"",""),
+            (["wait",*target,"--match","done","--timeout","0","--lines","5"],"wait",dict(base,match="done",timeout=0,lines=5),{"status":"matched","line":7},0,"\n",""),
+            (["wait",*target,"--regex","^done$"],"wait",dict(base,regex="^done$"),{"status":"matched","line":"done","future":True},0,"done\n",""),
+            (["wait",*target,"--exit"],"wait",dict(base,exit=True),{"status":"exited","code":"bad","signal":15,"text":7},0,"\n","t1 exited from signal 15\n"),
+            (["wait",*target,"--exit"],"wait",dict(base,exit=True),{"status":"exited","code":7,"signal":"bad","text":"last"},0,"last\n","t1 exited with code 7\n"),
+            (["wait",*target,"--match","done"],"wait",dict(base,match="done"),{"status":"future"},1,"","timed out waiting for t1\n"),
+            (["wait",*target,"--match","done"],"wait",dict(base,match="done"),None,1,"","timed out waiting for t1\n"),
+        ]
+        if not member:cases.append((["detach",*target],"detach",base,[],0,"",""))
+        return cases
+
+    def test_terminal_io_host_cli_preserves_requests_and_legacy_reports(self):
+        binary=os.environ.get("GOBLINS_LOCAL_CONTROLLER")
+        if binary is None:
+            import re
+            binary=re.search(r'exec (\S+)',app().read_text()).group(1)
+        init=copy.deepcopy(contract.read("fixtures.json")["host_initialize"]);init["features"].append("terminals")
+        for args,method,params,result,code,output,error in self.terminal_io_cli_cases():
+            with self.subTest(args=args,result=result),tempfile.TemporaryDirectory(prefix="gc-terminal-io-") as root:
+                state=Path(root);calls=[];errors=[]
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.settimeout(5);listener.bind(str(state/"host.sock"));listener.listen()
+                    def serve():
+                        try:
+                            peer,_=listener.accept()
+                            with peer:
+                                peer.settimeout(5);request=receive(peer)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=request["id"],result=init)))
+                                call=receive(peer);calls.append(call)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=result)))
+                        except Exception as failure:errors.append(failure)
+                    server=threading.Thread(target=serve,daemon=True);server.start()
+                    cli=subprocess.run([binary,"--state-dir",str(state),"terminal",*args],text=True,capture_output=True,timeout=10)
+                    server.join(timeout=6);self.assertFalse(server.is_alive());self.assertEqual(errors,[])
+                    self.assertEqual(cli.returncode,code,cli.stderr);self.assertEqual((cli.stdout,cli.stderr),(output,error))
+                    self.assertEqual((calls[0]["method"],calls[0]["params"]),("terminals."+method,params))
+
+    def test_terminal_io_sandbox_cli_preserves_requests_and_legacy_reports(self):
+        for args,method,params,result,code,output,error in self.terminal_io_cli_cases(member=True):
+            with self.subTest(args=args,result=result):
+                cli,call=self.sandbox_fake_cli(["terminal",*args],result,features=("terminals",))
+                self.assertEqual(cli.returncode,code,cli.stderr);self.assertEqual((cli.stdout,cli.stderr),(output,error))
+                self.assertEqual((call["method"],call["params"]),("terminals."+method,params))
+
     def test_terminal_cli_binds_lifecycle_contracts_and_preserves_display_fallbacks(self):
         binary=os.environ.get("GOBLINS_LOCAL_CONTROLLER")
         if binary is None:

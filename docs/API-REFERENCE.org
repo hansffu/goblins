@@ -1994,18 +1994,10 @@ Result:
       "x-json-integer": true
     },
     "rows": {
-      "type": "integer",
-      "format": "uint16",
-      "minimum": 0,
-      "maximum": 65535,
-      "x-json-integer": true
+      "$ref": "#/definitions/TerminalDimension"
     },
     "cols": {
-      "type": "integer",
-      "format": "uint16",
-      "minimum": 0,
-      "maximum": 65535,
-      "x-json-integer": true
+      "$ref": "#/definitions/TerminalDimension"
     },
     "attached": {
       "type": "boolean"
@@ -2179,6 +2171,830 @@ Positional parameters:
   ],
   "minItems": 2,
   "maxItems": 2
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-close-fields= adapter: The CLI ignores close results; normalize only a boolean accepted when present. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =terminals.read=
+
+Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalReadSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lines": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalReadSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "x-max-bytes": 262144
+    },
+    "alternate_screen": {
+      "type": "boolean"
+    },
+    "rows": {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    "truncated": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "text",
+    "alternate_screen",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-read-fields= adapter: Read a string text independently, otherwise absent (printed as an empty line). The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =terminals.send=
+
+Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalSendText"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "keys": {
+      "$ref": "#/definitions/TerminalKeys",
+      "default": []
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalSendText"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "$ref": "#/definitions/TerminalKeys",
+      "default": []
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-close-fields= adapter: The CLI ignores close results; normalize only a boolean accepted when present. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "required": [
+        "keys"
+      ],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "minItems": 1
+        }
+      }
+    }
+  ]
+}
+#+end_src
+
+** =terminals.wait=
+
+Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    },
+    "match": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "regex": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalRegex"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "exit": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "timeout": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalTimeout"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lines": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalRegex"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalTimeout"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 7
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/TerminalWaitMatchedResult"
+    },
+    {
+      "$ref": "#/definitions/TerminalWaitTimeoutResult"
+    },
+    {
+      "$ref": "#/definitions/TerminalWaitExitedResult"
+    }
+  ]
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-wait-fields= adapter: Read string status/line/text and signed 64-bit integer code/signal independently. Missing or malformed fields are absent; an unknown/missing status retains the timeout report. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "line": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "required": [
+        "match"
+      ],
+      "properties": {
+        "match": {
+          "type": "string",
+          "minLength": 1
+        },
+        "regex": {
+          "type": "null"
+        },
+        "exit": {
+          "enum": [
+            null,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "required": [
+        "regex"
+      ],
+      "properties": {
+        "regex": {
+          "type": "string"
+        },
+        "match": {
+          "type": "null"
+        },
+        "exit": {
+          "enum": [
+            null,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "required": [
+        "exit"
+      ],
+      "properties": {
+        "exit": {
+          "enum": [
+            true
+          ]
+        },
+        "match": {
+          "type": "null"
+        },
+        "regex": {
+          "type": "null"
+        }
+      }
+    }
+  ]
+}
+#+end_src
+
+** =terminals.detach=
+
+Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 2
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-close-fields= adapter: The CLI ignores close results; normalize only a boolean accepted when present. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =terminals.resize=
+
+Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    },
+    "rows": {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/TerminalDimension"
+    }
+  },
+  "required": [
+    "session",
+    "terminal",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    {
+      "$ref": "#/definitions/TerminalDimension"
+    }
+  ],
+  "minItems": 4,
+  "maxItems": 4
 }
 #+end_src
 
@@ -3849,18 +4665,10 @@ Result:
       "x-json-integer": true
     },
     "rows": {
-      "type": "integer",
-      "format": "uint16",
-      "minimum": 0,
-      "maximum": 65535,
-      "x-json-integer": true
+      "$ref": "#/definitions/TerminalDimension"
     },
     "cols": {
-      "type": "integer",
-      "format": "uint16",
-      "minimum": 0,
-      "maximum": 65535,
-      "x-json-integer": true
+      "$ref": "#/definitions/TerminalDimension"
     },
     "attached": {
       "type": "boolean"
@@ -4058,6 +4866,494 @@ The =terminal-close-fields= adapter: The CLI ignores close results; normalize on
   },
   "required": [],
   "additionalProperties": true
+}
+#+end_src
+
+** =terminals.read=
+
+Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminal": {
+      "type": "string"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalReadSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lines": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "x-max-bytes": 262144
+    },
+    "alternate_screen": {
+      "type": "boolean"
+    },
+    "rows": {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    "truncated": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "text",
+    "alternate_screen",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-read-fields= adapter: Read a string text independently, otherwise absent (printed as an empty line). The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =terminals.send=
+
+Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminal": {
+      "type": "string"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalSendText"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "keys": {
+      "$ref": "#/definitions/TerminalKeys",
+      "default": []
+    }
+  },
+  "required": [
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-close-fields= adapter: The CLI ignores close results; normalize only a boolean accepted when present. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "required": [
+        "keys"
+      ],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "minItems": 1
+        }
+      }
+    }
+  ]
+}
+#+end_src
+
+** =terminals.wait=
+
+Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminal": {
+      "type": "string"
+    },
+    "match": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "regex": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalRegex"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "exit": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "timeout": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalTimeout"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lines": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/TerminalWaitMatchedResult"
+    },
+    {
+      "$ref": "#/definitions/TerminalWaitTimeoutResult"
+    },
+    {
+      "$ref": "#/definitions/TerminalWaitExitedResult"
+    }
+  ]
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-wait-fields= adapter: Read string status/line/text and signed 64-bit integer code/signal independently. Missing or malformed fields are absent; an unknown/missing status retains the timeout report. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "line": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "required": [
+        "match"
+      ],
+      "properties": {
+        "match": {
+          "type": "string",
+          "minLength": 1
+        },
+        "regex": {
+          "type": "null"
+        },
+        "exit": {
+          "enum": [
+            null,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "required": [
+        "regex"
+      ],
+      "properties": {
+        "regex": {
+          "type": "string"
+        },
+        "match": {
+          "type": "null"
+        },
+        "exit": {
+          "enum": [
+            null,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "required": [
+        "exit"
+      ],
+      "properties": {
+        "exit": {
+          "enum": [
+            true
+          ]
+        },
+        "match": {
+          "type": "null"
+        },
+        "regex": {
+          "type": "null"
+        }
+      }
+    }
+  ]
 }
 #+end_src
 
@@ -5864,18 +7160,10 @@ The =terminal-close-fields= adapter: The CLI ignores close results; normalize on
       "x-json-integer": true
     },
     "rows": {
-      "type": "integer",
-      "format": "uint16",
-      "minimum": 0,
-      "maximum": 65535,
-      "x-json-integer": true
+      "$ref": "#/definitions/TerminalDimension"
     },
     "cols": {
-      "type": "integer",
-      "format": "uint16",
-      "minimum": 0,
-      "maximum": 65535,
-      "x-json-integer": true
+      "$ref": "#/definitions/TerminalDimension"
     },
     "attached": {
       "type": "boolean"
@@ -8230,6 +9518,690 @@ The =terminal-close-fields= adapter: The CLI ignores close results; normalize on
 }
 #+end_src
 
+** =TerminalReadSource=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "visible",
+    "recent"
+  ]
+}
+#+end_src
+
+** =TerminalLines=
+
+#+begin_src json
+{
+  "type": "integer",
+  "format": "uint64",
+  "minimum": 1,
+  "maximum": 5000,
+  "x-json-integer": true
+}
+#+end_src
+
+** =TerminalTimeout=
+
+#+begin_src json
+{
+  "type": "integer",
+  "format": "uint64",
+  "minimum": 0,
+  "maximum": 3600000,
+  "x-json-integer": true
+}
+#+end_src
+
+** =TerminalSendText=
+
+#+begin_src json
+{
+  "type": "string",
+  "x-max-bytes": 65536
+}
+#+end_src
+
+** =TerminalRegex=
+
+#+begin_src json
+{
+  "type": "string",
+  "description": "Compiled by the existing Rust regex validator with a 256 KiB compiled-size limit; JSON Schema does not implement Rust regex syntax or compilation."
+}
+#+end_src
+
+** =TerminalKey=
+
+#+begin_src json
+{
+  "type": "string",
+  "anyOf": [
+    {
+      "minLength": 1,
+      "maxLength": 1,
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+      }
+    },
+    {
+      "pattern": "^(?:[eE][nN][tT][eE][rR]|[tT][aA][bB]|[eE][sS][cC]|[bB][aA][cC][kK][sS][pP][aA][cC][eE]|[sS][pP][aA][cC][eE]|[uU][pP]|[dD][oO][wW][nN]|[lL][eE][fF][tT]|[rR][iI][gG][hH][tT]|[hH][oO][mM][eE]|[eE][nN][dD]|[pP][aA][gG][eE][uU][pP]|[pP][aA][gG][eE][dD][oO][wW][nN]|[iI][nN][sS][eE][rR][tT]|[dD][eE][lL][eE][tT][eE]|[sS][hH][iI][fF][tT]\\+[tT][aA][bB]|[fF]1|[fF]2|[fF]3|[fF]4|[fF]5|[fF]6|[fF]7|[fF]8|[fF]9|[fF]10|[fF]11|[fF]12)$",
+      "not": {
+        "pattern": "[^A-Za-z0-9+]"
+      }
+    },
+    {
+      "minLength": 6,
+      "maxLength": 6,
+      "pattern": "^[cC][tT][rR][lL]\\+[a-zA-Z]$"
+    },
+    {
+      "minLength": 5,
+      "maxLength": 5,
+      "pattern": "^[aA][lL][tT]\\+[!-~]$"
+    }
+  ]
+}
+#+end_src
+
+** =TerminalKeys=
+
+#+begin_src json
+{
+  "type": "array",
+  "maxItems": 64,
+  "items": {
+    "$ref": "#/definitions/TerminalKey"
+  }
+}
+#+end_src
+
+** =HostTerminalReadParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalReadSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lines": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =HostTerminalSendParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalSendText"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "keys": {
+      "$ref": "#/definitions/TerminalKeys",
+      "default": []
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =HostTerminalWaitParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    },
+    "match": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "regex": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalRegex"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "exit": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "timeout": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalTimeout"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lines": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MemberTerminalReadParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminal": {
+      "type": "string"
+    },
+    "source": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalReadSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lines": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MemberTerminalSendParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminal": {
+      "type": "string"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalSendText"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "keys": {
+      "$ref": "#/definitions/TerminalKeys",
+      "default": []
+    }
+  },
+  "required": [
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MemberTerminalWaitParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminal": {
+      "type": "string"
+    },
+    "match": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "regex": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalRegex"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "exit": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "timeout": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalTimeout"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lines": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalLines"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =HostTerminalResizeParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    },
+    "rows": {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/TerminalDimension"
+    }
+  },
+  "required": [
+    "session",
+    "terminal",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =TerminalReadResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "type": "string",
+      "x-max-bytes": 262144
+    },
+    "alternate_screen": {
+      "type": "boolean"
+    },
+    "rows": {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/TerminalDimension"
+    },
+    "truncated": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "text",
+    "alternate_screen",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalWaitMatchedResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "matched"
+      ]
+    },
+    "line": {
+      "type": "string",
+      "x-max-bytes": 4096
+    },
+    "truncated": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "status",
+    "line"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalWaitTimeoutResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "timeout"
+      ]
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalWaitExitedResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "exited"
+      ]
+    },
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -2147483648,
+          "maximum": 2147483647,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -2147483648,
+          "maximum": 2147483647,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "text": {
+      "type": "string",
+      "x-max-bytes": 262144
+    },
+    "truncated": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "status",
+    "code",
+    "signal",
+    "text"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalWaitResult=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/TerminalWaitMatchedResult"
+    },
+    {
+      "$ref": "#/definitions/TerminalWaitTimeoutResult"
+    },
+    {
+      "$ref": "#/definitions/TerminalWaitExitedResult"
+    }
+  ]
+}
+#+end_src
+
+** =TerminalReadReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalWaitReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "line": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -8252,6 +10224,9 @@ The =terminal-close-fields= adapter: The CLI ignores close results; normalize on
 - =terminal-creation= :: Host create accepts ordered positional parameters session,argv,cwd,env,name,rows,cols,notify or a closed named object; only session is required. Sandbox create/list/close accept a closed named object or null-as-empty, never positional arrays, and may never supply session. The existing sandbox relay derives the session from the connection and preserves policy/refusal ordering. Host notify=true is rejected before command/name/size validation; sandbox notify may request an exit notice. Size defaults independently to 40 rows and 120 columns. Command/name/size, target/policy/init, capacity and uniqueness checks precede canonical init encoding and spawn transfer.
 - =terminal-close= :: Close requests cancellation of the terminal process group and returns accepted=true. The entry remains until exit. Sandbox callers can close only agent-created terminals; host-created ones return -32009. An explicit close suppresses exit notices; disconnect while creating does not cancel the already requested terminal. Existing lifecycle/notice ownership stays handwritten.
 - =terminal-cli-fallbacks= :: Current terminal producers are precise. Legacy create CLI results read only a string id, otherwise print ?. List readers iterate only an array terminals, treat other envelopes as empty, and normalize each item independently: string identity/display fields or absent, attached only a JSON boolean, rows/cols rendered as their original JSON values (missing means null). Close readers ignore their result. Named client normalization profiles retain these behaviors around generated DTOs, including malformed fields and non-object results.
+- =terminal-io-parameters= :: Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Multi-character key names are ASCII-lowercased before modifier processing: alt+X sends ESC+x; a single-character X keeps its case. Alt modifiers accept only ASCII graphic characters (! through ~), excluding space.
+- =terminal-io-results= :: Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
+- =terminal-io-ownership= :: Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist.
 
 * Common errors
 
@@ -8293,3 +10268,5 @@ The =terminal-close-fields= adapter: The CLI ignores close results; normalize on
 - =terminal-parameter-validation= :: TerminalName maps to String and TerminalDimension to u16. Existing controller validators retain byte/syntax/size checks, host-notify refusal, command checks and diagnostic/order semantics. Sandbox terminal calls preserve null-as-empty and object-only semantics independently of host positional forms; no new parameter validation moves ahead of the existing sandbox policy gate.
 - =terminal-domain-bridge= :: The domain TerminalRecord retains mutable lifecycle state and snapshot equality/serialization until C15. A single From<&TerminalRecord> projection emits generated SessionTerminal for create/list and session projections. Runtime capabilities and pending creation/notice state do not enter the public DTO.
 - =terminal-cli-normalization= :: Current terminal producers are precise. Legacy create CLI results read only a string id, otherwise print ?. List readers iterate only an array terminals, treat other envelopes as empty, and normalize each item independently: string identity/display fields or absent, attached only a JSON boolean, rows/cols rendered as their original JSON values (missing means null). Close readers ignore their result. Named client normalization profiles retain these behaviors around generated DTOs, including malformed fields and non-object results.
+- =terminal-io-validation= :: TerminalReadSource, TerminalKey, TerminalRegex and TerminalSendText map to String; TerminalLines to usize; TerminalTimeout to u64; TerminalKeys to Vec<String>. Existing source matching, key_bytes, terminal::validate and Rust regex compilation preserve syntax, byte/count/line/timeout bounds, cross-field choices and diagnostics/refusal order. x-request-constraints publishes cross-field JSON Schema separately from generated structural DTOs. Rust regex syntax/compiled size remains a named semantic constraint, not a JSON Schema format.
+- =terminal-io-producers= :: Supervisor screen/read and matched/timeout/exited/send producers construct generated public DTOs, then retain their existing Value runtime envelope until C17. Controller parameter decoding and command ownership/cancellation stay handwritten; no private descriptor or lifecycle transport is changed.

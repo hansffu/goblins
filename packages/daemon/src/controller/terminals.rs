@@ -3,7 +3,7 @@
 //! (`Command::Spawn` with `SpawnKind::Terminal`), so a terminal runs with
 //! nobody attached and answers reads, input and waits.
 use super::exec::validate_command;
-use super::{Active, Connection, Controller, Fault, capacity, conflict, contract_params, params};
+use super::{Active, Connection, Controller, Fault, capacity, conflict, contract_params};
 use goblins_jsonrpc as rpc;
 use goblins_protocol::contract::{self, Method};
 use goblins_runtime::policy::Operation;
@@ -135,61 +135,6 @@ pub(super) struct Pending {
     /// The daemon's own wait for the exit of this terminal (its process ID),
     /// which an exit notice reports.
     notice: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Target {
-    session: String,
-    terminal: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Read {
-    session: String,
-    terminal: String,
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    lines: Option<usize>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Send {
-    session: String,
-    terminal: String,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    keys: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Wait {
-    session: String,
-    terminal: String,
-    #[serde(default, rename = "match")]
-    text: Option<String>,
-    #[serde(default)]
-    regex: Option<String>,
-    #[serde(default)]
-    exit: Option<bool>,
-    #[serde(default)]
-    timeout: Option<u64>,
-    #[serde(default)]
-    lines: Option<usize>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Resize {
-    session: String,
-    terminal: String,
-    rows: u16,
-    cols: u16,
 }
 
 fn invalid(message: &str) -> Fault {
@@ -361,8 +306,11 @@ impl Controller {
                         .collect()
                 })))
             }
-            "terminals.read" => {
-                let p: Read = params(value)?;
+            contract::host::TerminalsRead::NAME => {
+                let p = scoped_params::<
+                    contract::host::TerminalsRead,
+                    contract::sandbox::TerminalsRead,
+                >(caller, value)?;
                 let source = match p.source.as_deref() {
                     None | Some("visible") => Source::Visible,
                     Some("recent") => Source::Recent,
@@ -374,17 +322,23 @@ impl Controller {
                 };
                 self.terminal_call(c, rpc_id, &p.session, &p.terminal, call)
             }
-            "terminals.send" => {
-                let p: Send = params(value)?;
+            contract::host::TerminalsSend::NAME => {
+                let p = scoped_params::<
+                    contract::host::TerminalsSend,
+                    contract::sandbox::TerminalsSend,
+                >(caller, value)?;
                 let call = Call::Send {
                     text: p.text,
                     keys: p.keys,
                 };
                 self.terminal_call(c, rpc_id, &p.session, &p.terminal, call)
             }
-            "terminals.wait" => {
-                let p: Wait = params(value)?;
-                let condition = match (p.text, p.regex, p.exit) {
+            contract::host::TerminalsWait::NAME => {
+                let p = scoped_params::<
+                    contract::host::TerminalsWait,
+                    contract::sandbox::TerminalsWait,
+                >(caller, value)?;
+                let condition = match (p.match_, p.regex, p.exit) {
                     (Some(text), None, None | Some(false)) => Condition::Match(text),
                     (None, Some(regex), None | Some(false)) => Condition::Regex(regex),
                     (None, None, Some(true)) => Condition::Exit,
@@ -430,8 +384,8 @@ impl Controller {
             "terminals.detach" | "terminals.resize" if caller == Caller::Sandbox => {
                 Err((-32601, "method unavailable on sandbox endpoint".into()))
             }
-            "terminals.detach" => {
-                let p: Target = params(value)?;
+            contract::host::TerminalsDetach::NAME => {
+                let p = contract_params::<contract::host::TerminalsDetach>(value)?;
                 let (session, index) = self.terminal_target(&p.session, &p.terminal)?;
                 let a = self.sessions.get_mut(&session).unwrap();
                 let entry = &mut a.terminals.entries[index];
@@ -449,10 +403,10 @@ impl Controller {
                 a.terminals.entries[index].record.attached = false;
                 a.sync_terminals();
                 self.dirty = true;
-                Ok(Some(json!({"accepted":true})))
+                Ok(Some(json!(contract::ServerStopResult { accepted: true })))
             }
-            "terminals.resize" => {
-                let p: Resize = params(value)?;
+            contract::host::TerminalsResize::NAME => {
+                let p = contract_params::<contract::host::TerminalsResize>(value)?;
                 if !terminal::valid_size(p.rows, p.cols) {
                     return Err(invalid("invalid dimensions"));
                 }
@@ -472,7 +426,7 @@ impl Controller {
                 (record.rows, record.cols) = (p.rows, p.cols);
                 a.sync_terminals();
                 self.dirty = true;
-                Ok(Some(json!({"accepted":true})))
+                Ok(Some(json!(contract::ServerStopResult { accepted: true })))
             }
             _ => Err((-32601, "method unavailable on host endpoint".into())),
         }

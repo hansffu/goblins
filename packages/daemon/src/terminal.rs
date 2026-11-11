@@ -6,7 +6,6 @@ use crate::{RESIZE, STOP, attachment};
 use goblins_controller::{Result, host::Client};
 use goblins_protocol::contract;
 use goblins_protocol::plain_text;
-use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering};
 
 pub fn run(state: PathBuf, command: TerminalCommand) -> Result<i32> {
@@ -73,15 +72,14 @@ pub fn run(state: PathBuf, command: TerminalCommand) -> Result<i32> {
             source,
             lines,
         } => {
-            let mut params = json!({"session":goblin,"terminal":terminal});
-            if let Some(source) = source {
-                params["source"] = json!(source);
-            }
-            if let Some(lines) = lines {
-                params["lines"] = json!(lines);
-            }
-            let read = client.call_patient("terminals.read", params, &STOP)?;
-            println!("{}", read["text"].as_str().unwrap_or_default());
+            let params = contract::HostTerminalReadParams {
+                session: goblin,
+                terminal,
+                source,
+                lines,
+            };
+            let read = client.call_patient_typed::<contract::host::TerminalsRead>(params, &STOP)?;
+            println!("{}", read.text.as_deref().unwrap_or_default());
         }
         TerminalCommand::Send {
             goblin,
@@ -113,20 +111,23 @@ pub fn run(state: PathBuf, command: TerminalCommand) -> Result<i32> {
             timeout,
             lines,
         } => {
-            let mut params = json!({"session":goblin,"terminal":terminal});
-            match (text, regex, exit) {
-                (Some(text), None, false) => params["match"] = json!(text),
-                (None, Some(regex), false) => params["regex"] = json!(regex),
-                (None, None, true) => params["exit"] = json!(true),
+            let (match_, regex, exit) = match (text, regex, exit) {
+                (Some(text), None, false) => (Some(text), None, None),
+                (None, Some(regex), false) => (None, Some(regex), None),
+                (None, None, true) => (None, None, Some(true)),
                 _ => return Err("give one of --match, --regex and --exit".into()),
-            }
-            if let Some(timeout) = timeout {
-                params["timeout"] = json!(timeout);
-            }
-            if let Some(lines) = lines {
-                params["lines"] = json!(lines);
-            }
-            let result = client.call_patient("terminals.wait", params, &STOP)?;
+            };
+            let params = contract::HostTerminalWaitParams {
+                session: goblin,
+                terminal: terminal.clone(),
+                match_,
+                regex,
+                exit,
+                timeout,
+                lines,
+            };
+            let result =
+                client.call_patient_typed::<contract::host::TerminalsWait>(params, &STOP)?;
             return Ok(report(&terminal, &result));
         }
         TerminalCommand::Close { goblin, terminal } => {
@@ -139,9 +140,11 @@ pub fn run(state: PathBuf, command: TerminalCommand) -> Result<i32> {
             )?;
         }
         TerminalCommand::Detach { goblin, terminal } => {
-            client.call_patient(
-                "terminals.detach",
-                json!({"session":goblin,"terminal":terminal}),
+            client.call_patient_typed::<contract::host::TerminalsDetach>(
+                contract::HostTerminalTargetParams {
+                    session: goblin,
+                    terminal,
+                },
                 &STOP,
             )?;
         }
@@ -157,25 +160,27 @@ fn send(
     text: Option<String>,
     keys: Vec<String>,
 ) -> Result<()> {
-    let mut params = json!({"session":goblin,"terminal":terminal,"keys":keys});
-    if let Some(text) = text {
-        params["text"] = json!(text);
-    }
-    client.call_patient("terminals.send", params, &STOP)?;
+    let params = contract::HostTerminalSendParams {
+        session: goblin,
+        terminal,
+        keys,
+        text,
+    };
+    client.call_patient_typed::<contract::host::TerminalsSend>(params, &STOP)?;
     Ok(())
 }
 
 /// Print what a wait found: the exit code is 0 for a match or an exit, 1 for
 /// a timeout.
-fn report(terminal: &str, result: &Value) -> i32 {
-    match result["status"].as_str() {
+fn report(terminal: &str, result: &contract::TerminalWaitReply) -> i32 {
+    match result.status.as_deref() {
         Some("matched") => {
-            println!("{}", result["line"].as_str().unwrap_or_default());
+            println!("{}", result.line.as_deref().unwrap_or_default());
             0
         }
         Some("exited") => {
-            println!("{}", result["text"].as_str().unwrap_or_default());
-            let how = match (result["code"].as_i64(), result["signal"].as_i64()) {
+            println!("{}", result.text.as_deref().unwrap_or_default());
+            let how = match (result.code, result.signal) {
                 (Some(code), _) => format!("with code {code}"),
                 (None, Some(signal)) => format!("from signal {signal}"),
                 (None, None) => "with no status".into(),
@@ -214,10 +219,12 @@ fn attach(mut client: Client, goblin: String, terminal: String) -> Result<i32> {
         client,
         |client, rows, cols| {
             client
-                .call(
-                    "terminals.resize",
-                    json!({"session":session,"terminal":terminal,"rows":rows,"cols":cols}),
-                )
+                .call_typed::<contract::host::TerminalsResize>(contract::HostTerminalResizeParams {
+                    session: session.clone(),
+                    terminal: terminal.clone(),
+                    rows,
+                    cols,
+                })
                 .map(drop)
         },
         |client| {

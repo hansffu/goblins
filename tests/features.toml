@@ -47,7 +47,7 @@ paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs"
 
 [features.terminals]
 description = "Terminals in the sandbox: supervisor-emulated PTYs, their host and sandbox APIs, attachment, exit notices and CLIs"
-python = ["test_terminals", "test_api_contract.HistoricalClientTests.test_terminal_cli_binds_lifecycle_contracts_and_preserves_display_fallbacks", "test_api_contract.HistoricalClientTests.test_sandbox_terminal_cli_preserves_params_relative_cwd_and_legacy_results"]
+python = ["test_terminals", "test_api_contract.HistoricalClientTests.test_terminal_cli_binds_lifecycle_contracts_and_preserves_display_fallbacks", "test_api_contract.HistoricalClientTests.test_sandbox_terminal_cli_preserves_params_relative_cwd_and_legacy_results", "test_api_contract.HistoricalClientTests.test_terminal_io_host_cli_preserves_requests_and_legacy_reports", "test_api_contract.HistoricalClientTests.test_terminal_io_sandbox_cli_preserves_requests_and_legacy_reports"]
 checks = ["rust"]
 paths = ["libs/runtime/src/terminal.rs", "libs/supervisor/src/screen.rs", "packages/daemon/src/controller/terminals.rs", "packages/daemon/src/terminal.rs", "libs/api/src/terminal.rs", "packages/sandbox-cli/src/terminal.rs", "skills/goblins-terminals/*"]
 

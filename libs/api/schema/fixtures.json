@@ -6861,6 +6861,1479 @@
       "method": "terminals.close",
       "result": [],
       "valid": false
+    },
+    {
+      "method": "terminals.create",
+      "result": {
+        "id": "t1",
+        "name": null,
+        "label": "shell",
+        "origin": "host",
+        "started_at": 1,
+        "rows": 0,
+        "cols": 80,
+        "attached": false
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.list",
+      "result": {
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "host",
+            "started_at": 1,
+            "rows": 0,
+            "cols": 80,
+            "attached": false
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.create",
+      "result": {
+        "id": "t1",
+        "name": null,
+        "label": "shell",
+        "origin": "host",
+        "started_at": 1,
+        "rows": 24,
+        "cols": 501,
+        "attached": false
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.list",
+      "result": {
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "host",
+            "started_at": 1,
+            "rows": 24,
+            "cols": 501,
+            "attached": false
+          }
+        ]
+      },
+      "valid": false
+    }
+  ],
+  "terminal_io_parameter_cases": [
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {
+        "session": "a",
+        "terminal": "t1"
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "source": "recent",
+        "lines": 5
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "source": null,
+        "lines": null
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "source": "VISIBLE"
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "lines": 0
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "lines": 5001
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "lines": 1.0
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "text": ""
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "text": "\u0000"
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "keys": [
+          "g",
+          "A",
+          "enter",
+          "Ctrl+C",
+          "ALT+X",
+          "alt+!",
+          " ",
+          "\u00e9",
+          "Home",
+          "SHIFT+TAB"
+        ]
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "text": null,
+        "keys": [
+          "up"
+        ]
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1"
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "text": null,
+        "keys": []
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "keys": [
+          "ENTER\n"
+        ]
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "keys": [
+          "gg"
+        ]
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "keys": [
+          "alt+ "
+        ]
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "keys": null
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "keys": [
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter"
+        ]
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "text": 1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "match": "done"
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "match": "done",
+        "exit": false
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "regex": "^done$"
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "regex": ""
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "exit": true,
+        "timeout": 0
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "exit": true,
+        "timeout": 3600000,
+        "lines": 5000
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "match": "done",
+        "regex": "done"
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "match": "done",
+        "exit": true
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "match": ""
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "exit": false
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1"
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "exit": true,
+        "timeout": 3600001
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "exit": true,
+        "timeout": -1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "exit": true,
+        "lines": 0
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "regex": "("
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {},
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "unknown": 1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {},
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "unknown": 1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {},
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": {
+        "session": "a",
+        "terminal": "t1",
+        "unknown": 1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.read",
+      "params": [
+        "a",
+        "t1",
+        "recent",
+        5
+      ],
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.send",
+      "params": [
+        "a",
+        "t1",
+        null,
+        [
+          "enter"
+        ]
+      ],
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.wait",
+      "params": [
+        "a",
+        "t1",
+        null,
+        null,
+        true,
+        0,
+        5
+      ],
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.detach",
+      "params": [
+        "a",
+        "t1"
+      ],
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.detach",
+      "params": [
+        "a"
+      ],
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.resize",
+      "params": [
+        "a",
+        "t1",
+        20,
+        80
+      ],
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.resize",
+      "params": [
+        "a",
+        "t1",
+        0,
+        80
+      ],
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.resize",
+      "params": [
+        "a",
+        "t1",
+        501,
+        80
+      ],
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.resize",
+      "params": [
+        "a",
+        "t1",
+        65536,
+        80
+      ],
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {
+        "terminal": "t1"
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {
+        "terminal": "t1",
+        "source": "recent",
+        "lines": 5
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {
+        "terminal": "t1",
+        "source": null,
+        "lines": null
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {
+        "terminal": "t1",
+        "source": "VISIBLE"
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {
+        "terminal": "t1",
+        "lines": 0
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {
+        "terminal": "t1",
+        "lines": 5001
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {
+        "terminal": "t1",
+        "lines": 1.0
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "text": ""
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "text": "\u0000"
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "keys": [
+          "g",
+          "A",
+          "enter",
+          "Ctrl+C",
+          "ALT+X",
+          "alt+!",
+          " ",
+          "\u00e9",
+          "Home",
+          "SHIFT+TAB"
+        ]
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "text": null,
+        "keys": [
+          "up"
+        ]
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1"
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "text": null,
+        "keys": []
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "keys": [
+          "ENTER\n"
+        ]
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "keys": [
+          "gg"
+        ]
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "keys": [
+          "alt+ "
+        ]
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "keys": null
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "keys": [
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter",
+          "enter"
+        ]
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "text": 1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "match": "done"
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "match": "done",
+        "exit": false
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "regex": "^done$"
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "regex": ""
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "exit": true,
+        "timeout": 0
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "exit": true,
+        "timeout": 3600000,
+        "lines": 5000
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "match": "done",
+        "regex": "done"
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "match": "done",
+        "exit": true
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "match": ""
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "exit": false
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1"
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "exit": true,
+        "timeout": 3600001
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "exit": true,
+        "timeout": -1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "exit": true,
+        "lines": 0
+      },
+      "valid": false,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "regex": "("
+      },
+      "valid": true,
+      "decoded": true,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {},
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": {
+        "terminal": "t1",
+        "unknown": 1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {},
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": {
+        "terminal": "t1",
+        "unknown": 1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {},
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": {
+        "terminal": "t1",
+        "unknown": 1
+      },
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.read",
+      "params": [],
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.send",
+      "params": [],
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.wait",
+      "params": [],
+      "valid": false,
+      "decoded": false,
+      "runtime": false
+    }
+  ],
+  "terminal_io_result_cases": [
+    {
+      "method": "terminals.read",
+      "result": {
+        "text": "hello",
+        "alternate_screen": false,
+        "rows": 40,
+        "cols": 120
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.read",
+      "result": {
+        "text": "hello",
+        "alternate_screen": true,
+        "rows": 40,
+        "cols": 120,
+        "truncated": true,
+        "future": 1
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.read",
+      "result": {
+        "text": 7
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.read",
+      "result": null,
+      "valid": false
+    },
+    {
+      "method": "terminals.wait",
+      "result": {
+        "status": "matched",
+        "line": "done"
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.wait",
+      "result": {
+        "status": "matched",
+        "line": "done",
+        "truncated": true
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.wait",
+      "result": {
+        "status": "timeout"
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.wait",
+      "result": {
+        "status": "exited",
+        "code": null,
+        "signal": 15,
+        "text": "bye",
+        "truncated": true
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.wait",
+      "result": {
+        "status": "exited",
+        "code": 7,
+        "signal": null,
+        "text": ""
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.wait",
+      "result": {
+        "status": "exited",
+        "code": "bad",
+        "signal": 15,
+        "text": 7
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.wait",
+      "result": {
+        "status": "matched",
+        "line": 7
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.wait",
+      "result": {
+        "status": "future"
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.wait",
+      "result": null,
+      "valid": false
+    },
+    {
+      "method": "terminals.send",
+      "result": {
+        "accepted": true
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.send",
+      "result": [],
+      "valid": false
+    },
+    {
+      "method": "terminals.detach",
+      "result": {
+        "accepted": true
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.resize",
+      "result": {
+        "accepted": true
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.read",
+      "result": {
+        "text": "",
+        "alternate_screen": false,
+        "rows": 1,
+        "cols": 1
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.read",
+      "result": {
+        "text": "",
+        "alternate_screen": false,
+        "rows": 500,
+        "cols": 500
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.read",
+      "result": {
+        "text": "",
+        "alternate_screen": false,
+        "rows": 0,
+        "cols": 80
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.read",
+      "result": {
+        "text": "",
+        "alternate_screen": false,
+        "rows": 24,
+        "cols": 501
+      },
+      "valid": false
     }
   ]
 }

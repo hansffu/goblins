@@ -241,6 +241,8 @@ mod tests {
         assert_eq!(key_bytes("ctrl+c", false).unwrap(), b"\x03");
         assert_eq!(key_bytes("ctrl+Z", false).unwrap(), b"\x1a");
         assert_eq!(key_bytes("alt+x", false).unwrap(), b"\x1bx");
+        assert_eq!(key_bytes("AlT+X", false).unwrap(), b"\x1bx");
+        assert_eq!(key_bytes("X", false).unwrap(), b"X");
         assert_eq!(key_bytes("shift+tab", false).unwrap(), b"\x1b[Z");
         assert_eq!(key_bytes("f1", false).unwrap(), b"\x1bOP");
         assert_eq!(key_bytes("f12", false).unwrap(), b"\x1b[24~");

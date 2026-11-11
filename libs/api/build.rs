@@ -45,6 +45,17 @@ fn main() {
     settings.with_replacement("ExecSignalNumber", "i32", [].into_iter());
     settings.with_replacement("TerminalName", "std::string::String", [].into_iter());
     settings.with_replacement("TerminalDimension", "u16", [].into_iter());
+    for name in [
+        "TerminalReadSource",
+        "TerminalKey",
+        "TerminalRegex",
+        "TerminalSendText",
+    ] {
+        settings.with_replacement(name, "std::string::String", [].into_iter());
+    }
+    settings.with_replacement("TerminalLines", "usize", [].into_iter());
+    settings.with_replacement("TerminalTimeout", "u64", [].into_iter());
+    settings.with_replacement("TerminalKeys", "std::vec::Vec<String>", [].into_iter());
     for name in ["LaunchOptions", "HostLaunchOptions"] {
         settings.with_replacement(
             name,
@@ -70,6 +81,8 @@ fn main() {
         "TerminalCreateReply".to_string(),
         "TerminalListReply".to_string(),
         "TerminalCloseReply".to_string(),
+        "TerminalReadReply".to_string(),
+        "TerminalWaitReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox"] {
         let document: Value = serde_json::from_str(

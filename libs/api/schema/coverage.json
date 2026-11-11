@@ -1,19 +1,5 @@
 {
   "pending": {
-    "C05": {
-      "host": [
-        "terminals.read",
-        "terminals.send",
-        "terminals.wait",
-        "terminals.detach",
-        "terminals.resize"
-      ],
-      "sandbox": [
-        "terminals.read",
-        "terminals.send",
-        "terminals.wait"
-      ]
-    },
     "C07": {
       "sandbox": [
         "devshell.lock",

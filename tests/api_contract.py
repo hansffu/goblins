@@ -17,6 +17,8 @@ NORMALIZATIONS = {
     "terminal-create-fields": "Read a string id independently; all other input becomes an absent id, preserving the CLI's ? fallback.",
     "terminal-list-display": "Iterate terminals only when it is an array. Each item independently retains string identity/display fields, boolean attached and JSON-rendered rows/cols (missing means null).",
     "terminal-close-fields": "The CLI ignores close results; normalize only a boolean accepted when present.",
+    "terminal-read-fields": "Read a string text independently, otherwise absent (printed as an empty line).",
+    "terminal-wait-fields": "Read string status/line/text and signed 64-bit integer code/signal independently. Missing or malformed fields are absent; an unknown/missing status retains the timeout report.",
 }
 
 
@@ -28,6 +30,11 @@ def normalize_reply(profile, result):
         return dict(normalized, message=text("message"))
     if profile == "terminal-create-fields": return dict(id=text("id"))
     if profile == "terminal-close-fields": return dict(accepted=fields.get("accepted") if type(fields.get("accepted")) is bool else None)
+    if profile == "terminal-read-fields": return dict(text=text("text"))
+    if profile == "terminal-wait-fields":
+        normalized={name:text(name) for name in ("status","line","text")}
+        normalized.update({name:value if type(value) is int and -(2**63)<=value<2**63 else None for name in ("code","signal") for value in [fields.get(name)]})
+        return normalized
     if profile == "terminal-list-display":
         terminals=[]
         for item in fields.get("terminals", []) if isinstance(fields.get("terminals"), list) else []:
@@ -89,6 +96,16 @@ def method(endpoint, name):
     return next((m for m in document(endpoint)["methods"] if m["name"] == name), None)
 
 
+def validate_params(endpoint, name, params):
+    entry=method(endpoint,name)
+    if entry is None:return False
+    if params is None and entry.get("x-null-params-as-empty"):params={}
+    schema_validator(entry["x-positional-schema"] if isinstance(params,list) else entry["x-params-schema"]).validate(params)
+    if isinstance(params,list):params={p["name"]:value for p,value in zip(entry["params"],params)}
+    if "x-request-constraints" in entry:schema_validator(entry["x-request-constraints"]).validate(params)
+    return True
+
+
 def validate_notification(endpoint, direction, notification):
     entry = next((n for n in document(endpoint).get("x-notifications", []) if n["name"] == notification.get("method") and n["direction"] == direction), None)
     if entry is None: return False
@@ -138,6 +155,8 @@ def reference():
                 else:
                     lines.extend(["Compatible API-1 client reply (additive information may be absent):", ""])
                 lines.extend(["#+begin_src json", json.dumps(resolve(entry["x-client-result-schema"]), indent=2), "#+end_src", ""])
+            if "x-request-constraints" in entry:
+                lines.extend(["Cross-field request constraints (existing semantic validation):","","#+begin_src json",json.dumps(resolve(entry["x-request-constraints"]),indent=2),"#+end_src",""])
         for entry in document(endpoint).get("x-notifications", []):
             lines.extend([f"** Notification ={entry['name']}=", "", entry["description"], "", f"Direction: ={entry['direction']}=. Sender: {entry['sender']}. Receiver: {entry['receiver']}. State: {entry['connection-state']}.", "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", ""])
     lines.extend(["* Envelopes (handwritten transport, schema checked)", "", "#+begin_src json", json.dumps(common()["x-envelope-schemas"], indent=2), "#+end_src", "", "* Shared records", ""])
@@ -389,9 +408,11 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields"}
+                expected={"sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != {}:
                     raise ValueError("unknown client result normalization")
+            if "x-request-constraints" in entry:
+                schema_validator(entry["x-request-constraints"]).check_schema(resolve(entry["x-request-constraints"]))
     Draft7Validator.check_schema(common())
     check_coverage()
 

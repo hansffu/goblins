@@ -814,6 +814,374 @@
       },
       "x-client-result-normalization": "terminal-close-fields",
       "x-client-wire-result-schema": {}
+    },
+    {
+      "name": "terminals.read",
+      "description": "Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalReadParams/properties/session"
+          }
+        },
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalReadParams/properties/terminal"
+          }
+        },
+        {
+          "name": "source",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalReadParams/properties/source"
+          }
+        },
+        {
+          "name": "lines",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalReadParams/properties/lines"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/TerminalReadResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostTerminalReadParams"
+      },
+      "x-rust-name": "TerminalsRead",
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostTerminalReadParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/TerminalReadReply"
+      },
+      "x-client-result-normalization": "terminal-read-fields",
+      "x-client-wire-result-schema": {}
+    },
+    {
+      "name": "terminals.send",
+      "description": "Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalSendParams/properties/session"
+          }
+        },
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalSendParams/properties/terminal"
+          }
+        },
+        {
+          "name": "text",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalSendParams/properties/text"
+          }
+        },
+        {
+          "name": "keys",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalSendParams/properties/keys"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostTerminalSendParams"
+      },
+      "x-rust-name": "TerminalsSend",
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostTerminalSendParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/TerminalCloseReply"
+      },
+      "x-client-result-normalization": "terminal-close-fields",
+      "x-client-wire-result-schema": {},
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/HostTerminalSendParams"
+      }
+    },
+    {
+      "name": "terminals.wait",
+      "description": "Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalWaitParams/properties/session"
+          }
+        },
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalWaitParams/properties/terminal"
+          }
+        },
+        {
+          "name": "match",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalWaitParams/properties/match"
+          }
+        },
+        {
+          "name": "regex",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalWaitParams/properties/regex"
+          }
+        },
+        {
+          "name": "exit",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalWaitParams/properties/exit"
+          }
+        },
+        {
+          "name": "timeout",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalWaitParams/properties/timeout"
+          }
+        },
+        {
+          "name": "lines",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalWaitParams/properties/lines"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/TerminalWaitResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostTerminalWaitParams"
+      },
+      "x-rust-name": "TerminalsWait",
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostTerminalWaitParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/TerminalWaitReply"
+      },
+      "x-client-result-normalization": "terminal-wait-fields",
+      "x-client-wire-result-schema": {},
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/HostTerminalWaitParams"
+      }
+    },
+    {
+      "name": "terminals.detach",
+      "description": "Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalTargetParams/properties/session"
+          }
+        },
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalTargetParams/properties/terminal"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostTerminalTargetParams"
+      },
+      "x-rust-name": "TerminalsDetach",
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostTerminalTargetParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/TerminalCloseReply"
+      },
+      "x-client-result-normalization": "terminal-close-fields",
+      "x-client-wire-result-schema": {}
+    },
+    {
+      "name": "terminals.resize",
+      "description": "Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist. Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalResizeParams/properties/session"
+          }
+        },
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalResizeParams/properties/terminal"
+          }
+        },
+        {
+          "name": "rows",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalResizeParams/properties/rows"
+          }
+        },
+        {
+          "name": "cols",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostTerminalResizeParams/properties/cols"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostTerminalResizeParams"
+      },
+      "x-rust-name": "TerminalsResize",
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostTerminalResizeParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/TerminalCloseReply"
+      },
+      "x-client-result-normalization": "terminal-close-fields",
+      "x-client-wire-result-schema": {}
     }
   ],
   "x-notifications": [

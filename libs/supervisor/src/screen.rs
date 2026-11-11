@@ -2,6 +2,7 @@
 //! what `terminals.wait` matches, how keys are encoded for the modes the
 //! program set, and the redraw an attaching frontend gets.
 //! It parses untrusted sandbox output with the `vt100` crate.
+use goblins_protocol::contract;
 use goblins_runtime::terminal::{self, LINE_CAP, SCROLLBACK, Source, TEXT_CAP};
 use serde_json::{Value, json};
 
@@ -254,11 +255,13 @@ impl Screen {
         };
         let (rows, cols) = self.size();
         let (text, cut) = cap(&all, TEXT_CAP);
-        let mut result = json!({"text":text,"alternate_screen":self.alternate(),"rows":rows,"cols":cols});
-        if cut {
-            result["truncated"] = json!(true);
-        }
-        result
+        json!(contract::TerminalReadResult {
+            text,
+            alternate_screen: self.alternate(),
+            rows,
+            cols,
+            truncated: cut.then_some(true)
+        })
     }
     /// The newest line `matcher` matches among the screen's rows and the
     /// last `lines` recent lines, cut to the line limit.
@@ -386,6 +389,17 @@ impl Screen {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn generated_read_results_preserve_public_dimension_boundaries() {
+        let mut screen = super::Screen::new(1, 500);
+        for (rows, cols) in [(1, 500), (500, 1), (1, 1)] {
+            screen.resize(rows, cols);
+            let result = screen.read(goblins_runtime::terminal::Source::Visible, None);
+            assert_eq!(result["rows"].as_u64(), Some(u64::from(rows)));
+            assert_eq!(result["cols"].as_u64(), Some(u64::from(cols)));
+        }
+    }
+
     use super::*;
 
     fn screen(rows: u16, cols: u16, output: &str) -> Screen {
