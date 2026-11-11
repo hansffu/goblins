@@ -3254,6 +3254,335 @@
         "signal"
       ],
       "additionalProperties": false
+    },
+    "TerminalName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[a-z]",
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "[^a-z0-9_-]"
+          },
+          {
+            "pattern": "^t[0-9]+$"
+          }
+        ]
+      }
+    },
+    "TerminalDimension": {
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 1,
+      "maximum": 500,
+      "x-json-integer": true
+    },
+    "HostTerminalCreateParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "argv": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecArguments"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecDirectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "env": {
+          "$ref": "#/definitions/ExecEnvironment",
+          "default": []
+        },
+        "name": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rows": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalDimension"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cols": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalDimension"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "notify": {
+          "type": "boolean",
+          "default": false,
+          "enum": [
+            false
+          ]
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "additionalProperties": false
+    },
+    "MemberTerminalCreateParams": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecArguments"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecDirectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "env": {
+          "$ref": "#/definitions/ExecEnvironment",
+          "default": []
+        },
+        "name": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "rows": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalDimension"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cols": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalDimension"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "notify": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "HostTerminalTargetParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session",
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "MemberTerminalTargetParams": {
+      "type": "object",
+      "properties": {
+        "terminal": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "TerminalListResult": {
+      "type": "object",
+      "properties": {
+        "terminals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionTerminal"
+          }
+        }
+      },
+      "required": [
+        "terminals"
+      ],
+      "additionalProperties": true
+    },
+    "TerminalCreateReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "TerminalDisplay": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rows": {
+          "type": "string"
+        },
+        "cols": {
+          "type": "string"
+        },
+        "attached": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "rows",
+        "cols"
+      ],
+      "additionalProperties": true
+    },
+    "TerminalListReply": {
+      "type": "object",
+      "properties": {
+        "terminals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TerminalDisplay"
+          }
+        }
+      },
+      "required": [
+        "terminals"
+      ],
+      "additionalProperties": true
+    },
+    "TerminalCloseReply": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -3285,7 +3614,11 @@
     "positional-parameters": "Method descriptors retain original Serde field order. Generated structs are named DTOs; decode_params<M> maps positional arrays to those names before generated decoding because Typify sorts struct fields. Optional omissions and trailing defaults remain the original ones. Schema defaults do not authorize or perform lifecycle transitions. Nullable fields without an original Serde default still require an array position; x-positional-required records this independently of named-object optionality. Member launch requires its third agent_name position (null is valid); set-worktree requires [name] or [null], while {} still clears it.",
     "exec-descriptors": "Host sessions.exec carries SCM_RIGHTS with the first byte of its frame: one PTY slave when tty=true, otherwise stdin/stdout/stderr in that order. No descriptor numbers appear in JSON. The existing host connection budget is three accumulated descriptors, including fragmented reads. The call takes and closes all received descriptors on refusal and transfers stdio only after validation.",
     "exec-lifecycle": "Host-only exec waits for process completion and then closes its connection. Parameter and command validation precede descriptor-count, target/pin, policy, 64-exec capacity and init-availability checks, in that order; the existing canonical init-spawn 64 KiB check remains after ID allocation and before stdio transfer. Disconnect cancels only execs on that connection. kill_execs resolves dots as slashes and sends best-effort KillAll; accepted does not mean all commands have ended.",
-    "exec-signal": "exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability."
+    "exec-signal": "exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.",
+    "terminal-records": "Terminal records expose id, nullable name, display label, host/agent origin, Unix-millisecond started_at, rows/cols and attached. IDs increase per session and are never reused; list orders started terminals oldest first, including host and agent origins. Creation answers only after Spawned; pending creates do not appear in lists. Listed records remain until the program ends. Snapshots retain their domain record bridge until C15.",
+    "terminal-creation": "Host create accepts ordered positional parameters session,argv,cwd,env,name,rows,cols,notify or a closed named object; only session is required. Sandbox create/list/close accept a closed named object or null-as-empty, never positional arrays, and may never supply session. The existing sandbox relay derives the session from the connection and preserves policy/refusal ordering. Host notify=true is rejected before command/name/size validation; sandbox notify may request an exit notice. Size defaults independently to 40 rows and 120 columns. Command/name/size, target/policy/init, capacity and uniqueness checks precede canonical init encoding and spawn transfer.",
+    "terminal-close": "Close requests cancellation of the terminal process group and returns accepted=true. The entry remains until exit. Sandbox callers can close only agent-created terminals; host-created ones return -32009. An explicit close suppresses exit notices; disconnect while creating does not cancel the already requested terminal. Existing lifecycle/notice ownership stays handwritten.",
+    "terminal-cli-fallbacks": "Current terminal producers are precise. Legacy create CLI results read only a string id, otherwise print ?. List readers iterate only an array terminals, treat other envelopes as empty, and normalize each item independently: string identity/display fields or absent, attached only a JSON boolean, rows/cols rendered as their original JSON values (missing means null). Close readers ignore their result. Named client normalization profiles retain these behaviors around generated DTOs, including malformed fields and non-object results."
   },
   "x-envelope-schemas": {
     "Id": {
@@ -3703,6 +4036,95 @@
       ],
       "minItems": 1,
       "maxItems": 1
+    },
+    "HostTerminalCreateParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecArguments"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecDirectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "$ref": "#/definitions/ExecEnvironment",
+          "default": []
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalDimension"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TerminalDimension"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "type": "boolean",
+          "default": false,
+          "enum": [
+            false
+          ]
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 8
+    },
+    "HostTerminalTargetParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
     }
   }
 }

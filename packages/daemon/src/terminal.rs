@@ -4,6 +4,7 @@
 use crate::cli::TerminalCommand;
 use crate::{RESIZE, STOP, attachment};
 use goblins_controller::{Result, host::Client};
+use goblins_protocol::contract;
 use goblins_protocol::plain_text;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::Ordering};
@@ -27,42 +28,42 @@ pub fn run(state: PathBuf, command: TerminalCommand) -> Result<i32> {
                 let (name, value) = entry
                     .split_once('=')
                     .ok_or_else(|| format!("--env expects NAME=VALUE, not {entry}"))?;
-                pairs.push(json!([name, value]));
+                pairs.push((name.to_string(), value.to_string()));
             }
-            let mut params = json!({"session":goblin,"env":pairs});
-            if !argv.is_empty() {
-                params["argv"] = json!(argv);
-            }
-            if let Some(name) = name {
-                params["name"] = json!(name);
-            }
-            if let Some(cwd) = cwd {
-                params["cwd"] = json!(cwd);
-            }
-            if let Some((rows, cols)) = size {
-                params["rows"] = json!(rows);
-                params["cols"] = json!(cols);
-            }
-            let terminal = client.call_patient("terminals.create", params, &STOP)?;
-            println!("{}", plain_text(terminal["id"].as_str().unwrap_or("?")));
+            let params = contract::HostTerminalCreateParams {
+                session: goblin,
+                env: pairs,
+                argv: (!argv.is_empty()).then_some(argv),
+                name,
+                cwd,
+                rows: size.map(|s| s.0),
+                cols: size.map(|s| s.1),
+                notify: false,
+            };
+            let terminal =
+                client.call_patient_typed::<contract::host::TerminalsCreate>(params, &STOP)?;
+            println!("{}", plain_text(terminal.id.as_deref().unwrap_or("?")));
         }
         TerminalCommand::List { goblin } => {
-            let list = client.call_patient("terminals.list", json!({"session":goblin}), &STOP)?;
-            for terminal in list["terminals"].as_array().into_iter().flatten() {
-                let text = |key: &str| plain_text(terminal[key].as_str().unwrap_or("-"));
+            let list = client.call_patient_typed::<contract::host::TerminalsList>(
+                contract::SessionSelectorParams { session: goblin },
+                &STOP,
+            )?;
+            for terminal in list.terminals {
+                let text = |value: Option<&str>| plain_text(value.unwrap_or("-"));
                 println!(
                     "{}\t{}\t{}\t{}x{}\t{}\t{}",
-                    text("id"),
-                    text("name"),
-                    text("origin"),
-                    terminal["rows"],
-                    terminal["cols"],
-                    if terminal["attached"] == true {
+                    text(terminal.id.as_deref()),
+                    text(terminal.name.as_deref()),
+                    text(terminal.origin.as_deref()),
+                    terminal.rows,
+                    terminal.cols,
+                    if terminal.attached == Some(true) {
                         "attached"
                     } else {
                         "detached"
                     },
-                    text("label"),
+                    text(terminal.label.as_deref()),
                 );
             }
         }
@@ -129,9 +130,11 @@ pub fn run(state: PathBuf, command: TerminalCommand) -> Result<i32> {
             return Ok(report(&terminal, &result));
         }
         TerminalCommand::Close { goblin, terminal } => {
-            client.call_patient(
-                "terminals.close",
-                json!({"session":goblin,"terminal":terminal}),
+            client.call_patient_typed::<contract::host::TerminalsClose>(
+                contract::HostTerminalTargetParams {
+                    session: goblin,
+                    terminal,
+                },
                 &STOP,
             )?;
         }
@@ -221,20 +224,25 @@ fn attach(mut client: Client, goblin: String, terminal: String) -> Result<i32> {
             // The stream ended because the terminal was detached or ended;
             // the list says which. An ended terminal may still be listed, but
             // its attachment is not released while it is.
-            let list = client.call("terminals.list", json!({"session":session}))?;
-            let label = |t: &Value| t["id"] == terminal.as_str() || t["name"] == terminal.as_str();
-            let detached = list["terminals"]
-                .as_array()
-                .into_iter()
-                .flatten()
+            let list = client.call_typed::<contract::host::TerminalsList>(
+                contract::SessionSelectorParams {
+                    session: session.clone(),
+                },
+            )?;
+            let label = |t: &contract::TerminalDisplay| {
+                t.id.as_deref() == Some(terminal.as_str())
+                    || t.name.as_deref() == Some(terminal.as_str())
+            };
+            let detached = list
+                .terminals
+                .iter()
                 .find(|t| label(t))
-                .is_some_and(|t| t["attached"] == false);
-            let id = list["terminals"]
-                .as_array()
-                .into_iter()
-                .flatten()
+                .is_some_and(|t| t.attached == Some(false));
+            let id = list
+                .terminals
+                .iter()
                 .find(|t| label(t))
-                .and_then(|t| t["id"].as_str())
+                .and_then(|t| t.id.as_deref())
                 .unwrap_or(&terminal)
                 .to_string();
             outcome = Some(if detached {

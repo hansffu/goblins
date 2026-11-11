@@ -2,7 +2,7 @@
 #+date: 2026-11-10
 #+startup: showall
 
-Status: plan reviewed by Nikka and implementation authorized on 2026-11-10. C01 is committed as =2cb8e32=. The user authorized continuing all remaining chunks on 2026-11-11 and will perform final validation and decide merge. C02a (self reporting) is committed as =5bdb5db= after review by Nikka. C02b (session records/reads) is committed as =ccba2b7= after review by Nikka; its full integration validation remains blocked by the sandbox namespace restriction. C03 (launch/targets/lifecycle) is committed as =86b5dae= after review by Nikka. C04 (exec/process control) has passed its available serial validation and awaits final sign-off from Nikka; C05-C19 remain pending. Each chunk records validation and review before completion.
+Status: plan reviewed by Nikka and implementation authorized on 2026-11-10. C01 is committed as =2cb8e32=. The user authorized continuing all remaining chunks on 2026-11-11 and will perform final validation and decide merge. C02a (self reporting) is committed as =5bdb5db= after review by Nikka. C02b (session records/reads) is committed as =ccba2b7= after review by Nikka; its full integration validation remains blocked by the sandbox namespace restriction. C03 (launch/targets/lifecycle) is committed as =86b5dae= after review by Nikka. C04 (exec/process control) is committed as =101f8e4= after review by Nikka. C05a (terminal records/create/list/close) has passed its available serial validation and awaits final sign-off from Nikka; C05b and C06-C19 remain pending. Each chunk records validation and review before completion.
 
 The user wants the full JSON-RPC contract, implemented in vertical chunks. Each chunk follows this order: define its JSON-RPC specification, generate types where possible, migrate its producers and consumers, then validate. Do not implement all schemas first, all generators next and all consumers last.
 
@@ -102,12 +102,16 @@ C04 validation (2026-11-11): final =just test-rust= passed 554 tests with four s
 
 ** C05: Managed terminals
 
+Implementation split: C05a covers terminal records and host/sandbox create/list/close; C05b covers read/send/wait and host detach/resize. Each repeats spec, generation, migration and validation, including endpoint parameter forms, legacy CLI field fallbacks and existing authority/refusal ordering.
+
 Depends on: C04. Current definition: local =TerminalRecord= and request structs; typed internal =TerminalCall=; public results are assembled as JSON.
 
 1. *Spec*: define all host/sandbox =terminals.*= operations with exact availability, notify behavior, terminal records, read truncation and matched/timeout/exited wait variants.
 2. *Generate*: generate endpoint-specific DTOs, result unions and public terminal records; preserve private command/domain types through conversions where needed.
 3. *Migrate*: handlers, gate, supervisor result producers, host/sandbox CLIs and terminal views; retire session-record terminal placeholders introduced in C02.
 4. *Validate*: input/key validation, screen reads, immediate/final-output matches, output bounds, exit notices, wait cancellation, create failure and frontend-independent terminal lifetime. Feature areas: terminals, exec, messaging, emacs.
+
+C05a validation (2026-11-11): =just test-rust= passed 558 tests with four standard helper/driver ignores; 28 contract and actual host/sandbox CLI checks and 178 Emacs tests passed; feature mapping covers all 398 discovered Python tests. Checks preserve host positional order, sandbox object-only/null-as-empty behavior, generated record projection, startup-delayed create results, close acceptance/authority and field-independent legacy CLI fallbacks. The sandbox fake-daemon cases verify default/explicit create parameters, notify, relative cwd, list display and ignored close results under the existing independently proved connect-denial isolation; the original sandbox run fixture retains its feature list. Controller tests distinguish retained IDs, still-owned names, released names and reused live names. Final schema/reference consistency, workspace compilation and all 232 Nix flake checks passed on the unchanged reviewed candidate; matching hashes and logs are retained in =target/c05a-validation/=. The required =just test-feature full= passed its Rust phase, then failed actual sandbox launches with namespace =EPERM= and was stopped; the later test/compatibility follow-ups received the serial checks above. Full integration/native, packaged smoke validation and the final =just test-merge= gate remain pending in a host-capable environment. No merge has been performed.
 
 ** C06: Attachment exchanges
 

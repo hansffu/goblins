@@ -812,3 +812,53 @@ fn an_exit_notice_says_how_the_program_ended_and_cuts_its_lines_to_4_kib() {
     assert!(message.starts_with("exit code 1\n…"));
     assert!(message.ends_with("line 1999 é"));
 }
+
+#[test]
+fn generated_lifecycle_contracts_keep_host_positional_and_sandbox_object_forms() {
+    let (mut d, _events, received) = goblin();
+    let record = create(
+        &mut d,
+        &received,
+        json!(["a", ["sh"], "/work", [["A", "b"]], "app", 30, 90, false]),
+    );
+    assert_eq!(record["name"], "app");
+    assert_eq!((record["rows"].as_u64(), record["cols"].as_u64()), (Some(30), Some(90)));
+    assert_eq!(record["origin"], "host");
+    let list = ask(&mut d, "terminals.list", json!(["a"]));
+    assert_eq!(list["result"]["terminals"], json!([record.clone()]));
+    let member = sandbox_ask(&mut d, "terminals.list", Value::Null);
+    assert_eq!(member["result"], list["result"]);
+    for method in ["terminals.create", "terminals.list", "terminals.close"] {
+        let refused = sandbox_ask(&mut d, method, json!([]));
+        assert_eq!(refused["error"]["code"], -32602);
+        assert_eq!(refused["error"]["message"], "params must be an object");
+    }
+    let closed = ask(&mut d, "terminals.close", json!(["a", "app"]));
+    assert_eq!(closed["result"], json!({"accepted": true}));
+    assert!(matches!(take(&received), Command::CancelProcess { everything: false, .. }));
+    // Close acceptance precedes process exit, so the terminal remains listed.
+    assert_eq!(ask(&mut d, "terminals.list", json!(["a"]))["result"], list["result"]);
+}
+
+#[test]
+fn terminal_list_keeps_retained_ids_and_releases_agent_name_selectors() {
+    let (mut d, _events, _) = goblin();
+    let (runtime, _events, received) = goblins_runtime::Fake::new();
+    let released = runtime.release_flag();
+    let a = d.sessions.get_mut("a").unwrap();
+    a.runtime = Some(Box::new(runtime));
+    a.record.agent_name = "friendly".into();
+    create(&mut d, &received, json!({"session":"a"}));
+    d.end_terminals("a", "stopped");
+    d.sessions.get_mut("a").unwrap().record.state = "stopped".into();
+    // Name lookup tracks retained runtime ownership, rather than state text.
+    assert_eq!(ask(&mut d, "terminals.list", json!(["friendly"]))["result"], json!({"terminals":[]}));
+    released.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(ask(&mut d, "terminals.list", json!(["a"]))["result"], json!({"terminals":[]}));
+    assert_eq!(ask(&mut d, "terminals.list", json!(["friendly"]))["error"]["code"], -32004);
+    assert_eq!(ask(&mut d, "terminals.list", json!(["absent"]))["error"]["code"], -32004);
+    live(&mut d, "b");
+    d.sessions.get_mut("b").unwrap().record.agent_name = "friendly".into();
+    assert_eq!(d.resolve_session("friendly").unwrap(), "b");
+    assert_eq!(ask(&mut d, "terminals.list", json!(["friendly"]))["result"], json!({"terminals":[]}));
+}

@@ -25,6 +25,9 @@ pub trait Method {
     const MIN_POSITIONAL: usize;
     const OMIT_EMPTY_OBJECTS: &'static [&'static str];
     const PRESENCE: ParamPresence;
+    const POSITIONAL: bool = true;
+    const NULL_AS_EMPTY: bool = false;
+    const OMIT_FALSE: &'static [&'static str] = &[];
 }
 
 /// Notifications have no result association and never become callable methods.
@@ -99,6 +102,50 @@ impl Response for ExecReply {
             "message": value.get("message").and_then(Value::as_str),
         });
         serde_json::from_value(normalized).map_err(io::Error::other)
+    }
+}
+
+impl Response for TerminalCreateReply {
+    const SCHEMA: &'static str = "TerminalCreateReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            id: value.get("id").and_then(Value::as_str).map(str::to_owned),
+        })
+    }
+}
+
+impl Response for TerminalListReply {
+    const SCHEMA: &'static str = "TerminalListReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            terminals: value
+                .get("terminals")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|t| {
+                    let text = |name| t.get(name).and_then(Value::as_str).map(str::to_owned);
+                    TerminalDisplay {
+                        id: text("id"),
+                        name: text("name"),
+                        label: text("label"),
+                        origin: text("origin"),
+                        rows: t.get("rows").unwrap_or(&Value::Null).to_string(),
+                        cols: t.get("cols").unwrap_or(&Value::Null).to_string(),
+                        attached: t.get("attached").and_then(Value::as_bool),
+                    }
+                })
+                .collect(),
+        })
+    }
+}
+
+impl Response for TerminalCloseReply {
+    const SCHEMA: &'static str = "TerminalCloseReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            accepted: value.get("accepted").and_then(Value::as_bool),
+        })
     }
 }
 
@@ -312,6 +359,16 @@ impl Response for ServerStopResult {
 /// Decode requests using their original endpoint-specific positional field order.
 /// Typify emits alphabetic Rust fields, so wire arrays must first become named data.
 pub fn decode_params<M: Method>(value: Value) -> serde_json::Result<M::Params> {
+    let value = if value.is_null() && M::NULL_AS_EMPTY {
+        serde_json::json!({})
+    } else {
+        value
+    };
+    if value.is_array() && !M::POSITIONAL {
+        return Err(<serde_json::Error as serde::de::Error>::custom(
+            "params must be an object",
+        ));
+    }
     decode_ordered(value, M::PARAM_ORDER, M::MIN_POSITIONAL)
 }
 
@@ -369,6 +426,11 @@ pub fn params_value<M: Method>(params: M::Params) -> serde_json::Result<Value> {
                 .get(*name)
                 .is_some_and(|v| v.as_object().is_some_and(|m| m.is_empty()))
             {
+                object.remove(*name);
+            }
+        }
+        for name in M::OMIT_FALSE {
+            if object.get(*name) == Some(&Value::Bool(false)) {
                 object.remove(*name);
             }
         }
@@ -433,6 +495,115 @@ mod tests {
 
     fn fixtures() -> Value {
         serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap()
+    }
+
+    #[test]
+    fn terminal_create_params_preserve_original_order_defaults_and_endpoint_forms() {
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyCreate {
+            session: String,
+            #[serde(default)]
+            argv: Option<Vec<String>>,
+            #[serde(default)]
+            cwd: Option<String>,
+            #[serde(default)]
+            env: Vec<(String, String)>,
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            rows: Option<u16>,
+            #[serde(default)]
+            cols: Option<u16>,
+            #[serde(default)]
+            notify: bool,
+        }
+        let scoped = |value: Value| -> Option<Value> {
+            let mut map = match value {
+                Value::Null => serde_json::Map::new(),
+                Value::Object(m) if !m.contains_key("session") => m,
+                _ => return None,
+            };
+            map.insert("session".into(), Value::String("a".into()));
+            Some(Value::Object(map))
+        };
+        for case in fixtures()["terminal_parameter_cases"].as_array().unwrap() {
+            if case["method"] != "terminals.create" {
+                continue;
+            }
+            let member = case["endpoint"] == "sandbox";
+            let value = case["params"].clone();
+            let old = if member {
+                scoped(value.clone()).and_then(|v| serde_json::from_value::<LegacyCreate>(v).ok())
+            } else {
+                serde_json::from_value::<LegacyCreate>(value.clone()).ok()
+            };
+            let new = if member {
+                decode_params::<sandbox::TerminalsCreate>(value)
+                    .ok()
+                    .and_then(|p| params_value::<sandbox::TerminalsCreate>(p).ok())
+                    .and_then(scoped)
+            } else {
+                decode_params::<host::TerminalsCreate>(value)
+                    .ok()
+                    .and_then(|p| params_value::<host::TerminalsCreate>(p).ok())
+            };
+            assert_eq!(old.is_some(), new.is_some(), "{case}");
+            assert_eq!(new.is_some(), case["decoded"].as_bool().unwrap(), "{case}");
+            if let (Some(old), Some(new)) = (old, new) {
+                if !old.notify {
+                    assert!(new.get("notify").is_none());
+                }
+                assert!(new["env"].is_array());
+                let new: LegacyCreate = serde_json::from_value(new).unwrap();
+                assert_eq!(
+                    serde_json::to_value(old).unwrap(),
+                    serde_json::to_value(new).unwrap(),
+                    "{case}"
+                );
+            }
+        }
+        assert!(decode_params::<sandbox::TerminalsList>(Value::Null).is_ok());
+        assert!(decode_params::<sandbox::TerminalsList>(serde_json::json!([])).is_err());
+        assert!(decode_params::<host::TerminalsList>(serde_json::json!(["a"])).is_ok());
+        assert!(
+            decode_params::<sandbox::TerminalsClose>(serde_json::json!({"terminal":"app"})).is_ok()
+        );
+        assert!(decode_params::<sandbox::TerminalsClose>(serde_json::json!(["app"])).is_err());
+        assert!(decode_params::<host::TerminalsClose>(serde_json::json!(["a", "app"])).is_ok());
+    }
+
+    #[test]
+    fn terminal_normalized_readers_preserve_independent_legacy_fallbacks() {
+        assert!(
+            TerminalCreateReply::decode(serde_json::json!({"id":7}))
+                .unwrap()
+                .id
+                .is_none()
+        );
+        assert!(
+            TerminalCreateReply::decode(Value::Null)
+                .unwrap()
+                .id
+                .is_none()
+        );
+        let list=TerminalListReply::decode(serde_json::json!({"terminals":[
+            {"id":"t1","name":null,"origin":"remote","rows":"wide","cols":null,"attached":false},null,{"attached":"false"}
+        ]})).unwrap();
+        assert_eq!(list.terminals.len(), 3);
+        let first = &list.terminals[0];
+        assert_eq!(first.id.as_deref(), Some("t1"));
+        assert_eq!(first.origin.as_deref(), Some("remote"));
+        assert_eq!((&*first.rows, &*first.cols), ("\"wide\"", "null"));
+        assert_eq!(first.attached, Some(false));
+        assert!(list.terminals[1].id.is_none() && list.terminals[2].attached.is_none());
+        assert!(
+            TerminalListReply::decode(Value::Null)
+                .unwrap()
+                .terminals
+                .is_empty()
+        );
+        assert!(TerminalCloseReply::decode(serde_json::json!([])).is_ok());
     }
 
     #[test]

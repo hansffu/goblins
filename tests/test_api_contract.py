@@ -15,6 +15,21 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_terminal_contract_corpora_and_endpoint_parameter_forms(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["terminal_parameter_cases"]:
+            entry=contract.method(case["endpoint"],case["method"])
+            params={} if case["params"] is None and entry.get("x-null-params-as-empty") else case["params"]
+            schema=entry["x-positional-schema"] if isinstance(params,list) else entry["x-params-schema"]
+            self.assertEqual(contract.schema_validator(schema).is_valid(params),case["valid"],str(case))
+        for case in fixtures["terminal_result_cases"]:
+            for endpoint in ("host","sandbox"):
+                reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+                self.assertTrue(contract.validate_reply(endpoint,case["method"],reply,compatibility=True))
+                if case["valid"]:self.assertTrue(contract.validate_reply(endpoint,case["method"],reply))
+                else:
+                    with self.assertRaises(ValidationError):contract.validate_reply(endpoint,case["method"],reply)
+
     def test_exec_contract_corpora_and_notification_direction(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["exec_parameter_cases"]:
@@ -247,6 +262,42 @@ class ContractTests(unittest.TestCase):
 
 
 class HistoricalClientTests(unittest.TestCase):
+    def test_terminal_cli_binds_lifecycle_contracts_and_preserves_display_fallbacks(self):
+        binary=os.environ.get("GOBLINS_LOCAL_CONTROLLER")
+        if binary is None:
+            import re
+            binary=re.search(r'exec (\S+)',app().read_text()).group(1)
+        fixtures=contract.read("fixtures.json");init=copy.deepcopy(fixtures["host_initialize"]);init["features"].append("terminals")
+        record=fixtures["terminal_record"]
+        cases=[
+            (["create","a"],{"session":"a","env":[]},record,"t1\n"),
+            (["create","a","--name","app","--cwd","/work","--env","A=b","--size","30x90","--","sh"],{"session":"a","env":[["A","b"]],"name":"app","cwd":"/work","rows":30,"cols":90,"argv":["sh"]},{"id":7},"?\n"),
+            (["create","a"],{"session":"a","env":[]},None,"?\n"),
+            (["list","a"],{"session":"a"},{"terminals":[record]},"t1\t-\thost\t40x120\tdetached\tshell\n"),
+            (["list","a"],{"session":"a"},{"terminals":[{"id":7,"name":"odd","origin":"remote","rows":"wide","cols":None,"attached":"false","label":"bad"},None]},'-\todd\tremote\t"wide"xnull\tdetached\tbad\n-\t-\t-\tnullxnull\tdetached\t-\n'),
+            (["list","a"],{"session":"a"},None,""),
+            (["close","a","app"],{"session":"a","terminal":"app"},[],""),
+        ]
+        for args,params,result,expected in cases:
+            with self.subTest(args=args,result=result),tempfile.TemporaryDirectory(prefix="gc-terminal-") as root:
+                state=Path(root);errors=[];calls=[]
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.settimeout(5);listener.bind(str(state/"host.sock"));listener.listen()
+                    def serve():
+                        try:
+                            peer,_=listener.accept()
+                            with peer:
+                                peer.settimeout(5);request=receive(peer)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=request["id"],result=init)))
+                                call=receive(peer);calls.append(call)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=result)))
+                        except Exception as error:errors.append(error)
+                    server=threading.Thread(target=serve,daemon=True);server.start()
+                    cli=subprocess.run([binary,"--state-dir",str(state),"terminal",*args],text=True,capture_output=True,timeout=10)
+                    server.join(timeout=6);self.assertFalse(server.is_alive());self.assertEqual(errors,[])
+                    self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(cli.stdout,expected);self.assertEqual(cli.stderr,"")
+                    self.assertEqual(calls[0]["method"],"terminals."+args[0]);self.assertEqual(calls[0]["params"],params)
+
     def test_exec_cli_uses_generated_params_and_passes_stdio_outside_json(self):
         import array
         binary=os.environ.get("GOBLINS_LOCAL_CONTROLLER")
@@ -504,7 +555,7 @@ class HistoricalClientTests(unittest.TestCase):
                     self.assertEqual(calls[0]["params"].get("recreate"),None if command=="run" else "record-id")
                     self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
 
-    def test_sandbox_run_keeps_exact_named_and_unset_request_fields(self):
+    def sandbox_fake_cli(self, arguments, result, cwd=None, features=()):
         import errno
         import shlex
         import sys
@@ -546,44 +597,68 @@ class HistoricalClientTests(unittest.TestCase):
                         self.assertNotEqual(cli.returncode,0)
                         self.assertIn("(os error 13)",cli.stderr)
                         fake.close();peer.settimeout(2);self.assertEqual(peer.recv(1),b"")
-            for named in (False,True):
-                path=root/("named.sock" if named else "unset.sock");calls=[];errors=[]
-                with socket.socket(socket.AF_UNIX) as listener:
-                    listener.settimeout(5);listener.bind(str(path));listener.listen()
-                    def serve():
-                        try:
-                            peer,_=listener.accept()
-                            with peer:
-                                peer.settimeout(5);init=receive(peer)
-                                peer.sendall(frame(dict(jsonrpc="2.0",id=init["id"],result=fixtures["sandbox_initialize"])))
-                                call=receive(peer);calls.append(call)
-                                peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=fixtures["forward_compatibility"]["member_launch"])))
-                        except Exception as error: errors.append(error)
-                    server=threading.Thread(target=serve,daemon=True)
-                    preload=str(library)+(":"+os.environ["LD_PRELOAD"] if os.environ.get("LD_PRELOAD") else "")
-                    fake=socket.socket(socket.AF_UNIX);fake.connect(str(path))
-                    env={**os.environ,"LD_PRELOAD":preload,"GOBLINS_TEST_FAKE_REQUEST_FD":str(fake.fileno())}
-                    args=[str(binary),"run","shell"]+(["--name","named","--worktree","branch","-o","model=fast"] if named else [])
-                    # Install the pre-exec guard before creating the server
-                    # thread, so no Python lock can be inherited from it.
-                    child=subprocess.Popen(args,env=env,pass_fds=(fake.fileno(),),preexec_fn=isolate,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-                    server.start()
+            path=root/"request.sock";calls=[];errors=[]
+            with socket.socket(socket.AF_UNIX) as listener:
+                listener.settimeout(5);listener.bind(str(path));listener.listen()
+                def serve():
                     try:
-                        output,error=child.communicate(timeout=10)
-                        cli=subprocess.CompletedProcess(args,child.returncode,output,error)
-                    finally:
-                        if child.poll() is None:
-                            child.kill();child.communicate()
-                        fake.close()
-                    server.join(timeout=6);self.assertFalse(server.is_alive());self.assertEqual(errors,[])
+                        peer,_=listener.accept()
+                        with peer:
+                            peer.settimeout(5);init=receive(peer)
+                            peer.sendall(frame(dict(jsonrpc="2.0",id=init["id"],result={**fixtures["sandbox_initialize"],"features":[*fixtures["sandbox_initialize"]["features"],*features]})))
+                            call=receive(peer);calls.append(call)
+                            peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=result)))
+                    except Exception as error: errors.append(error)
+                server=threading.Thread(target=serve,daemon=True)
+                preload=str(library)+(":"+os.environ["LD_PRELOAD"] if os.environ.get("LD_PRELOAD") else "")
+                fake=socket.socket(socket.AF_UNIX);fake.connect(str(path))
+                env={**os.environ,"LD_PRELOAD":preload,"GOBLINS_TEST_FAKE_REQUEST_FD":str(fake.fileno())}
+                args=[str(binary),*arguments]
+                # Install the pre-exec guard before creating the server
+                # thread, so no Python lock can be inherited from it.
+                child=subprocess.Popen(args,cwd=cwd,env=env,pass_fds=(fake.fileno(),),preexec_fn=isolate,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                server.start()
+                try:
+                    output,error=child.communicate(timeout=10)
+                    cli=subprocess.CompletedProcess(args,child.returncode,output,error)
+                finally:
+                    if child.poll() is None:
+                        child.kill();child.communicate()
+                    fake.close()
+                server.join(timeout=6);self.assertFalse(server.is_alive());self.assertEqual(errors,[])
+                return cli,calls[0]
+
+    def test_sandbox_run_keeps_exact_named_and_unset_request_fields(self):
+        result=contract.read("fixtures.json")["forward_compatibility"]["member_launch"]
+        for named in (False,True):
+            args=["run","shell"]+(["--name","named","--worktree","branch","-o","model=fast"] if named else [])
+            cli,call=self.sandbox_fake_cli(args,result)
+            self.assertEqual(cli.returncode,0,cli.stderr)
+            self.assertEqual(call["method"],"sessions.start")
+            params=call["params"]
+            self.assertEqual(set(params),{"key","name","agent_name","detached","options"}|({"worktree"} if named else set()))
+            self.assertEqual(params["name"],"shell");self.assertEqual(params["agent_name"],"named" if named else None)
+            self.assertIs(params["detached"],True);self.assertEqual(params["options"],{"model":"fast"} if named else {})
+            if named:self.assertEqual(params["worktree"],"branch")
+            self.assertEqual(json.loads(cli.stdout),result)
+
+    def test_sandbox_terminal_cli_preserves_params_relative_cwd_and_legacy_results(self):
+        with tempfile.TemporaryDirectory(prefix="gc-terminal-cwd-") as cwd:
+            cases=[
+                (["create"],{"env":[]},{"id":"t1"},"t1\n"),
+                (["create","--name","app","--cwd","relative","--notify","--env","A=b","--size","30x90","--","sh"],
+                 {"env":[["A","b"]],"name":"app","cwd":str(Path(cwd)/"relative"),"notify":True,"rows":30,"cols":90,"argv":["sh"]},{"id":7},"?\n"),
+                (["create"],{"env":[]},None,"?\n"),
+                (["list"],{},{"terminals":[{"id":7,"name":"odd","origin":"remote","rows":"wide","cols":None,"attached":"false","label":"bad"},None]},'-\todd\tremote\t"wide"xnull\tdetached\tbad\n-\t-\t-\tnullxnull\tdetached\t-\n'),
+                (["list"],{},None,""),
+                (["close","app"],{"terminal":"app"},[],""),
+            ]
+            for args,params,result,expected in cases:
+                with self.subTest(args=args,result=result):
+                    cli,call=self.sandbox_fake_cli(["terminal",*args],result,cwd=cwd,features=("terminals",))
                     self.assertEqual(cli.returncode,0,cli.stderr)
-                    self.assertEqual(calls[0]["method"],"sessions.start")
-                    params=calls[0]["params"]
-                    self.assertEqual(set(params),{"key","name","agent_name","detached","options"}|({"worktree"} if named else set()))
-                    self.assertEqual(params["name"],"shell");self.assertEqual(params["agent_name"],"named" if named else None)
-                    self.assertIs(params["detached"],True);self.assertEqual(params["options"],{"model":"fast"} if named else {})
-                    if named:self.assertEqual(params["worktree"],"branch")
-                    self.assertEqual(json.loads(cli.stdout),fixtures["forward_compatibility"]["member_launch"])
+                    self.assertEqual(cli.stdout,expected);self.assertEqual(cli.stderr,"")
+                    self.assertEqual(call["method"],"terminals."+args[0]);self.assertEqual(call["params"],params)
 
     def test_real_status_cli_accepts_historical_api1_daemon(self):
         output = self.legacy_cli("status")

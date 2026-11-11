@@ -1,6 +1,7 @@
 //! Sandbox-side request gate. No daemon state or Linux transport belongs here.
 use crate::policy::{Capabilities, Operation, Refusal};
 use goblins_jsonrpc::Call;
+use goblins_protocol::contract::{self, Method};
 use goblins_protocol::rpc::{DevShellDiffParams, FlakeRunParams, PermissionParams};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -78,7 +79,9 @@ pub fn check(
 ) -> Result<(), Refusal> {
     let method = call.method.as_str();
     let limit = match method {
-        "sessions.set-variables" | "permissions.request" | "terminals.create" => 16384,
+        "sessions.set-variables"
+        | "permissions.request"
+        | contract::sandbox::TerminalsCreate::NAME => 16384,
         // A terminal takes up to 64 KiB of text to type.
         "terminals.send" => goblins_protocol::messages::MAX_REQUEST,
         _ => 4096,
@@ -130,12 +133,12 @@ pub fn check(
             | "host.status"
             | "host.list"
             | "host.cancel"
-            | "terminals.create"
-            | "terminals.list"
+            | contract::sandbox::TerminalsCreate::NAME
+            | contract::sandbox::TerminalsList::NAME
             | "terminals.read"
             | "terminals.send"
             | "terminals.wait"
-            | "terminals.close"
+            | contract::sandbox::TerminalsClose::NAME
     ) {
         return Err(Refusal::Policy {
             code: -32601,
@@ -287,9 +290,12 @@ pub fn check(
         }
         // A terminal is an exec. The daemon checks the parameters; the call
         // never names a goblin, so it reaches only the caller's own.
-        "terminals.create" => Some(Operation::Exec),
-        "terminals.list" | "terminals.read" | "terminals.send" | "terminals.wait"
-        | "terminals.close" => None,
+        contract::sandbox::TerminalsCreate::NAME => Some(Operation::Exec),
+        contract::sandbox::TerminalsList::NAME
+        | "terminals.read"
+        | "terminals.send"
+        | "terminals.wait"
+        | contract::sandbox::TerminalsClose::NAME => None,
         "raids.create" => {
             let Raid { raid: _raid } = parse(&call.params)?;
             None

@@ -3,6 +3,7 @@
 //! the caller's own.
 use crate::cli::TerminalCommand;
 use goblins_jsonrpc as rpc;
+use goblins_protocol::contract::{self, Method, Response};
 use goblins_protocol::plain_text;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -14,22 +15,33 @@ const FEATURE: &str = "terminals";
 /// cancels the wait.
 fn call(method: &str, params: Value) -> Result<Value, String> {
     let (mut socket, init) = crate::connect()?;
-    if !init.features.iter().any(|candidate| candidate == FEATURE)
-    {
+    if !init.features.iter().any(|candidate| candidate == FEATURE) {
         return Err("this daemon has no terminals for goblins; restart it".into());
     }
     socket
         .set_write_timeout(Some(rpc::TIMEOUT))
         .map_err(|e| e.to_string())?;
     socket
-        .write_all(&rpc::encode(&rpc::request(json!(1), method, params)).map_err(|e| e.to_string())?)
+        .write_all(
+            &rpc::encode(&rpc::request(json!(1), method, params)).map_err(|e| e.to_string())?,
+        )
         .map_err(|e| e.to_string())?;
     let frame = rpc::read(&mut socket).map_err(|e| e.to_string())?;
     rpc::validate_response(&frame, &json!(1)).map_err(|e| e.to_string())?;
     if let Some(error) = frame.get("error") {
-        return Err(plain_text(error["message"].as_str().unwrap_or("request failed")));
+        return Err(plain_text(
+            error["message"].as_str().unwrap_or("request failed"),
+        ));
     }
     Ok(frame["result"].clone())
+}
+
+fn call_typed<M: Method>(params: M::Params) -> Result<M::Result, String> {
+    let wire = call(
+        M::NAME,
+        contract::params_value::<M>(params).map_err(|e| e.to_string())?,
+    )?;
+    M::Result::decode(wire).map_err(|e| e.to_string())
 }
 
 pub fn run(command: TerminalCommand) -> Result<i32, String> {
@@ -47,51 +59,54 @@ pub fn run(command: TerminalCommand) -> Result<i32, String> {
                 let (name, value) = entry
                     .split_once('=')
                     .ok_or_else(|| format!("--env expects NAME=VALUE, not {entry}"))?;
-                pairs.push(json!([name, value]));
+                pairs.push((name.to_string(), value.to_string()));
             }
-            let mut params = json!({"env":pairs});
-            if !argv.is_empty() {
-                params["argv"] = json!(argv);
-            }
-            if let Some(name) = name {
-                params["name"] = json!(name);
-            }
-            if let Some(cwd) = cwd {
+            let cwd = if let Some(cwd) = cwd {
                 // Relative to where this command runs.
                 let cwd = if cwd.is_absolute() {
                     cwd
                 } else {
-                    std::env::current_dir().map_err(|e| e.to_string())?.join(cwd)
+                    std::env::current_dir()
+                        .map_err(|e| e.to_string())?
+                        .join(cwd)
                 };
-                params["cwd"] = json!(cwd.to_str().ok_or("the directory must be UTF-8")?);
-            }
-            if let Some((rows, cols)) = size {
-                params["rows"] = json!(rows);
-                params["cols"] = json!(cols);
-            }
-            if notify {
-                params["notify"] = json!(true);
-            }
-            let terminal = call("terminals.create", params)?;
-            println!("{}", plain_text(terminal["id"].as_str().unwrap_or("?")));
+                Some(
+                    cwd.to_str()
+                        .ok_or("the directory must be UTF-8")?
+                        .to_string(),
+                )
+            } else {
+                None
+            };
+            let params = contract::MemberTerminalCreateParams {
+                env: pairs,
+                argv: (!argv.is_empty()).then_some(argv),
+                name,
+                cwd,
+                rows: size.map(|s| s.0),
+                cols: size.map(|s| s.1),
+                notify,
+            };
+            let terminal = call_typed::<contract::sandbox::TerminalsCreate>(params)?;
+            println!("{}", plain_text(terminal.id.as_deref().unwrap_or("?")));
         }
         TerminalCommand::List => {
-            let list = call("terminals.list", json!({}))?;
-            for terminal in list["terminals"].as_array().into_iter().flatten() {
-                let text = |key: &str| plain_text(terminal[key].as_str().unwrap_or("-"));
+            let list = call_typed::<contract::sandbox::TerminalsList>(contract::EmptyParams {})?;
+            for terminal in list.terminals {
+                let text = |value: Option<&str>| plain_text(value.unwrap_or("-"));
                 println!(
                     "{}\t{}\t{}\t{}x{}\t{}\t{}",
-                    text("id"),
-                    text("name"),
-                    text("origin"),
-                    terminal["rows"],
-                    terminal["cols"],
-                    if terminal["attached"] == true {
+                    text(terminal.id.as_deref()),
+                    text(terminal.name.as_deref()),
+                    text(terminal.origin.as_deref()),
+                    terminal.rows,
+                    terminal.cols,
+                    if terminal.attached == Some(true) {
                         "attached"
                     } else {
                         "detached"
                     },
-                    text("label"),
+                    text(terminal.label.as_deref()),
                 );
             }
         }
@@ -142,7 +157,9 @@ pub fn run(command: TerminalCommand) -> Result<i32, String> {
             return Ok(report(&terminal, &call("terminals.wait", params)?));
         }
         TerminalCommand::Close { terminal } => {
-            call("terminals.close", json!({"terminal":terminal}))?;
+            call_typed::<contract::sandbox::TerminalsClose>(
+                contract::MemberTerminalTargetParams { terminal },
+            )?;
         }
     }
     Ok(0)
@@ -187,7 +204,13 @@ mod tests {
     #[test]
     fn a_wait_exits_0_on_a_match_or_an_exit_and_1_on_a_timeout() {
         assert_eq!(report("t1", &json!({"status":"matched","line":"done"})), 0);
-        assert_eq!(report("t1", &json!({"status":"exited","code":3,"signal":null,"text":""})), 0);
+        assert_eq!(
+            report(
+                "t1",
+                &json!({"status":"exited","code":3,"signal":null,"text":""})
+            ),
+            0
+        );
         assert_eq!(report("t1", &json!({"status":"timeout"})), 1);
     }
 }

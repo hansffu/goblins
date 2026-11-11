@@ -2,22 +2,16 @@
   "pending": {
     "C05": {
       "host": [
-        "terminals.create",
-        "terminals.list",
         "terminals.read",
         "terminals.send",
         "terminals.wait",
-        "terminals.close",
         "terminals.detach",
         "terminals.resize"
       ],
       "sandbox": [
-        "terminals.create",
-        "terminals.list",
         "terminals.read",
         "terminals.send",
-        "terminals.wait",
-        "terminals.close"
+        "terminals.wait"
       ]
     },
     "C07": {

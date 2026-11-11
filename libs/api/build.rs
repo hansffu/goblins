@@ -43,6 +43,8 @@ fn main() {
         [].into_iter(),
     );
     settings.with_replacement("ExecSignalNumber", "i32", [].into_iter());
+    settings.with_replacement("TerminalName", "std::string::String", [].into_iter());
+    settings.with_replacement("TerminalDimension", "u16", [].into_iter());
     for name in ["LaunchOptions", "HostLaunchOptions"] {
         settings.with_replacement(
             name,
@@ -65,6 +67,9 @@ fn main() {
         "ServerStopResult".to_string(),
         "SetVariablesResult".to_string(),
         "ExecReply".to_string(),
+        "TerminalCreateReply".to_string(),
+        "TerminalListReply".to_string(),
+        "TerminalCloseReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox"] {
         let document: Value = serde_json::from_str(
@@ -107,7 +112,16 @@ fn main() {
             } else {
                 positional
             };
-            let minimum = positional["minItems"].as_u64().unwrap();
+            let positional_allowed = method["paramStructure"] != "by-name";
+            let minimum = positional["minItems"].as_u64().unwrap_or(0);
+            let null_as_empty = method["x-null-params-as-empty"].as_bool().unwrap_or(false);
+            let omit_false: Vec<_> = method
+                .get("x-client-omit-default-false")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|v| v.as_str().unwrap())
+                .collect();
             let omit_empty: Vec<_> = method
                 .get("x-client-omit-empty-objects")
                 .and_then(Value::as_array)
@@ -137,7 +151,7 @@ fn main() {
                 .iter()
                 .map(|p| p["name"].as_str().unwrap())
                 .collect();
-            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
+            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const POSITIONAL: bool = {positional_allowed}; const NULL_AS_EMPTY: bool = {null_as_empty}; const OMIT_FALSE: &'static [&'static str] = &{omit_false:?}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
             names.push(name);
         }
         output.push_str(&format!("pub const METHODS: &[&str] = &{names:?}; }}\n"));

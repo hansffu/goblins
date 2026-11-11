@@ -12,6 +12,32 @@ from referencing.jsonschema import DRAFT7
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
+NORMALIZATIONS = {
+    "exec-field-fallback": "Read code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields.",
+    "terminal-create-fields": "Read a string id independently; all other input becomes an absent id, preserving the CLI's ? fallback.",
+    "terminal-list-display": "Iterate terminals only when it is an array. Each item independently retains string identity/display fields, boolean attached and JSON-rendered rows/cols (missing means null).",
+    "terminal-close-fields": "The CLI ignores close results; normalize only a boolean accepted when present.",
+}
+
+
+def normalize_reply(profile, result):
+    fields = result if isinstance(result, dict) else {}
+    text = lambda name: fields.get(name) if isinstance(fields.get(name), str) else None
+    if profile == "exec-field-fallback":
+        normalized = {name: (value if type(value) is int and -(2**63) <= value < 2**63 else None) for name in ("code", "signal") for value in [fields.get(name)]}
+        return dict(normalized, message=text("message"))
+    if profile == "terminal-create-fields": return dict(id=text("id"))
+    if profile == "terminal-close-fields": return dict(accepted=fields.get("accepted") if type(fields.get("accepted")) is bool else None)
+    if profile == "terminal-list-display":
+        terminals=[]
+        for item in fields.get("terminals", []) if isinstance(fields.get("terminals"), list) else []:
+            item=item if isinstance(item, dict) else {}
+            row={key: item.get(key) if isinstance(item.get(key), str) else None for key in ("id","name","label","origin")}
+            row.update(attached=item.get("attached") if type(item.get("attached")) is bool else None)
+            row.update({key:json.dumps(item.get(key),ensure_ascii=False,sort_keys=True,separators=(",",":")) for key in ("rows","cols")})
+            terminals.append(row)
+        return dict(terminals=terminals)
+    raise ValueError("unknown client normalization")
 
 
 def read(name):
@@ -87,11 +113,9 @@ def validate_reply(endpoint, name, reply, compatibility=False):
             raise ValidationError(f"unlisted error for {endpoint}/{name}: {error['code']}")
     else:
         result = reply["result"]
-        if compatibility and entry.get("x-client-result-normalization") == "exec-field-fallback":
+        if compatibility and "x-client-result-normalization" in entry:
             schema_validator(entry["x-client-wire-result-schema"]).validate(result)
-            fields = result if isinstance(result, dict) else {}
-            result = {name: (value if type(value) is int and -(2**63) <= value < 2**63 else None) for name in ("code", "signal") for value in [fields.get(name)]}
-            result["message"] = fields.get("message") if isinstance(fields.get("message"), str) else None
+            result = normalize_reply(entry["x-client-result-normalization"],result)
         schema = entry.get("x-client-result-schema", entry["result"]["schema"]) if compatibility else entry["result"]["schema"]
         schema_validator(schema).validate(result)
         if name == "initialize" and (result["api"] != common()["x-api-version"] or result["role"] != endpoint):
@@ -109,7 +133,8 @@ def reference():
             lines.extend([f"** ={entry['name']}=", "", entry["description"], "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", "", "Result:", "", "#+begin_src json", json.dumps(resolve(entry["result"]["schema"]), indent=2), "#+end_src", "", "Method errors: " + ", ".join(str(e["code"]) for e in entry["errors"]) + ". Common envelope/connection errors also apply.", ""])
             if "x-client-result-schema" in entry:
                 if "x-client-result-normalization" in entry:
-                    lines.extend(["Compatible client wire result (legacy field fallback):", "", "#+begin_src json",json.dumps(resolve(entry["x-client-wire-result-schema"]),indent=2),"#+end_src","","The =exec-field-fallback= adapter reads code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields. The generated normalized client DTO is:",""])
+                    profile=entry["x-client-result-normalization"]
+                    lines.extend(["Compatible client wire result (legacy field fallback):", "", "#+begin_src json",json.dumps(resolve(entry["x-client-wire-result-schema"]),indent=2),"#+end_src","",f"The ={profile}= adapter: {NORMALIZATIONS[profile]} The generated normalized client DTO is:",""])
                 else:
                     lines.extend(["Compatible API-1 client reply (additive information may be absent):", ""])
                 lines.extend(["#+begin_src json", json.dumps(resolve(entry["x-client-result-schema"]), indent=2), "#+end_src", ""])
@@ -350,8 +375,13 @@ def check():
                 if isinstance(value, list): return [parameter_shape(v) for v in value]
                 return value
             expected_items = [params["properties"][name] for name in order] if order else False
-            if positional.get("minItems") != minimum or positional.get("maxItems") != len(order) or parameter_shape(positional.get("items")) != parameter_shape(expected_items):
+            if entry.get("paramStructure") == "by-name":
+                if positional != {"not":{}}: raise ValueError("object-only method permits positional parameters")
+            elif positional.get("minItems") != minimum or positional.get("maxItems") != len(order) or parameter_shape(positional.get("items")) != parameter_shape(expected_items):
                 raise ValueError(f"positional schema differs from method parameter order: {entry['name']}")
+            if entry.get("x-null-params-as-empty") and entry.get("paramStructure") != "by-name": raise ValueError("invalid nullable-object contract")
+            for name in entry.get("x-client-omit-default-false", []):
+                if params["properties"].get(name,{}).get("default") is not False: raise ValueError("invalid client false omission")
             schema_validator(entry["x-positional-schema"]).check_schema(resolve(entry["x-positional-schema"]))
             schema_validator(entry["x-params-schema"]).check_schema(params)
             if "result" in entry:
@@ -359,7 +389,8 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                if endpoint != "host" or entry["name"] != "sessions.exec" or entry["x-client-result-normalization"] != "exec-field-fallback" or entry.get("x-client-wire-result-schema") != {}:
+                expected={"sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields"}
+                if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != {}:
                     raise ValueError("unknown client result normalization")
     Draft7Validator.check_schema(common())
     check_coverage()

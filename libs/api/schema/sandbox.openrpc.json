@@ -465,6 +465,192 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/RunTargetListReply"
       }
+    },
+    {
+      "name": "terminals.create",
+      "description": "Host create accepts ordered positional parameters session,argv,cwd,env,name,rows,cols,notify or a closed named object; only session is required. Sandbox create/list/close accept a closed named object or null-as-empty, never positional arrays, and may never supply session. The existing sandbox relay derives the session from the connection and preserves policy/refusal ordering. Host notify=true is rejected before command/name/size validation; sandbox notify may request an exit notice. Size defaults independently to 40 rows and 120 columns. Command/name/size, target/policy/init, capacity and uniqueness checks precede canonical init encoding and spawn transfer.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "argv",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberTerminalCreateParams/properties/argv"
+          }
+        },
+        {
+          "name": "cwd",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberTerminalCreateParams/properties/cwd"
+          }
+        },
+        {
+          "name": "env",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberTerminalCreateParams/properties/env"
+          }
+        },
+        {
+          "name": "name",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberTerminalCreateParams/properties/name"
+          }
+        },
+        {
+          "name": "rows",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberTerminalCreateParams/properties/rows"
+          }
+        },
+        {
+          "name": "cols",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberTerminalCreateParams/properties/cols"
+          }
+        },
+        {
+          "name": "notify",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberTerminalCreateParams/properties/notify"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/SessionTerminal"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MemberTerminalCreateParams"
+      },
+      "x-rust-name": "TerminalsCreate",
+      "x-positional-schema": {
+        "not": {}
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/TerminalCreateReply"
+      },
+      "x-client-result-normalization": "terminal-create-fields",
+      "x-client-wire-result-schema": {},
+      "x-client-omit-default-false": [
+        "notify"
+      ],
+      "x-null-params-as-empty": true
+    },
+    {
+      "name": "terminals.list",
+      "description": "Terminal records expose id, nullable name, display label, host/agent origin, Unix-millisecond started_at, rows/cols and attached. IDs increase per session and are never reused; list orders started terminals oldest first, including host and agent origins. Creation answers only after Spawned; pending creates do not appear in lists. Listed records remain until the program ends. Snapshots retain their domain record bridge until C15.",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/TerminalListResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-rust-name": "TerminalsList",
+      "x-positional-schema": {
+        "not": {}
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/TerminalListReply"
+      },
+      "x-client-result-normalization": "terminal-list-display",
+      "x-client-wire-result-schema": {},
+      "x-null-params-as-empty": true
+    },
+    {
+      "name": "terminals.close",
+      "description": "Close requests cancellation of the terminal process group and returns accepted=true. The entry remains until exit. Sandbox callers can close only agent-created terminals; host-created ones return -32009. An explicit close suppresses exit notices; disconnect while creating does not cancel the already requested terminal. Existing lifecycle/notice ownership stays handwritten.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberTerminalTargetParams/properties/terminal"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MemberTerminalTargetParams"
+      },
+      "x-rust-name": "TerminalsClose",
+      "x-positional-schema": {
+        "not": {}
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/TerminalCloseReply"
+      },
+      "x-client-result-normalization": "terminal-close-fields",
+      "x-client-wire-result-schema": {},
+      "x-null-params-as-empty": true
     }
   ],
   "x-notifications": [],

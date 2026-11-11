@@ -1680,7 +1680,7 @@ Compatible client wire result (legacy field fallback):
 {}
 #+end_src
 
-The =exec-field-fallback= adapter reads code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields. The generated normalized client DTO is:
+The =exec-field-fallback= adapter: Read code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields. The generated normalized client DTO is:
 
 #+begin_src json
 {
@@ -1788,6 +1788,450 @@ Result:
 #+end_src
 
 Method errors: -32602, -32004, -32009. Common envelope/connection errors also apply.
+
+** =terminals.create=
+
+Host create accepts ordered positional parameters session,argv,cwd,env,name,rows,cols,notify or a closed named object; only session is required. Sandbox create/list/close accept a closed named object or null-as-empty, never positional arrays, and may never supply session. The existing sandbox relay derives the session from the connection and preserves policy/refusal ordering. Host notify=true is rejected before command/name/size validation; sandbox notify may request an exit notice. Size defaults independently to 40 rows and 120 columns. Command/name/size, target/policy/init, capacity and uniqueness checks precede canonical init encoding and spawn transfer.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "argv": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecArguments"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecDirectory"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "env": {
+      "$ref": "#/definitions/ExecEnvironment",
+      "default": []
+    },
+    "name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rows": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cols": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "notify": {
+      "type": "boolean",
+      "default": false,
+      "enum": [
+        false
+      ]
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecArguments"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecDirectory"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "$ref": "#/definitions/ExecEnvironment",
+      "default": []
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "type": "boolean",
+      "default": false,
+      "enum": [
+        false
+      ]
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 8
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "label": {
+      "type": "string"
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "host",
+        "agent"
+      ]
+    },
+    "started_at": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true
+    },
+    "rows": {
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0,
+      "maximum": 65535,
+      "x-json-integer": true
+    },
+    "cols": {
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0,
+      "maximum": 65535,
+      "x-json-integer": true
+    },
+    "attached": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "label",
+    "origin",
+    "started_at",
+    "rows",
+    "cols",
+    "attached"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-create-fields= adapter: Read a string id independently; all other input becomes an absent id, preserving the CLI's ? fallback. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =terminals.list=
+
+Terminal records expose id, nullable name, display label, host/agent origin, Unix-millisecond started_at, rows/cols and attached. IDs increase per session and are never reused; list orders started terminals oldest first, including host and agent origins. Creation answers only after Spawned; pending creates do not appear in lists. Listed records remain until the program ends. Snapshots retain their domain record bridge until C15. An exact retained session ID reads published terminal records even after stop (empty after terminal cleanup). Agent names resolve only while the runtime is live: a released name or unretained ID returns -32004, and a reused name selects the new live session.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SessionTerminal"
+      }
+    }
+  },
+  "required": [
+    "terminals"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-list-display= adapter: Iterate terminals only when it is an array. Each item independently retains string identity/display fields, boolean attached and JSON-rendered rows/cols (missing means null). The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/TerminalDisplay"
+      }
+    }
+  },
+  "required": [
+    "terminals"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =terminals.close=
+
+Close requests cancellation of the terminal process group and returns accepted=true. The entry remains until exit. Sandbox callers can close only agent-created terminals; host-created ones return -32009. An explicit close suppresses exit notices; disconnect while creating does not cancel the already requested terminal. Existing lifecycle/notice ownership stays handwritten.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 2
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-close-fields= adapter: The CLI ignores close results; normalize only a boolean accepted when present. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
 
 ** Notification =exec.signal=
 
@@ -3278,6 +3722,342 @@ Compatible API-1 client reply (additive information may be absent):
   "items": {
     "$ref": "#/definitions/RunTargetReply"
   }
+}
+#+end_src
+
+** =terminals.create=
+
+Host create accepts ordered positional parameters session,argv,cwd,env,name,rows,cols,notify or a closed named object; only session is required. Sandbox create/list/close accept a closed named object or null-as-empty, never positional arrays, and may never supply session. The existing sandbox relay derives the session from the connection and preserves policy/refusal ordering. Host notify=true is rejected before command/name/size validation; sandbox notify may request an exit notice. Size defaults independently to 40 rows and 120 columns. Command/name/size, target/policy/init, capacity and uniqueness checks precede canonical init encoding and spawn transfer.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "argv": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecArguments"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecDirectory"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "env": {
+      "$ref": "#/definitions/ExecEnvironment",
+      "default": []
+    },
+    "name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rows": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cols": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "notify": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "label": {
+      "type": "string"
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "host",
+        "agent"
+      ]
+    },
+    "started_at": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true
+    },
+    "rows": {
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0,
+      "maximum": 65535,
+      "x-json-integer": true
+    },
+    "cols": {
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0,
+      "maximum": 65535,
+      "x-json-integer": true
+    },
+    "attached": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "label",
+    "origin",
+    "started_at",
+    "rows",
+    "cols",
+    "attached"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-create-fields= adapter: Read a string id independently; all other input becomes an absent id, preserving the CLI's ? fallback. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =terminals.list=
+
+Terminal records expose id, nullable name, display label, host/agent origin, Unix-millisecond started_at, rows/cols and attached. IDs increase per session and are never reused; list orders started terminals oldest first, including host and agent origins. Creation answers only after Spawned; pending creates do not appear in lists. Listed records remain until the program ends. Snapshots retain their domain record bridge until C15.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SessionTerminal"
+      }
+    }
+  },
+  "required": [
+    "terminals"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-list-display= adapter: Iterate terminals only when it is an array. Each item independently retains string identity/display fields, boolean attached and JSON-rendered rows/cols (missing means null). The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/TerminalDisplay"
+      }
+    }
+  },
+  "required": [
+    "terminals"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =terminals.close=
+
+Close requests cancellation of the terminal process group and returns accepted=true. The entry remains until exit. Sandbox callers can close only agent-created terminals; host-created ones return -32009. An explicit close suppresses exit notices; disconnect while creating does not cancel the already requested terminal. Existing lifecycle/notice ownership stays handwritten.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminal": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =terminal-close-fields= adapter: The CLI ignores close results; normalize only a boolean accepted when present. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
 }
 #+end_src
 
@@ -7066,6 +7846,390 @@ Compatible API-1 client reply (additive information may be absent):
 }
 #+end_src
 
+** =TerminalName=
+
+#+begin_src json
+{
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 32,
+  "pattern": "^[a-z]",
+  "not": {
+    "anyOf": [
+      {
+        "pattern": "[^a-z0-9_-]"
+      },
+      {
+        "pattern": "^t[0-9]+$"
+      }
+    ]
+  }
+}
+#+end_src
+
+** =TerminalDimension=
+
+#+begin_src json
+{
+  "type": "integer",
+  "format": "uint16",
+  "minimum": 1,
+  "maximum": 500,
+  "x-json-integer": true
+}
+#+end_src
+
+** =HostTerminalCreateParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "argv": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecArguments"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecDirectory"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "env": {
+      "$ref": "#/definitions/ExecEnvironment",
+      "default": []
+    },
+    "name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rows": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cols": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "notify": {
+      "type": "boolean",
+      "default": false,
+      "enum": [
+        false
+      ]
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MemberTerminalCreateParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "argv": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecArguments"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecDirectory"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "env": {
+      "$ref": "#/definitions/ExecEnvironment",
+      "default": []
+    },
+    "name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "rows": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cols": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TerminalDimension"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "notify": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+** =HostTerminalTargetParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "terminal": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session",
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MemberTerminalTargetParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminal": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "terminal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =TerminalListResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SessionTerminal"
+      }
+    }
+  },
+  "required": [
+    "terminals"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalCreateReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalDisplay=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "label": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rows": {
+      "type": "string"
+    },
+    "cols": {
+      "type": "string"
+    },
+    "attached": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalListReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "terminals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/TerminalDisplay"
+      }
+    }
+  },
+  "required": [
+    "terminals"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TerminalCloseReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -7084,6 +8248,10 @@ Compatible API-1 client reply (additive information may be absent):
 - =exec-descriptors= :: Host sessions.exec carries SCM_RIGHTS with the first byte of its frame: one PTY slave when tty=true, otherwise stdin/stdout/stderr in that order. No descriptor numbers appear in JSON. The existing host connection budget is three accumulated descriptors, including fragmented reads. The call takes and closes all received descriptors on refusal and transfers stdio only after validation.
 - =exec-lifecycle= :: Host-only exec waits for process completion and then closes its connection. Parameter and command validation precede descriptor-count, target/pin, policy, 64-exec capacity and init-availability checks, in that order; the existing canonical init-spawn 64 KiB check remains after ID allocation and before stdio transfer. Disconnect cancels only execs on that connection. kill_execs resolves dots as slashes and sends best-effort KillAll; accepted does not mean all commands have ended.
 - =exec-signal= :: exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.
+- =terminal-records= :: Terminal records expose id, nullable name, display label, host/agent origin, Unix-millisecond started_at, rows/cols and attached. IDs increase per session and are never reused; list orders started terminals oldest first, including host and agent origins. Creation answers only after Spawned; pending creates do not appear in lists. Listed records remain until the program ends. Snapshots retain their domain record bridge until C15.
+- =terminal-creation= :: Host create accepts ordered positional parameters session,argv,cwd,env,name,rows,cols,notify or a closed named object; only session is required. Sandbox create/list/close accept a closed named object or null-as-empty, never positional arrays, and may never supply session. The existing sandbox relay derives the session from the connection and preserves policy/refusal ordering. Host notify=true is rejected before command/name/size validation; sandbox notify may request an exit notice. Size defaults independently to 40 rows and 120 columns. Command/name/size, target/policy/init, capacity and uniqueness checks precede canonical init encoding and spawn transfer.
+- =terminal-close= :: Close requests cancellation of the terminal process group and returns accepted=true. The entry remains until exit. Sandbox callers can close only agent-created terminals; host-created ones return -32009. An explicit close suppresses exit notices; disconnect while creating does not cancel the already requested terminal. Existing lifecycle/notice ownership stays handwritten.
+- =terminal-cli-fallbacks= :: Current terminal producers are precise. Legacy create CLI results read only a string id, otherwise print ?. List readers iterate only an array terminals, treat other envelopes as empty, and normalize each item independently: string identity/display fields or absent, attached only a JSON boolean, rows/cols rendered as their original JSON values (missing means null). Close readers ignore their result. Named client normalization profiles retain these behaviors around generated DTOs, including malformed fields and non-object results.
 
 * Common errors
 
@@ -7122,3 +8290,6 @@ Compatible API-1 client reply (additive information may be absent):
 - =exec-command-validation= :: ExecText, ExecArguments and ExecDirectory map to String/Vec<String>/String; ExecEnvironment maps to Vec<(String,String)>. Existing validate_command retains UTF-8 byte, NUL, argv/env bounds and name/path diagnostics before descriptor/authority checks. The canonical init encoding validator remains after target, policy, capacity and init checks. Descriptor transport/ownership and cancellation remain handwritten.
 - =exec-signal= :: ExecSignalNumber maps to i32 so the existing forwardable validator retains legal signal/state handling. Generated notification identity and ordered parameters are separate from callable Method identities. Invalid active-exec input closes instead of returning an RPC error.
 - =exec-client-reply= :: ExecReply is the generated normalized client DTO, not a restriction on old wire results. The named exec-field-fallback Response adapter preserves the original CLI: code/signal are independently read as signed 64-bit JSON integers, message as a string; malformed/missing fields become None. Non-object results have no recognized fields, retaining the exit-255 fallback. x-client-wire-result-schema explicitly accepts these historical inputs; current producer schemas remain precise. Canonical JSON-RPC envelope/correlation errors are still rejected.
+- =terminal-parameter-validation= :: TerminalName maps to String and TerminalDimension to u16. Existing controller validators retain byte/syntax/size checks, host-notify refusal, command checks and diagnostic/order semantics. Sandbox terminal calls preserve null-as-empty and object-only semantics independently of host positional forms; no new parameter validation moves ahead of the existing sandbox policy gate.
+- =terminal-domain-bridge= :: The domain TerminalRecord retains mutable lifecycle state and snapshot equality/serialization until C15. A single From<&TerminalRecord> projection emits generated SessionTerminal for create/list and session projections. Runtime capabilities and pending creation/notice state do not enter the public DTO.
+- =terminal-cli-normalization= :: Current terminal producers are precise. Legacy create CLI results read only a string id, otherwise print ?. List readers iterate only an array terminals, treat other envelopes as empty, and normalize each item independently: string identity/display fields or absent, attached only a JSON boolean, rows/cols rendered as their original JSON values (missing means null). Close readers ignore their result. Named client normalization profiles retain these behaviors around generated DTOs, including malformed fields and non-object results.

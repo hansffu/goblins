@@ -6192,5 +6192,675 @@
       "valid": false,
       "compatible": true
     }
+  ],
+  "terminal_parameter_cases": [
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "argv": [
+          "sh"
+        ],
+        "cwd": "/work",
+        "env": [
+          [
+            "A",
+            "b"
+          ]
+        ],
+        "name": "app",
+        "rows": 30,
+        "cols": 90,
+        "notify": false
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "argv": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "cwd": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "name": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "rows": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "cols": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "name": "A"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "name": "app\n"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "name": "t1"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "rows": 0
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "cols": 501
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "rows": 65536
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "env": [
+          [
+            "A\n",
+            "b"
+          ]
+        ]
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "env": null
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "notify": null
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "extra": 1
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.list",
+      "params": {
+        "session": "a"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.close",
+      "params": {
+        "session": "a",
+        "terminal": "app"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.close",
+      "params": {
+        "session": "a"
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": [
+        "a"
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": [
+        "a",
+        [
+          "sh"
+        ],
+        "/work",
+        [
+          [
+            "A",
+            "b"
+          ]
+        ],
+        "app",
+        30,
+        90,
+        false
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": {
+        "session": "a",
+        "notify": true
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.create",
+      "params": [],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.list",
+      "params": [
+        "a"
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.list",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.close",
+      "params": [
+        "a",
+        "app"
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "terminals.close",
+      "params": [
+        "a"
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {},
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "argv": [
+          "sh"
+        ],
+        "cwd": "/work",
+        "env": [
+          [
+            "A",
+            "b"
+          ]
+        ],
+        "name": "app",
+        "rows": 30,
+        "cols": 90,
+        "notify": true
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "argv": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "cwd": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "name": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "rows": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "cols": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "name": "A"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "name": "app\n"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "name": "t1"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "rows": 0
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "cols": 501
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "rows": 65536
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "env": [
+          [
+            "A\n",
+            "b"
+          ]
+        ]
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "env": null
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "notify": null
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "extra": 1
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.list",
+      "params": {},
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.close",
+      "params": {
+        "terminal": "app"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.close",
+      "params": {},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": null,
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": [],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.create",
+      "params": {
+        "session": "other"
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.list",
+      "params": null,
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.list",
+      "params": [],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.list",
+      "params": {
+        "session": "other"
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.close",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.close",
+      "params": [],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "terminals.close",
+      "params": {
+        "session": "other",
+        "terminal": "app"
+      },
+      "valid": false,
+      "decoded": false
+    }
+  ],
+  "terminal_record": {
+    "id": "t1",
+    "name": null,
+    "label": "shell",
+    "origin": "host",
+    "started_at": 1,
+    "rows": 40,
+    "cols": 120,
+    "attached": false
+  },
+  "terminal_result_cases": [
+    {
+      "method": "terminals.create",
+      "result": {
+        "id": "t1",
+        "name": null,
+        "label": "shell",
+        "origin": "host",
+        "started_at": 1,
+        "rows": 40,
+        "cols": 120,
+        "attached": false
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.list",
+      "result": {
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "host",
+            "started_at": 1,
+            "rows": 40,
+            "cols": 120,
+            "attached": false
+          }
+        ]
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.close",
+      "result": {
+        "accepted": true
+      },
+      "valid": true
+    },
+    {
+      "method": "terminals.create",
+      "result": {
+        "id": 7
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.create",
+      "result": null,
+      "valid": false
+    },
+    {
+      "method": "terminals.list",
+      "result": {
+        "terminals": null
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.list",
+      "result": {
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "remote",
+            "started_at": 1,
+            "rows": 40,
+            "cols": 120,
+            "attached": false
+          },
+          null,
+          {
+            "id": "t3",
+            "rows": "wide",
+            "cols": null,
+            "attached": "false"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "method": "terminals.close",
+      "result": [],
+      "valid": false
+    }
   ]
 }

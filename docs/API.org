@@ -194,7 +194,7 @@ Kills every exec running in a goblin. The kill is best effort: the answer means 
 
 ** Terminals
 
-A terminal is a named, long-lived program on a PTY that the goblin's supervisor owns, so it keeps running with nobody attached. It belongs to one goblin; the host endpoint can use any goblin's terminals. Each method takes =session=, an agent name or session ID, and fails with =-32009= when that goblin is not running. =terminals= in =features= says the daemon has these methods. A goblin whose configuration refuses exec refuses terminals. A terminal runs through goblins-init as an exec does, with an exec's environment, in =cwd= or the goblin's working directory; it counts toward neither =shells= nor =execs=.
+A terminal is a named, long-lived program on a PTY that the goblin's supervisor owns, so it keeps running with nobody attached. It belongs to one goblin; the host endpoint can use any goblin's terminals. Host methods take =session=, an agent name or session ID. Operations on a running program fail with =-32009= when the goblin is not running; =terminals.list= also reads retained stopped records. =terminals= in =features= says the daemon has these methods. A goblin whose configuration refuses exec refuses terminals. A terminal runs through goblins-init as an exec does, with an exec's environment, in =cwd= or the goblin's working directory; it counts toward neither =shells= nor =execs=.
 
 A terminal has an ID, =t1=, =t2=, …, counting up for the goblin's run and never reused in it, and optionally a name: a lowercase letter, then lowercase letters, digits, =-= and =_=, at most 32 characters in all, not of the form of an ID, and unique among the goblin's live terminals. =terminal= parameters take the ID or the name. At most 16 terminals exist per goblin. Sizes are 1–500 rows and columns. A terminal ends when its program exits, when it is closed, or when the goblin stops; detaching never ends it. It then leaves the list: the supervisor first keeps reading its PTY for up to a second after the exit, so the output the program left is read, settles the waits on it, ends everything the program started, and gives an attached frontend up to one more second to read what is queued before closing its stream. Terminals are not restored when a goblin is recreated.
 
@@ -204,14 +204,18 @@ The supervisor feeds each terminal's output through a terminal emulator with 5,0
 
 Starts a program on a new terminal. The reply arrives once the program has started.
 
-- Input :: ={"session", "argv", "cwd", "env", "name", "rows", "cols"}=. =argv=, =cwd= and =env= are checked as for =sessions.exec=; omitted =argv= runs the sandbox's =$SHELL=. =name= is optional. =rows= and =cols= size the terminal until a frontend attaches (default 40 and 120).
+- Input :: ={"session", "argv", "cwd", "env", "name", "rows", "cols", "notify"}=, or a positional array in exactly that order with one through eight elements. Only =session= is required. =argv=, =cwd= and =env= are checked as for =sessions.exec=; missing/null =argv= runs the sandbox's =$SHELL=, missing/null =cwd= uses its working directory and =env= defaults to =[]=. Missing/null =name= means unnamed; otherwise it is 1–32 lowercase ASCII letters, digits, =-= or =_=, starts with a letter and is not =t= followed by digits. Missing/null =rows= and =cols= independently default to 40 and 120; supplied sizes are 1–500. =notify= defaults to false; true is refused on the host before command/name/size validation. Unknown fields are refused. The CLI retains its existing field omission, including absent false =notify=.
 - Output :: a =Terminal= record.
 - Errors :: =-32602= for an invalid name, size or program; =-32009= when the name is in use, the goblin refuses exec or has no init channel, or the program could not be started (the message is init's); =-32010= when the goblin has 16 terminals or the supervisor is busy.
 
+The record has =id= (never reused within this goblin's run), nullable =name=, display =label=, =origin= (=host= or =agent=), =started_at= (Unix milliseconds), =rows=, =cols= and boolean =attached=. Every current producer field is present; readers ignore additions. The create CLI reads a string =id= independently and prints =?= if it is missing or malformed, including a non-object legacy result.
+
 *** =terminals.list=
 
-- Input :: ={"session"}=
-- Output :: ={"terminals": [Terminal]}=, oldest first; empty for a goblin that is not running.
+- Input :: ={"session"}= or =[session]=, with no unknown fields.
+- Output :: ={"terminals": [Terminal]}=, oldest first. An exact retained session ID can read the published records after stop; the list is empty once terminal cleanup has completed. Agent names resolve only while their runtime remains live: a released name returns =-32004=, and a reused name selects its new live session. An unknown or no-longer-retained ID also returns =-32004=.
+
+The CLI retains its legacy display fallbacks through generated normalized fields: it iterates only a =terminals= array (otherwise empty), reads string identity/display fields or prints =-=, displays attachment only for boolean true, and renders =rows= and =cols= as their JSON values, with missing values displayed as =null=. The attachment completion reader distinguishes explicit boolean false from missing attachment information.
 
 *** =terminals.read=
 
@@ -236,7 +240,7 @@ Waits until a line matches, or the terminal's program exits. The reply arrives w
 
 *** =terminals.close=
 
-Ends a terminal's program the way a withdrawn exec is cancelled: its process group. The terminal stays listed until its program has ended.
+Ends a terminal's program the way a withdrawn exec is cancelled: its process group. The terminal stays listed until its program has ended. The host positional form is =[session, terminal]=; both fields are required and unknown named fields are refused. The CLI ignores the close result, preserving compatibility with legacy result shapes.
 
 - Input :: ={"session", "terminal"}=
 - Output :: ={"accepted": true}=
@@ -258,6 +262,8 @@ Resizes a terminal's PTY and screen.
 *** Terminals on the sandbox endpoint
 
 A goblin reaches its own terminals with =terminals.create=, =terminals.list=, =terminals.read=, =terminals.send=, =terminals.wait= and =terminals.close= on the sandbox endpoint (=terminals= is in the sandbox's =features=). They are the host endpoint's methods with the same parameters, results and limits, except that no call names a goblin: a call with a =session= is refused with =-32602=, and the goblin is the caller's, so another goblin's terminals cannot be reached or even told apart from missing ones (=-32004=). =terminals.attach=, =terminals.detach= and =terminals.resize= do not exist there (=-32601=). A request is at most 4 KiB, except =terminals.create= (16 KiB) and =terminals.send= (64 KiB, the request body limit). As for =sessions.exec=, a configuration that refuses exec refuses =terminals.create=. A wait holds its connection, which serves no other call meanwhile; a connection that closes cancels its wait, and a goblin has at most 16 waits in all, the host's included.
+
+Sandbox =terminals.create=, =terminals.list= and =terminals.close= take named objects only; =null= is treated as ={}=, and arrays are refused even when empty. Create has no required fields, list takes none, and close requires =terminal=. Their generated endpoint contracts retain this distinction from host positional forms and the caller-derived session authority.
 
 - Authority :: the goblin can list, read, send to and wait on all of its terminals, those the human created (origin =host=) included, and create new ones, whose origin is =agent=. It can close only terminals with origin =agent=: closing a =host= terminal is refused with =-32009= and a message saying that only the human can close it.
 - =terminals.create= also takes =notify= (a boolean, default false; refused on the host endpoint). With it, the daemon puts one operation notice from =goblins= in the goblin's inbox when the terminal's program exits, whether or not the goblin's configuration has an agent integration. A program that was ended by =terminals.close=, or by the goblin stopping, sends none. The notice is the operation notice of an outcome with =message.operation= ={"request": "SESSION-tN", "kind": "terminal", "subject": LABEL, "status": "exited", "message"}= (=request= is the goblin's session ID and the terminal's ID joined by =-=, which names it for good as an ID is not reused in a goblin's run), where =message= is =exit code N= or =killed by signal N=, then the last 20 lines of the terminal's screen at the end, cut to 4 KiB with the newest lines kept (a cut starts with =…=). The notice body says =terminal LABEL exited=, then =message=. The daemon asks the supervisor to report the exit when it starts the terminal, as a wait that exists from the start and counts toward no limit, so a program that exits at once still sends its notice.

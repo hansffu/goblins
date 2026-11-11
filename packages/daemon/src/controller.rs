@@ -190,16 +190,7 @@ impl From<&SessionRecord> for contract::HostSession {
             terminals: r
                 .terminals
                 .iter()
-                .map(|t| contract::SessionTerminal {
-                    id: t.id.clone(),
-                    name: t.name.clone(),
-                    label: t.label.clone(),
-                    origin: t.origin.parse().expect("terminal origin"),
-                    started_at: t.started_at,
-                    rows: t.rows,
-                    cols: t.cols,
-                    attached: t.attached,
-                })
+                .map(contract::SessionTerminal::from)
                 .collect(),
             skipped: r
                 .skipped

@@ -3,8 +3,9 @@
 //! (`Command::Spawn` with `SpawnKind::Terminal`), so a terminal runs with
 //! nobody attached and answers reads, input and waits.
 use super::exec::validate_command;
-use super::{Active, Connection, Controller, Fault, capacity, conflict, params};
+use super::{Active, Connection, Controller, Fault, capacity, conflict, contract_params, params};
 use goblins_jsonrpc as rpc;
+use goblins_protocol::contract::{self, Method};
 use goblins_runtime::policy::Operation;
 use goblins_runtime::terminal::{self, Call, Condition, Source};
 use goblins_runtime::{Command, Event, SpawnKind, Stdio, TerminalId, exec};
@@ -29,6 +30,38 @@ pub struct TerminalRecord {
     pub cols: u16,
     /// A frontend is attached.
     pub attached: bool,
+}
+
+impl From<&TerminalRecord> for contract::SessionTerminal {
+    fn from(t: &TerminalRecord) -> Self {
+        Self {
+            id: t.id.clone(),
+            name: t.name.clone(),
+            label: t.label.clone(),
+            origin: t.origin.parse().expect("terminal origin"),
+            started_at: t.started_at,
+            rows: t.rows,
+            cols: t.cols,
+            attached: t.attached,
+        }
+    }
+}
+
+/// The wrapper already rejected caller-supplied session and injected authority.
+/// Check the endpoint DTO at the original parameter-decoding point, after the
+/// common shutdown/wait guards, before decoding its host-shaped domain input.
+fn scoped_params<H: contract::Method, S: contract::Method>(
+    caller: Caller,
+    value: Value,
+) -> Result<H::Params, Fault> {
+    if caller == Caller::Sandbox {
+        let mut user = value.clone();
+        if let Some(map) = user.as_object_mut() {
+            map.remove("session");
+        }
+        let _ = contract_params::<S>(user)?;
+    }
+    contract_params::<H>(value)
 }
 
 /// A host connection waiting for its terminal to start.
@@ -102,32 +135,6 @@ pub(super) struct Pending {
     /// The daemon's own wait for the exit of this terminal (its process ID),
     /// which an exit notice reports.
     notice: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Create1 {
-    session: String,
-    #[serde(default)]
-    argv: Option<Vec<String>>,
-    #[serde(default)]
-    cwd: Option<String>,
-    #[serde(default)]
-    env: Vec<(String, String)>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    rows: Option<u16>,
-    #[serde(default)]
-    cols: Option<u16>,
-    #[serde(default)]
-    notify: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Session {
-    session: String,
 }
 
 #[derive(Deserialize)]
@@ -265,11 +272,7 @@ impl Active {
 
 impl Controller {
     /// Resolve a terminal of a running goblin.
-    fn terminal_target(
-        &self,
-        session: &str,
-        terminal: &str,
-    ) -> Result<(String, usize), Fault> {
+    fn terminal_target(&self, session: &str, terminal: &str) -> Result<(String, usize), Fault> {
         let id = self.exec_target(session, None)?;
         let index = self.sessions[&id].terminals.find(terminal).ok_or_else(|| {
             (
@@ -332,11 +335,31 @@ impl Controller {
             return Err(conflict());
         }
         match method {
-            "terminals.create" => self.terminal_create(c, rpc_id, caller, params(value)?),
-            "terminals.list" => {
-                let p: Session = params(value)?;
+            contract::host::TerminalsCreate::NAME => {
+                self.terminal_create(
+                    c,
+                    rpc_id,
+                    caller,
+                    scoped_params::<
+                        contract::host::TerminalsCreate,
+                        contract::sandbox::TerminalsCreate,
+                    >(caller, value)?,
+                )
+            }
+            contract::host::TerminalsList::NAME => {
+                let p = scoped_params::<
+                    contract::host::TerminalsList,
+                    contract::sandbox::TerminalsList,
+                >(caller, value)?;
                 let id = self.resolve_session(&p.session)?;
-                Ok(Some(json!({"terminals": self.sessions[&id].record.terminals})))
+                Ok(Some(json!(contract::TerminalListResult {
+                    terminals: self.sessions[&id]
+                        .record
+                        .terminals
+                        .iter()
+                        .map(contract::SessionTerminal::from)
+                        .collect()
+                })))
             }
             "terminals.read" => {
                 let p: Read = params(value)?;
@@ -374,8 +397,11 @@ impl Controller {
                 };
                 self.terminal_call(c, rpc_id, &p.session, &p.terminal, call)
             }
-            "terminals.close" => {
-                let p: Target = params(value)?;
+            contract::host::TerminalsClose::NAME => {
+                let p = scoped_params::<
+                    contract::host::TerminalsClose,
+                    contract::sandbox::TerminalsClose,
+                >(caller, value)?;
                 let (session, index) = self.terminal_target(&p.session, &p.terminal)?;
                 let a = self.sessions.get_mut(&session).unwrap();
                 let entry = &mut a.terminals.entries[index];
@@ -399,7 +425,7 @@ impl Controller {
                     })
                     .map_err(|_| capacity())?;
                 a.terminals.entries[index].closing = true;
-                Ok(Some(json!({"accepted":true})))
+                Ok(Some(json!(contract::ServerStopResult { accepted: true })))
             }
             "terminals.detach" | "terminals.resize" if caller == Caller::Sandbox => {
                 Err((-32601, "method unavailable on sandbox endpoint".into()))
@@ -456,10 +482,12 @@ impl Controller {
         c: &mut Connection,
         rpc_id: Value,
         caller: Caller,
-        p: Create1,
+        p: contract::HostTerminalCreateParams,
     ) -> Result<Option<Value>, Fault> {
         if p.notify && caller == Caller::Host {
-            return Err(invalid("notify is for the goblin's own agent: use the sandbox endpoint"));
+            return Err(invalid(
+                "notify is for the goblin's own agent: use the sandbox endpoint",
+            ));
         }
         validate_command(&p.argv, &p.cwd, &p.env)?;
         if let Some(name) = &p.name
@@ -491,10 +519,7 @@ impl Controller {
         if a.terminals.entries.len() >= terminal::MAX_TERMINALS {
             return Err((
                 -32010,
-                format!(
-                    "a goblin has at most {} terminals",
-                    terminal::MAX_TERMINALS
-                ),
+                format!("a goblin has at most {} terminals", terminal::MAX_TERMINALS),
             ));
         }
         if let Some(name) = &p.name
@@ -662,7 +687,11 @@ impl Controller {
                 a.sync_terminals();
                 self.dirty = true;
                 if let Some(create) = create {
-                    self.terminal_answer(create.connection, create.rpc, Ok(json!(record)));
+                    self.terminal_answer(
+                        create.connection,
+                        create.rpc,
+                        Ok(json!(contract::SessionTerminal::from(&record))),
+                    );
                 }
                 None
             }
@@ -811,7 +840,11 @@ impl Controller {
         // A terminal whose creator left is still created.
         for a in self.sessions.values_mut() {
             for entry in &mut a.terminals.entries {
-                if entry.create.as_ref().is_some_and(|c| c.connection == connection) {
+                if entry
+                    .create
+                    .as_ref()
+                    .is_some_and(|c| c.connection == connection)
+                {
                     entry.create = None;
                 }
             }

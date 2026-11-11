@@ -3,7 +3,7 @@ use crate::Result;
 use crate::controller::PermissionRecord;
 use crate::controller::Snapshot;
 use goblins_jsonrpc::{self as rpc, Decoder};
-use goblins_protocol::contract::{self, Method};
+use goblins_protocol::contract::{self, Method, Response};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -108,6 +108,14 @@ impl Client {
                 .into());
         }
         Ok(reply["result"].clone())
+    }
+    pub fn call_patient_typed<M: Method>(
+        &mut self,
+        params: M::Params,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<M::Result> {
+        let wire = self.call_patient(M::NAME, contract::params_value::<M>(params)?, stop)?;
+        Ok(M::Result::decode(wire)?)
     }
     /// Send a request with descriptors attached, without reading its reply.
     /// Returns the request ID.
