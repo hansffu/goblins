@@ -78,10 +78,7 @@ fn report(result: &Value) -> i32 {
 
 fn connect() -> Result<UnixStream, String> {
     let (socket, init) = crate::connect()?;
-    if !init["features"]
-        .as_array()
-        .is_some_and(|v| v.iter().any(|f| f == FEATURE))
-    {
+    if !init.features.iter().any(|candidate| candidate == FEATURE) {
         return Err("this daemon does not support host commands".into());
     }
     Ok(socket)

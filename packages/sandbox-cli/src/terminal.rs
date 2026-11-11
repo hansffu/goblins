@@ -14,9 +14,7 @@ const FEATURE: &str = "terminals";
 /// cancels the wait.
 fn call(method: &str, params: Value) -> Result<Value, String> {
     let (mut socket, init) = crate::connect()?;
-    if !init["features"]
-        .as_array()
-        .is_some_and(|features| features.iter().any(|f| f == FEATURE))
+    if !init.features.iter().any(|candidate| candidate == FEATURE)
     {
         return Err("this daemon has no terminals for goblins; restart it".into());
     }

@@ -35,7 +35,7 @@ paths = ["libs/supervisor/src/binds.rs", "libs/supervisor/src/snapshot.rs", "lib
 
 [features.lifecycle]
 description = "Daemon management, configuration, names and responsiveness"
-python = ["test_daemon", "test_server", "test_cleanup", "test_configuration", "test_agent_names", "test_responsiveness", "test_supervised", "test_maintenance"]
+python = ["test_daemon", "test_server", "test_cleanup", "test_configuration", "test_agent_names", "test_responsiveness", "test_supervised", "test_maintenance", "test_api_contract.ContractBoundaryTests", "test_api_contract.HistoricalClientTests"]
 checks = ["rust"]
 paths = ["packages/daemon/src/server.rs", "libs/supervisor/src/cleanup.rs", "packages/daemon/src/goblin-names.txt"]
 
@@ -126,7 +126,7 @@ paths = ["emacs/*.el", "emacs/icons/*", "tests/emacs-init.el"]
 
 [features.infrastructure]
 description = "Test selection, scheduler, fixture ownership and routing checks"
-python = ["test_runner", "test_features", "test_dependencies", "test_rust_tests", "test_terminal_support", "test_process_discovery", "test_fake_codex"]
+python = ["test_runner", "test_features", "test_dependencies", "test_rust_tests", "test_terminal_support", "test_process_discovery", "test_fake_codex", "test_api_contract.ContractTests"]
 checks = []
 paths = []
 

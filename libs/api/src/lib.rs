@@ -177,6 +177,7 @@ pub fn plain_text(s: &str) -> String {
         .collect()
 }
 
+pub mod contract;
 pub mod editor;
 pub mod init;
 pub mod messages;

@@ -108,7 +108,7 @@
           pkgs.clippy
           pkgs.just
           pkgs.git
-          (pkgs.python3.withPackages (p: [ p.pyte ]))
+          (pkgs.python3.withPackages (p: [ p.pyte p.jsonschema ]))
           pkgs.bubblewrap
           pkgs.nix
           pkgs.nixfmt

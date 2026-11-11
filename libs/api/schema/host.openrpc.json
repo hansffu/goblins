@@ -1,0 +1,132 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "Goblins host endpoint",
+    "version": "1"
+  },
+  "methods": [
+    {
+      "name": "initialize",
+      "description": "Initialize once before other requests. Unsupported u32 versions return -32002; repeated initialization returns -32009 after parameter validation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "api",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/InitializeParams/properties/api"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/InitializeResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32002,
+          "message": "Unsupported API version"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/InitializeParams"
+      },
+      "x-rust-name": "Initialize",
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-json-integer": true
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/InitializeReply"
+      }
+    },
+    {
+      "name": "server.status",
+      "description": "Current live-worker count and history ownership; available during shutdown.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStatusResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-rust-name": "ServerStatus",
+      "x-positional-schema": {
+        "type": "array",
+        "items": [],
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/ServerStatusReply"
+      }
+    },
+    {
+      "name": "server.stop",
+      "description": "Accept shutdown, clear the subscription and close after reply; acceptance does not mean cleanup has completed.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-rust-name": "ServerStop",
+      "x-positional-schema": {
+        "type": "array",
+        "items": [],
+        "minItems": 0,
+        "maxItems": 0
+      }
+    }
+  ],
+  "x-notifications": [],
+  "x-common-errors": [
+    -32700,
+    -32600,
+    -32601,
+    -32602,
+    -32001,
+    -32010
+  ],
+  "x-coverage": "Incremental: other surfaces are assigned in coverage.json."
+}

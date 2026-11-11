@@ -120,7 +120,11 @@ fn daemon(method: &str, value: Value) -> Result<Value> {
     let mut s = UnixStream::connect(socket)?;
     s.set_read_timeout(Some(Duration::from_secs(3)))?;
     s.set_write_timeout(Some(Duration::from_secs(3)))?;
-    rpc::exchange(&mut s, json!(0), "initialize", json!({"api":1}))?;
+    goblins_protocol::contract::initialize(
+        &mut s,
+        json!(0),
+        goblins_protocol::contract::EndpointRole::Sandbox,
+    )?;
     Ok(rpc::exchange(&mut s, json!(1), method, value)?)
 }
 /// A separate reporter keeps ten-second freshness heartbeats independent of
@@ -1219,7 +1223,7 @@ mod tests {
                 let mut peer = peer.unwrap();
                 let init = rpc::read(&mut peer).unwrap();
                 peer.write_all(
-                    &rpc::encode(&rpc::result(init["id"].clone(), json!({"api":1}))).unwrap(),
+                    &rpc::encode(&rpc::result(init["id"].clone(), serde_json::from_str::<Value>(include_str!("../../../libs/api/schema/fixtures.json")).unwrap()["sandbox_initialize"].clone())).unwrap(),
                 )
                 .unwrap();
                 let call = rpc::read(&mut peer).unwrap();

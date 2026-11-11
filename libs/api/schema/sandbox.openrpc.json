@@ -1,0 +1,73 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "Goblins sandbox endpoint",
+    "version": "1"
+  },
+  "methods": [
+    {
+      "name": "initialize",
+      "description": "Initialize once before other requests. Unsupported u32 versions return -32002; repeated initialization returns -32009 after parameter validation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "api",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/InitializeParams/properties/api"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/InitializeResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32002,
+          "message": "Unsupported API version"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/InitializeParams"
+      },
+      "x-rust-name": "Initialize",
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-json-integer": true
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/InitializeReply"
+      }
+    }
+  ],
+  "x-notifications": [],
+  "x-common-errors": [
+    -32700,
+    -32600,
+    -32601,
+    -32602,
+    -32001,
+    -32010
+  ],
+  "x-coverage": "Incremental: other surfaces are assigned in coverage.json."
+}

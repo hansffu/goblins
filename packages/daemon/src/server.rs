@@ -1,8 +1,8 @@
 //! Local server management. Stop uses the authenticated host connection, never a PID file.
 use crate::STOP;
 use goblins_controller::{Result, controller::Controller, host::Client};
+use goblins_protocol::contract;
 use goblins_unix as unix;
-use serde_json::json;
 use std::{
     fs::{File, OpenOptions},
     io::{self, Write},
@@ -39,12 +39,13 @@ pub fn foreground(
         "Goblins daemon ready at {}",
         state.join("host.sock").display()
     );
-    match history["reason"].as_str() {
-        None => println!(
-            "Session history in {}",
-            history["directory"].as_str().unwrap_or("-")
-        ),
-        Some(reason) => println!("Running without session history: {reason}"),
+    match history {
+        contract::HistoryStatus::OwnedHistory(history) => {
+            println!("Session history in {}", history.directory.display())
+        }
+        contract::HistoryStatus::UnavailableHistory(history) => {
+            println!("Running without session history: {}", history.reason)
+        }
     }
     while !STOP.load(Ordering::Relaxed) && !daemon.shutdown_ready() {
         daemon.tick()?;
@@ -179,7 +180,7 @@ pub fn stop(state: &Path) -> Result<()> {
         println!("Server already stopped");
         return Ok(());
     };
-    client.call("server.stop", json!({}))?;
+    client.call_typed::<contract::host::ServerStop>(contract::EmptyParams {})?;
     let deadline = Instant::now() + Duration::from_secs(20);
     while lock_held(state)? {
         if Instant::now() >= deadline || STOP.load(Ordering::Relaxed) {
@@ -193,27 +194,29 @@ pub fn stop(state: &Path) -> Result<()> {
 
 pub fn status(state: &Path) -> Result<i32> {
     if let Some(mut client) = Client::connect_optional(state)? {
-        let status = client.call("server.status", json!({}))?;
+        let status = client.call_typed::<contract::host::ServerStatus>(contract::EmptyParams {})?;
         println!(
             "Server {} ({}) · {} live agents",
-            status["state"].as_str().unwrap_or("unknown"),
-            client.instance,
-            status["sessions"]
+            status.state, client.instance, status.sessions
         );
-        let history = &status["history"];
-        match (history["owner"].as_bool(), history["directory"].as_str()) {
-            (Some(true), Some(directory)) if history["recording"] == false => println!(
-                "Session history in {directory} (not recording: goblins of a --workspace server cannot be resumed)"
-            ),
-            (Some(true), Some(directory)) => println!("Session history in {directory}"),
-            (Some(false), _) => println!(
-                "No session history: {}",
-                history["reason"].as_str().unwrap_or("unavailable")
-            ),
-            _ => (),
+        if let Some(history) = &status.history {
+            match (history.owner, history.directory.as_deref()) {
+                (Some(true), Some(directory)) if history.recording == Some(false) => println!(
+                    "Session history in {} (not recording: goblins of a --workspace server cannot be resumed)",
+                    directory.display()
+                ),
+                (Some(true), Some(directory)) => {
+                    println!("Session history in {}", directory.display())
+                }
+                (Some(false), _) => println!(
+                    "No session history: {}",
+                    history.reason.as_deref().unwrap_or("unavailable")
+                ),
+                _ => (),
+            }
         }
-        match status["manifest"].as_str() {
-            Some(manifest) => println!("Raid owners run goblins from {manifest}"),
+        match status.manifest.as_deref() {
+            Some(manifest) => println!("Raid owners run goblins from {}", manifest.display()),
             None => println!("No current configuration: raid owners cannot run goblins yet"),
         }
         Ok(0)

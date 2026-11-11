@@ -28,8 +28,8 @@ Content-Length: 61\r\n
 - The header is at most 256 bytes. A response body is at most 1 MiB.
 - Request bodies: messaging methods accept up to 64 KiB. Other host methods, =sessions.set-variables= and =permissions.request= accept 16 KiB; other sandbox methods 4 KiB.
 - Frame deadlines are 3 seconds. Every connection must send its complete =initialize= frame within 3 seconds of being accepted, and a sandbox connection must send its one following call within 3 seconds of initializing. On an initialized host connection the clock starts at each frame's first byte, so an idle host connection never times out.
-- =params= is an object; an omitted =params= means ={}=. Unknown fields, duplicate keys, nesting deeper than 32 and batches are rejected. Request IDs must not be null. Notifications from a client (no =id=) are ignored, except =exec.signal= on an exec connection.
-- Results may gain fields; clients should ignore fields they do not know.
+- Parameters normally use named objects; positional-array forms are documented per method as their contracts are migrated. An omitted =params= means ={}=. Unknown named parameters and envelope fields, duplicate keys, nesting deeper than 32 and batches are rejected. Request IDs must not be null. Notifications from a client (no =id=) are ignored, except =exec.signal= on an exec connection.
+- Results may gain fields, including in nested objects such as initialization limits and history status; clients should ignore fields they do not know. This tolerance does not relax validation of known fields or unknown request parameters.
 
 ** Connections
 
@@ -67,11 +67,16 @@ Session parameters named =session= accept a session ID or the agent name of a li
 
 * Initialization (both endpoints)
 
+The schema-first migration currently covers =initialize=, =server.status= and =server.stop=. Their machine-readable contracts are in =libs/api/schema/=, with the generated [[file:API-REFERENCE.org][covered-method reference]]. Other surfaces remain specified here and assigned to later chunks in =libs/api/schema/coverage.json=. Generated types supplement the existing transport, policy and lifecycle checks.
+
+The result descriptions specify what the current daemon produces. Compatible API-1 clients also accept older replies without additive metadata: =configuration= and limits information in =initialize=, and =history=, =manifest= and =worktrees_directory= in =server.status=. The =x-client-result-schema= extension defines those generated client reply types; missing information remains optional, and clients use advertised features before relying on capabilities. Tests of the current daemon still enforce the current producer schema.
+
 ** =initialize=
 
 Negotiates the API version and identifies the daemon.
 
 - Input :: ={"api": 1}=
+- Parameter forms :: The existing decoder also accepts =[1]=. =api= is a required unsigned 32-bit integer; unsupported versions return =-32002=. Unknown named parameters, missing/null values and extra positional values return =-32602=. Parameter validation precedes repeated-initialize =-32009= and unsupported-version checks.
 - Output :: ={"api": 1, "instance", "role": "host"|"sandbox", "configuration", "features": [...], "limits": {...}}=. =instance= identifies this daemon run. =configuration= is the caller's configuration name on the sandbox endpoint, null on the host endpoint. =features= lists capability strings (for example =state-subscribe=, =raids=, =exec=, =terminals=, =host-commands=, and =attach-handlers= for =attach.sock=). =limits= has =header=, =body=, =frame_seconds=, =depth=, =response_body=, =calls=, =connections=, =sessions=, =output_queue=, =snapshot= and =terminal_buffer=.
 
 * Host endpoint
@@ -85,6 +90,7 @@ While the server is stopping, every method except =server.status= and =server.st
 Reports whether the server is running and how many goblins it has.
 
 - Input :: ={}=
+- Parameter forms :: =[]= is also accepted; omitted =params= defaults to ={}=. Null, unknown fields and extra positional values return =-32602=.
 - Output :: ={"instance", "state": "running"|"stopping", "sessions": N, "history", "manifest", "worktrees_directory"}=. =sessions= counts goblins with a live worker. =history= is ={"directory", "owner": true, "keep", "recording"}= when this server owns the history store, or ={"directory", "owner": false, "reason"}= when it does not. =manifest= is the current runtime manifest path or null. =worktrees_directory= is the expanded =mkGoblins.worktrees.directory= of the current configuration, or null when worktrees are off (see [[file:specs/WORKTREES.org][specs/WORKTREES.org]]); a host client creates worktrees beneath =DIRECTORY/REPO= with Git.
 
 *** =server.stop=
@@ -92,6 +98,7 @@ Reports whether the server is running and how many goblins it has.
 Stops the server and every goblin. The connection is closed after the reply.
 
 - Input :: ={}=
+- Parameter forms :: As for =server.status=, both ={}= and =[]= are accepted, including omitted =params=.
 - Output :: ={"accepted": true}=
 
 ** State

@@ -163,7 +163,8 @@ def receive(conn):
     conn.settimeout(3)
     init = framed(conn)
     assert init["method"] == "initialize"
-    conn.sendall(frame({"jsonrpc":"2.0", "id":init["id"], "result":{"api":1,"role":"sandbox"}}))
+    fixture = json.loads((HERE / "libs/api/schema/fixtures.json").read_text())["sandbox_initialize"]
+    conn.sendall(frame({"jsonrpc":"2.0", "id":init["id"], "result":fixture}))
     req = framed(conn)
     assert req["method"] == "permissions.request"
     return request(id=req["id"], package=req["params"]["package"], reason=req["params"]["reason"])

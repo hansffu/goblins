@@ -85,6 +85,12 @@ test-emacs:
       -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
 
 # Full packaging/Nix validation stays available separately from the edit loop.
+api-reference:
+    python3 tests/api_contract.py --write
+
+api-check:
+    python3 tests/api_contract.py
+
 test-nix:
     nix flake check --max-jobs 1 --cores 2
 

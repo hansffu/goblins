@@ -1,0 +1,11 @@
+{
+  "EmptyParams": "Typify represents empty closed objects as maps; use a handwritten deny_unknown_fields empty struct to preserve the existing Serde decoder, including [] as well as {}. Null and unknown fields remain refused.",
+  "required-nullable": "Typify/Serde Option accepts absence as null. Response::decode explicitly checks required nullable result fields before deserialization. Producers emit null rather than omitting; schema response validation checks the same presence rule.",
+  "validation": "Type generation is not JSON Schema validation: constraints such as byte lengths remain named handwritten validators; tests check schema agreement.",
+  "protocol": "Framing, duplicate keys, request IDs, deadlines and connection state remain in libs/jsonrpc and controller; generated DTOs never authorize calls.",
+  "boolean-enum": "Typify 0.7 emits bool for boolean singleton enums. Response::decode requires accepted=true. HistoryStatus uses an owner-discriminated handwritten decoder around generated record DTOs so added fields cannot select the wrong untagged variant.",
+  "HostPath": "The schema string maps to std::path::PathBuf to retain existing path serialization and invalid-UTF-8 behavior. This is descriptor-free data, not runtime authority.",
+  "integer-representation": "JSON Schema treats 1.0 as an integer, while existing Serde integer fields reject JSON floating-point values. x-json-integer and the Python validator preserve that representation constraint; generated Rust integer decoders enforce it naturally.",
+  "HistoryStatus": "Typify does not enforce boolean singleton enums when selecting an untagged union. Select the generated OwnedHistory/UnavailableHistory record by the owner boolean, preserving unknown-field tolerance and required directory presence.",
+  "API-1-client-compatibility": "Method::Produced retains the current producer DTO; Method::Result uses the generated x-client-result-schema reply DTO when additive information was absent on older API-1 daemons. Optional fields retain absence rather than acquiring synthetic defaults. Current-daemon Python checks still validate the producer result schema."
+}

@@ -2,6 +2,7 @@
 use crate::Result;
 use crate::supervised::{Executable, Supervised};
 use goblins_jsonrpc::{self as rpc, Decoder};
+use goblins_protocol::contract::{self, Method};
 use goblins_protocol::{
     Request,
     rpc::{DevShellDiffParams, FlakeRunParams, PermissionParams},
@@ -604,11 +605,6 @@ struct Stop {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Initialize {
-    api: u32,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SessionId {
     session: String,
 }
@@ -949,12 +945,20 @@ impl Controller {
         self.record_running();
     }
     /// The history store's directory and whether this daemon owns it.
-    pub fn history_status(&self) -> Value {
+    pub fn history_status(&self) -> contract::HistoryStatus {
         match &self.history {
-            Ok(store) => json!({"directory":store.directory,"owner":true,"keep":self.keep_sessions,
-                "recording":self.workspace.is_none()}),
+            Ok(store) => contract::HistoryStatus::OwnedHistory(contract::OwnedHistory {
+                directory: store.directory.clone(),
+                owner: true,
+                keep: self.keep_sessions as u64,
+                recording: self.workspace.is_none(),
+            }),
             Err(reason) => {
-                json!({"directory":self.history_directory,"owner":false,"reason":reason})
+                contract::HistoryStatus::UnavailableHistory(contract::UnavailableHistory {
+                    directory: self.history_directory.clone(),
+                    owner: false,
+                    reason: reason.clone(),
+                })
             }
         }
     }
@@ -2427,23 +2431,30 @@ impl Controller {
             return Err((-32009, "server is stopping".into()));
         }
         match method {
-            "server.status" => {
-                let _: Empty = params(value)?;
-                Ok(
-                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.live()).count(),"history":self.history_status(),
-                        "manifest":self.current_manifest.as_ref().map(|m| &m.path),
-                        "worktrees_directory":self.worktrees_directory()}),
-                )
+            contract::host::ServerStatus::NAME => {
+                let _: contract::EmptyParams = params(value)?;
+                Ok(json!(contract::ServerStatusResult {
+                    instance: self.instance.clone(),
+                    state: if self.shutdown.is_some() {
+                        contract::ServerState::Stopping
+                    } else {
+                        contract::ServerState::Running
+                    },
+                    sessions: self.sessions.values().filter(|a| a.live()).count() as u64,
+                    history: self.history_status(),
+                    manifest: self.current_manifest.as_ref().map(|m| m.path.clone()),
+                    worktrees_directory: self.worktrees_directory(),
+                }))
             }
-            "server.stop" => {
-                let _: Empty = params(value)?;
+            contract::host::ServerStop::NAME => {
+                let _: contract::EmptyParams = params(value)?;
                 // Flush acceptance before teardown, but a non-reading host
                 // cannot prevent shutdown by holding its response queue full.
                 self.shutdown
                     .get_or_insert((c.id, Instant::now() + std::time::Duration::from_secs(1)));
                 c.subscription = None;
                 c.close = true;
-                Ok(json!({"accepted":true}))
+                Ok(json!(contract::ServerStopResult { accepted: true }))
             }
             "sessions.list" => {
                 let _: Empty = params(value)?;
@@ -2597,22 +2608,83 @@ impl Controller {
             if matches!(c.role, Role::Host) && !messaging && c.body_bytes > legacy_limit {
                 return Err((-32602, "request exceeds method frame limit".into()));
             }
-            if call.method == "initialize" {
-                let p: Initialize = params(call.params)?;
+            if call.method == contract::host::Initialize::NAME {
+                let p: contract::InitializeParams = params(call.params)?;
                 if c.initialized {
                     return Err(conflict());
                 }
-                if p.api != 1 {
+                if p.api != contract::API_VERSION {
                     return Err((-32002, "unsupported Goblins API".into()));
                 }
                 c.initialized = true;
                 if matches!(c.role, Role::Host) {
                     c.decoder = Decoder::new(goblins_protocol::messages::MAX_REQUEST, None);
                 }
-                return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate","terminals"]}else{match &c.role { Role::Sandbox(id) => self.sessions.get(id).map_or_else(|| Support::linux().sandbox_features(), |a| a.support.sandbox_features()), Role::Host => vec![] }},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
-                ));
+                let host = matches!(c.role, Role::Host);
+                return Ok(Some(json!(contract::InitializeResult {
+                    api: contract::API_VERSION
+                        .try_into()
+                        .expect("supported API version"),
+                    instance: self.instance.clone(),
+                    configuration: match &c.role {
+                        Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.clone()),
+                        Role::Host => None,
+                    },
+                    role: if host {
+                        contract::EndpointRole::Host
+                    } else {
+                        contract::EndpointRole::Sandbox
+                    },
+                    features: (if matches!(c.role, Role::Host) {
+                        vec![
+                            "scopes",
+                            "docker-enable",
+                            "package-grants",
+                            "same-daemon-reconnect",
+                            "state-subscribe",
+                            "agent-activity-v1",
+                            "raw-terminal",
+                            "agent-names",
+                            "server-control",
+                            "terminal-reattach",
+                            "attach-handlers",
+                            "agent-inbox-v1",
+                            "communications-log-v1",
+                            "run-targets",
+                            "raids",
+                            "raid-owner",
+                            "exec",
+                            "recreate",
+                            "terminals",
+                        ]
+                    } else {
+                        match &c.role {
+                            Role::Sandbox(id) => self.sessions.get(id).map_or_else(
+                                || Support::linux().sandbox_features(),
+                                |a| a.support.sandbox_features(),
+                            ),
+                            Role::Host => vec![],
+                        }
+                    })
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                    limits: contract::Limits {
+                        header: 256,
+                        body: goblins_protocol::messages::MAX_REQUEST as u64,
+                        frame_seconds: 3,
+                        depth: 32,
+                        response_body: rpc::MAX_BODY as u64,
+                        calls: if host { 4096 } else { 2 },
+                        connections: if host { HOSTS as u64 } else { 8 },
+                        sessions: SESSIONS as u64,
+                        output_queue: QUEUE as u64,
+                        snapshot: 900 * 1024,
+                        terminal_buffer: 65536,
+                    },
+                })));
             }
+
             if !c.initialized {
                 return Err((-32001, "initialize first".into()));
             }
@@ -2655,9 +2727,13 @@ impl Controller {
                 Role::Host if call.method == "sessions.exec" => {
                     self.exec_start(c, id.clone(), call.params).map(|()| None)
                 }
-                Role::Host if call.method.starts_with("terminals.") => {
-                    self.terminals(c, id.clone(), terminals::Caller::Host, &call.method, call.params)
-                }
+                Role::Host if call.method.starts_with("terminals.") => self.terminals(
+                    c,
+                    id.clone(),
+                    terminals::Caller::Host,
+                    &call.method,
+                    call.params,
+                ),
                 Role::Host if call.method == "history.prune" => {
                     self.history_prune(c, id.clone(), call.params)
                 }
@@ -6812,8 +6888,8 @@ mod tests {
         let shared = first.state.join("history");
         first.open_history(Ok(shared.clone()), 100);
         second.open_history(Ok(shared.clone()), 100);
-        assert_eq!(first.history_status()["owner"], true);
-        let status = second.history_status();
+        assert_eq!(json!(first.history_status())["owner"], true);
+        let status = json!(second.history_status());
         assert_eq!(status["owner"], false);
         let reason = status["reason"].as_str().unwrap();
         assert!(
@@ -6851,7 +6927,7 @@ mod tests {
             second.tick().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        assert_eq!(second.history_status()["owner"], true);
+        assert_eq!(json!(second.history_status())["owner"], true);
         let store = second.history.as_ref().unwrap();
         assert_eq!(store.records.keys().collect::<Vec<_>>(), ["g", "kid"]);
         let record = &store.records["g"];

@@ -7,6 +7,31 @@
 (require 'goblins-raids)
 (require 'goblins-terminal)
 
+(ert-deftest goblins-initialize-contract-fixture ()
+  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+                                 (file-name-directory (file-truename (locate-library "goblins")))))
+         (fixtures (with-temp-buffer
+                     (insert-file-contents file)
+                     (json-parse-buffer :object-type 'plist :null-object nil)))
+         (host (plist-get fixtures :host_initialize)))
+    (should (goblins--initialize-valid-p host))
+    (should (goblins--initialize-valid-p
+             (plist-get (plist-get fixtures :forward_compatibility) :host_initialize)))
+    (should (goblins--initialize-valid-p
+             (plist-get (plist-get fixtures :historical_api1) :host_initialize)))
+    (should-not (goblins--initialize-valid-p (plist-get fixtures :sandbox_initialize)))
+    (dolist (key '(:api :role :instance :features))
+      (let ((broken (copy-tree host)))
+        (cl-remf broken key)
+        (should-not (goblins--initialize-valid-p broken))))
+    (dolist (key '(:configuration :limits))
+      (let ((legacy (copy-tree host)))
+        (cl-remf legacy key)
+        (should (goblins--initialize-valid-p legacy))))
+    (let ((broken (copy-tree host)))
+      (setf (plist-get broken :features) [1])
+      (should-not (goblins--initialize-valid-p broken)))))
+
 ;; Unit tests check failure notices; reconnection has tests of its own.
 (setq goblins-reconnect-delays nil)
 (require 'project)

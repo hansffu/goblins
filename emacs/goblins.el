@@ -1008,6 +1008,25 @@ reports in the echo area, so it suits init files and hooks."
   (setq goblins--reconnect-attempt 0)
   (goblins--connect-now))
 
+(defun goblins--initialize-valid-p (result)
+  "Check the host initialization boundary against the covered C01 contract."
+  (and (equal (plist-get result :api) 1)
+       (equal (plist-get result :role) "host")
+       (stringp (plist-get result :instance))
+       (null (plist-get result :configuration))
+       (vectorp (plist-get result :features))
+       (cl-every #'stringp (append (plist-get result :features) nil))
+       (or (not (plist-member result :limits))
+           (let ((limits (plist-get result :limits)))
+             (and (listp limits)
+                  (cl-every (lambda (key)
+                     (let ((value (plist-get limits key)))
+                       (or (null value)
+                           (and (integerp value) (<= 0 value 18446744073709551615)))))
+                   '(:header :body :frame_seconds :depth :response_body
+                     :calls :connections :sessions :output_queue
+                     :snapshot :terminal_buffer)))))))
+
 (defun goblins--connect-now ()
   "Connect this status buffer and subscribe to the daemon's state."
   (goblins--cancel-reconnect)
@@ -1046,9 +1065,7 @@ reports in the echo area, so it suits init files and hooks."
           (goblins--request
            'initialize '(:api 1)
            (lambda (result)
-             (if (not (and (equal (plist-get result :api) 1)
-                           (equal (plist-get result :role) "host")
-                           (stringp (plist-get result :instance))))
+             (if (not (goblins--initialize-valid-p result))
                  (goblins--fail "Incompatible Goblins daemon")
                (setq goblins--instance (plist-get result :instance)
                      goblins--features (append (plist-get result :features) nil))

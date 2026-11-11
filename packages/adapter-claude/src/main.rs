@@ -85,7 +85,11 @@ static REQUEST_SOCKET: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new()
 fn daemon(method: &str, value: Value) -> Result<Value> {
     let socket = REQUEST_SOCKET.get_or_init(|| goblins_protocol::REQUEST_SOCKET.into());
     let mut s = UnixStream::connect(socket)?;
-    rpc::exchange(&mut s, json!(0), "initialize", json!({"api":1}))?;
+    goblins_protocol::contract::initialize(
+        &mut s,
+        json!(0),
+        goblins_protocol::contract::EndpointRole::Sandbox,
+    )?;
     Ok(rpc::exchange(&mut s, json!(1), method, value)?)
 }
 /// A call bounded as a whole: the protocol's timeouts apply to each

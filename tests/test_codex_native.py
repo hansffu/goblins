@@ -305,7 +305,8 @@ requires_openai_auth=false
                 with peer:
                     try:
                         init = receive(peer)
-                        peer.sendall(frame({'jsonrpc':'2.0','id':init['id'],'result':{'api':1,'role':'sandbox'}}))
+                        fixture = json.loads((Path(__file__).resolve().parents[1] / 'libs/api/schema/fixtures.json').read_text())['sandbox_initialize']
+                        peer.sendall(frame({'jsonrpc':'2.0','id':init['id'],'result':fixture}))
                         call = receive(peer)
                         if call['method'] == 'sessions.set-variables':
                             reports.put(call['params']['variables'])

@@ -2,7 +2,7 @@
 #+date: 2026-11-10
 #+startup: showall
 
-Status: draft for discussion and review by Nikka. This change creates the migration plan, not schemas, generators or runtime changes. Implementation begins only after the plan is agreed.
+Status: plan reviewed by Nikka and implementation authorized on 2026-11-10. C01 is in progress in =json-rpc-migration-plan=; C02-C19 remain pending. Each chunk records validation and review before completion.
 
 The user wants the full JSON-RPC contract, implemented in vertical chunks. Each chunk follows this order: define its JSON-RPC specification, generate types where possible, migrate its producers and consumers, then validate. Do not implement all schemas first, all generators next and all consumers last.
 

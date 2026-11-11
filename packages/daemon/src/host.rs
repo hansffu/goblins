@@ -3,6 +3,7 @@ use crate::Result;
 use crate::controller::PermissionRecord;
 use crate::controller::Snapshot;
 use goblins_jsonrpc::{self as rpc, Decoder};
+use goblins_protocol::contract::{self, Method};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -36,19 +37,21 @@ impl Client {
             }
             Err(e) => return Err(e.into()),
         };
-        let init = rpc::exchange(&mut stream, json!(1), "initialize", json!({"api":1}))?;
-        if init["api"] != 1 || init["role"] != "host" {
-            return Err("incompatible daemon".into());
-        }
+        let init = contract::initialize(&mut stream, json!(1), contract::EndpointRole::Host)?;
         Ok(Some(Self {
-            features: serde_json::from_value(init["features"].clone())?,
-            instance: init["instance"]
-                .as_str()
-                .ok_or("missing daemon identity")?
-                .into(),
+            features: init.features,
+            instance: init.instance,
             stream,
             next: 1,
         }))
+    }
+    pub fn call_typed<M: Method>(&mut self, params: M::Params) -> Result<M::Result> {
+        self.next += 1;
+        Ok(contract::exchange::<M>(
+            &mut self.stream,
+            json!(self.next),
+            params,
+        )?)
     }
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next += 1;

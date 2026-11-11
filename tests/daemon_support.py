@@ -10,6 +10,7 @@ import tempfile
 import time
 import uuid
 from build_support import daemon_environment, fixture_app
+from api_contract import validate_reply
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,6 +69,7 @@ def receive(peer):
 
 class RPC:
     def __init__(self, path):
+        self.endpoint = "host" if Path(path).name == "host.sock" else "sandbox"
         self.peer = socket.socket(socket.AF_UNIX)
         self.peer.settimeout(5)
         self.peer.connect(str(path))
@@ -83,6 +85,7 @@ class RPC:
         id = self.send(method, params)
         reply = receive(self.peer)
         assert reply["id"] == id, reply
+        validate_reply(self.endpoint, method, reply)
         if "error" in reply:
             raise ValueError(reply["error"])
         return reply["result"]

@@ -1,0 +1,796 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "InitializeParams": {
+      "type": "object",
+      "properties": {
+        "api": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "x-json-integer": true
+        }
+      },
+      "required": [
+        "api"
+      ],
+      "additionalProperties": false
+    },
+    "EmptyParams": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "EndpointRole": {
+      "type": "string",
+      "enum": [
+        "host",
+        "sandbox"
+      ]
+    },
+    "ServerState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "stopping"
+      ]
+    },
+    "Limits": {
+      "type": "object",
+      "properties": {
+        "header": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "body": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "frame_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "response_body": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "connections": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "output_queue": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "snapshot": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "terminal_buffer": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        }
+      },
+      "required": [
+        "header",
+        "body",
+        "frame_seconds",
+        "depth",
+        "response_body",
+        "calls",
+        "connections",
+        "sessions",
+        "output_queue",
+        "snapshot",
+        "terminal_buffer"
+      ],
+      "additionalProperties": true,
+      "description": " Clients ignore unknown result fields for forward compatibility."
+    },
+    "InitializeResult": {
+      "type": "object",
+      "properties": {
+        "api": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "enum": [
+            1
+          ],
+          "x-json-integer": true
+        },
+        "instance": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/definitions/EndpointRole"
+        },
+        "configuration": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limits": {
+          "$ref": "#/definitions/Limits"
+        }
+      },
+      "required": [
+        "api",
+        "instance",
+        "role",
+        "configuration",
+        "features",
+        "limits"
+      ],
+      "additionalProperties": true,
+      "description": " Clients ignore unknown result fields for forward compatibility."
+    },
+    "OwnedHistory": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "$ref": "#/definitions/HostPath"
+        },
+        "owner": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "keep": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "recording": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "directory",
+        "owner",
+        "keep",
+        "recording"
+      ],
+      "additionalProperties": true,
+      "description": " Clients ignore unknown result fields for forward compatibility."
+    },
+    "UnavailableHistory": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner": {
+          "type": "boolean",
+          "enum": [
+            false
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "directory",
+        "owner",
+        "reason"
+      ],
+      "additionalProperties": true,
+      "description": " Clients ignore unknown result fields for forward compatibility."
+    },
+    "HistoryStatus": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/OwnedHistory"
+        },
+        {
+          "$ref": "#/definitions/UnavailableHistory"
+        }
+      ]
+    },
+    "ServerStatusResult": {
+      "type": "object",
+      "properties": {
+        "instance": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/ServerState"
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "history": {
+          "$ref": "#/definitions/HistoryStatus"
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worktrees_directory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "instance",
+        "state",
+        "sessions",
+        "history",
+        "manifest",
+        "worktrees_directory"
+      ],
+      "additionalProperties": true,
+      "description": " Clients ignore unknown result fields for forward compatibility."
+    },
+    "ServerStopResult": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "additionalProperties": true,
+      "description": " Clients ignore unknown result fields for forward compatibility."
+    },
+    "HostPath": {
+      "type": "string",
+      "description": "Host path; Rust uses PathBuf serialization so invalid UTF-8 is not silently replaced."
+    },
+    "LimitsReply": {
+      "type": "object",
+      "properties": {
+        "header": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "body": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frame_seconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "depth": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "response_body": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calls": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connections": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sessions": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_queue": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal_buffer": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true,
+      "description": "Client compatibility view: additive API-1 information may be absent; known fields remain typed and unknown result fields are ignored."
+    },
+    "InitializeReply": {
+      "type": "object",
+      "properties": {
+        "api": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "format": "uint32",
+          "enum": [
+            1
+          ],
+          "x-json-integer": true
+        },
+        "instance": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/definitions/EndpointRole"
+        },
+        "configuration": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LimitsReply"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "api",
+        "instance",
+        "role",
+        "features"
+      ],
+      "additionalProperties": true,
+      "description": "Client compatibility view: additive API-1 information may be absent; known fields remain typed and unknown result fields are ignored."
+    },
+    "HistoryReply": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "keep": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recording": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "required": [],
+      "description": "Optional client history metadata. No ownership or recording status is invented when older daemons omit it."
+    },
+    "ServerStatusReply": {
+      "type": "object",
+      "properties": {
+        "instance": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/ServerState"
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "history": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HistoryReply"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worktrees_directory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "instance",
+        "state",
+        "sessions"
+      ],
+      "additionalProperties": true,
+      "description": "Client compatibility view: additive API-1 information may be absent; known fields remain typed and unknown result fields are ignored."
+    }
+  },
+  "x-api-version": 1,
+  "x-errors": {
+    "-32700": "Invalid JSON",
+    "-32600": "Invalid frame or envelope",
+    "-32601": "Method unavailable",
+    "-32602": "Invalid parameters",
+    "-32001": "Initialize first",
+    "-32002": "Unsupported API version",
+    "-32003": "Host command capacity",
+    "-32004": "Record absent",
+    "-32009": "Stale or conflicting operation",
+    "-32010": "Resource limit or init unavailable"
+  },
+  "x-protocol": {
+    "framing": "Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.",
+    "request_id": "1\u201364 ASCII letters/digits/underscore/hyphen, or unsigned integer <=9007199254740991. No null/boolean/fractional IDs. Notifications omit ID.",
+    "notification_policy": "Ordinary notifications are ignored; active exec and attach have their own exchanges.",
+    "connections": "Host: 4096 calls including initialize. Sandbox: initialize then one call, up to 8 connections.",
+    "initialization": "Parameters are checked before repeated-initialize conflict, then unsupported-version refusal. api accepts u32; supported version is 1. configuration is null on host and the configuration key on sandbox (null if unavailable).",
+    "server_control": "Host only. Both remain available during shutdown. stop flushes acceptance then closes its connection and completes cleanup asynchronously.",
+    "parameter_forms": "C01 methods accept named objects or positional arrays: initialize accepts {api:N} or [N], server methods accept {} or []. Omitted params default to {}. Preserve Serde refusal order.",
+    "result_extensions": "Result objects, including nested limits and history variants, may gain fields. Clients ignore unknown result fields; known fields and history owner discrimination remain validated. Request parameters stay closed.",
+    "api1_compatibility": "Producer result schemas describe the current daemon precisely. x-client-result-schema describes compatible API-1 replies accepted by clients: configuration/limits and newer server.status history/manifest/worktree metadata may be absent. Clients retain absence as optional data and use advertised features rather than inventing values."
+  },
+  "x-envelope-schemas": {
+    "Id": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9_-]"
+          }
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "x-json-integer": true
+        }
+      ]
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        "message": {
+          "type": "string"
+        },
+        "data": {}
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "Call": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "enum": [
+            "2.0"
+          ]
+        },
+        "id": {
+          "$ref": "#/x-envelope-schemas/Id"
+        },
+        "method": {
+          "type": "string",
+          "x-max-bytes": 64
+        },
+        "params": {
+          "default": {}
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method"
+      ],
+      "additionalProperties": false
+    },
+    "Success": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "enum": [
+            "2.0"
+          ]
+        },
+        "id": {
+          "$ref": "#/x-envelope-schemas/Id"
+        },
+        "result": {}
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "Failure": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "enum": [
+            "2.0"
+          ]
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/x-envelope-schemas/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/x-envelope-schemas/Error"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

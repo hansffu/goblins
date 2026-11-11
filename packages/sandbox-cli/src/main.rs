@@ -1,4 +1,5 @@
 //! Untrusted request client. No controller or helper dependency.
+use goblins_protocol::contract;
 mod cli;
 mod host;
 mod init;
@@ -429,10 +430,7 @@ fn waiting_call(
     params: serde_json::Value,
 ) -> Result<Result<serde_json::Value, String>, String> {
     let (mut socket, init) = connect()?;
-    if !init["features"]
-        .as_array()
-        .is_some_and(|v| v.iter().any(|f| f == feature))
-    {
+    if !init.features.iter().any(|candidate| candidate == feature) {
         return Err(format!("daemon does not support {method}"));
     }
     socket
@@ -563,14 +561,12 @@ fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String
     let id = random_key()?;
     let exchange = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let mut socket = UnixStream::connect(REQUEST_SOCKET)?;
-        let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))?;
-        if init["api"] != 1 || init["role"] != "sandbox" {
-            return Err("incompatible daemon".into());
-        }
+        let init = contract::initialize(&mut socket, json!(0), contract::EndpointRole::Sandbox)?;
         if params["kind"] == "docker"
-            && !init["features"]
-                .as_array()
-                .is_some_and(|features| features.iter().any(|feature| feature == "docker-enable"))
+            && !init
+                .features
+                .iter()
+                .any(|feature| feature == "docker-enable")
         {
             return Err("daemon does not support on-demand Docker; start a new sandbox with an updated daemon".into());
         }
@@ -615,9 +611,10 @@ fn mailbox_command(method: &str, params: serde_json::Value) -> Result<i32, Strin
         goblins_protocol::messages::Mutation::parse(method, params.clone())?;
     }
     let (mut socket, init) = connect()?;
-    if !init["features"]
-        .as_array()
-        .is_some_and(|v| v.iter().any(|f| f == goblins_protocol::messages::FEATURE))
+    if !init
+        .features
+        .iter()
+        .any(|feature| feature == goblins_protocol::messages::FEATURE)
     {
         return Err("daemon does not support agent inboxes".into());
     }
@@ -637,13 +634,10 @@ fn random_key() -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     Ok(random.iter().map(|b| format!("{b:02x}")).collect())
 }
-fn connect() -> Result<(UnixStream, serde_json::Value), String> {
+fn connect() -> Result<(UnixStream, contract::InitializeReply), String> {
     let mut socket = UnixStream::connect(REQUEST_SOCKET).map_err(|e| e.to_string())?;
-    let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))
+    let init = contract::initialize(&mut socket, json!(0), contract::EndpointRole::Sandbox)
         .map_err(|e| e.to_string())?;
-    if init["api"] != 1 || init["role"] != "sandbox" {
-        return Err("incompatible daemon".into());
-    }
     Ok((socket, init))
 }
 fn main() {

@@ -1,0 +1,371 @@
+{
+  "host_initialize": {
+    "api": 1,
+    "instance": "fixture-instance",
+    "role": "host",
+    "configuration": null,
+    "features": [
+      "state-subscribe",
+      "server-control"
+    ],
+    "limits": {
+      "header": 256,
+      "body": 65536,
+      "frame_seconds": 3,
+      "depth": 32,
+      "response_body": 1048576,
+      "calls": 4096,
+      "connections": 32,
+      "sessions": 16,
+      "output_queue": 2097152,
+      "snapshot": 921600,
+      "terminal_buffer": 65536
+    }
+  },
+  "sandbox_initialize": {
+    "api": 1,
+    "instance": "fixture-instance",
+    "role": "sandbox",
+    "configuration": "shell",
+    "features": [
+      "package-grants"
+    ],
+    "limits": {
+      "header": 256,
+      "body": 65536,
+      "frame_seconds": 3,
+      "depth": 32,
+      "response_body": 1048576,
+      "calls": 2,
+      "connections": 8,
+      "sessions": 16,
+      "output_queue": 2097152,
+      "snapshot": 921600,
+      "terminal_buffer": 65536
+    }
+  },
+  "server_status": {
+    "instance": "fixture-instance",
+    "state": "running",
+    "sessions": 0,
+    "history": {
+      "directory": "/state/history",
+      "owner": true,
+      "keep": 100,
+      "recording": true
+    },
+    "manifest": null,
+    "worktrees_directory": null
+  },
+  "server_status_unavailable": {
+    "instance": "fixture-instance",
+    "state": "running",
+    "sessions": 0,
+    "history": {
+      "directory": null,
+      "owner": false,
+      "reason": "unavailable"
+    },
+    "manifest": null,
+    "worktrees_directory": null
+  },
+  "server_stop": {
+    "accepted": true
+  },
+  "parameter_cases": [
+    {
+      "method": "initialize",
+      "params": {
+        "api": 1
+      },
+      "valid": true
+    },
+    {
+      "method": "initialize",
+      "params": [
+        1
+      ],
+      "valid": true
+    },
+    {
+      "method": "initialize",
+      "params": {
+        "api": 0
+      },
+      "valid": true
+    },
+    {
+      "method": "initialize",
+      "params": {
+        "api": 4294967295
+      },
+      "valid": true
+    },
+    {
+      "method": "initialize",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": {
+        "api": null
+      },
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": {
+        "api": true
+      },
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": {
+        "api": 1.0
+      },
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": {
+        "api": -1
+      },
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": {
+        "api": 4294967296
+      },
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": {
+        "api": 1,
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "initialize",
+      "params": [
+        1,
+        2
+      ],
+      "valid": false
+    },
+    {
+      "method": "server.status",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "server.status",
+      "params": [],
+      "valid": true
+    },
+    {
+      "method": "server.status",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "server.status",
+      "params": {
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "server.status",
+      "params": [
+        1
+      ],
+      "valid": false
+    },
+    {
+      "method": "server.status",
+      "params": false,
+      "valid": false
+    }
+  ],
+  "forward_compatibility": {
+    "host_initialize": {
+      "api": 1,
+      "instance": "fixture-instance",
+      "role": "host",
+      "configuration": null,
+      "features": [
+        "state-subscribe",
+        "server-control"
+      ],
+      "limits": {
+        "header": 256,
+        "body": 65536,
+        "frame_seconds": 3,
+        "depth": 32,
+        "response_body": 1048576,
+        "calls": 4096,
+        "connections": 32,
+        "sessions": 16,
+        "output_queue": 2097152,
+        "snapshot": 921600,
+        "terminal_buffer": 65536,
+        "future_limit": {
+          "extension": true
+        }
+      },
+      "future_result": {
+        "new": "field"
+      }
+    },
+    "sandbox_initialize": {
+      "api": 1,
+      "instance": "fixture-instance",
+      "role": "sandbox",
+      "configuration": "shell",
+      "features": [
+        "package-grants"
+      ],
+      "limits": {
+        "header": 256,
+        "body": 65536,
+        "frame_seconds": 3,
+        "depth": 32,
+        "response_body": 1048576,
+        "calls": 2,
+        "connections": 8,
+        "sessions": 16,
+        "output_queue": 2097152,
+        "snapshot": 921600,
+        "terminal_buffer": 65536,
+        "future_limit": {
+          "extension": true
+        }
+      },
+      "future_result": {
+        "new": "field"
+      }
+    },
+    "server_status": {
+      "instance": "fixture-instance",
+      "state": "running",
+      "sessions": 0,
+      "history": {
+        "directory": "/state/history",
+        "owner": true,
+        "keep": 100,
+        "recording": true,
+        "future_history": [
+          "new",
+          "data"
+        ]
+      },
+      "manifest": null,
+      "worktrees_directory": null,
+      "future_result": {
+        "new": "field"
+      }
+    },
+    "server_status_unavailable": {
+      "instance": "fixture-instance",
+      "state": "running",
+      "sessions": 0,
+      "history": {
+        "directory": null,
+        "owner": false,
+        "reason": "unavailable",
+        "future_history": [
+          "new",
+          "data"
+        ],
+        "keep": 42,
+        "recording": false
+      },
+      "manifest": null,
+      "worktrees_directory": null,
+      "future_result": {
+        "new": "field"
+      }
+    },
+    "server_stop": {
+      "accepted": true,
+      "future_result": {
+        "new": "field"
+      }
+    }
+  },
+  "historical_api1": {
+    "host_initialize": {
+      "api": 1,
+      "instance": "fixture-instance",
+      "role": "host",
+      "features": [
+        "package-grants",
+        "same-daemon-reconnect",
+        "state-subscribe",
+        "raw-terminal",
+        "agent-names",
+        "server-control",
+        "terminal-reattach"
+      ],
+      "limits": {
+        "header": 256,
+        "body": 16384,
+        "frame_seconds": 3,
+        "depth": 32,
+        "response_body": 1048576,
+        "calls": 4096,
+        "connections": 32,
+        "sessions": 16,
+        "output_queue": 2097152,
+        "snapshot": 921600,
+        "terminal_buffer": 65536
+      }
+    },
+    "sandbox_initialize": {
+      "api": 1,
+      "instance": "fixture-instance",
+      "role": "sandbox",
+      "features": [
+        "package-grants",
+        "terminal-detach"
+      ],
+      "limits": {
+        "header": 256,
+        "body": 4096,
+        "frame_seconds": 3,
+        "depth": 32,
+        "response_body": 1048576,
+        "calls": 2,
+        "connections": 8,
+        "sessions": 16,
+        "output_queue": 2097152,
+        "snapshot": 921600,
+        "terminal_buffer": 65536
+      }
+    },
+    "server_status": {
+      "instance": "fixture-instance",
+      "state": "running",
+      "sessions": 0
+    },
+    "server_stop": {
+      "accepted": true
+    },
+    "source": "2d1f7e92e9a7183727c4935b92155c6a47a59629:crates/controller/src/controller.rs (293c878 parent), initialization and server.status handlers"
+  }
+}
