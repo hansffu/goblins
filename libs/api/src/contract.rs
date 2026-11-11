@@ -15,6 +15,21 @@ pub mod mailbox_status {
 }
 pub use mailbox_status::Empty as MailboxStatusParams;
 
+impl Response for CommunicationsPageReply {
+    const SCHEMA: &'static str = "CommunicationsPageReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            events: value.get("events").and_then(Value::as_array).cloned(),
+            cursor: value.get("cursor").and_then(Value::as_u64),
+            session: value
+                .get("session")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            latest: value.get("latest").and_then(Value::as_u64),
+        })
+    }
+}
+
 /// Closed empty parameter objects need a struct, rather than a generated map.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -249,6 +264,8 @@ pub trait Response: DeserializeOwned {
 
 mod host_job;
 pub use host_job::{HostJob, host_submitted};
+#[cfg(test)]
+mod communications;
 #[cfg(test)]
 mod mailbox;
 mod raid;

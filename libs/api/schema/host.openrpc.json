@@ -2416,6 +2416,82 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/InboxStatusReply"
       }
+    },
+    {
+      "name": "communications.list",
+      "x-rust-name": "CommunicationsList",
+      "description": "Host-only communications pagination. Closed named params default after=0 and limit=100, with optional nullable session. Original positional [after,limit,session] requires all three slots because session had no Serde sequence default. Decode first, then validate limit1..100 before resolving an exact session ID or a unique running agent name. Filter by actor or sessions, advance cursor through excluded events, and stop before advancing past an included event exceeding 100 rows or 512KiB of summed serialized event bytes. latest is the last global sequence, independently of the page/filter. Preserve offline regular-file, 128MiB, final newline, sequence and instance checks. Body limit64KiB. C13b owns event payload variants.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "after",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/CommunicationsListParams/properties/after"
+          }
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/CommunicationsListParams/properties/limit"
+          }
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/CommunicationsListParams/properties/session"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/CommunicationsPageResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid params or limit"
+        },
+        {
+          "code": -32004,
+          "message": "Session absent"
+        },
+        {
+          "code": -32009,
+          "message": "Ambiguous session or serialization failure"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/CommunicationsListParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/CommunicationsListParams"
+      },
+      "x-positional-required": [
+        "session"
+      ],
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/CommunicationsListParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/CommunicationsPageReply"
+      },
+      "x-client-result-normalization": "communications-page-fields",
+      "x-client-wire-result-schema": {},
+      "x-client-param-profiles": [
+        {
+          "name": "communications-cli",
+          "x-rust-name": "CommunicationsCli",
+          "x-params-schema": {
+            "$ref": "common.json#/definitions/CommunicationsCliParams"
+          },
+          "description": "The host CLI always emits after and nullable session, and omits limit to use the existing default."
+        }
+      ]
     }
   ],
   "x-notifications": [

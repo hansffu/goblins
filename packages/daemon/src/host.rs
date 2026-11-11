@@ -282,6 +282,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn communications_profile_preserves_requests_and_independent_page_fallbacks() {
+        use std::io::Write;
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        let pages = fixtures["communications_page_cases"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let _no_forks = goblins_unix::no_forks();
+        std::thread::scope(|scope| {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
+            stream.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            let mut client = Client {
+                instance: "i".into(),
+                features: vec![],
+                stream,
+                next: 0,
+            };
+            let outputs = pages.clone();
+            let server = scope.spawn(move || {
+                for (index, page) in outputs.into_iter().enumerate() {
+                    let call = rpc::read(&mut peer).unwrap();
+                    assert_eq!(call["method"], "communications.list");
+                    assert_eq!(
+                        call["params"],
+                        if index % 2 == 0 {
+                            json!({"after":0,"session":null})
+                        } else {
+                            json!({"after":3,"session":"alpha"})
+                        }
+                    );
+                    peer.write_all(&rpc::encode(&rpc::result(call["id"].clone(), page)).unwrap())
+                        .unwrap();
+                }
+            });
+            for (index, page) in pages.into_iter().enumerate() {
+                let result = client
+                    .call_profile::<contract::host_param_profiles::CommunicationsCli>(
+                        contract::CommunicationsCliParams {
+                            after: if index % 2 == 0 { 0 } else { 3 },
+                            session: if index % 2 == 0 {
+                                None
+                            } else {
+                                Some("alpha".into())
+                            },
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(result.events.as_ref(), page["events"].as_array());
+                assert_eq!(result.cursor, page["cursor"].as_u64());
+                assert_eq!(result.latest, page["latest"].as_u64());
+                assert_eq!(result.session.as_deref(), page["session"].as_str());
+            }
+            server.join().unwrap();
+        });
+    }
+    #[test]
     fn adapter_status_boundary_accepts_native_fixture_and_rejects_missing_revision() {
         use std::io::Write;
         let fixtures: Value =

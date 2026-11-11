@@ -7743,6 +7743,219 @@
       "properties": {},
       "required": [],
       "additionalProperties": false
+    },
+    "CommunicationsLimit": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true,
+      "default": 100
+    },
+    "CommunicationsListParams": {
+      "type": "object",
+      "properties": {
+        "after": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true,
+          "default": 0
+        },
+        "limit": {
+          "$ref": "#/definitions/CommunicationsLimit",
+          "default": 100
+        },
+        "session": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "CommunicationsEvent": {
+      "type": "object",
+      "properties": {
+        "instance": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "kind": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "data": {}
+      },
+      "required": [
+        "instance",
+        "sequence",
+        "timestamp",
+        "kind",
+        "actor",
+        "sessions",
+        "data"
+      ],
+      "additionalProperties": true,
+      "description": "C13a event envelope retains original serialized field order and named/sequence readers. Event kind/data stay open until C13b introduces known producer payloads with an explicit legacy/unknown-event reader. No stored-log format changes."
+    },
+    "CommunicationsPageResult": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CommunicationsEvent"
+          }
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "session": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        }
+      },
+      "required": [
+        "events",
+        "cursor",
+        "session",
+        "latest"
+      ],
+      "additionalProperties": true
+    },
+    "CommunicationsPageReply": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "events",
+        "cursor",
+        "session",
+        "latest"
+      ],
+      "additionalProperties": true
+    },
+    "CommunicationsCliParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        }
+      },
+      "required": [
+        "session",
+        "after"
+      ],
+      "additionalProperties": false
     }
   },
   "x-api-version": 1,
@@ -8839,6 +9052,35 @@
       ],
       "minItems": 1,
       "maxItems": 1
+    },
+    "CommunicationsListParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true,
+          "default": 0
+        },
+        {
+          "$ref": "#/definitions/CommunicationsLimit",
+          "default": 100
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 3
     }
   },
   "x-request-constraints": {
@@ -9376,6 +9618,16 @@
           "type": "string",
           "minLength": 1,
           "x-max-bytes": 512
+        }
+      }
+    },
+    "CommunicationsListParams": {
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "x-json-integer": true
         }
       }
     }
@@ -10045,6 +10297,36 @@
       "order": [
         "message"
       ]
+    },
+    "CommunicationsListParams": {
+      "name": "List",
+      "order": [
+        "after",
+        "limit",
+        "session"
+      ],
+      "required-nullable": [
+        "session"
+      ],
+      "emit-defaults": [
+        "after",
+        "limit"
+      ]
+    },
+    "CommunicationsEvent": {
+      "name": "Event",
+      "order": [
+        "instance",
+        "sequence",
+        "timestamp",
+        "kind",
+        "actor",
+        "sessions",
+        "data"
+      ]
     }
+  },
+  "x-migration-pending": {
+    "C13b": "Known communication event payloads, kind/payload pairing, compatible retained-log and Emacs data consumers."
   }
 }

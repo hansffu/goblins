@@ -16,6 +16,20 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_communications_pagination_contract_and_legacy_page_projection(self):
+        fixtures=contract.read("fixtures.json")
+        for value in fixtures["communications_parameter_cases"]:
+            structural=contract.schema_validator(contract.method("host","communications.list")["x-positional-schema"] if isinstance(value,list) else contract.method("host","communications.list")["x-params-schema"]).is_valid(value)
+            valid=structural and (not isinstance(value,dict) or 1<=value.get("limit",100)<=100)
+            if valid:self.assertTrue(contract.validate_params("host","communications.list",value))
+            else:
+                with self.assertRaises(ValidationError):contract.validate_params("host","communications.list",value)
+        for value in fixtures["communications_page_cases"]:
+            self.assertTrue(contract.validate_reply("host","communications.list",dict(jsonrpc="2.0",id=1,result=value),compatibility=True))
+        self.assertTrue(contract.validate_params("host","communications.list",dict(after=0,limit=100)))
+        page=dict(events=[fixtures["communications_event"]],cursor=1,latest=1,session=None)
+        self.assertTrue(contract.validate_reply("host","communications.list",dict(jsonrpc="2.0",id=1,result=page)))
+
     def test_inbox_status_contract_rejects_malformed_core_and_accepts_older_additions(self):
         for endpoint in ("host","sandbox"):
             for case in contract.read("fixtures.json")["inbox_status_cases"]:

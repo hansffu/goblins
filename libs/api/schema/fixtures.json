@@ -19715,5 +19715,136 @@
     "head": null,
     "revision": 0,
     "audit_failed": false
-  }
+  },
+  "communications_event": {
+    "instance": "i",
+    "sequence": 1,
+    "timestamp": 9,
+    "kind": "future.event",
+    "actor": "a",
+    "sessions": [
+      "a"
+    ],
+    "data": {
+      "future": [
+        true,
+        null
+      ]
+    }
+  },
+  "communications_parameter_cases": [
+    {},
+    {
+      "after": 0,
+      "limit": 100,
+      "session": null
+    },
+    [
+      0,
+      100,
+      null
+    ],
+    {
+      "after": 18446744073709551615,
+      "limit": 1,
+      "session": "a"
+    },
+    {
+      "limit": 0
+    },
+    {
+      "limit": 101
+    },
+    {
+      "session": "absent"
+    },
+    null,
+    [],
+    [
+      0
+    ],
+    [
+      0,
+      100
+    ],
+    [
+      0,
+      100,
+      null,
+      1
+    ],
+    {
+      "after": 1.0
+    },
+    {
+      "after": -1
+    },
+    {
+      "after": 18446744073709551616
+    },
+    {
+      "limit": null
+    },
+    {
+      "session": 1
+    },
+    {
+      "actor": "a"
+    }
+  ],
+  "communications_page_cases": [
+    {
+      "events": [
+        {
+          "instance": "i",
+          "sequence": 1,
+          "timestamp": 9,
+          "kind": "future.event",
+          "actor": "a",
+          "sessions": [
+            "a"
+          ],
+          "data": {
+            "future": [
+              true,
+              null
+            ]
+          }
+        }
+      ],
+      "cursor": 1,
+      "session": null,
+      "latest": 1
+    },
+    {},
+    null,
+    [],
+    {
+      "events": [
+        null,
+        7,
+        {}
+      ],
+      "cursor": 1,
+      "session": 7,
+      "latest": 1
+    },
+    {
+      "events": "bad",
+      "cursor": -1,
+      "session": false,
+      "latest": 1.0
+    },
+    {
+      "events": [],
+      "cursor": 18446744073709551615,
+      "session": "a",
+      "latest": 18446744073709551615
+    },
+    {
+      "events": [],
+      "cursor": 18446744073709551616,
+      "latest": true
+    }
+  ]
 }

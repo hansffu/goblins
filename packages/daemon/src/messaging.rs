@@ -7,7 +7,6 @@ use crate::mailbox::Event;
 use crate::mailbox::Limits;
 use crate::mailbox::Mailbox;
 use goblins_protocol::messages::Mutation;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -87,18 +86,7 @@ pub struct Service {
 }
 
 use goblins_protocol::contract::{self, Method};
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct List {
-    #[serde(default)]
-    after: u64,
-    #[serde(default = "page_size")]
-    limit: usize,
-    session: Option<String>,
-}
-fn page_size() -> usize {
-    100
-}
+use goblins_protocol::contract::CommunicationsListParams as List;
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> mailbox::Result<T> {
     serde_json::from_value(value).map_err(|e| (-32602, e.to_string()))
 }
@@ -289,8 +277,8 @@ impl<L: Log> State<L> {
             contract::host::InboxStatus::NAME => {
                 parse::<contract::MailboxStatusParams>(params).map(|_| mailbox.status(&actor))
             }
-            "communications.list" if actor == "host" => {
-                parse::<List>(params).and_then(|p| page(journal.events(), known, p))
+            contract::host::CommunicationsList::NAME if actor == "host" => {
+                parse::<List>(params).and_then(|p| page(journal.events(), known, p)).map(|p|json!(p))
             }
             _ => Mutation::parse(&method, params)
                 .map_err(|e| (-32602, e))
@@ -332,7 +320,11 @@ impl Drop for Service {
     }
 }
 
-fn page(journal: &[Event], directory: &Directory, p: List) -> mailbox::Result<Value> {
+fn page(
+    journal: &[Event],
+    directory: &Directory,
+    p: List,
+) -> mailbox::Result<contract::CommunicationsPageResult> {
     if p.limit == 0 || p.limit > 100 {
         return Err((-32602, "limit must be 1..100".into()));
     }
@@ -368,12 +360,16 @@ fn page(journal: &[Event], directory: &Directory, p: List) -> mailbox::Result<Va
                 break;
             }
             bytes += size;
-            events.push(event);
+            events.push(event.clone());
         }
         cursor = event.sequence;
     }
-    Ok(json!({"events":events,"cursor":cursor,"session":scope,
-        "latest":journal.last().map_or(0,|e|e.sequence)}))
+    Ok(contract::CommunicationsPageResult {
+        events,
+        cursor,
+        session: scope,
+        latest: journal.last().map_or(0, |e| e.sequence),
+    })
 }
 
 /// Offline inspection uses the same cursor and session filter as the live
@@ -444,9 +440,9 @@ pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Va
             },
         )
         .map_err(|(_, e)| e)?;
-        result.extend(p["events"].as_array().unwrap().iter().cloned());
-        after = p["cursor"].as_u64().unwrap();
-        if after >= p["latest"].as_u64().unwrap() {
+        result.extend(p.events.into_iter().map(|event|json!(event)));
+        after = p.cursor;
+        if after >= p.latest {
             break;
         }
     }
@@ -455,6 +451,122 @@ pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Va
 
 #[cfg(test)]
 mod tests {
+    fn original_page(journal: &[Event], directory: &Directory, p: List) -> mailbox::Result<Value> {
+        if p.limit == 0 || p.limit > 100 {
+            return Err((-32602, "limit must be 1..100".into()));
+        }
+        let scope = p
+            .session
+            .as_ref()
+            .map(|target| {
+                if directory.contains_key(target) {
+                    return Ok(target.clone());
+                }
+                let mut found = directory
+                    .values()
+                    .filter(|s| s.running && s.agent_name == *target);
+                let first = found
+                    .next()
+                    .ok_or_else(|| (-32004, "session absent".into()))?;
+                if found.next().is_some() {
+                    return Err((-32009, "ambiguous session; use its ID".into()));
+                }
+                Ok(first.id.clone())
+            })
+            .transpose()?;
+        let contains = |id: &str| scope.as_ref().is_none_or(|scope| id == scope);
+        let mut events = vec![];
+        let mut bytes = 0;
+        let mut cursor = p.after;
+        for event in journal.iter().filter(|e| e.sequence > p.after) {
+            if contains(&event.actor) || event.sessions.iter().any(|id| contains(id)) {
+                let size = serde_json::to_vec(event)
+                    .map_err(|e| (-32009, e.to_string()))?
+                    .len();
+                if events.len() >= p.limit || bytes + size > 512 * 1024 {
+                    break;
+                }
+                bytes += size;
+                events.push(event);
+            }
+            cursor = event.sequence;
+        }
+        Ok(json!({"events":events,"cursor":cursor,"session":scope,
+        "latest":journal.last().map_or(0,|e|e.sequence)}))
+    }
+    #[test]
+    fn generated_pages_match_original_filters_cursor_order_and_byte_budget() {
+        let directory: Directory = [
+            ("a", "alpha", true),
+            ("b", "beta", true),
+            ("old", "alpha", false),
+            ("d1", "duplicate", true),
+            ("d2", "duplicate", true),
+        ]
+        .into_iter()
+        .map(|(id, name, running)| {
+            (
+                id.into(),
+                mailbox::Session {
+                    id: id.into(),
+                    agent_name: name.into(),
+                    stop_reason: None,
+                    running,
+                },
+            )
+        })
+        .collect();
+        let event = |sequence, actor: &str, data| Event {
+            instance: "i".into(),
+            sequence,
+            timestamp: 9,
+            kind: "future.event".into(),
+            actor: actor.into(),
+            sessions: vec![actor.into()],
+            data,
+        };
+        for journal in [
+            vec![
+                event(1, "a", json!({})),
+                event(2, "b", json!({})),
+                event(3, "old", json!({})),
+                event(4, "a", json!({})),
+            ],
+            vec![
+                event(1, "a", json!("x".repeat(300 * 1024))),
+                event(2, "b", json!("x".repeat(300 * 1024))),
+                event(3, "a", json!("x".repeat(300 * 1024))),
+            ],
+            vec![event(1, "a", json!("x".repeat(512 * 1024)))],
+            vec![],
+        ] {
+            for after in [0, 1, 4, u64::MAX] {
+                for limit in [0, 1, 2, 100, 101] {
+                    for session in [
+                        None,
+                        Some("a"),
+                        Some("alpha"),
+                        Some("old"),
+                        Some("absent"),
+                        Some("duplicate"),
+                    ] {
+                        let params = List {
+                            after,
+                            limit,
+                            session: session.map(str::to_owned),
+                        };
+                        let old = original_page(&journal, &directory, params.clone());
+                        let new = page(&journal, &directory, params).map(|p| json!(p));
+                        assert_eq!(
+                            old, new,
+                            "after={after}, limit={limit}, session={session:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
     use crate::raid::Raids;
 

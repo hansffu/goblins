@@ -452,7 +452,7 @@ Returns a claimed message to the queue.
 Pages through the communications audit log. Host only.
 
 - Input :: ={"after"?, "limit"?, "session"?}=. =after= is a sequence cursor (default 0); =limit= is 1–100 (default 100); =session= filters to one goblin.
-- Output :: ={"events": [Event], "cursor", "session", "latest"}=. Pass =cursor= as the next =after=. A page is at most 512 KiB.
+- Output :: ={"events": [Event], "cursor", "session", "latest"}=. Pass =cursor= as the next =after=. The budget is at most 512 KiB of serialized included events, excluding the outer wrapper. The cursor advances across excluded rows but not past an included row that exceeds the byte/row budget; latest remains global. Closed named params preserve defaults. Positional [after,limit,session] requires three slots. Limit validation precedes target lookup. Generated event envelopes preserve stored order; C13b owns typed kind/data payloads and retained-log consumers.
 
 * Sandbox endpoint
 

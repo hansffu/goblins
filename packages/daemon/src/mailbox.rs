@@ -81,16 +81,7 @@ impl Default for Limits {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Event {
-    pub instance: String,
-    pub sequence: u64,
-    pub timestamp: u64,
-    pub kind: String,
-    pub actor: String,
-    pub sessions: Vec<String>,
-    pub data: Value,
-}
+pub use goblins_protocol::contract::CommunicationsEvent as Event;
 
 #[derive(Debug)]
 pub enum AuditError {

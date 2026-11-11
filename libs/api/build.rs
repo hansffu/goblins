@@ -167,6 +167,8 @@ fn main() {
         "MailboxOperation",
         "MailboxRaidNotice",
         "MailboxGetParams",
+        "CommunicationsListParams",
+        "CommunicationsEvent",
     ] {
         settings.with_patch(
             name,
@@ -186,6 +188,7 @@ fn main() {
         "crate::contract::MailboxStatusParams",
         [].into_iter(),
     );
+    settings.with_replacement("CommunicationsLimit", "usize", [].into_iter());
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -267,6 +270,22 @@ fn main() {
                     }
                 }
             }
+            if record["emit-defaults"]
+                .as_array()
+                .is_some_and(|keys| keys.iter().any(|v| v == key))
+            {
+                for attr in &mut field.attrs {
+                    if attr.path().is_ident("serde") {
+                        let entries=attr.parse_args_with(syn::punctuated::Punctuated::<syn::Meta,syn::Token![,]>::parse_terminated).unwrap();
+                        let entries: syn::punctuated::Punctuated<syn::Meta, syn::Token![,]> =
+                            entries
+                                .into_iter()
+                                .filter(|m| !m.path().is_ident("skip_serializing_if"))
+                                .collect();
+                        *attr = syn::parse_quote!(#[serde(#entries)]);
+                    }
+                }
+            }
             for alias in record["aliases"][key].as_array().into_iter().flatten() {
                 let alias = alias.as_str().unwrap();
                 field
@@ -317,6 +336,7 @@ fn main() {
         "PermissionListReply".to_string(),
         "IgnoredResult".to_string(),
         "RaidDisplayReply".to_string(),
+        "CommunicationsPageReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(

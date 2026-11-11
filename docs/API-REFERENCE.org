@@ -6008,6 +6008,248 @@ Compatible API-1 client reply (additive information may be absent):
 }
 #+end_src
 
+** =communications.list=
+
+Host-only communications pagination. Closed named params default after=0 and limit=100, with optional nullable session. Original positional [after,limit,session] requires all three slots because session had no Serde sequence default. Decode first, then validate limit1..100 before resolving an exact session ID or a unique running agent name. Filter by actor or sessions, advance cursor through excluded events, and stop before advancing past an included event exceeding 100 rows or 512KiB of summed serialized event bytes. latest is the last global sequence, independently of the page/filter. Preserve offline regular-file, 128MiB, final newline, sequence and instance checks. Body limit64KiB. C13b owns event payload variants.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "after": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true,
+      "default": 0
+    },
+    "limit": {
+      "$ref": "#/definitions/CommunicationsLimit",
+      "default": 100
+    },
+    "session": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true,
+      "default": 0
+    },
+    {
+      "$ref": "#/definitions/CommunicationsLimit",
+      "default": 100
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  ],
+  "minItems": 3,
+  "maxItems": 3
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/CommunicationsEvent"
+      }
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "session": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "latest": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "events",
+    "cursor",
+    "session",
+    "latest"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =communications-page-fields= adapter: Read events only as an array, cursor/latest only as u64 JSON integers, and session only as a string; malformed fields and nonobjects remain absent so the CLI retains its original printing and diagnostic order. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "events": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {}
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cursor": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "latest": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "events",
+    "cursor",
+    "session",
+    "latest"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Client parameter profile =communications-cli=:
+
+The host CLI always emits after and nullable session, and omits limit to use the existing default.
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "after": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "session",
+    "after"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "x-json-integer": true
+    }
+  }
+}
+#+end_src
+
 ** Notification =exec.signal=
 
 exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.
@@ -11693,6 +11935,33 @@ Original Serde container names, field order, required nullable sequence slots an
     "name": "Get",
     "order": [
       "message"
+    ]
+  },
+  "CommunicationsListParams": {
+    "name": "List",
+    "order": [
+      "after",
+      "limit",
+      "session"
+    ],
+    "required-nullable": [
+      "session"
+    ],
+    "emit-defaults": [
+      "after",
+      "limit"
+    ]
+  },
+  "CommunicationsEvent": {
+    "name": "Event",
+    "order": [
+      "instance",
+      "sequence",
+      "timestamp",
+      "kind",
+      "actor",
+      "sessions",
+      "data"
     ]
   }
 }
@@ -20807,6 +21076,249 @@ Original Serde container names, field order, required nullable sequence slots an
 }
 #+end_src
 
+** =CommunicationsLimit=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 0,
+  "maximum": 18446744073709551615,
+  "format": "uint64",
+  "x-json-integer": true,
+  "default": 100
+}
+#+end_src
+
+** =CommunicationsListParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "after": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true,
+      "default": 0
+    },
+    "limit": {
+      "$ref": "#/definitions/CommunicationsLimit",
+      "default": 100
+    },
+    "session": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+** =CommunicationsEvent=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "instance": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "timestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "kind": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "data": {}
+  },
+  "required": [
+    "instance",
+    "sequence",
+    "timestamp",
+    "kind",
+    "actor",
+    "sessions",
+    "data"
+  ],
+  "additionalProperties": true,
+  "description": "C13a event envelope retains original serialized field order and named/sequence readers. Event kind/data stay open until C13b introduces known producer payloads with an explicit legacy/unknown-event reader. No stored-log format changes."
+}
+#+end_src
+
+** =CommunicationsPageResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/CommunicationsEvent"
+      }
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "session": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "latest": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "events",
+    "cursor",
+    "session",
+    "latest"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommunicationsPageReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "events": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {}
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cursor": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "latest": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "events",
+    "cursor",
+    "session",
+    "latest"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommunicationsCliParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "after": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "session",
+    "after"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -20910,3 +21422,5 @@ Original Serde container names, field order, required nullable sequence slots an
 - =mailbox-serde-records= :: Generated message, notice and mutation DTOs retain schema-declared original Rust struct names with schema-name aliases for exposed malformed-request diagnostics and original field order for direct Serde sequence readers; nullable fields without old Serde defaults keep their positional requirement and serialized nulls. Message reader aliases sender_path and recipient_path remain accepted while current producers emit sender_name/recipient_name. The generator edits the Rust syntax tree, checks every field/order/alias and preserves all unrelated generated code. Semantic byte limits, identifiers, claims, routing, idempotency and authority stay in the existing mutation/state machine.
 - =mailbox-result-constraints= :: Only MailboxNextResult and MailboxCompleteResult allOf constraints are removed from the temporary generator input; canonical schemas retain coherent null/non-null claim pairs, claimed message state, matching generations via x-equal-fields, and completed state. Existing producers select matching message/generation values and completed state, with independent producer wire-equivalence tests. CLI successful bodies still use IgnoredResult/raw JSON rather than imposing a new legacy refusal. Draft 7 cross-instance-value equality is declared through x-equal-fields and checked by the repository contract validator. Read-side typed projections, adapter inbox handling and unfinished-operation/health records remain C12b.
 - =mailbox-status-readers= :: InboxStatusReply requires all five original core fields so incomplete replies become read errors instead of quiet/empty inboxes. Additive raid_audit_failed/operations default false/empty for older peers. Adapters validate typed RPC replies then adapt them to their existing persisted JSON ledger format; ledger storage/lifecycle stays domain-owned. InboxHead is a named (String,u64) alias because Typify replacement paths cannot be tuple expressions. MailboxStatusParams uses a named empty Empty struct, as closed empty maps otherwise change exposed original Serde diagnostics.
+- =communications-envelope-stage= :: C13a generates the existing event envelope and exact Serde name/order; kind/data remain String/Value until C13b introduces producer payload pairing and compatible retained-log consumers. CommunicationsLimit maps to usize, retaining the old decoder. Request emit-defaults removes only serialization omission, preserving after=0/limit=100 read defaults; session retains its original required positional nullable slot. The CLI outbound profile emits after/session and omits limit exactly as before.
+- =communications-page-reader= :: The CLI page reader normalizes fields independently: events only as array of raw JSON values, cursor/latest only as u64, session only as string. Missing/malformed values remain absent so the caller retains original event printing and page/cursor/sequence error order; successful legacy bodies gain no new early refusal. The canonical producer result stays strict. C13b owns event-data consumers.

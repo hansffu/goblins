@@ -5955,3 +5955,36 @@ m2, and m3, which failed when beta stopped."
             (should (equal (plist-get (cadr (car sent)) :approved) :json-false)))))
         ;; Not a real connection: nothing to close when the test ends.
         (with-current-buffer source (setq-local goblins--connection nil)))))))
+
+(ert-deftest goblins-communications-page-contract-and-stale-replies ()
+  (require 'goblins-messages)
+  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+                                 (file-name-directory (file-truename (locate-library "goblins")))))
+         (fixtures (with-temp-buffer (insert-file-contents file)
+                     (json-parse-buffer :object-type 'plist :null-object nil)))
+         (event (plist-get fixtures :communications_event))
+         (source (generate-new-buffer " *communications source*")) calls done ingested)
+    (unwind-protect
+        (progn
+          (with-current-buffer source
+            (setq-local goblins--connection 'connection goblins--instance "i" goblins--subscription "s"))
+          (with-temp-buffer
+            (setq-local goblins--view-source source goblins--messages-cache-source source
+                        goblins--messages-instance "i" goblins--messages-cursor 0)
+            (cl-letf (((symbol-function 'jsonrpc-async-request)
+                       (lambda (connection method params &rest options)
+                         (push (list connection method params) calls)
+                         (setq done (plist-get options :success-fn))))
+                      ((symbol-function 'goblins--messages-render) #'ignore)
+                      ((symbol-function 'goblins--messages-ingest) (lambda (row) (push row ingested))))
+              (goblins--messages-fetch)
+              (should (equal (car calls) '(connection communications.list (:after 0 :limit 100))))
+              (funcall done (list :events (vector event) :cursor 1 :latest 1 :session nil))
+              (should (= goblins--messages-cursor 1))
+              (should (equal ingested (list event)))
+              (should-not goblins--messages-fetching)
+              ;; A stale response schedules a new read without reapplying rows.
+              (goblins--messages-page (list :events (vector event) :cursor 1 :latest 1) source "i" 0)
+              (should (equal (car calls) '(connection communications.list (:after 1 :limit 100))))
+              (should (equal ingested (list event))))))
+      (kill-buffer source))))

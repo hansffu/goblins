@@ -17,6 +17,7 @@ REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
     "raid-members-display": "Read raid/member display strings independently with - fallback, booleans strictly, members only when an array, created_by string presence and existing escaped/sorted option rendering; accept non-object legacy results.",
+    "communications-page-fields": "Read events only as an array, cursor/latest only as u64 JSON integers, and session only as a string; malformed fields and nonobjects remain absent so the CLI retains its original printing and diagnostic order.",
     "ignore-successful-body": "Ignore the successful body, including non-objects; retain the original validated JSON for printing.",
     "permission-record-fields": "Map original positional record order, default missing kind to package, retain required string fields, nullable options and arbitrary preview JSON, ignoring additive record fields.",
     "permission-list-records": "Apply the compatible permission-record reader element-wise to the result list.",
@@ -37,6 +38,10 @@ NORMALIZATIONS = {
 
 
 def normalize_reply(profile, result):
+    if profile == "communications-page-fields":
+        obj=result if isinstance(result,dict) else {}
+        integer=lambda key:obj.get(key) if type(obj.get(key)) is int and 0<=obj[key]<=2**64-1 else None
+        return dict(events=obj.get("events") if isinstance(obj.get("events"),list) else None,cursor=integer("cursor"),latest=integer("latest"),session=obj.get("session") if isinstance(obj.get("session"),str) else None)
     if profile == "ignore-successful-body":return {}
     if profile == "raid-members-display":
         fields=result if isinstance(result,dict) else {}
@@ -651,18 +656,18 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("messages.get","messages.send","messages.reply","inbox.next","inbox.complete","inbox.requeue","raids.create","raids.leave","raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"communications.list":"communications-page-fields","raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("messages.get","messages.send","messages.reply","inbox.next","inbox.complete","inbox.requeue","raids.create","raids.leave","raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"$ref":"common.json#/x-client-result-schemas/PermissionListReply"} if entry["name"]=="permissions.list" else {"$ref":"common.json#/x-client-result-schemas/PermissionRecordReply"} if entry["name"]=="permissions.get" else {"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-client-param-normalization" in entry:
                 if entry["name"]!="permissions.request" or entry["x-client-param-normalization"]!="permission-request-fields":raise ValueError("unknown client parameter normalization")
             param_profiles=entry.get("x-client-param-profiles",[])
             if param_profiles:
-                expected={"raids.set_owner":"RaidOwnerSetOwner", "raids.destroy":"RaidOwnerDestroy"}
+                expected={"raids.set_owner":"RaidOwnerSetOwner", "raids.destroy":"RaidOwnerDestroy", "communications.list":"CommunicationsCli"}
                 rust=expected.get(entry["name"])
                 if endpoint!="host" or not rust or len(param_profiles)!=1:raise ValueError("unknown client parameter profile")
                 profile=param_profiles[0]
-                if (profile["name"],profile["x-rust-name"],profile["x-params-schema"])!=("raid-owner-ui",rust,{"$ref":"common.json#/definitions/"+rust+"Wire"}):raise ValueError("invalid client parameter profile")
+                if (profile["name"],profile["x-rust-name"],profile["x-params-schema"])!=(("communications-cli" if entry["name"]=="communications.list" else "raid-owner-ui"),rust,{"$ref":"common.json#/definitions/"+rust+("Params" if entry["name"]=="communications.list" else "Wire")}):raise ValueError("invalid client parameter profile")
                 schema_validator(profile["x-params-schema"]).check_schema(resolve(profile["x-params-schema"]))
             profiles=entry.get("x-client-result-profiles",[])
             if profiles:

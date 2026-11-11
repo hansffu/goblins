@@ -214,24 +214,13 @@ fn execute(cli: Cli) -> Result<i32> {
                     );
                 }
                 instance = Some(client.instance.clone());
-                let page = client.call(
-                    "communications.list",
-                    serde_json::json!({"session":session,"after":cursor}),
-                )?;
-                session = page["session"].as_str().map(String::from);
-                for event in page["events"]
-                    .as_array()
-                    .ok_or("invalid communications page")?
-                {
+                let page = client.call_profile::<goblins_protocol::contract::host_param_profiles::CommunicationsCli>(goblins_protocol::contract::CommunicationsCliParams {session,after:cursor})?;
+                session = page.session;
+                for event in page.events.as_ref().ok_or("invalid communications page")? {
                     print_event(event, json)?;
                 }
-                cursor = page["cursor"]
-                    .as_u64()
-                    .ok_or("invalid communications cursor")?;
-                let caught_up = cursor
-                    >= page["latest"]
-                        .as_u64()
-                        .ok_or("invalid communications sequence")?;
+                cursor = page.cursor.ok_or("invalid communications cursor")?;
+                let caught_up = cursor >= page.latest.ok_or("invalid communications sequence")?;
                 if STOP.load(Ordering::Relaxed) || (caught_up && !follow) {
                     break;
                 }
