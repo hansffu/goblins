@@ -4315,6 +4315,35 @@ The =ignore-successful-body= adapter: Ignore the successful body, including non-
 }
 #+end_src
 
+Client parameter profile =raid-owner-ui=:
+
+The existing TUI copies immutable id/generation and selected member id from the shown preview without coercion, including explicit null or malformed legacy values; canonical receiver validation remains authoritative. raid stays a string. Dissolution omits stop_members unless true. This generated outbound profile is bound to the canonical method while preserving those exact legacy wire values.
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "id": {},
+    "generation": {},
+    "stop_members": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "raid",
+    "id",
+    "generation"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
 ** =raids.set_owner=
 
 Checks raid identity/generation, then target resolution, membership and liveness before committing the owner; owner changes resume paused raids. Host-only request shape; both session IDs and live names are resolved where a session selector exists. Requests retain original positional order, closed named fields and optional null id/generation guards. Wire DTO decoding keeps plain strings so existing domain validation/error precedence is unchanged. Event capacity is checked before commits and remains -32010. Raid/member records contain no host paths, terminal endpoints or process identities. Member rows retain join order and omit vanished sessions. Current owner/paused invariants remain enforced by the pure raid domain rules. The host body limit is 16384 bytes. CLI mutations ignore successful bodies and print original JSON; members uses an independent legacy display projection without tightening malformed/additive peer replies.
@@ -4473,6 +4502,31 @@ The =ignore-successful-body= adapter: Ignore the successful body, including non-
   "properties": {},
   "required": [],
   "additionalProperties": true
+}
+#+end_src
+
+Client parameter profile =raid-owner-ui=:
+
+The existing TUI copies immutable id/generation and selected member id from the shown preview without coercion, including explicit null or malformed legacy values; canonical receiver validation remains authoritative. raid stays a string. Dissolution omits stop_members unless true. This generated outbound profile is bound to the canonical method while preserving those exact legacy wire values.
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "session": {},
+    "id": {},
+    "generation": {}
+  },
+  "required": [
+    "raid",
+    "session",
+    "id",
+    "generation"
+  ],
+  "additionalProperties": false
 }
 #+end_src
 
@@ -8623,6 +8677,442 @@ The =ignore-successful-body= adapter: Ignore the successful body, including non-
   "properties": {},
   "required": [],
   "additionalProperties": true
+}
+#+end_src
+
+** =raids.create=
+
+Create a named raid with the authenticated caller as owner. Name validation and existing membership/creation rules stay in the pure domain before commit. Sandbox parameter shapes differ from host methods. Named params are closed; original positional forms are retained and null params refused. Existing initialization/stopping, runtime liveness, created-member control, actor derivation, event capacity and 4096-byte body limit remain in force. No capability or authority moves into generated DTOs.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "raid"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "$ref": "#/definitions/RaidNameRule"
+    },
+    "owner": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "former_owner": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RaidMemberRecord"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "owner",
+    "former_owner",
+    "paused",
+    "generation",
+    "members"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "raid": {
+      "$ref": "#/definitions/RaidNameRule"
+    }
+  }
+}
+#+end_src
+
+** =raids.leave=
+
+Leave the caller raid. A non-owner created by a raid owner cannot leave while its creation relationship holds; owners may leave and pause remaining members. The last member dissolves the raid. No caller-supplied target/raid is accepted. Sandbox parameter shapes differ from host methods. Named params are closed; original positional forms are retained and null params refused. Existing initialization/stopping, runtime liveness, created-member control, actor derivation, event capacity and 4096-byte body limit remain in force. No capability or authority moves into generated DTOs.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    },
+    "dissolved": {
+      "type": "boolean"
+    },
+    "paused": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "accepted",
+    "dissolved",
+    "paused"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =raids.members=
+
+Return the current raid selected only by caller identity, or the existing not-member conflict. The member display reader retains independent partial/malformed-field fallbacks. Sandbox parameter shapes differ from host methods. Named params are closed; original positional forms are retained and null params refused. Existing initialization/stopping, runtime liveness, created-member control, actor derivation, event capacity and 4096-byte body limit remain in force. No capability or authority moves into generated DTOs.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "$ref": "#/definitions/RaidNameRule"
+    },
+    "owner": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "former_owner": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RaidMemberRecord"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "owner",
+    "former_owner",
+    "paused",
+    "generation",
+    "members"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =raid-members-display= adapter: Read raid/member display strings independently with - fallback, booleans strictly, members only when an array, created_by string presence and existing escaped/sorted option rendering; accept non-object legacy results. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "former_owner": {
+      "type": "string"
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RaidMemberDisplay"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "former_owner",
+    "paused",
+    "members"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =raids.set_role=
+
+Change only the caller descriptive role in its current raid. Membership lookup precedes role validation; changing a role never transfers ownership. Sandbox parameter shapes differ from host methods. Named params are closed; original positional forms are retained and null params refused. Existing initialization/stopping, runtime liveness, created-member control, actor derivation, event capacity and 4096-byte body limit remain in force. No capability or authority moves into generated DTOs.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "role"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "$ref": "#/definitions/RaidNameRule"
+    },
+    "owner": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "former_owner": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RaidMemberRecord"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "owner",
+    "former_owner",
+    "paused",
+    "generation",
+    "members"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "role": {
+      "$ref": "#/definitions/RaidNameRule"
+    }
+  }
 }
 #+end_src
 
@@ -17164,6 +17654,73 @@ Errors: -32009.
 }
 #+end_src
 
+** =SandboxRaidRoleParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "role": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "role"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =RaidOwnerSetOwnerWire=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "session": {},
+    "id": {},
+    "generation": {}
+  },
+  "required": [
+    "raid",
+    "session",
+    "id",
+    "generation"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =RaidOwnerDestroyWire=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "id": {},
+    "generation": {},
+    "stop_members": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "raid",
+    "id",
+    "generation"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -17260,5 +17817,7 @@ Errors: -32009.
 - =host-job-result-discriminant= :: HostJob maps to a named wrapper over generated HostJobActive/Completed records, selecting a completed shape when any exit_code/signal/code key is present, checking required fields and the sandbox log path. Both records retain status String because the permission record overrides cached state. Host outcome cache uses the existing generated PermissionHostOutcome DTO; view construction preserves the old cache/default plus record override behavior.
 - =ignored-result-reader= :: IgnoredResult is a named empty struct replacing Typify map generation. Its Response decoder always returns the empty projection, preserving clients which ignore successful list/cancel bodies while returning the original validated JSON for printing. It is not a producer schema and does not weaken current result validation.
 - =host-submitted-legacy-reader= :: HostSubmittedReply is generated but a named projection retains the original method-only classification, string params.request or empty fallback, including nonstandard envelopes and malformed/missing params. Canonical notifications still have jsonrpc 2.0, no id and closed named request params.
-- =raid-domain-and-legacy-records= :: RaidNameRule maps to String so generated request and result DTOs do not move syntax or authority checks earlier. Existing pure raid functions retain name/role/list validation, membership and generation invariants. RaidLegacyOptions maps to BTreeMap<String,String>. Local mutable raid/member/membership records remain domain-owned until C15; generated record projections and a compatible snapshot reader bridge them. The compatible reader maps original record and nested member positional orders, keeps unknown fields/states/roles, and defaults missing owner/role/created_by/former_owner to null, paused false, generation zero and options {} exactly as the original Serde structs did.
-- =raid-display-reader= :: RaidDisplayReply/RaidMemberDisplay are generated normalized display DTOs. A named projection independently reads string fields or -, boolean flags, members only when an array and string-created_by presence. Options retain the existing launch_choices escaping, sorted keys, non-string ? fallback and comma-spacing replacement. Raw JSON is retained only for JSON printing and the compatibility wrapper used by sandbox callers until C11b.
+- =raid-domain-and-legacy-records= :: RaidNameRule maps to String so generated request and result DTOs do not move syntax or authority checks earlier. Existing pure raid functions retain name/role/list validation, membership and generation invariants. RaidLegacyOptions maps to BTreeMap<String,String>. Local mutable raid/member records remain domain-owned until C15; membership data wraps generated SessionRaid in C11b; generated record projections and a compatible snapshot reader bridge them. The compatible reader maps original record and nested member positional orders, keeps unknown fields/states/roles, and defaults missing owner/role/created_by/former_owner to null, paused false, generation zero and options {} exactly as the original Serde structs did.
+- =raid-display-reader= :: RaidDisplayReply/RaidMemberDisplay are generated normalized display DTOs. A named projection independently reads string fields or -, boolean flags, members only when an array and string-created_by presence. Options retain the existing launch_choices escaping, sorted keys, non-string ? fallback and comma-spacing replacement. Raw JSON is retained for JSON printing and the compatibility formatter; sandbox callers now bind the generated member display result.
+- =raid-owner-ui-param-profile= :: The TUI request profile preserves raw shown id/generation/member-id JSON and explicit null guard keys rather than coercing malformed legacy preview values into absent guards. Generated method-bound ParamsProfile types carry those fields as Value while raid remains String and optional stop_members is emitted only when true. Canonical host params remain strict String/u64, so malformed requests still receive the old receiver refusals. The profile does not grant authority.
+- =raid-membership-generated-domain-wrapper= :: Local RaidMembership is a transparent wrapper around generated SessionRaid data with its former Eq/PartialEq traits. A named legacy decoder maps original [id,name,role,owner,paused?] order/minimum four and old named missing nullable/paused defaults through SessionRaidReply before constructing SessionRaid. This preserves direct and nested legacy deserialization while removing C02 field-by-field copies; mutable raid ownership still lives in the domain.

@@ -12,6 +12,39 @@ use goblins_controller::{
     host::Client,
 };
 use goblins_protocol::{contract, plain_text};
+#[derive(Debug, PartialEq)]
+enum RaidOwnerAction {
+    SetOwner(contract::RaidOwnerSetOwnerWire),
+    Destroy(contract::RaidOwnerDestroyWire),
+}
+impl RaidOwnerAction {
+    fn call(self, client: &mut Client) -> Result<()> {
+        match self {
+            Self::SetOwner(params) => {
+                client.call_profile::<contract::host_param_profiles::RaidOwnerSetOwner>(params)?;
+            }
+            Self::Destroy(params) => {
+                client.call_profile::<contract::host_param_profiles::RaidOwnerDestroy>(params)?;
+            }
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    fn wire(self) -> (&'static str, serde_json::Value) {
+        use contract::{Method, ParamsProfile};
+        fn wire<P: ParamsProfile>(params: P::Params) -> (&'static str, serde_json::Value) {
+            (
+                <P::Method as Method>::NAME,
+                contract::profile_params::<P>(params).unwrap(),
+            )
+        }
+        match self {
+            Self::SetOwner(p) => wire::<contract::host_param_profiles::RaidOwnerSetOwner>(p),
+            Self::Destroy(p) => wire::<contract::host_param_profiles::RaidOwnerDestroy>(p),
+        }
+    }
+}
+
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -990,8 +1023,8 @@ impl View {
         let Some(action) = self.raid_action(key, p) else {
             return false;
         };
-        if let Some((method, params, done)) = action {
-            self.notice = match client.call(method, params) {
+        if let Some((action, done)) = action {
+            self.notice = match action.call(client) {
                 Ok(_) => done,
                 Err(e) => safe(&e.to_string()),
             };
@@ -1009,12 +1042,18 @@ impl View {
         &mut self,
         key: KeyCode,
         p: &PermissionRecord,
-    ) -> Option<Option<(&'static str, serde_json::Value, String)>> {
+    ) -> Option<Option<(RaidOwnerAction, String)>> {
         let preview = p.preview.as_ref()?;
         let members = raid_members(preview);
-        let mut params = serde_json::json!({"raid":p.package,"id":preview["raid"],
-            "generation":preview["generation"]});
-        let (method, done) = match key {
+        let destroy = |stop_members| {
+            RaidOwnerAction::Destroy(contract::RaidOwnerDestroyWire {
+                raid: p.package.clone(),
+                id: preview["raid"].clone(),
+                generation: preview["generation"].clone(),
+                stop_members,
+            })
+        };
+        let (action, done) = match key {
             KeyCode::Left | KeyCode::Right if !members.is_empty() => {
                 let n = members.len();
                 self.owner_choice = if key == KeyCode::Left {
@@ -1026,30 +1065,31 @@ impl View {
             }
             KeyCode::Char('o') => {
                 let member = members.get(self.owner_choice)?;
-                params["session"] = member["id"].clone();
                 let name = member["agent_name"].as_str().unwrap_or("?");
                 (
-                    "raids.set_owner",
+                    RaidOwnerAction::SetOwner(contract::RaidOwnerSetOwnerWire {
+                        raid: p.package.clone(),
+                        session: member["id"].clone(),
+                        id: preview["raid"].clone(),
+                        generation: preview["generation"].clone(),
+                    }),
                     format!("{} is the new owner", safe(name)),
                 )
             }
-            KeyCode::Char('x') => (
-                "raids.destroy",
-                "Dissolved; its goblins keep running".into(),
-            ),
+            KeyCode::Char('x') => (destroy(None), "Dissolved; its goblins keep running".into()),
             KeyCode::Char('k') if self.confirm_stop.as_ref() != Some(&p.id) => {
                 self.confirm_stop = Some(p.id.clone());
                 self.notice = "Press k again to stop every member and dissolve the raid".into();
                 return Some(None);
             }
-            KeyCode::Char('k') => {
-                params["stop_members"] = serde_json::json!(true);
-                ("raids.destroy", "Stopped every member and dissolved".into())
-            }
+            KeyCode::Char('k') => (
+                destroy(Some(true)),
+                "Stopped every member and dissolved".into(),
+            ),
             _ => return None,
         };
         self.confirm_stop = None;
-        Some(Some((method, params, done)))
+        Some(Some((action, done)))
     }
     fn diff_input(&mut self, key: KeyCode, client: &mut Client) {
         let Some(view) = &mut self.diff else {
@@ -1392,7 +1432,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            (call.0, call.1),
+            call.0.wire(),
             (
                 "raids.set_owner",
                 serde_json::json!({"raid":"beta","id":"beta-raid","generation":1,"session":"m1"})
@@ -1406,8 +1446,26 @@ mod tests {
             .raid_action(KeyCode::Char('k'), &prompt("beta"))
             .unwrap()
             .unwrap();
-        assert_eq!(call.1["stop_members"], true);
+        assert_eq!(call.0.wire().1["stop_members"], true);
         assert_eq!(view.raid_action(KeyCode::Char('y'), &prompt("beta")), None);
+    }
+    #[test]
+    fn raid_owner_actions_preserve_shown_raw_guards_and_field_presence() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        for case in fixtures["raid_owner_requests"].as_array().unwrap() {
+            let prompt:PermissionRecord=serde_json::from_value(serde_json::json!({"kind":"raid-owner","id":"p","session":"owner","agent_name":"owner","approval":"token","package":"crew","reason":"","state":"pending","preview":case["preview"]})).unwrap();
+            let mut view = View::new();
+            let key = KeyCode::Char(case["key"].as_str().unwrap().chars().next().unwrap());
+            if key == KeyCode::Char('k') {
+                assert_eq!(view.raid_action(key, &prompt), Some(None));
+            }
+            let (action, _) = view.raid_action(key, &prompt).unwrap().unwrap();
+            let (method, params) = action.wire();
+            assert_eq!(method, case["method"].as_str().unwrap());
+            assert_eq!(params, case["params"], "{case}");
+            assert!(view.confirm_stop.is_none());
+        }
     }
     #[test]
     fn a_paused_raid_prompt_marks_the_chosen_member() {

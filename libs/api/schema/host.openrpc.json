@@ -1634,7 +1634,17 @@
         "$ref": "common.json#/definitions/IgnoredResult"
       },
       "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      "x-client-result-normalization": "ignore-successful-body",
+      "x-client-param-profiles": [
+        {
+          "name": "raid-owner-ui",
+          "x-rust-name": "RaidOwnerDestroy",
+          "x-params-schema": {
+            "$ref": "common.json#/definitions/RaidOwnerDestroyWire"
+          },
+          "description": "The existing TUI copies immutable id/generation and selected member id from the shown preview without coercion, including explicit null or malformed legacy values; canonical receiver validation remains authoritative. raid stays a string. Dissolution omits stop_members unless true. This generated outbound profile is bound to the canonical method while preserving those exact legacy wire values."
+        }
+      ]
     },
     {
       "name": "raids.set_owner",
@@ -1705,7 +1715,17 @@
         "$ref": "common.json#/definitions/IgnoredResult"
       },
       "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      "x-client-result-normalization": "ignore-successful-body",
+      "x-client-param-profiles": [
+        {
+          "name": "raid-owner-ui",
+          "x-rust-name": "RaidOwnerSetOwner",
+          "x-params-schema": {
+            "$ref": "common.json#/definitions/RaidOwnerSetOwnerWire"
+          },
+          "description": "The existing TUI copies immutable id/generation and selected member id from the shown preview without coercion, including explicit null or malformed legacy values; canonical receiver validation remains authoritative. raid stays a string. Dissolution omits stop_members unless true. This generated outbound profile is bound to the canonical method while preserving those exact legacy wire values."
+        }
+      ]
     },
     {
       "name": "raids.members",

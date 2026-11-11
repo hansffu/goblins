@@ -322,18 +322,32 @@ fn variables(assignments: &[String]) -> Result<goblins_protocol::SetVariables, S
 }
 fn raid(command: cli::RaidCommand) -> Result<i32, String> {
     use cli::RaidCommand::*;
-    let (method, params, json) = match command {
-        Create { raid } => ("raids.create", json!({"raid":raid}), true),
-        Leave => ("raids.leave", json!({}), true),
-        Members { json } => ("raids.members", json!({}), json),
-        SetRole { role } => ("raids.set_role", json!({"role":role}), true),
+    let wire = match command {
+        Create { raid } => {
+            call_typed_with_wire::<contract::sandbox::RaidsCreate>(contract::RaidSelectorParams {
+                raid,
+            })?
+            .1
+        }
+        Leave => call_typed_with_wire::<contract::sandbox::RaidsLeave>(contract::EmptyParams {})?.1,
+        SetRole { role } => {
+            call_typed_with_wire::<contract::sandbox::RaidsSetRole>(
+                contract::SandboxRaidRoleParams { role },
+            )?
+            .1
+        }
+        Members { json } => {
+            let (reply, wire) =
+                call_typed_with_wire::<contract::sandbox::RaidsMembers>(contract::EmptyParams {})?;
+            if json {
+                println!("{wire}");
+            } else {
+                print!("{}", goblins_protocol::raid_members_typed(&reply));
+            }
+            return Ok(0);
+        }
     };
-    let result = call(method, params)?;
-    if json {
-        println!("{result}");
-    } else {
-        print!("{}", goblins_protocol::raid_members(&result));
-    }
+    println!("{wire}");
     Ok(0)
 }
 fn request_permission(params: contract::PermissionParams) -> Result<i32, String> {
@@ -698,10 +712,6 @@ pub(crate) fn call_typed_with_wire<M: contract::Method>(
 pub(crate) fn call_typed<M: contract::Method>(params: M::Params) -> Result<M::Result, String> {
     let (mut socket, _) = connect()?;
     contract::exchange::<M>(&mut socket, json!(1), params).map_err(|e| e.to_string())
-}
-pub(crate) fn call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
-    let (mut socket, _) = connect()?;
-    rpc::exchange(&mut socket, json!(1), method, params).map_err(|e| e.to_string())
 }
 fn mailbox_command(method: &str, params: serde_json::Value) -> Result<i32, String> {
     if method != "inbox.status" {

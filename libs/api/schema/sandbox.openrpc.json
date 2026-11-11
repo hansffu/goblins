@@ -1365,6 +1365,200 @@
       },
       "x-client-wire-result-schema": {},
       "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "raids.create",
+      "x-rust-name": "RaidsCreate",
+      "description": "Create a named raid with the authenticated caller as owner. Name validation and existing membership/creation rules stay in the pure domain before commit. Sandbox parameter shapes differ from host methods. Named params are closed; original positional forms are retained and null params refused. Existing initialization/stopping, runtime liveness, created-member control, actor derivation, event capacity and 4096-byte body limit remain in force. No capability or authority moves into generated DTOs.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "raid",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSelectorParams/properties/raid"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name or role"
+        },
+        {
+          "code": -32009,
+          "message": "Not a member, existing membership or created-member conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/RaidSelectorParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body",
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/SandboxRaidCreateParams"
+      }
+    },
+    {
+      "name": "raids.leave",
+      "x-rust-name": "RaidsLeave",
+      "description": "Leave the caller raid. A non-owner created by a raid owner cannot leave while its creation relationship holds; owners may leave and pause remaining members. The last member dissolves the raid. No caller-supplied target/raid is accepted. Sandbox parameter shapes differ from host methods. Named params are closed; original positional forms are retained and null params refused. Existing initialization/stopping, runtime liveness, created-member control, actor derivation, event capacity and 4096-byte body limit remain in force. No capability or authority moves into generated DTOs.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidChangeResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name or role"
+        },
+        {
+          "code": -32009,
+          "message": "Not a member, existing membership or created-member conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "raids.members",
+      "x-rust-name": "RaidsMembers",
+      "description": "Return the current raid selected only by caller identity, or the existing not-member conflict. The member display reader retains independent partial/malformed-field fallbacks. Sandbox parameter shapes differ from host methods. Named params are closed; original positional forms are retained and null params refused. Existing initialization/stopping, runtime liveness, created-member control, actor derivation, event capacity and 4096-byte body limit remain in force. No capability or authority moves into generated DTOs.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name or role"
+        },
+        {
+          "code": -32009,
+          "message": "Not a member, existing membership or created-member conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/RaidDisplayReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "raid-members-display"
+    },
+    {
+      "name": "raids.set_role",
+      "x-rust-name": "RaidsSetRole",
+      "description": "Change only the caller descriptive role in its current raid. Membership lookup precedes role validation; changing a role never transfers ownership. Sandbox parameter shapes differ from host methods. Named params are closed; original positional forms are retained and null params refused. Existing initialization/stopping, runtime liveness, created-member control, actor derivation, event capacity and 4096-byte body limit remain in force. No capability or authority moves into generated DTOs.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "role",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SandboxRaidRoleParams/properties/role"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name or role"
+        },
+        {
+          "code": -32009,
+          "message": "Not a member, existing membership or created-member conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SandboxRaidRoleParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body",
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/SandboxRaidRoleParams"
+      }
     }
   ],
   "x-notifications": [

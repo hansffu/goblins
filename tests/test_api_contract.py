@@ -15,6 +15,29 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_sandbox_raid_and_ui_parameter_contracts(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["sandbox_raid_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params("sandbox",case["method"],case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params("sandbox",case["method"],case["params"])
+        for case in fixtures["raid_owner_requests"]:
+            entry=contract.method("host",case["method"])
+            contract.schema_validator(entry["x-client-param-profiles"][0]["x-params-schema"]).validate(case["params"])
+            if case["canonical"]:self.assertTrue(contract.validate_params("host",case["method"],case["params"]))
+            elif case["preview"].get("raid") is not None:
+                with self.assertRaises(ValidationError):contract.validate_params("host",case["method"],case["params"])
+        for case in fixtures["session_raid_cases"]:
+            schema={"$ref":"common.json#/x-client-result-schemas/SessionRaidReply"}
+            if case["legacy"]:contract.schema_validator(schema).validate(case["result"])
+            else:
+                with self.assertRaises(ValidationError):contract.schema_validator(schema).validate(case["result"])
+        for case in fixtures["raid_record_cases"]:
+            reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+            self.assertTrue(contract.validate_reply("sandbox","raids.members",reply,compatibility=True))
+            if case["current"]:self.assertTrue(contract.validate_reply("sandbox","raids.members",reply))
+        self.assertTrue(contract.validate_reply("sandbox","raids.leave",dict(jsonrpc="2.0",id=1,result=dict(accepted=True,dissolved=True,paused=False))))
+
     def test_host_raid_contracts_and_legacy_display_projection(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["host_raid_parameter_cases"]:

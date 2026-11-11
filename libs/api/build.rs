@@ -76,6 +76,18 @@ fn main() {
             typify::TypeSpacePatch::default().with_derive("PartialEq"),
         );
     }
+    for name in ["RaidOwnerSetOwnerWire", "RaidOwnerDestroyWire"] {
+        settings.with_patch(
+            name,
+            typify::TypeSpacePatch::default().with_derive("PartialEq"),
+        );
+    }
+    settings.with_patch(
+        "SessionRaid",
+        typify::TypeSpacePatch::default()
+            .with_derive("PartialEq")
+            .with_derive("Eq"),
+    );
     settings.with_replacement("EditorPath", "std::string::String", [].into_iter());
     settings.with_replacement("EditorPosition", "u32", [].into_iter());
     settings.with_replacement("EditorExitCode", "i32", [].into_iter());
@@ -297,6 +309,26 @@ fn main() {
             names.push(name);
         }
         output.push_str(&format!("pub const METHODS: &[&str] = &{names:?}; }}\n"));
+        output.push_str(&format!(
+            "pub mod {endpoint}_param_profiles {{ #[allow(unused_imports)] use super::*;\n"
+        ));
+        for method in document["methods"].as_array().unwrap() {
+            for profile in method["x-client-param-profiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let rust = profile["x-rust-name"].as_str().unwrap();
+                let method_rust = method["x-rust-name"].as_str().unwrap();
+                let params = profile["x-params-schema"]["$ref"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("common.json#/definitions/")
+                    .unwrap();
+                output.push_str(&format!("pub struct {rust}; impl crate::contract::ParamsProfile for {rust} {{ type Method = super::{endpoint}::{method_rust}; type Params = {params}; }}\n"));
+            }
+        }
+        output.push_str("}\n");
         output.push_str(&format!(
             "pub mod {endpoint}_reply_profiles {{ #[allow(unused_imports)] use super::*;\n"
         ));

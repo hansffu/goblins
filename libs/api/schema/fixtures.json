@@ -16216,5 +16216,521 @@
     {
       "members": "not an array"
     }
+  ],
+  "sandbox_raid_parameter_cases": [
+    {
+      "method": "raids.create",
+      "params": {
+        "raid": "crew"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.create",
+      "params": [
+        "crew"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.create",
+      "params": {
+        "raid": "Bad Name"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.create",
+      "params": [
+        ""
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.create",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.create",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.create",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.create",
+      "params": [
+        "a",
+        "b"
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.create",
+      "params": {
+        "raid": 7
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.create",
+      "params": {
+        "raid": "crew",
+        "session": "other"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "role": "reviewer"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_role",
+      "params": [
+        "reviewer"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "role": "Bad Role"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": [
+        ""
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": [
+        "a",
+        "b"
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "role": 7
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "role": "reviewer",
+        "session": "other"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.leave",
+      "params": {},
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.leave",
+      "params": [],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.leave",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.leave",
+      "params": [
+        1
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.leave",
+      "params": {
+        "raid": "crew"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.members",
+      "params": {},
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.members",
+      "params": [],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.members",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.members",
+      "params": [
+        1
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.members",
+      "params": {
+        "session": "other"
+      },
+      "decoded": false,
+      "valid": false
+    }
+  ],
+  "session_raid_cases": [
+    {
+      "result": {
+        "id": "r",
+        "name": "crew",
+        "role": null,
+        "owner": "a",
+        "paused": false
+      },
+      "legacy": true
+    },
+    {
+      "result": {
+        "id": "r",
+        "name": "crew"
+      },
+      "legacy": true
+    },
+    {
+      "result": [
+        "r",
+        "crew",
+        null,
+        "a"
+      ],
+      "legacy": true
+    },
+    {
+      "result": [
+        "r",
+        "crew",
+        "reviewer",
+        null,
+        true
+      ],
+      "legacy": true
+    },
+    {
+      "result": [
+        "r",
+        "crew",
+        null,
+        null,
+        false,
+        7
+      ],
+      "legacy": false
+    },
+    {
+      "result": [
+        "r",
+        "crew",
+        null
+      ],
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "r",
+        "name": "crew",
+        "paused": null
+      },
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "r",
+        "name": "crew",
+        "role": 4
+      },
+      "legacy": false
+    },
+    {
+      "result": null,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "r",
+        "name": "crew",
+        "extra": 7
+      },
+      "legacy": true
+    }
+  ],
+  "raid_owner_requests": [
+    {
+      "preview": {
+        "raid": "r",
+        "generation": 3,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "o",
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "id": "r",
+        "generation": 3,
+        "session": "a"
+      },
+      "canonical": true
+    },
+    {
+      "preview": {
+        "raid": "r",
+        "generation": 3,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "x",
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": "r",
+        "generation": 3
+      },
+      "canonical": true
+    },
+    {
+      "preview": {
+        "raid": "r",
+        "generation": 3,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "k",
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": "r",
+        "generation": 3,
+        "stop_members": true
+      },
+      "canonical": true
+    },
+    {
+      "preview": {
+        "members": [
+          {
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "o",
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "id": null,
+        "generation": null,
+        "session": null
+      },
+      "canonical": false
+    },
+    {
+      "preview": {
+        "members": [
+          {
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "x",
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": null,
+        "generation": null
+      },
+      "canonical": false
+    },
+    {
+      "preview": {
+        "members": [
+          {
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "k",
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": null,
+        "generation": null,
+        "stop_members": true
+      },
+      "canonical": false
+    },
+    {
+      "preview": {
+        "raid": {
+          "legacy": true
+        },
+        "generation": "bad",
+        "members": [
+          {
+            "id": 7,
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "o",
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "id": {
+          "legacy": true
+        },
+        "generation": "bad",
+        "session": 7
+      },
+      "canonical": false
+    },
+    {
+      "preview": {
+        "raid": {
+          "legacy": true
+        },
+        "generation": "bad",
+        "members": [
+          {
+            "id": 7,
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "x",
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": {
+          "legacy": true
+        },
+        "generation": "bad"
+      },
+      "canonical": false
+    },
+    {
+      "preview": {
+        "raid": {
+          "legacy": true
+        },
+        "generation": "bad",
+        "members": [
+          {
+            "id": 7,
+            "agent_name": "alpha",
+            "state": "running"
+          }
+        ],
+        "name": "crew"
+      },
+      "key": "k",
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": {
+          "legacy": true
+        },
+        "generation": "bad",
+        "stop_members": true
+      },
+      "canonical": false
+    }
   ]
 }

@@ -178,13 +178,7 @@ impl From<&SessionRecord> for contract::HostSession {
             detail: r.detail.clone(),
             recreated_from: r.recreated_from.clone(),
             exit_code: r.exit_code.clone(),
-            raid: r.raid.as_ref().map(|r| contract::SessionRaid {
-                id: r.id.clone(),
-                name: r.name.clone(),
-                role: r.role.clone(),
-                owner: r.owner.clone(),
-                paused: r.paused,
-            }),
+            raid: r.raid.as_ref().map(|r| r.0.clone()),
             shells: r.shells.clone(),
             execs: r.execs.clone(),
             terminals: r
@@ -260,13 +254,7 @@ impl TryFrom<contract::HostSessionReply> for SessionRecord {
             detail: r.detail,
             recreated_from: r.recreated_from,
             exit_code: r.exit_code,
-            raid: r.raid.map(|r| RaidMembership {
-                id: r.id,
-                name: r.name,
-                role: r.role,
-                owner: r.owner,
-                paused: r.paused,
-            }),
+            raid: r.raid.map(|r| RaidMembership(r.into())),
             shells: r.shells,
             execs: r.execs,
             terminals: r

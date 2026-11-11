@@ -279,6 +279,8 @@ def reference():
                 else:
                     lines.extend(["Compatible API-1 client reply (additive information may be absent):", ""])
                 lines.extend(["#+begin_src json", json.dumps(resolve(entry["x-client-result-schema"]), indent=2), "#+end_src", ""])
+            for profile in entry.get("x-client-param-profiles",[]):
+                lines.extend([f"Client parameter profile ={profile['name']}=:","",profile["description"],"","#+begin_src json",json.dumps(resolve(profile["x-params-schema"]),indent=2),"#+end_src",""])
             for profile in entry.get("x-client-result-profiles",[]):
                 lines.extend([f"Client result profile ={profile['name']}=:","",profile["description"],"","Accepted wire result:","","#+begin_src json",json.dumps(resolve(profile["x-client-wire-result-schema"]),indent=2),"#+end_src","","Normalized generated client DTO:","","#+begin_src json",json.dumps(resolve(profile["x-client-result-schema"]),indent=2),"#+end_src",""])
             if "x-request-constraints" in entry:
@@ -615,11 +617,19 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("raids.create","raids.leave","raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"$ref":"common.json#/x-client-result-schemas/PermissionListReply"} if entry["name"]=="permissions.list" else {"$ref":"common.json#/x-client-result-schemas/PermissionRecordReply"} if entry["name"]=="permissions.get" else {"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-client-param-normalization" in entry:
                 if entry["name"]!="permissions.request" or entry["x-client-param-normalization"]!="permission-request-fields":raise ValueError("unknown client parameter normalization")
+            param_profiles=entry.get("x-client-param-profiles",[])
+            if param_profiles:
+                expected={"raids.set_owner":"RaidOwnerSetOwner", "raids.destroy":"RaidOwnerDestroy"}
+                rust=expected.get(entry["name"])
+                if endpoint!="host" or not rust or len(param_profiles)!=1:raise ValueError("unknown client parameter profile")
+                profile=param_profiles[0]
+                if (profile["name"],profile["x-rust-name"],profile["x-params-schema"])!=("raid-owner-ui",rust,{"$ref":"common.json#/definitions/"+rust+"Wire"}):raise ValueError("invalid client parameter profile")
+                schema_validator(profile["x-params-schema"]).check_schema(resolve(profile["x-params-schema"]))
             profiles=entry.get("x-client-result-profiles",[])
             if profiles:
                 if entry["name"]!="permissions.request" or len(profiles)!=1:raise ValueError("unknown client result profile")

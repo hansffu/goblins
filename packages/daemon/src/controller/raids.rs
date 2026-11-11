@@ -4,7 +4,6 @@
 use super::Controller;
 use super::Fault;
 use super::Start;
-use super::params;
 use crate::raid;
 use goblins_protocol::contract::{self,Method};
 use crate::raid::Event;
@@ -23,15 +22,26 @@ const LAUNCHING: &str = "";
 pub(super) const RAID_OWNER: &str = "raid-owner";
 
 /// A session record's raid, as the controller currently has it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RaidMembership {
-    pub id: String,
-    pub name: String,
-    pub role: Option<String>,
-    /// Session ID of the owner; None while paused.
-    pub owner: Option<String>,
-    #[serde(default)]
-    pub paused: bool,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct RaidMembership(pub contract::SessionRaid);
+impl std::ops::Deref for RaidMembership {
+    type Target = contract::SessionRaid;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for RaidMembership {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl<'de> Deserialize<'de> for RaidMembership {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        contract::decode_session_raid(Value::deserialize(deserializer)?)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RaidRecord {
@@ -122,22 +132,6 @@ impl From<contract::RaidRecordReply> for RaidRecord {
         }
     }
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Name {
-    raid: String,
-}
-/// `id` and `generation`, when given, must still name the raid as the
-/// caller saw it, such as in a raid-owner prompt.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Role {
-    role: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Empty {}
-
 /// A validated launch join, applied once the session is inserted: a host
 /// `--raid` join, or a member the owner runs.
 pub(super) enum Join {
@@ -360,12 +354,14 @@ impl Controller {
             .sessions
             .keys()
             .map(|id| {
-                let raid = self.raids.of(id).map(|r| RaidMembership {
-                    id: r.id.clone(),
-                    name: r.name.clone(),
-                    role: r.members[id].role.clone(),
-                    owner: r.owner.clone(),
-                    paused: r.paused.is_some(),
+                let raid = self.raids.of(id).map(|r| {
+                    RaidMembership(contract::SessionRaid {
+                        id: r.id.clone(),
+                        name: r.name.clone(),
+                        role: r.members[id].role.clone(),
+                        owner: r.owner.clone(),
+                        paused: r.paused.is_some(),
+                    })
                 });
                 (id.clone(), raid)
             })
@@ -624,8 +620,9 @@ impl Controller {
         let current = self.raids.of(scope).map(|r| r.name.clone());
         let not_member = || self.raid_fault(raid::Error::NotMember(scope.into()));
         match method {
-            "raids.create" => {
-                let p: Name = params(value)?;
+            contract::sandbox::RaidsCreate::NAME => {
+                let p = contract::decode_params::<contract::sandbox::RaidsCreate>(value)
+                    .map_err(|e| (-32602, e.to_string()))?;
                 let mut next = self.raids.clone();
                 let id = self.raid_id(&p.raid);
                 let events = next
@@ -634,8 +631,9 @@ impl Controller {
                 self.raid_commit(next, events)?;
                 self.raid_value(&p.raid)
             }
-            "raids.leave" => {
-                let _: Empty = params(value)?;
+            contract::sandbox::RaidsLeave::NAME => {
+                let _ = contract::decode_params::<contract::sandbox::RaidsLeave>(value)
+                    .map_err(|e| (-32602, e.to_string()))?;
                 let name = current.ok_or_else(not_member)?;
                 let raid = self.raids.get(&name).expect("current raid");
                 if raid.owner.as_deref() != Some(scope) && raid.members[scope].created_by.is_some()
@@ -648,15 +646,22 @@ impl Controller {
                 let events = self.raids.remove(scope, Reason::Left);
                 let (dissolved, paused) = outcome(&events);
                 self.raid_queue(events);
-                Ok(json!({"accepted":true,"dissolved":dissolved,"paused":paused}))
+                serde_json::to_value(contract::RaidChangeResult {
+                    accepted: true,
+                    dissolved,
+                    paused,
+                })
+                .map_err(|e| (-32603, e.to_string()))
             }
-            "raids.members" => {
-                let _: Empty = params(value)?;
+            contract::sandbox::RaidsMembers::NAME => {
+                let _ = contract::decode_params::<contract::sandbox::RaidsMembers>(value)
+                    .map_err(|e| (-32602, e.to_string()))?;
                 let name = current.ok_or_else(not_member)?;
                 self.raid_value(&name)
             }
-            "raids.set_role" => {
-                let p: Role = params(value)?;
+            contract::sandbox::RaidsSetRole::NAME => {
+                let p = contract::decode_params::<contract::sandbox::RaidsSetRole>(value)
+                    .map_err(|e| (-32602, e.to_string()))?;
                 let name = current.ok_or_else(not_member)?;
                 let mut next = self.raids.clone();
                 let events = next
@@ -683,6 +688,65 @@ fn outcome(events: &[Event]) -> (bool, bool) {
 mod preview_tests {
     use super::super::tests::{daemon, live};
     use super::*;
+    #[test]
+    fn sandbox_raid_handlers_keep_domain_error_order_and_public_results() {
+        let _no_forks = goblins_unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _events = live(&mut d, "a");
+        // A structurally valid but invalid role still looks up caller membership first.
+        assert_eq!(
+            d.sandbox_raids("a", "raids.set_role", json!({"role":"Bad Role"}))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        let created = d
+            .sandbox_raids("a", "raids.create", json!(["crew"]))
+            .unwrap();
+        let old = serde_json::to_value(original_record(&d, d.raids.get("crew").unwrap())).unwrap();
+        assert_eq!(created, old);
+        let before = d.sessions["a"].record.raid.clone();
+        assert_eq!(
+            d.sandbox_raids("a", "raids.set_role", json!(["Bad Role"]))
+                .unwrap_err()
+                .0,
+            -32602
+        );
+        assert_eq!(d.sessions["a"].record.raid, before);
+        let role = d
+            .sandbox_raids("a", "raids.set_role", json!(["reviewer"]))
+            .unwrap();
+        assert_eq!(role["owner"], "a");
+        assert_eq!(role["members"][0]["role"], "reviewer");
+        assert_eq!(
+            d.sandbox_raids("a", "raids.members", json!([])).unwrap(),
+            role
+        );
+        assert_eq!(
+            d.sandbox_raids("a", "raids.leave", json!([])).unwrap(),
+            json!({"accepted":true,"dissolved":true,"paused":false})
+        );
+        assert!(d.sessions["a"].record.raid.is_none());
+        drop(d);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn raid_membership_wrapper_preserves_original_wire_forms() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../../libs/api/schema/fixtures.json"))
+                .unwrap();
+        for case in fixtures["session_raid_cases"].as_array().unwrap() {
+            let result = serde_json::from_value::<RaidMembership>(case["result"].clone());
+            assert_eq!(result.is_ok(), case["legacy"].as_bool().unwrap(), "{case}");
+            if let Ok(result) = result {
+                assert_eq!(
+                    serde_json::to_value(&result).unwrap(),
+                    serde_json::to_value(&result.0).unwrap()
+                );
+            }
+        }
+    }
     fn original_preview(controller: &Controller, raid: &raid::Raid) -> Value {
         let mut members: Vec<_> = raid.members.iter().collect();
         members.sort_by_key(|(_, m)| m.joined);

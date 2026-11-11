@@ -50,6 +50,15 @@ pub trait Method {
     const OMIT_FALSE: &'static [&'static str] = &[];
 }
 
+/// A generated outbound parameter profile bound to its canonical RPC method.
+pub trait ParamsProfile {
+    type Method: Method;
+    type Params: Serialize;
+}
+pub fn profile_params<P: ParamsProfile>(params: P::Params) -> serde_json::Result<Value> {
+    serde_json::to_value(params)
+}
+
 /// An explicitly declared client result reader, bound to its RPC method.
 pub trait ResultProfile {
     type Method: Method;
@@ -228,7 +237,7 @@ pub trait Response: DeserializeOwned {
 mod host_job;
 pub use host_job::{HostJob, host_submitted};
 mod raid;
-pub use raid::raid_display_reply;
+pub use raid::{decode_session_raid, raid_display_reply};
 mod permission;
 mod preview;
 pub use preview::preview_reply;

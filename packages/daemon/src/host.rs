@@ -70,6 +70,16 @@ impl Client {
             params,
         )?)
     }
+    pub fn call_profile<P: contract::ParamsProfile>(
+        &mut self,
+        params: P::Params,
+    ) -> Result<<P::Method as Method>::Result> {
+        let wire = self.call(
+            <P::Method as Method>::NAME,
+            contract::profile_params::<P>(params)?,
+        )?;
+        Ok(contract::decode_reply::<P::Method>(wire)?)
+    }
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next += 1;
         Ok(rpc::exchange(
@@ -271,6 +281,54 @@ pub fn decision<'a>(line: &str, snapshot: &'a Snapshot) -> Option<(&'a Permissio
 mod tests {
     use super::*;
 
+    #[test]
+    fn raid_owner_profiles_send_exact_shown_payloads_and_ignore_legacy_successes() {
+        use std::io::Write;
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        let cases = fixtures["raid_owner_requests"].as_array().unwrap().clone();
+        let _no_forks = goblins_unix::no_forks();
+        std::thread::scope(|scope| {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
+            stream.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            let mut client = Client {
+                instance: "test".into(),
+                features: vec![],
+                stream,
+                next: 0,
+            };
+            let expected = cases.clone();
+            let server = scope.spawn(move || {
+                for case in expected {
+                    let call = rpc::read(&mut peer).unwrap();
+                    assert_eq!(call["method"], case["method"]);
+                    assert_eq!(call["params"], case["params"]);
+                    peer.write_all(
+                        &rpc::encode(&rpc::result(call["id"].clone(), json!(["legacy", null])))
+                            .unwrap(),
+                    )
+                    .unwrap();
+                }
+            });
+            for case in cases {
+                if case["method"] == "raids.set_owner" {
+                    client
+                        .call_profile::<contract::host_param_profiles::RaidOwnerSetOwner>(
+                            serde_json::from_value(case["params"].clone()).unwrap(),
+                        )
+                        .unwrap();
+                } else {
+                    client
+                        .call_profile::<contract::host_param_profiles::RaidOwnerDestroy>(
+                            serde_json::from_value(case["params"].clone()).unwrap(),
+                        )
+                        .unwrap();
+                }
+            }
+            server.join().unwrap();
+        });
+    }
     #[test]
     fn host_raid_bindings_preserve_cli_request_presence_and_original_results() {
         use std::io::Write;

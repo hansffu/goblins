@@ -1,13 +1,5 @@
 {
   "pending": {
-    "C11": {
-      "sandbox": [
-        "raids.create",
-        "raids.leave",
-        "raids.members",
-        "raids.set_role"
-      ]
-    },
     "C12": {
       "host": [
         "messages.send",

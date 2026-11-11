@@ -36,16 +36,6 @@ pub use goblins_protocol::contract::MemberLaunchParams as MemberStart;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Raid {
-    raid: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Role {
-    role: String,
-}
 
 pub fn messaging(method: &str) -> bool {
     matches!(
@@ -120,10 +110,10 @@ pub fn check(
             | "sessions.stop"
             | "targets.list"
             | contract::sandbox::DevShellLock::NAME
-            | "raids.create"
-            | "raids.leave"
-            | "raids.members"
-            | "raids.set_role"
+            | contract::sandbox::RaidsCreate::NAME
+            | contract::sandbox::RaidsLeave::NAME
+            | contract::sandbox::RaidsMembers::NAME
+            | contract::sandbox::RaidsSetRole::NAME
             | contract::sandbox::HostStatus::NAME
             | contract::sandbox::HostList::NAME
             | contract::sandbox::HostCancel::NAME
@@ -305,12 +295,24 @@ pub fn check(
         | contract::sandbox::TerminalsSend::NAME
         | contract::sandbox::TerminalsWait::NAME
         | contract::sandbox::TerminalsClose::NAME => None,
-        "raids.create" => {
-            let Raid { raid: _raid } = parse(&call.params)?;
+        contract::sandbox::RaidsCreate::NAME => {
+            let _ = contract::decode_params::<contract::sandbox::RaidsCreate>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
             None
         }
-        "raids.set_role" => {
-            let Role { role: _role } = parse(&call.params)?;
+        contract::sandbox::RaidsSetRole::NAME => {
+            let _ = contract::decode_params::<contract::sandbox::RaidsSetRole>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
+            None
+        }
+        contract::sandbox::RaidsLeave::NAME => {
+            let _ = contract::decode_params::<contract::sandbox::RaidsLeave>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
+            None
+        }
+        contract::sandbox::RaidsMembers::NAME => {
+            let _ = contract::decode_params::<contract::sandbox::RaidsMembers>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
             None
         }
         contract::sandbox::DevShellLock::NAME => {
@@ -358,6 +360,35 @@ mod tests {
             path: "/work".into(),
         });
         p
+    }
+    #[test]
+    fn sandbox_raid_gate_preserves_structural_decoding_and_defers_domain_syntax() {
+        let policy = policy();
+        let support = Support::linux();
+        let caps = Capabilities {
+            policy: &policy,
+            support: &support,
+        };
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../api/schema/fixtures.json")).unwrap();
+        for case in fixtures["sandbox_raid_parameter_cases"].as_array().unwrap() {
+            let c = call(case["method"].as_str().unwrap(), case["params"].clone());
+            assert_eq!(
+                check(&caps, &c, 100, true, false, false).is_ok(),
+                case["decoded"].as_bool().unwrap(),
+                "{case}"
+            );
+        }
+        // Caller readiness and the body limit still precede parameter decoding.
+        let malformed = call("raids.set_role", json!({"session":"other"}));
+        assert_eq!(
+            fault(check(&caps, &malformed, 100, false, false, false).unwrap_err()).0,
+            -32001
+        );
+        assert_eq!(
+            fault(check(&caps, &malformed, 4097, true, false, false).unwrap_err()),
+            (-32602, "request exceeds method frame limit".into())
+        );
     }
     #[test]
     fn permission_requests_keep_nested_forms_name_diagnostics_and_policy_order() {

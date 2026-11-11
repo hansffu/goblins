@@ -2734,6 +2734,36 @@ project's root, a directory inside it and a directory in no project."
         (setq-local goblins--connection t goblins--subscription "s")
         (should-error (goblins--decide-record record t) :type 'user-error)))))
 
+(ert-deftest goblins-raid-owner-generated-contract-fixtures ()
+  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+                                 (file-name-directory (file-truename (locate-library "goblins")))))
+         (fixtures (with-temp-buffer
+                     (insert-file-contents file)
+                     (json-parse-buffer :object-type 'plist :null-object nil))))
+    (seq-doseq (case (plist-get fixtures :raid_owner_requests))
+      (let* ((record (list :preview (plist-get case :preview)))
+             (key (plist-get case :key))
+             (expected (plist-get case :params)))
+        (goblins-test--raid-calls calls
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt choices &rest _) (caar choices)))
+                    ((symbol-function 'y-or-n-p) (lambda (_) t)))
+            (if (equal key "o")
+                (goblins-raid-owner-pick 'source record)
+              (goblins-raid-owner-dissolve 'source record (equal key "k"))))
+          (let ((call (car calls)))
+            (should (= (length calls) 1))
+            (should (eq (car call) (intern (plist-get case :method))))
+            (dolist (field '(:raid :id :generation))
+              (should (plist-member (cdr call) field))
+              (should (equal (plist-get (cdr call) field) (plist-get expected field))))
+            (if (equal key "o")
+                (progn
+                  (should (plist-member (cdr call) :session))
+                  (should (equal (plist-get (cdr call) :session) (plist-get expected :session))))
+            (should (equal (plist-member (cdr call) :stop_members)
+                           (and (equal key "k") '(:stop_members t)))))))))))
+
 (ert-deftest goblins-raid-command-creates-or-joins-around-a-goblin ()
   (goblins-test--raid-sidebar
     (goblins-test--raid-calls calls

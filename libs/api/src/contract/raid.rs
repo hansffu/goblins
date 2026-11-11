@@ -73,6 +73,26 @@ pub fn raid_display_reply(record: &Value) -> RaidDisplayReply {
     }
 }
 
+/// Decode the original session membership order and named defaults.
+pub fn decode_session_raid(value: Value) -> io::Result<SessionRaid> {
+    let value = ordered_value(value, &["id", "name", "role", "owner", "paused"], 4)
+        .map_err(io::Error::other)?;
+    serde_json::from_value::<SessionRaidReply>(value)
+        .map(Into::into)
+        .map_err(io::Error::other)
+}
+impl From<SessionRaidReply> for SessionRaid {
+    fn from(r: SessionRaidReply) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            role: r.role,
+            owner: r.owner,
+            paused: r.paused,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +219,70 @@ mod tests {
             }
         }
     }
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Role {
+        role: String,
+    }
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Empty {}
+    #[derive(Deserialize, Serialize)]
+    struct OldMembership {
+        id: String,
+        name: String,
+        role: Option<String>,
+        owner: Option<String>,
+        #[serde(default)]
+        paused: bool,
+    }
+    #[test]
+    fn sandbox_raid_parameters_preserve_original_decoders_and_positional_forms() {
+        for case in fixtures()["sandbox_raid_parameter_cases"]
+            .as_array()
+            .unwrap()
+        {
+            let value = case["params"].clone();
+            macro_rules! compare {
+                ($old:ty,$method:ty) => {{
+                    let old = serde_json::from_value::<$old>(value.clone());
+                    let new = decode_params::<$method>(value.clone());
+                    assert_eq!(old.is_ok(), new.is_ok(), "{case}");
+                    assert_eq!(new.is_ok(), case["decoded"].as_bool().unwrap(), "{case}");
+                    if let (Ok(old), Ok(new)) = (old, new) {
+                        assert_eq!(
+                            serde_json::to_value(old).unwrap(),
+                            serde_json::to_value(new).unwrap(),
+                            "{case}"
+                        );
+                    }
+                }};
+            }
+            match case["method"].as_str().unwrap() {
+                "raids.create" => compare!(Name, sandbox::RaidsCreate),
+                "raids.set_role" => compare!(Role, sandbox::RaidsSetRole),
+                "raids.leave" => compare!(Empty, sandbox::RaidsLeave),
+                _ => compare!(Empty, sandbox::RaidsMembers),
+            }
+        }
+    }
+    #[test]
+    fn session_membership_reader_preserves_original_serde_and_current_output() {
+        for case in fixtures()["session_raid_cases"].as_array().unwrap() {
+            let old = serde_json::from_value::<OldMembership>(case["result"].clone());
+            let new = decode_session_raid(case["result"].clone());
+            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
+            assert_eq!(new.is_ok(), case["legacy"].as_bool().unwrap(), "{case}");
+            if let (Ok(old), Ok(new)) = (old, new) {
+                assert_eq!(
+                    serde_json::to_value(old).unwrap(),
+                    serde_json::to_value(new).unwrap(),
+                    "{case}"
+                );
+            }
+        }
+    }
+
     fn original_members(record: &serde_json::Value) -> String {
         let text = |v: &serde_json::Value| v.as_str().unwrap_or("-").to_string();
         let mut rows = vec![[

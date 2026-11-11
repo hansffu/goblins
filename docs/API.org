@@ -327,6 +327,8 @@ Each method that returns =Raid= returns the raid's current record. Raid names an
 
 Host request objects are closed and retain these positional forms: =raids.invite= =[raid, sessions]=; =raids.destroy= =[raid, id?, generation?, stop_members?]=; =raids.set_owner= =[raid, session, id?, generation?]=; =raids.members= =[raid]=; =raids.kick= =[raid, session]=; =raids.set_role= =[raid, session, role]=. Null id/generation means no guard, and omitted stop_members is false. Selectors decode as plain strings: invalid names used as lookups retain absence errors instead of new early grammar refusals. Invite syntax/count checks precede target resolution; set-owner guards precede target/membership checks; kick/set-role look up the raid and target membership before changing it, with role syntax checked by the domain operation. The host body limit remains 16 KiB. Event capacity, actor derivation and clone-before-commit authority are unchanged.
 
+Raid-owner TUI requests use a generated outbound profile bound to set-owner or destroy. It copies the displayed id/generation and selected member id verbatim, retaining explicit nulls and malformed legacy JSON for the receiver to validate; it never silently turns a malformed guard into an absent one. Destroy omits stop_members unless true. These client profiles describe existing payload construction, while canonical host parameter types remain strict. Emacs request consumers are checked against the same contract fixtures where Rust type generation is not applicable.
+
 Host mutations print the original successful JSON and ignore body content for interpretation. Member display clients independently retain fields and fallbacks from partial/malformed peer records, including non-object bodies, unknown states, non-string option values and additive fields. Canonical producer validation remains separate from those legacy display rules.
 
 *** =raids.invite=
@@ -593,6 +595,8 @@ Records the worktree the goblin works in, which Emacs and other host clients fol
 
 ** Raids
 
+Sandbox raid requests are closed objects with caller-derived membership: =raids.create= accepts ={"raid"}= or =[raid]=; =raids.leave= and =raids.members= accept ={}= or =[]=; =raids.set_role= accepts ={"role"}= or =[role]=. Supplying host-only raid/session fields is refused. Null params are invalid. A missing current raid is the existing not-member conflict; set-role checks that membership before domain role syntax. Created non-owner members cannot leave through this method, and no role assignment changes authority. The sandbox body limit remains 4 KiB.
+
 *** =raids.create=
 
 - Input :: ={"raid"}=
@@ -709,7 +713,7 @@ Legacy record readers retain =kind:package= when absent, accept missing/null nul
 
 ={"id", "name", "owner", "former_owner", "paused", "generation", "members": [{"id", "agent_name", "name", "role", "state", "owner", "created_by", "options"}]}=. A member's =options= are its launch options, as in =Session=. =owner= is null while paused; =generation= changes on every pause and owner change.
 
-Current raid and member records always emit every documented field, including nullable owner/former_owner/role/created_by, false paused/owner flags, generation zero and empty options. Member rows follow join order, omit vanished sessions and contain no host paths, process identities, terminal endpoints or diagnostics. Snapshot compatibility keeps missing former_owner:null, paused:false and generation:0; member created_by:null and options:{} retain their old defaults. Legacy records also keep original positional orders =[id,name,owner,former_owner,paused,generation,members]= (seven slots) and nested =[id,agent_name,name,role,state,owner,created_by?,options?]= (six through eight slots), open additions and unrestricted string states/roles. Mutable domain records remain local through generated conversions until C15; C11b closes the remaining sandbox and TUI/Emacs consumers.
+Current raid and member records always emit every documented field, including nullable owner/former_owner/role/created_by, false paused/owner flags, generation zero and empty options. Member rows follow join order, omit vanished sessions and contain no host paths, process identities, terminal endpoints or diagnostics. Snapshot compatibility keeps missing former_owner:null, paused:false and generation:0; member created_by:null and options:{} retain their old defaults. Legacy records also keep original positional orders =[id,name,owner,former_owner,paused,generation,members]= (seven slots) and nested =[id,agent_name,name,role,state,owner,created_by?,options?]= (six through eight slots), open additions and unrestricted string states/roles. Mutable raid/member domain records remain local through generated conversions until C15. The remaining sandbox and TUI/Emacs consumers use the same contracts. Local session membership now wraps generated SessionRaid data; its compatibility reader retains named defaults and original =[id,name,role,owner,paused?]= sequence order (four or five slots) without moving mutable raid authority into DTOs.
 
 ** HostJob
 
