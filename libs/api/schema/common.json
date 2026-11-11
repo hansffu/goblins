@@ -3019,6 +3019,241 @@
       "type": "string",
       "pattern": "^/",
       "description": "Absolute runtime manifest path, validated by the existing controller."
+    },
+    "ExecText": {
+      "type": "string",
+      "pattern": "^[^\\u0000]*$",
+      "x-max-bytes": 65536
+    },
+    "ExecArguments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/definitions/ExecText"
+      }
+    },
+    "ExecDirectory": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]*$",
+      "x-max-bytes": 4096
+    },
+    "ExecEnvironment": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z_]",
+            "not": {
+              "pattern": "[^A-Za-z0-9_]"
+            }
+          },
+          {
+            "$ref": "#/definitions/ExecText"
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "ExecParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "pin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "argv": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecArguments"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecDirectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "env": {
+          "$ref": "#/definitions/ExecEnvironment",
+          "default": []
+        },
+        "tty": {
+          "type": "boolean",
+          "default": false
+        },
+        "interactive": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "additionalProperties": false
+    },
+    "ExecExitResult": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int32",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int32",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "signal"
+      ],
+      "additionalProperties": true
+    },
+    "ExecStartupFailureResult": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -2147483648,
+          "maximum": 2147483647,
+          "x-json-integer": true
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": true
+    },
+    "ExecResult": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecExitResult"
+        },
+        {
+          "$ref": "#/definitions/ExecStartupFailureResult"
+        }
+      ]
+    },
+    "ExecReply": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int64",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int64",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "ExecSignalNumber": {
+      "type": "integer",
+      "format": "int32",
+      "minimum": -2147483648,
+      "maximum": 2147483647,
+      "x-json-integer": true,
+      "enum": [
+        1,
+        2,
+        15
+      ]
+    },
+    "ExecSignalParams": {
+      "type": "object",
+      "properties": {
+        "signal": {
+          "$ref": "#/definitions/ExecSignalNumber"
+        }
+      },
+      "required": [
+        "signal"
+      ],
+      "additionalProperties": false
     }
   },
   "x-api-version": 1,
@@ -3047,7 +3282,10 @@
     "self_reporting": "sessions.status exposes only the caller and its policy/activity. Worktree paths are deliberately visible. Activity is independent of lifecycle; variables update atomically and empty values remove keys. Missing or null set-worktree name clears the record; names are validated before filesystem access.",
     "session-records": "Current session read producers emit complete endpoint-specific records. Host sessions include descriptor-free process identities and host paths; sandbox records exclude them, except the intentionally shared Worktree.path. API-1 reader schemas retain the defaults and omissions previously accepted by Rust snapshot clients. The controller retains domain records; explicit projections and a generated-read adapter preserve snapshot consumers until C15. Nested terminal and raid summaries are typed public data; their methods migrate in C05 and C11.",
     "launch-lifecycle": "Launch keys bind endpoint actor and decoded parameters; identical retries return the original acceptance, including during recreate after the record becomes reserved. Recreate record resolution precedes normal launch validation. Acceptance state starting is not readiness. Public DTOs contain no recorded-history capability or host-selectable member worktree. Sandbox start uses current owner/run-target policy and fixed member launch arguments. Stop acceptance is not completed cleanup; host resize uses an exact session id, and sandbox detach closes its one-shot connection after acceptance. Sandbox sessions.attach remains refusal-only (-32601), before its existing trailing-input handling.",
-    "positional-parameters": "Method descriptors retain original Serde field order. Generated structs are named DTOs; decode_params<M> maps positional arrays to those names before generated decoding because Typify sorts struct fields. Optional omissions and trailing defaults remain the original ones. Schema defaults do not authorize or perform lifecycle transitions. Nullable fields without an original Serde default still require an array position; x-positional-required records this independently of named-object optionality. Member launch requires its third agent_name position (null is valid); set-worktree requires [name] or [null], while {} still clears it."
+    "positional-parameters": "Method descriptors retain original Serde field order. Generated structs are named DTOs; decode_params<M> maps positional arrays to those names before generated decoding because Typify sorts struct fields. Optional omissions and trailing defaults remain the original ones. Schema defaults do not authorize or perform lifecycle transitions. Nullable fields without an original Serde default still require an array position; x-positional-required records this independently of named-object optionality. Member launch requires its third agent_name position (null is valid); set-worktree requires [name] or [null], while {} still clears it.",
+    "exec-descriptors": "Host sessions.exec carries SCM_RIGHTS with the first byte of its frame: one PTY slave when tty=true, otherwise stdin/stdout/stderr in that order. No descriptor numbers appear in JSON. The existing host connection budget is three accumulated descriptors, including fragmented reads. The call takes and closes all received descriptors on refusal and transfers stdio only after validation.",
+    "exec-lifecycle": "Host-only exec waits for process completion and then closes its connection. Parameter and command validation precede descriptor-count, target/pin, policy, 64-exec capacity and init-availability checks, in that order; the existing canonical init-spawn 64 KiB check remains after ID allocation and before stdio transfer. Disconnect cancels only execs on that connection. kill_execs resolves dots as slashes and sends best-effort KillAll; accepted does not mean all commands have ended.",
+    "exec-signal": "exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability."
   },
   "x-envelope-schemas": {
     "Id": {
@@ -3400,6 +3638,71 @@
       "items": false,
       "minItems": 0,
       "maxItems": 0
+    },
+    "ExecParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecArguments"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecDirectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        {
+          "$ref": "#/definitions/ExecEnvironment",
+          "default": []
+        },
+        {
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 7
+    },
+    "ExecSignalParams": {
+      "type": "array",
+      "items": [
+        {
+          "$ref": "#/definitions/ExecSignalNumber"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
     }
   }
 }

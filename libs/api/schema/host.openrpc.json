@@ -469,9 +469,168 @@
         "$ref": "common.json#/x-positional-schemas/HostSessionsResizePositional"
       },
       "x-rust-name": "SessionsResize"
+    },
+    {
+      "name": "sessions.exec",
+      "description": "Run a host command with out-of-band stdio descriptors. The reply waits for exit or startup failure; closing this connection cancels its exec. Pin and existing validation/authority order are retained. See exec-descriptors, exec-lifecycle and exec-signal protocol rules.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ExecParams/properties/session"
+          }
+        },
+        {
+          "name": "pin",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ExecParams/properties/pin"
+          }
+        },
+        {
+          "name": "argv",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ExecParams/properties/argv"
+          }
+        },
+        {
+          "name": "cwd",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ExecParams/properties/cwd"
+          }
+        },
+        {
+          "name": "env",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ExecParams/properties/env"
+          }
+        },
+        {
+          "name": "tty",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ExecParams/properties/tty"
+          }
+        },
+        {
+          "name": "interactive",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ExecParams/properties/interactive"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ExecResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ExecParams"
+      },
+      "x-rust-name": "SessionsExec",
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/ExecParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/ExecReply"
+      },
+      "x-client-result-normalization": "exec-field-fallback",
+      "x-client-wire-result-schema": {}
+    },
+    {
+      "name": "sessions.kill_execs",
+      "description": "Best-effort cancellation of every exec in the resolved sandbox. Dots in the session selector are replaced with slashes. Acceptance means KillAll was handed to the runtime, not completion.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SessionSelectorParams"
+      },
+      "x-rust-name": "SessionsKillExecs",
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostSessionsStopPositional"
+      }
     }
   ],
-  "x-notifications": [],
+  "x-notifications": [
+    {
+      "name": "exec.signal",
+      "x-rust-name": "ExecSignal",
+      "direction": "client-to-server",
+      "sender": "host client",
+      "receiver": "daemon",
+      "connection-state": "active exec only; ignored as no-id notification outside active exec",
+      "description": "exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "signal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ExecSignalParams/properties/signal"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ExecSignalParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/ExecSignalParams"
+      }
+    }
+  ],
   "x-common-errors": [
     -32700,
     -32600,

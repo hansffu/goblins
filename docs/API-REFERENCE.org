@@ -1531,6 +1531,302 @@ Result:
 
 Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
 
+** =sessions.exec=
+
+Run a host command with out-of-band stdio descriptors. The reply waits for exit or startup failure; closing this connection cancels its exec. Pin and existing validation/authority order are retained. See exec-descriptors, exec-lifecycle and exec-signal protocol rules.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "pin": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "argv": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecArguments"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecDirectory"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "env": {
+      "$ref": "#/definitions/ExecEnvironment",
+      "default": []
+    },
+    "tty": {
+      "type": "boolean",
+      "default": false
+    },
+    "interactive": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecArguments"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecDirectory"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    {
+      "$ref": "#/definitions/ExecEnvironment",
+      "default": []
+    },
+    {
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "type": "boolean",
+      "default": false
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 7
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/ExecExitResult"
+    },
+    {
+      "$ref": "#/definitions/ExecStartupFailureResult"
+    }
+  ]
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =exec-field-fallback= adapter reads code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =sessions.kill_execs=
+
+Best-effort cancellation of every exec in the resolved sandbox. Dots in the session selector are replaced with slashes. Acceptance means KillAll was handed to the runtime, not completion.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009. Common envelope/connection errors also apply.
+
+** Notification =exec.signal=
+
+exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.
+
+Direction: =client-to-server=. Sender: host client. Receiver: daemon. State: active exec only; ignored as no-id notification outside active exec.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "signal": {
+      "$ref": "#/definitions/ExecSignalNumber"
+    }
+  },
+  "required": [
+    "signal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "$ref": "#/definitions/ExecSignalNumber"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
 * sandbox
 
 ** =initialize=
@@ -6480,6 +6776,296 @@ Compatible API-1 client reply (additive information may be absent):
 }
 #+end_src
 
+** =ExecText=
+
+#+begin_src json
+{
+  "type": "string",
+  "pattern": "^[^\\u0000]*$",
+  "x-max-bytes": 65536
+}
+#+end_src
+
+** =ExecArguments=
+
+#+begin_src json
+{
+  "type": "array",
+  "minItems": 1,
+  "maxItems": 1024,
+  "items": {
+    "$ref": "#/definitions/ExecText"
+  }
+}
+#+end_src
+
+** =ExecDirectory=
+
+#+begin_src json
+{
+  "type": "string",
+  "pattern": "^/[^\\u0000]*$",
+  "x-max-bytes": 4096
+}
+#+end_src
+
+** =ExecEnvironment=
+
+#+begin_src json
+{
+  "type": "array",
+  "maxItems": 256,
+  "items": {
+    "type": "array",
+    "items": [
+      {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z_]",
+        "not": {
+          "pattern": "[^A-Za-z0-9_]"
+        }
+      },
+      {
+        "$ref": "#/definitions/ExecText"
+      }
+    ],
+    "minItems": 2,
+    "maxItems": 2
+  }
+}
+#+end_src
+
+** =ExecParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "pin": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "argv": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecArguments"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ExecDirectory"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "env": {
+      "$ref": "#/definitions/ExecEnvironment",
+      "default": []
+    },
+    "tty": {
+      "type": "boolean",
+      "default": false
+    },
+    "interactive": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =ExecExitResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -2147483648,
+          "maximum": 2147483647,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int32",
+          "minimum": -2147483648,
+          "maximum": 2147483647,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "code",
+    "signal"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =ExecStartupFailureResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "integer",
+      "format": "int32",
+      "minimum": -2147483648,
+      "maximum": 2147483647,
+      "x-json-integer": true
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =ExecResult=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/ExecExitResult"
+    },
+    {
+      "$ref": "#/definitions/ExecStartupFailureResult"
+    }
+  ]
+}
+#+end_src
+
+** =ExecReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =ExecSignalNumber=
+
+#+begin_src json
+{
+  "type": "integer",
+  "format": "int32",
+  "minimum": -2147483648,
+  "maximum": 2147483647,
+  "x-json-integer": true,
+  "enum": [
+    1,
+    2,
+    15
+  ]
+}
+#+end_src
+
+** =ExecSignalParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "signal": {
+      "$ref": "#/definitions/ExecSignalNumber"
+    }
+  },
+  "required": [
+    "signal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -6495,6 +7081,9 @@ Compatible API-1 client reply (additive information may be absent):
 - =session-records= :: Current session read producers emit complete endpoint-specific records. Host sessions include descriptor-free process identities and host paths; sandbox records exclude them, except the intentionally shared Worktree.path. API-1 reader schemas retain the defaults and omissions previously accepted by Rust snapshot clients. The controller retains domain records; explicit projections and a generated-read adapter preserve snapshot consumers until C15. Nested terminal and raid summaries are typed public data; their methods migrate in C05 and C11.
 - =launch-lifecycle= :: Launch keys bind endpoint actor and decoded parameters; identical retries return the original acceptance, including during recreate after the record becomes reserved. Recreate record resolution precedes normal launch validation. Acceptance state starting is not readiness. Public DTOs contain no recorded-history capability or host-selectable member worktree. Sandbox start uses current owner/run-target policy and fixed member launch arguments. Stop acceptance is not completed cleanup; host resize uses an exact session id, and sandbox detach closes its one-shot connection after acceptance. Sandbox sessions.attach remains refusal-only (-32601), before its existing trailing-input handling.
 - =positional-parameters= :: Method descriptors retain original Serde field order. Generated structs are named DTOs; decode_params<M> maps positional arrays to those names before generated decoding because Typify sorts struct fields. Optional omissions and trailing defaults remain the original ones. Schema defaults do not authorize or perform lifecycle transitions. Nullable fields without an original Serde default still require an array position; x-positional-required records this independently of named-object optionality. Member launch requires its third agent_name position (null is valid); set-worktree requires [name] or [null], while {} still clears it.
+- =exec-descriptors= :: Host sessions.exec carries SCM_RIGHTS with the first byte of its frame: one PTY slave when tty=true, otherwise stdin/stdout/stderr in that order. No descriptor numbers appear in JSON. The existing host connection budget is three accumulated descriptors, including fragmented reads. The call takes and closes all received descriptors on refusal and transfers stdio only after validation.
+- =exec-lifecycle= :: Host-only exec waits for process completion and then closes its connection. Parameter and command validation precede descriptor-count, target/pin, policy, 64-exec capacity and init-availability checks, in that order; the existing canonical init-spawn 64 KiB check remains after ID allocation and before stdio transfer. Disconnect cancels only execs on that connection. kill_execs resolves dots as slashes and sends best-effort KillAll; accepted does not mean all commands have ended.
+- =exec-signal= :: exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.
 
 * Common errors
 
@@ -6530,3 +7119,6 @@ Compatible API-1 client reply (additive information may be absent):
 - =launch-retry-cache= :: The controller retains its serialized acceptance cache and domain Start (including private recorded history and member worktree). Generated HostLaunchParams projects into Start; HostLaunchResult produces the acceptance. Sandbox projection decodes that known cached result into the generated DTO and emits only MemberLaunchResult fields; no host paths cross the sandbox launch reply.
 - =host-launch-omission= :: Typify cannot emit skip_serializing_if for a replaced BTreeMap field. Method OMIT_EMPTY_OBJECTS comes from x-client-omit-empty-objects and params_value<M> omits the empty host options object before a typed exchange. Nonempty options remain present and reach the existing host refusal; inbound decoding/defaults are unchanged. Strict pre-launch-options fake-daemon CLI tests cover run and resume.
 - =client-param-presence= :: ParamPresence metadata comes from x-client-param-presence. params_value<M> retains host run null agent_name/scope/dev_shell, removes the empty name for recreate, and retains sandbox run null agent_name. It never removes a nonempty supplied name or other explicit values, so invalid combinations still reach existing validation. This is caller wire-shape compatibility around generated DTOs; inbound decoding is unchanged.
+- =exec-command-validation= :: ExecText, ExecArguments and ExecDirectory map to String/Vec<String>/String; ExecEnvironment maps to Vec<(String,String)>. Existing validate_command retains UTF-8 byte, NUL, argv/env bounds and name/path diagnostics before descriptor/authority checks. The canonical init encoding validator remains after target, policy, capacity and init checks. Descriptor transport/ownership and cancellation remain handwritten.
+- =exec-signal= :: ExecSignalNumber maps to i32 so the existing forwardable validator retains legal signal/state handling. Generated notification identity and ordered parameters are separate from callable Method identities. Invalid active-exec input closes instead of returning an RPC error.
+- =exec-client-reply= :: ExecReply is the generated normalized client DTO, not a restriction on old wire results. The named exec-field-fallback Response adapter preserves the original CLI: code/signal are independently read as signed 64-bit JSON integers, message as a string; malformed/missing fields become None. Non-object results have no recognized fields, retaining the exit-255 fallback. x-client-wire-result-schema explicitly accepts these historical inputs; current producer schemas remain precise. Canonical JSON-RPC envelope/correlation errors are still rejected.

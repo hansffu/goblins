@@ -63,6 +63,16 @@ def method(endpoint, name):
     return next((m for m in document(endpoint)["methods"] if m["name"] == name), None)
 
 
+def validate_notification(endpoint, direction, notification):
+    entry = next((n for n in document(endpoint).get("x-notifications", []) if n["name"] == notification.get("method") and n["direction"] == direction), None)
+    if entry is None: return False
+    if set(notification) - {"jsonrpc", "method", "params"} or notification.get("jsonrpc") != "2.0":
+        raise ValidationError("invalid notification envelope")
+    params = notification.get("params", {})
+    schema_validator(entry["x-positional-schema"] if isinstance(params, list) else entry["x-params-schema"]).validate(params)
+    return True
+
+
 def validate_reply(endpoint, name, reply, compatibility=False):
     """Unmigrated methods remain pending; covered methods must match exactly."""
     entry = method(endpoint, name)
@@ -77,6 +87,11 @@ def validate_reply(endpoint, name, reply, compatibility=False):
             raise ValidationError(f"unlisted error for {endpoint}/{name}: {error['code']}")
     else:
         result = reply["result"]
+        if compatibility and entry.get("x-client-result-normalization") == "exec-field-fallback":
+            schema_validator(entry["x-client-wire-result-schema"]).validate(result)
+            fields = result if isinstance(result, dict) else {}
+            result = {name: (value if type(value) is int and -(2**63) <= value < 2**63 else None) for name in ("code", "signal") for value in [fields.get(name)]}
+            result["message"] = fields.get("message") if isinstance(fields.get("message"), str) else None
         schema = entry.get("x-client-result-schema", entry["result"]["schema"]) if compatibility else entry["result"]["schema"]
         schema_validator(schema).validate(result)
         if name == "initialize" and (result["api"] != common()["x-api-version"] or result["role"] != endpoint):
@@ -93,7 +108,13 @@ def reference():
         for entry in document(endpoint)["methods"]:
             lines.extend([f"** ={entry['name']}=", "", entry["description"], "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", "", "Result:", "", "#+begin_src json", json.dumps(resolve(entry["result"]["schema"]), indent=2), "#+end_src", "", "Method errors: " + ", ".join(str(e["code"]) for e in entry["errors"]) + ". Common envelope/connection errors also apply.", ""])
             if "x-client-result-schema" in entry:
-                lines.extend(["Compatible API-1 client reply (additive information may be absent):", "", "#+begin_src json", json.dumps(resolve(entry["x-client-result-schema"]), indent=2), "#+end_src", ""])
+                if "x-client-result-normalization" in entry:
+                    lines.extend(["Compatible client wire result (legacy field fallback):", "", "#+begin_src json",json.dumps(resolve(entry["x-client-wire-result-schema"]),indent=2),"#+end_src","","The =exec-field-fallback= adapter reads code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields. The generated normalized client DTO is:",""])
+                else:
+                    lines.extend(["Compatible API-1 client reply (additive information may be absent):", ""])
+                lines.extend(["#+begin_src json", json.dumps(resolve(entry["x-client-result-schema"]), indent=2), "#+end_src", ""])
+        for entry in document(endpoint).get("x-notifications", []):
+            lines.extend([f"** Notification ={entry['name']}=", "", entry["description"], "", f"Direction: ={entry['direction']}=. Sender: {entry['sender']}. Receiver: {entry['receiver']}. State: {entry['connection-state']}.", "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", ""])
     lines.extend(["* Envelopes (handwritten transport, schema checked)", "", "#+begin_src json", json.dumps(common()["x-envelope-schemas"], indent=2), "#+end_src", "", "* Shared records", ""])
     for name, schema in common()["definitions"].items():
         lines.extend([f"** ={name}=", "", "#+begin_src json", json.dumps(schema, indent=2), "#+end_src", ""])
@@ -172,6 +193,10 @@ def notification_names(text):
     """Discover notification objects; nested params.id is not a request ID."""
     text = re.split(r'#\[cfg\(test\)\]\s*mod\s+tests\b', text, maxsplit=1)[0]
     names = set()
+    for endpoint, rust in re.findall(r'contract::notification::<\s*contract::(host|sandbox)_notifications::(\w+)\s*,?\s*>', text):
+        matches = [n["name"] for n in document(endpoint).get("x-notifications", []) if n["x-rust-name"] == rust]
+        if len(matches) != 1: raise ValueError("unassigned generated notification emitter")
+        names.add(matches[0])
     for macro in re.finditer(r'\bjson!\s*\(\s*\{', text):
         body = rust_block(text, macro.end() - 1)
         tokens = [token.group() for token in RUST_TOKEN.finditer(body) if not token.group().startswith("/")]
@@ -208,6 +233,10 @@ def method_names(text):
     for endpoint, rust in re.findall(r'contract::(host|sandbox)::(\w+)::NAME', text):
         matches = [entry["name"] for entry in document(endpoint)["methods"] if entry["x-rust-name"] == rust]
         if len(matches) != 1: raise ValueError(f"unassigned generated identity {endpoint}/{rust}")
+        literals.add(matches[0])
+    for endpoint, rust in re.findall(r'contract::(?:decode_notification|notification)::<\s*contract::(host|sandbox)_notifications::(\w+)\s*,?\s*>', text):
+        matches = [n["name"] for n in document(endpoint).get("x-notifications", []) if n["x-rust-name"] == rust]
+        if len(matches) != 1: raise ValueError("unassigned generated notification identity")
         literals.add(matches[0])
     return literals
 
@@ -263,9 +292,10 @@ def check_coverage(registry=None, sources=None):
                      {("sandbox", name, "server-to-client") for name in submitted} |
                      {("host", name, "client-to-server") for name in notification_names(sources["exec_client"])})
     assigned = {(row["endpoint"], row["name"], row["direction"]) for row in registry["notifications"]}
+    covered = [(endpoint, row["name"], row["direction"]) for endpoint in ("host", "sandbox") for row in document(endpoint).get("x-notifications", [])]
     for row in registry["notifications"]:
         if not re.fullmatch(r'C\d\d', row["chunk"]): raise ValueError("invalid notification chunk")
-    if assigned != notifications or len(assigned) != len(registry["notifications"]):
+    if assigned | set(covered) != notifications or len(assigned) != len(registry["notifications"]) or len(set(covered)) != len(covered) or assigned & set(covered):
         raise ValueError("notification endpoint/direction/chunk differs from its exchange")
     checks = [("controller", "submit", "host.submitted"), ("controller", "publish", "state.changed"), ("exec_input", "exec_input", "exec.signal")]
     for source, function, name in checks:
@@ -289,7 +319,10 @@ def check():
         names = [m["name"] for m in doc["methods"]]
         if len(names) != len(set(names)):
             raise ValueError(f"duplicate method: {endpoint}")
-        for entry in doc["methods"]:
+        for entry in doc["methods"] + doc.get("x-notifications", []):
+            if entry in doc.get("x-notifications", []):
+                if entry["name"] in names or entry["direction"] not in ("client-to-server", "server-to-client") or not all(entry.get(k) for k in ("sender", "receiver", "connection-state", "description")):
+                    raise ValueError("invalid notification contract")
             params = resolve(entry["x-params-schema"])
             if {p["name"] for p in entry["params"]} != set(params["properties"]):
                 raise ValueError(f"parameter descriptors disagree: {entry['name']}")
@@ -321,9 +354,13 @@ def check():
                 raise ValueError(f"positional schema differs from method parameter order: {entry['name']}")
             schema_validator(entry["x-positional-schema"]).check_schema(resolve(entry["x-positional-schema"]))
             schema_validator(entry["x-params-schema"]).check_schema(params)
-            schema_validator(entry["result"]["schema"]).check_schema(resolve(entry["result"]["schema"]))
+            if "result" in entry:
+                schema_validator(entry["result"]["schema"]).check_schema(resolve(entry["result"]["schema"]))
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
+            if "x-client-result-normalization" in entry:
+                if endpoint != "host" or entry["name"] != "sessions.exec" or entry["x-client-result-normalization"] != "exec-field-fallback" or entry.get("x-client-wire-result-schema") != {}:
+                    raise ValueError("unknown client result normalization")
     Draft7Validator.check_schema(common())
     check_coverage()
 

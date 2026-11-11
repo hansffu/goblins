@@ -178,8 +178,10 @@ Resizes the session's PTY, or for a goblin with =onAttach= the attached client's
 
 Runs a command inside a running goblin. The request must carry file descriptors (=SCM_RIGHTS=) with its first byte: one PTY slave with =tty=, otherwise stdin, stdout and stderr. The reply arrives when the command exits, and the connection then closes. While it runs, the client may send =exec.signal= notifications (={"signal": N}=) to forward a signal.
 
-- Input :: ={"session", "pin", "argv", "cwd", "env", "tty", "interactive"}=. =pin= (optional) requires this exact session ID. =argv= (optional) defaults to the sandbox's =$SHELL=; otherwise 1–1024 arguments of at most 64 KiB each, without NUL. =cwd= (optional) is absolute, at most 4096 bytes. =env= is a list of at most 256 =[name, value]= pairs. =interactive= marks an explicit =-t= shell, counted in =shells=.
-- Output :: ={"code", "signal"}= when it exited, or ={"code", "message"}= when it could not be started.
+- Input :: ={"session", "pin", "argv", "cwd", "env", "tty", "interactive"}=. Only =session= is required. The positional form follows that exact order, with one through seven elements. Missing or null =pin=, =argv= and =cwd= mean no pin, the sandbox's =$SHELL= and its working directory respectively. Otherwise =argv= has 1–1024 arguments of at most 64 KiB each, without NUL; =cwd= is absolute, without NUL and at most 4096 UTF-8 bytes. =env= defaults to =[]= and is a list of at most 256 =[name, value]= pairs: names match =[A-Za-z_][A-Za-z0-9_]{0,255}= and values have at most 64 KiB without NUL. =tty= and =interactive= default to false; an explicit =-t= shell is counted in =shells= only when both are true. Unknown named parameters, null =env= and invalid element types are refused.
+- Output :: ={"code", "signal"}= when it exited, with both fields present and independently nullable signed 32-bit integers, or ={"code", "message"}= when it could not be started, with a signed 32-bit shell code and a diagnostic string. If init could not be asked, the call returns =-32010= instead of a result. Added result fields are ignored by readers; the CLI independently treats malformed or missing code/signal/message fields as absent, retaining valid fields alongside them. A non-object legacy result has no recognized fields; the CLI uses exit 255 when neither code nor signal is usable. The named =exec-field-fallback= adapter normalizes those historical inputs into generated client fields; it does not relax current producer schemas.
+
+The host-only =exec.signal= notification has no =id= and takes ={"signal": N}= or =[N]=, where =N= is a signed 32-bit integer and one of =SIGHUP= (1), =SIGINT= (2) or =SIGTERM= (15). While an exec is active, invalid parameters, unsupported signals, any request ID or a different method close that connection; cleanup cancels only its exec. Outside active exec, a no-ID notification is ignored after envelope parsing; a host request with an ID and method =exec.signal= is unknown (=-32601=). The notification never enters a callable-method or sandbox allowlist.
 
 The host connection accepts at most three accumulated descriptors (=goblins_protocol::HOST_MAX_FDS=), including across fragmented reads; this is separate from the private supervisor transport's 240-descriptor frame limit. Exec validation also checks the canonical serialized init =spawn= command against 64 KiB, counting the allocated exec ID and JSON escaping; only a larger encoding returns =-32602= with =command too long=. This check remains after target/policy/capacity/init-availability checks and before stdio transfer or exec registration. The shared validator changes neither public framing limits nor refusal order.
 
@@ -187,7 +189,7 @@ The host connection accepts at most three accumulated descriptors (=goblins_prot
 
 Kills every exec running in a goblin. The kill is best effort: the answer means it was handed to the goblin's runtime, not that every exec has ended; each exec's own call ends when it does. A goblin whose sandbox init has gone answers =conflict=.
 
-- Input :: ={"session"}=
+- Input :: ={"session"}= or =[session]=. Dots in this selector are replaced with slashes before resolution; unknown fields are refused.
 - Output :: ={"accepted": true}=
 
 ** Terminals

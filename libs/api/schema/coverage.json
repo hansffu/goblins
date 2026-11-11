@@ -1,11 +1,5 @@
 {
   "pending": {
-    "C04": {
-      "host": [
-        "sessions.exec",
-        "sessions.kill_execs"
-      ]
-    },
     "C05": {
       "host": [
         "terminals.create",
@@ -115,12 +109,6 @@
     }
   },
   "notifications": [
-    {
-      "endpoint": "host",
-      "name": "exec.signal",
-      "direction": "client-to-server",
-      "chunk": "C04"
-    },
     {
       "endpoint": "sandbox",
       "name": "host.submitted",

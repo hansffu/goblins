@@ -807,11 +807,6 @@ impl From<contract::HostLaunchParams> for Start {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SessionId {
-    session: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RequestId {
     request: String,
 }
@@ -2750,8 +2745,8 @@ impl Controller {
                 let id = self.resolve_session(&p.session)?;
                 self.detach(&id)
             }
-            "sessions.kill_execs" => {
-                let p: SessionId = params(value)?;
+            contract::host::SessionsKillExecs::NAME => {
+                let p = contract_params::<contract::host::SessionsKillExecs>(value)?;
                 self.kill_execs(&p.session)
             }
             contract::host::SessionsResize::NAME => {
@@ -2994,7 +2989,7 @@ impl Controller {
                 return Ok(None);
             }
             match &c.role {
-                Role::Host if call.method == "sessions.exec" => {
+                Role::Host if call.method == contract::host::SessionsExec::NAME => {
                     self.exec_start(c, id.clone(), call.params).map(|()| None)
                 }
                 Role::Host if call.method.starts_with("terminals.") => self.terminals(
@@ -6024,6 +6019,196 @@ mod tests {
             0,
             "rejected descriptors leaked"
         );
+    }
+
+    #[test]
+    fn exec_command_validation_matches_the_contract_corpus() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        for case in fixtures["exec_parameter_cases"].as_array().unwrap() {
+            if case["method"] != "sessions.exec" {
+                continue;
+            }
+            let valid =
+                contract::decode_params::<contract::host::SessionsExec>(case["params"].clone())
+                    .ok()
+                    .is_some_and(|p| exec::validate_command(&p.argv, &p.cwd, &p.env).is_ok());
+            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
+        }
+    }
+
+    #[test]
+    fn generated_exec_completions_keep_delayed_reply_shapes_and_close_after_answering() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        for case in 0..4 {
+            let (mut c, _peer) = connection(Role::Host);
+            c.id = d.number();
+            c.initialized = true;
+            c.fds = (0..3).map(|_| unix::pipe().unwrap().0).collect();
+            d.exec_start(&mut c, json!(99), json!(["a"])).unwrap();
+            assert!(c.output.is_empty() && c.waiting.is_some());
+            let id = c.exec.unwrap();
+            assert!(matches!(
+                received.lock().unwrap().pop_front(),
+                Some(Command::Spawn { .. })
+            ));
+            d.connections.push(c);
+            let (event, expected) = match case {
+                0 => (
+                    Event::Exited {
+                        id,
+                        code: Some(7),
+                        signal: None,
+                    },
+                    rpc::result(json!(99), json!({"code":7,"signal":null})),
+                ),
+                1 => (
+                    Event::Exited {
+                        id,
+                        code: None,
+                        signal: Some(15),
+                    },
+                    rpc::result(json!(99), json!({"code":null,"signal":15})),
+                ),
+                2 => (
+                    Event::SpawnFailed {
+                        id,
+                        code: Some(127),
+                        message: "missing".into(),
+                    },
+                    rpc::result(json!(99), json!({"code":127,"message":"missing"})),
+                ),
+                _ => (
+                    Event::SpawnFailed {
+                        id,
+                        code: None,
+                        message: "init unavailable".into(),
+                    },
+                    rpc::error(json!(99), -32010, "init unavailable"),
+                ),
+            };
+            d.process_event("a", event);
+            let mut c = d.connections.pop().unwrap();
+            assert!(c.close && c.waiting.is_none());
+            let frame = c.output.pop_front().unwrap();
+            let body = frame.windows(4).position(|s| s == b"\r\n\r\n").unwrap() + 4;
+            assert_eq!(rpc::parse(&frame[body..]).unwrap(), expected);
+            assert!(d.execs.is_empty());
+            assert!(received.lock().unwrap().is_empty());
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn exec_signal_contract_is_connection_scoped_and_invalid_input_cancels_only_its_exec() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        let start = |d: &mut Controller| {
+            let (mut c, peer) = connection(Role::Host);
+            c.id = d.number();
+            c.initialized = true;
+            c.fds = (0..3).map(|_| unix::pipe().unwrap().0).collect();
+            d.exec_start(&mut c, json!(5), json!({"session":"a"}))
+                .unwrap();
+            assert!(matches!(
+                received.lock().unwrap().pop_front(),
+                Some(Command::Spawn { .. })
+            ));
+            (c, peer)
+        };
+        let (unrelated, _unrelated_peer) = start(&mut d);
+        let unrelated_id = unrelated.exec.unwrap();
+        let invalid = [
+            (None, "exec.signal", json!({})),
+            (None, "exec.signal", json!([])),
+            (None, "exec.signal", json!({"signal":null})),
+            (None, "exec.signal", json!({"signal":9})),
+            (None, "exec.signal", json!({"signal":1.0})),
+            (None, "exec.signal", json!({"signal":2147483648_u64})),
+            (None, "exec.signal", json!({"signal":2,"extra":0})),
+            (None, "sessions.stop", json!({"session":"a"})),
+            (Some(json!(99)), "exec.signal", json!({"signal":2})),
+        ];
+        for (rpc_id, method, params) in invalid {
+            let (mut c, _peer) = start(&mut d);
+            let id = c.exec.unwrap();
+            for params in [json!({"signal":1}), json!([2]), json!({"signal":15})] {
+                let expected = params
+                    .get("signal")
+                    .or_else(|| params.get(0))
+                    .unwrap()
+                    .as_i64()
+                    .unwrap() as i32;
+                d.exec_input(
+                    &mut c,
+                    id,
+                    rpc::Call {
+                        jsonrpc: "2.0".into(),
+                        id: None,
+                        method: "exec.signal".into(),
+                        params,
+                    },
+                );
+                assert!(!c.dead);
+                assert!(
+                    matches!(received.lock().unwrap().pop_front(),Some(Command::Signal{id:actual,signal}) if actual==id && signal==expected)
+                );
+            }
+            d.exec_input(
+                &mut c,
+                id,
+                rpc::Call {
+                    jsonrpc: "2.0".into(),
+                    id: rpc_id,
+                    method: method.into(),
+                    params,
+                },
+            );
+            assert!(c.dead);
+            assert!(received.lock().unwrap().is_empty());
+            d.exec_withdraw(c.id);
+            assert!(
+                matches!(received.lock().unwrap().pop_front(),Some(Command::CancelProcess{id:actual,everything:false}) if actual==id)
+            );
+            assert_eq!(d.execs.len(), 1);
+            assert!(d.execs.contains_key(&unrelated_id));
+        }
+        let (mut idle, _peer) = connection(Role::Host);
+        idle.initialized = true;
+        d.dispatch(
+            &mut idle,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: None,
+                method: "exec.signal".into(),
+                params: json!({"signal":15}),
+            },
+        );
+        assert!(!idle.dead && idle.output.is_empty());
+        assert!(received.lock().unwrap().is_empty());
+        assert_eq!(
+            d.host(&mut idle, "exec.signal", json!({"signal":15}))
+                .unwrap_err()
+                .0,
+            -32601
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -2,10 +2,16 @@
 //! the stdio relay (or the PTY master with -t); the daemon only hands the
 //! sandbox ends to goblins-init and reports the exit status. This
 //! connection stays open for the exec's life: closing it cancels the exec.
-use goblins_controller::{Result, host::Client};
+use goblins_controller::{
+    Result,
+    host::{Client, ExecStdio},
+};
 use goblins_jsonrpc::{self as rpc, Decoder};
+use goblins_protocol::contract::{self, Method, Response};
 use goblins_unix as unix;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::{
     io::{self, Read, Write},
     os::fd::{AsRawFd, OwnedFd, RawFd},
@@ -118,7 +124,7 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
         let (name, value) = entry
             .split_once('=')
             .ok_or_else(|| format!("-e expects NAME=VALUE, not {entry}"))?;
-        env.push(json!([name, value]));
+        env.push((name.to_string(), value.to_string()));
     }
     let mut client = Client::connect(&state)?;
     if !client.features.iter().any(|f| f == "exec") {
@@ -131,21 +137,15 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
     {
         return Err(format!("daemon instance changed; goblin {} is gone", options.goblin).into());
     }
-    let mut params = json!({
-        "session": options.goblin,
-        "tty": tty,
-        "interactive": options.tty == "always",
-        "env": env,
-    });
-    if !options.command.is_empty() {
-        params["argv"] = json!(options.command);
-    }
-    if let Some(cwd) = &options.workdir {
-        params["cwd"] = json!(cwd);
-    }
-    if let Some(pin) = &options.session {
-        params["pin"] = json!(pin);
-    }
+    let params = contract::ExecParams {
+        session: options.goblin,
+        tty,
+        interactive: options.tty == "always",
+        env,
+        argv: (!options.command.is_empty()).then_some(options.command),
+        cwd: options.workdir,
+        pin: options.session,
+    };
     // The sandbox ends travel to goblins-init; we keep our ends.
     let mut pipes = Vec::new();
     let mut keep = Vec::new();
@@ -159,7 +159,7 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
             ws_ypixel: 0,
         });
         let (m, slave) = unix::pty(size.ws_row, size.ws_col)?;
-        id = client.send_with_fds("sessions.exec", params, &[slave.as_raw_fd()])?;
+        id = client.send_exec(params, ExecStdio::Tty(&slave))?;
         unix::nonblocking(m.as_raw_fd())?;
         pipes.push(Pipe::new(0, m.as_raw_fd()));
         pipes.push(Pipe::new(m.as_raw_fd(), 1));
@@ -168,15 +168,7 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
         let (stdin_r, stdin_w) = unix::pipe()?;
         let (stdout_r, stdout_w) = unix::pipe()?;
         let (stderr_r, stderr_w) = unix::pipe()?;
-        id = client.send_with_fds(
-            "sessions.exec",
-            params,
-            &[
-                stdin_r.as_raw_fd(),
-                stdout_w.as_raw_fd(),
-                stderr_w.as_raw_fd(),
-            ],
-        )?;
+        id = client.send_exec(params, ExecStdio::Fds([&stdin_r, &stdout_w, &stderr_w]))?;
         for fd in [&stdin_w, &stdout_r, &stderr_r] {
             unix::nonblocking(fd.as_raw_fd())?;
         }
@@ -205,11 +197,11 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
             .to_string()
             .into());
     }
-    let result = &reply["result"];
-    if let Some(message) = result["message"].as_str() {
+    let result = <contract::host::SessionsExec as Method>::Result::decode(reply["result"].clone())?;
+    if let Some(message) = &result.message {
         eprintln!("goblins: {}", goblins_protocol::plain_text(message));
     }
-    Ok(match (result["code"].as_i64(), result["signal"].as_i64()) {
+    Ok(match (result.code, result.signal) {
         (Some(code), _) => code as i32,
         (None, Some(signal)) => 128 + signal as i32,
         _ => FAILURE,
@@ -243,9 +235,11 @@ fn relay_with_clock(
             (&HUP, libc::SIGHUP),
         ] {
             if flag.swap(false, Ordering::Relaxed) && reply.is_none() {
-                let frame = rpc::encode(
-                    &json!({"jsonrpc":"2.0","method":"exec.signal","params":{"signal":signal}}),
-                )?;
+                let frame = rpc::encode(&contract::notification::<
+                    contract::host_notifications::ExecSignal,
+                >(contract::ExecSignalParams {
+                    signal,
+                })?)?;
                 // Small and rare: a blocking write is fine.
                 stream.set_nonblocking(false)?;
                 stream.write_all(&frame)?;

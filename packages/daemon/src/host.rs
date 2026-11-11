@@ -18,6 +18,12 @@ pub struct Client {
     stream: UnixStream,
     next: u64,
 }
+
+/// Borrowed stdio capabilities; descriptor numbers never enter the JSON DTO.
+pub enum ExecStdio<'a> {
+    Tty(&'a std::os::fd::OwnedFd),
+    Fds([&'a std::os::fd::OwnedFd; 3]),
+}
 impl Client {
     pub fn connect(state: &Path) -> Result<Self> {
         Self::connect_optional(state)?
@@ -125,6 +131,25 @@ impl Client {
         )?;
         Ok(id)
     }
+    /// Start the generated exec contract while retaining descriptor ownership
+    /// in the caller until the send completes. Completion is read by the relay.
+    pub fn send_exec(
+        &mut self,
+        params: contract::ExecParams,
+        stdio: ExecStdio<'_>,
+    ) -> Result<Value> {
+        use std::os::fd::AsRawFd;
+        let fds = match stdio {
+            ExecStdio::Tty(fd) if params.tty => vec![fd.as_raw_fd()],
+            ExecStdio::Fds(fds) if !params.tty => fds.into_iter().map(AsRawFd::as_raw_fd).collect(),
+            _ => return Err("exec stdio does not match tty".into()),
+        };
+        self.send_with_fds(
+            contract::host::SessionsExec::NAME,
+            contract::params_value::<contract::host::SessionsExec>(params)?,
+            &fds,
+        )
+    }
     /// The connection itself, for a caller that keeps it open (an exec).
     pub fn into_stream(self) -> UnixStream {
         self.stream
@@ -229,6 +254,63 @@ pub fn decision<'a>(line: &str, snapshot: &'a Snapshot) -> Option<(&'a Permissio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_exec_send_binds_stdio_without_consuming_borrowed_descriptors() {
+        use std::os::fd::AsRawFd;
+        let (stream, peer) = UnixStream::pair().unwrap();
+        let mut client = Client {
+            instance: String::new(),
+            features: vec![],
+            stream,
+            next: 1,
+        };
+        let fd = goblins_unix::pipe().unwrap().0;
+        for tty in [false, true] {
+            let params = contract::ExecParams {
+                session: "a".into(),
+                pin: None,
+                argv: None,
+                cwd: None,
+                env: vec![],
+                tty,
+                interactive: false,
+            };
+            if !tty {
+                assert!(
+                    client
+                        .send_exec(params.clone(), ExecStdio::Tty(&fd))
+                        .is_err()
+                );
+                assert_eq!(client.next, 1);
+            }
+            let stdio = if tty {
+                ExecStdio::Tty(&fd)
+            } else {
+                ExecStdio::Fds([&fd, &fd, &fd])
+            };
+            let id = client.send_exec(params, stdio).unwrap();
+            let mut frame = [0; 4096];
+            let (length, received) =
+                goblins_unix::ancillary::receive(peer.as_raw_fd(), &mut frame, 0).unwrap();
+            assert_eq!(received.len(), if tty { 1 } else { 3 });
+            let body = frame[..length]
+                .windows(4)
+                .position(|s| s == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            let call = rpc::parse(&frame[body..length]).unwrap();
+            assert_eq!(call["id"], id);
+            assert_eq!(call["method"], contract::host::SessionsExec::NAME);
+            assert_eq!(
+                call["params"],
+                json!({"session":"a","env":[],"tty":tty,"interactive":false})
+            );
+            assert!(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) } >= 0);
+        }
+        // No descriptor number or capability is ever part of the JSON object.
+        assert_eq!(client.next, 3);
+    }
     use std::os::fd::AsRawFd;
 
     #[test]

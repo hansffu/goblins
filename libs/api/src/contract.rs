@@ -27,6 +27,30 @@ pub trait Method {
     const PRESENCE: ParamPresence;
 }
 
+/// Notifications have no result association and never become callable methods.
+pub trait Notification {
+    type Params: Serialize + DeserializeOwned;
+    const NAME: &'static str;
+    const DIRECTION: &'static str;
+    const PARAM_ORDER: &'static [&'static str];
+    const MIN_POSITIONAL: usize;
+}
+
+pub fn notification<N: Notification>(params: N::Params) -> serde_json::Result<Value> {
+    Ok(
+        serde_json::json!({"jsonrpc":"2.0", "method":N::NAME, "params":serde_json::to_value(params)?}),
+    )
+}
+
+pub fn decode_notification<N: Notification>(call: rpc::Call) -> serde_json::Result<N::Params> {
+    if call.id.is_some() || call.method != N::NAME {
+        return Err(<serde_json::Error as serde::de::Error>::custom(
+            "unexpected notification",
+        ));
+    }
+    decode_ordered(call.params, N::PARAM_ORDER, N::MIN_POSITIONAL)
+}
+
 mod generated {
     use super::EmptyParams;
     include!(concat!(env!("OUT_DIR"), "/contract.rs"));
@@ -60,6 +84,21 @@ pub trait Response: DeserializeOwned {
     fn decode(value: Value) -> io::Result<Self> {
         validate_result_shape(&value, Self::SCHEMA)?;
         serde_json::from_value(value).map_err(io::Error::other)
+    }
+}
+
+/// The original exec CLI read these fields independently. Keep that legacy
+/// fallback before decoding the generated normalized DTO; current producers
+/// still use the precise exit/startup-failure schemas.
+impl Response for ExecReply {
+    const SCHEMA: &'static str = "ExecReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        let normalized = serde_json::json!({
+            "code": value.get("code").and_then(Value::as_i64),
+            "signal": value.get("signal").and_then(Value::as_i64),
+            "message": value.get("message").and_then(Value::as_str),
+        });
+        serde_json::from_value(normalized).map_err(io::Error::other)
     }
 }
 
@@ -273,20 +312,28 @@ impl Response for ServerStopResult {
 /// Decode requests using their original endpoint-specific positional field order.
 /// Typify emits alphabetic Rust fields, so wire arrays must first become named data.
 pub fn decode_params<M: Method>(value: Value) -> serde_json::Result<M::Params> {
+    decode_ordered(value, M::PARAM_ORDER, M::MIN_POSITIONAL)
+}
+
+fn decode_ordered<P: DeserializeOwned>(
+    value: Value,
+    order: &[&str],
+    minimum: usize,
+) -> serde_json::Result<P> {
     let value = match value {
         Value::Array(values) => {
-            if values.len() < M::MIN_POSITIONAL {
+            if values.len() < minimum {
                 return Err(<serde_json::Error as serde::de::Error>::custom(
                     "too few positional parameters",
                 ));
             }
-            if values.len() > M::PARAM_ORDER.len() {
+            if values.len() > order.len() {
                 return Err(<serde_json::Error as serde::de::Error>::custom(
                     "too many positional parameters",
                 ));
             }
             Value::Object(
-                M::PARAM_ORDER
+                order
                     .iter()
                     .zip(values)
                     .map(|(name, value)| ((*name).to_string(), value))
@@ -386,6 +433,120 @@ mod tests {
 
     fn fixtures() -> Value {
         serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap()
+    }
+
+    #[test]
+    fn exec_parameters_preserve_legacy_order_defaults_and_decoding() {
+        #[derive(Debug, Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyExec {
+            session: String,
+            #[serde(default)]
+            pin: Option<String>,
+            #[serde(default)]
+            argv: Option<Vec<String>>,
+            #[serde(default)]
+            cwd: Option<String>,
+            #[serde(default)]
+            env: Vec<(String, String)>,
+            #[serde(default)]
+            tty: bool,
+            #[serde(default)]
+            interactive: bool,
+        }
+        for case in fixtures()["exec_parameter_cases"].as_array().unwrap() {
+            if case["method"] != host::SessionsExec::NAME {
+                continue;
+            }
+            let old = serde_json::from_value::<LegacyExec>(case["params"].clone());
+            let new = decode_params::<host::SessionsExec>(case["params"].clone());
+            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
+            assert_eq!(new.is_ok(), case["decoded"].as_bool().unwrap(), "{case}");
+            if let (Ok(old), Ok(new)) = (old, new) {
+                assert_eq!(old.session, new.session);
+                assert_eq!(old.pin, new.pin);
+                assert_eq!(old.argv, new.argv);
+                assert_eq!(old.cwd, new.cwd);
+                assert_eq!(old.env, new.env);
+                assert_eq!(old.tty, new.tty);
+                assert_eq!(old.interactive, new.interactive);
+                let wire = params_value::<host::SessionsExec>(new).unwrap();
+                for key in ["session", "env", "tty", "interactive"] {
+                    assert!(wire.get(key).is_some());
+                }
+                for (key, value) in [
+                    ("argv", old.argv.is_none()),
+                    ("cwd", old.cwd.is_none()),
+                    ("pin", old.pin.is_none()),
+                ] {
+                    if value {
+                        assert!(wire.get(key).is_none());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exec_notification_identity_params_and_compatible_results() {
+        assert!(!host::METHODS.contains(&host_notifications::ExecSignal::NAME));
+        assert_eq!(
+            host_notifications::ExecSignal::DIRECTION,
+            "client-to-server"
+        );
+        for case in fixtures()["exec_signal_cases"].as_array().unwrap() {
+            let call = rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: None,
+                method: host_notifications::ExecSignal::NAME.into(),
+                params: case["params"].clone(),
+            };
+            assert_eq!(
+                decode_notification::<host_notifications::ExecSignal>(call).is_ok(),
+                case["decoded"].as_bool().unwrap(),
+                "{case}"
+            );
+        }
+        let value = notification::<host_notifications::ExecSignal>(ExecSignalParams { signal: 15 })
+            .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"jsonrpc":"2.0","method":"exec.signal","params":{"signal":15}})
+        );
+        for case in fixtures()["exec_result_cases"].as_array().unwrap() {
+            let wire = case["result"].clone();
+            let normalized = ExecReply::decode(wire.clone()).unwrap();
+            assert_eq!(normalized.code, wire.get("code").and_then(Value::as_i64));
+            assert_eq!(
+                normalized.signal,
+                wire.get("signal").and_then(Value::as_i64)
+            );
+            assert_eq!(
+                normalized.message.as_deref(),
+                wire.get("message").and_then(Value::as_str)
+            );
+            assert_eq!(
+                ExecReply::decode(case["result"].clone()).is_ok(),
+                case["compatible"].as_bool().unwrap(),
+                "{case}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(ExecExitResult {
+                code: Some(7),
+                signal: None
+            })
+            .unwrap(),
+            serde_json::json!({"code":7,"signal":null})
+        );
+        assert_eq!(
+            serde_json::to_value(ExecStartupFailureResult {
+                code: 127,
+                message: "missing".into()
+            })
+            .unwrap(),
+            serde_json::json!({"code":127,"message":"missing"})
+        );
     }
 
     #[test]

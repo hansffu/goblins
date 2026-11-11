@@ -7,15 +7,15 @@ use super::Controller;
 use super::Fault;
 use super::capacity;
 use super::conflict;
-use super::params;
+use super::contract_params;
 use goblins_jsonrpc as rpc;
+use goblins_protocol::contract;
 use goblins_runtime::Command;
 use goblins_runtime::Event;
 use goblins_runtime::SpawnKind;
 use goblins_runtime::Stdio;
 use goblins_runtime::exec;
 use goblins_runtime::policy::Operation;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// Live execs per sandbox; TRAMP, eshell and magit open one per command.
@@ -38,43 +38,8 @@ impl Exec {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ExecParams {
-    /// Agent name or session ID.
-    session: String,
-    /// Require exactly this session ID; never re-resolve the name.
-    #[serde(default)]
-    pin: Option<String>,
-    /// The sandbox's `$SHELL` when absent.
-    #[serde(default)]
-    argv: Option<Vec<String>>,
-    #[serde(default)]
-    cwd: Option<String>,
-    #[serde(default)]
-    env: Vec<(String, String)>,
-    #[serde(default)]
-    tty: bool,
-    /// Asked for a terminal explicitly (`-t`): an interactive shell, counted
-    /// and logged as one. TRAMP's terminals are not.
-    #[serde(default)]
-    interactive: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Signal {
-    signal: i32,
-}
-
 fn invalid(message: &str) -> Fault {
     (-32602, message.into())
-}
-
-impl ExecParams {
-    fn validate(&self) -> Result<(), Fault> {
-        validate_command(&self.argv, &self.cwd, &self.env)
-    }
 }
 
 /// The program, directory and environment of an exec or a terminal.
@@ -107,11 +72,7 @@ pub(super) fn validate_command(
 impl Controller {
     /// Resolve an exec target. A pin names the exact session: a stopped or
     /// different goblin fails instead of falling back to the name.
-    pub(super) fn exec_target(
-        &self,
-        designator: &str,
-        pin: Option<&str>,
-    ) -> Result<String, Fault> {
+    pub(super) fn exec_target(&self, designator: &str, pin: Option<&str>) -> Result<String, Fault> {
         let id = match pin {
             Some(pin) => {
                 let a = self.sessions.get(pin).ok_or_else(|| {
@@ -148,8 +109,8 @@ impl Controller {
         if self.shutdown.is_some() || c.exec.is_some() {
             return Err(conflict());
         }
-        let p: ExecParams = params(value)?;
-        p.validate()?;
+        let p = contract_params::<contract::host::SessionsExec>(value)?;
+        validate_command(&p.argv, &p.cwd, &p.env)?;
         if fds.len() != if p.tty { 1 } else { 3 } {
             return Err(invalid(
                 "pass a PTY slave with tty, or stdin, stdout and stderr",
@@ -206,12 +167,14 @@ impl Controller {
     }
     /// A frame on a connection running an exec: only signal notifications.
     pub(super) fn exec_input(&mut self, c: &mut Connection, id: u64, call: rpc::Call) {
-        let signal = (call.id.is_none() && call.method == "exec.signal")
-            .then(|| params::<Signal>(call.params).ok())
-            .flatten()
-            .filter(|s| exec::forwardable(s.signal));
+        let signal =
+            contract::decode_notification::<contract::host_notifications::ExecSignal>(call)
+                .ok()
+                .filter(|s| exec::forwardable(s.signal));
         match signal {
-            Some(Signal { signal }) => self.exec_command(id, Command::Signal { id, signal }),
+            Some(contract::ExecSignalParams { signal }) => {
+                self.exec_command(id, Command::Signal { id, signal })
+            }
             None => c.dead = true,
         }
     }
@@ -239,7 +202,7 @@ impl Controller {
             .as_mut()
             .ok_or_else(conflict)?
             .send(Command::KillAll);
-        Ok(json!({"accepted":true}))
+        Ok(json!(contract::ServerStopResult { accepted: true }))
     }
     /// The exec's client disconnected: cancel it.
     pub(super) fn exec_withdraw(&mut self, connection: u64) {
@@ -349,7 +312,7 @@ impl Controller {
             {
                 // Init answered, or could not be asked.
                 let reply = match code {
-                    Some(code) => Ok(json!({"code":code,"message":message})),
+                    Some(code) => Ok(json!(contract::ExecStartupFailureResult { code, message })),
                     None => Err((-32010, message)),
                 };
                 self.exec_finished(id, Some(reply));
@@ -357,7 +320,10 @@ impl Controller {
             Event::Exited { id, code, signal }
                 if self.execs.get(&id).is_some_and(|e| e.session == session) =>
             {
-                self.exec_finished(id, Some(Ok(json!({"code":code,"signal":signal}))));
+                self.exec_finished(
+                    id,
+                    Some(Ok(json!(contract::ExecExitResult { code, signal }))),
+                );
             }
             _ => (),
         }

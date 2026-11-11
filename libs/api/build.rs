@@ -34,6 +34,15 @@ fn main() {
         settings.with_replacement(name, "std::string::String", [].into_iter());
     }
     settings.with_replacement("LaunchDimension", "u16", [].into_iter());
+    settings.with_replacement("ExecArguments", "std::vec::Vec<String>", [].into_iter());
+    settings.with_replacement("ExecDirectory", "std::string::String", [].into_iter());
+    settings.with_replacement("ExecText", "std::string::String", [].into_iter());
+    settings.with_replacement(
+        "ExecEnvironment",
+        "std::vec::Vec<(String, String)>",
+        [].into_iter(),
+    );
+    settings.with_replacement("ExecSignalNumber", "i32", [].into_iter());
     for name in ["LaunchOptions", "HostLaunchOptions"] {
         settings.with_replacement(
             name,
@@ -55,6 +64,7 @@ fn main() {
         "ServerStatusReply".to_string(),
         "ServerStopResult".to_string(),
         "SetVariablesResult".to_string(),
+        "ExecReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox"] {
         let document: Value = serde_json::from_str(
@@ -131,6 +141,39 @@ fn main() {
             names.push(name);
         }
         output.push_str(&format!("pub const METHODS: &[&str] = &{names:?}; }}\n"));
+        output.push_str(&format!(
+            "pub mod {endpoint}_notifications {{ #[allow(unused_imports)] use super::*;\n"
+        ));
+        let mut notifications = Vec::new();
+        for notification in document["x-notifications"].as_array().into_iter().flatten() {
+            let name = notification["name"].as_str().unwrap();
+            let rust = notification["x-rust-name"].as_str().unwrap();
+            let params = notification["x-params-schema"]["$ref"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("common.json#/definitions/")
+                .unwrap();
+            let reference = notification["x-positional-schema"]["$ref"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("common.json#")
+                .unwrap();
+            let minimum = common.pointer(reference).unwrap()["minItems"]
+                .as_u64()
+                .unwrap();
+            let order: Vec<_> = notification["params"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["name"].as_str().unwrap())
+                .collect();
+            let direction = notification["direction"].as_str().unwrap();
+            output.push_str(&format!("pub struct {rust}; impl crate::contract::Notification for {rust} {{ type Params = {params}; const NAME: &'static str = {name:?}; const DIRECTION: &'static str = {direction:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; }}\n"));
+            notifications.push(name);
+        }
+        output.push_str(&format!(
+            "pub const NOTIFICATIONS: &[&str] = &{notifications:?}; }}\n"
+        ));
     }
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("contract.rs"),

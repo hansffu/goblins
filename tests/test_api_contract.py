@@ -15,6 +15,45 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_exec_contract_corpora_and_notification_direction(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["exec_parameter_cases"]:
+            entry=contract.method("host",case["method"])
+            schema=entry["x-positional-schema"] if isinstance(case["params"],list) else entry["x-params-schema"]
+            self.assertEqual(contract.schema_validator(schema).is_valid(case["params"]),case["valid"],str(case))
+        for case in fixtures["exec_result_cases"]:
+            reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+            for compatible,expected in ((False,case["valid"]),(True,case["compatible"])):
+                if expected:self.assertTrue(contract.validate_reply("host","sessions.exec",reply,compatibility=compatible))
+                else:
+                    with self.assertRaises(ValidationError):contract.validate_reply("host","sessions.exec",reply,compatibility=compatible)
+        for case in fixtures["exec_signal_cases"]:
+            notification=dict(jsonrpc="2.0",method="exec.signal",params=case["params"])
+            if case["valid"]:self.assertTrue(contract.validate_notification("host","client-to-server",notification))
+            else:
+                with self.assertRaises(ValidationError):contract.validate_notification("host","client-to-server",notification)
+        good=dict(jsonrpc="2.0",method="exec.signal",params=dict(signal=15))
+        self.assertFalse(contract.validate_notification("sandbox","client-to-server",good))
+        self.assertFalse(contract.validate_notification("host","server-to-client",good))
+        with self.assertRaises(ValidationError):contract.validate_notification("host","client-to-server",dict(good,id=1))
+        self.assertIsNone(contract.method("host","exec.signal"))
+
+    def test_generated_notification_emitter_and_consumer_require_coverage(self):
+        from unittest.mock import patch
+        sources=contract.implementation_sources()
+        for key in ("exec_client","exec_input"):
+            changed=dict(sources)
+            changed[key]=sources[key].replace("contract::host_notifications::ExecSignal","contract::host_notifications::UnassignedSignal",1)
+            self.assertNotEqual(changed[key],sources[key])
+            with self.assertRaisesRegex(ValueError,"unassigned generated notification"):
+                contract.check_coverage(sources=changed)
+        original=contract.document
+        host=copy.deepcopy(original("host"))
+        host["x-notifications"][0]["direction"]="server-to-client"
+        with patch.object(contract,"document",side_effect=lambda endpoint: host if endpoint=="host" else original(endpoint)):
+            with self.assertRaisesRegex(ValueError,"notification endpoint"):
+                contract.check_coverage()
+
     def test_offline_meta_schema_and_reference_are_current(self):
         contract.check()
         self.assertEqual(contract.REFERENCE.read_text(), contract.reference())
@@ -208,6 +247,69 @@ class ContractTests(unittest.TestCase):
 
 
 class HistoricalClientTests(unittest.TestCase):
+    def test_exec_cli_uses_generated_params_and_passes_stdio_outside_json(self):
+        import array
+        binary=os.environ.get("GOBLINS_LOCAL_CONTROLLER")
+        if binary is None:
+            import re
+            binary=re.search(r'exec (\S+)',app().read_text()).group(1)
+        init=copy.deepcopy(contract.read("fixtures.json")["host_initialize"])
+        init["features"].append("exec")
+        cases=[(False,False,{"code":7,"signal":None,"future":True},7),
+               (False,True,{"code":127,"message":"fixture missing"},127),
+               (True,False,{"code":None,"signal":15},143),
+               (False,False,{},255),
+               (False,False,{"code":0,"signal":"bad"},0),
+               (False,False,{"code":"bad","signal":15},143),
+               (False,False,{"code":3,"message":42},3),
+               (False,False,{"code":True,"signal":15},143),
+               (False,False,None,255)]
+        for tty,named,result,expected_code in cases:
+            with self.subTest(tty=tty,named=named,result=result),tempfile.TemporaryDirectory(prefix="gc-exec-") as root:
+                state=Path(root);calls=[];errors=[]
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.settimeout(5);listener.bind(str(state/"host.sock"));listener.listen()
+                    def serve():
+                        fds=[]
+                        try:
+                            peer,_=listener.accept()
+                            with peer:
+                                peer.settimeout(5);request=receive(peer)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=request["id"],result=init)))
+                                first,ancillary,flags,_=peer.recvmsg(1,socket.CMSG_SPACE(3*array.array("i").itemsize))
+                                for level,kind,data in ancillary:
+                                    self.assertEqual((level,kind),(socket.SOL_SOCKET,socket.SCM_RIGHTS))
+                                    values=array.array("i");values.frombytes(data);fds.extend(values)
+                                self.assertFalse(flags & socket.MSG_CTRUNC)
+                                class Prefix:
+                                    def recv(self,size):
+                                        nonlocal first
+                                        if first: value,first=first,b"";return value
+                                        return peer.recv(size)
+                                call=receive(Prefix());calls.append(call)
+                                self.assertEqual(len(fds),1 if tty else 3)
+                                os.write(fds[0] if tty else fds[1],b"fixture output\n")
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=result)))
+                        except Exception as error:errors.append(error)
+                        finally:
+                            for fd in fds:os.close(fd)
+                    server=threading.Thread(target=serve,daemon=True);server.start()
+                    args=[binary,"--state-dir",str(state),"exec"]
+                    if tty:args.append("-t")
+                    if named:args.extend(["--session","pinned","--workdir","/work","-e","A=b"])
+                    args.append("agent")
+                    if named:args.extend(["--","echo","hello"])
+                    cli=subprocess.run(args,stdin=subprocess.DEVNULL,text=True,capture_output=True,timeout=10)
+                    server.join(timeout=6);self.assertFalse(server.is_alive());self.assertEqual(errors,[])
+                    self.assertEqual(cli.returncode,expected_code,cli.stderr)
+                    if "message" not in (result or {}) or not isinstance(result["message"],str):
+                        self.assertEqual(cli.stderr,"")
+                    self.assertIn("fixture output",cli.stdout)
+                    self.assertEqual(calls[0]["method"],"sessions.exec")
+                    expected={"session":"agent","env":[["A","b"]] if named else [],"tty":tty,"interactive":tty}
+                    if named:expected.update(pin="pinned",cwd="/work",argv=["echo","hello"])
+                    self.assertEqual(calls[0]["params"],expected)
+
     def legacy_cli(self, command):
         binary = os.environ.get("GOBLINS_LOCAL_CONTROLLER")
         if binary is None:
