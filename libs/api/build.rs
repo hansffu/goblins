@@ -353,6 +353,11 @@ fn main() {
         [].into_iter(),
     );
     settings.with_replacement("SupervisorStartedPid", "u32", [].into_iter());
+    settings.with_replacement(
+        "SupervisorStartedPackages",
+        "Vec<(String,::std::path::PathBuf)>",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while

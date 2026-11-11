@@ -13340,6 +13340,217 @@
         "Serialize",
         "Deserialize"
       ]
+    },
+    "SupervisorStartedPackages": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/definitions/SupervisorPath"
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "SupervisorStartedSkipped": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-rust-field-name": "name",
+          "x-rust-type": "String"
+        },
+        "reason": {
+          "type": "string",
+          "x-rust-field-name": "reason",
+          "x-rust-type": "String"
+        }
+      },
+      "required": [
+        "name",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "x-rust-name": "Skipped",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "name",
+        "reason"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartedRecreated": {
+      "type": "object",
+      "properties": {
+        "packages": {
+          "$ref": "#/definitions/SupervisorStartedPackages",
+          "x-rust-field-name": "packages",
+          "x-rust-type": "Vec<(String,::std::path::PathBuf)>"
+        },
+        "auto_approve": {
+          "$ref": "#/definitions/SupervisorStartedPackages",
+          "x-rust-field-name": "auto_approve",
+          "x-rust-type": "Vec<(String,::std::path::PathBuf)>"
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SupervisorStartedSkipped"
+          },
+          "x-rust-field-name": "skipped",
+          "x-rust-type": "Vec<Skipped>"
+        },
+        "fresh": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "fresh",
+          "x-rust-type": "Option<String>"
+        }
+      },
+      "required": [
+        "packages",
+        "auto_approve",
+        "skipped"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "Recreated",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "packages",
+        "auto_approve",
+        "skipped",
+        "fresh"
+      ],
+      "x-rust-derives": [
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartedAuto": {
+      "type": "object",
+      "properties": {
+        "rooted": {
+          "$ref": "#/definitions/SupervisorStartedPackages",
+          "x-rust-field-name": "rooted",
+          "x-rust-type": "Vec<(String,::std::path::PathBuf)>"
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SupervisorStartedSkipped"
+          },
+          "x-rust-field-name": "skipped",
+          "x-rust-type": "Vec<Skipped>"
+        }
+      },
+      "required": [
+        "rooted",
+        "skipped"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "Auto",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "rooted",
+        "skipped"
+      ],
+      "x-rust-derives": [
+        "Default",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartedReport": {
+      "type": "object",
+      "properties": {
+        "folder": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "folder",
+          "x-rust-type": "Option<::std::path::PathBuf>"
+        },
+        "checkout": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "x-rust-field-name": "checkout",
+          "x-rust-type": "Option<::std::path::PathBuf>",
+          "x-rust-default": true
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "worktree",
+          "x-rust-type": "Option<String>"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "detail",
+          "x-rust-type": "Option<String>"
+        }
+      },
+      "required": [],
+      "additionalProperties": true,
+      "x-rust-name": "Report",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "folder",
+        "checkout",
+        "worktree",
+        "detail"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Default",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ]
     }
   },
   "x-api-version": 1,
@@ -16576,7 +16787,8 @@
     "Lifecycle scalar roots": "Generated parameter records and identities retain present empty object params for Command.ScopeFailed/Stop and Event.InitLost/PayloadExited, original member/name/error strings and bool mode, plus required nullable i32 stopped exit_code. Root fieldwise decoding and original unknown-method/extra/missing diagnostics stay unchanged. Stop remains distinct from lifecycle control notifications Stopping/Released; no lifecycle, scope or export policy is added.",
     "Scope membership": "Generated Command.ScopeMembership root and standard Result<Descriptor,String> metadata preserve the original plain Result shape. The producer duplicates the owned Fd at the original result point; the reader parses the Result, consumes its referenced capability, then finishes root params. Actual ownership, cleanup, framing, no-adoption and scope authority remain native. Legacy descriptor sequences accepted at the typed Value boundary do not claim Channel framing accepts forms without its $fd marker.",
     "Started policy/config": "Generated started_metadata Policy/ScopePolicy/DevShellPolicy/Editor/OnAttach/Handlers preserve original Serde names, field order/types/traits and open/closed/default behavior. Live Started.policy field uses native-to-wire and wire-to-native conversions at the original serialization/extraction point. Runtime domain types, methods, docs and authority remain native. Event.Started root and its other fields stay pending in later C17d3b slices; this is not whole-root closure.",
-    "Started support/identity": "Generated Feature metadata retains original kebab-case variants, declaration order and ordering traits. Support uses a generated BTreeSet alias preserving declaration-order serialization and duplicate normalization; its schema permits repeated input features as the native reader does. Identity metadata retains original open record, u32 pid and u64 namespace fields. Live fields convert at original codec points; native Support helpers, Feature docs and Identity authority/ownership remain unchanged. Started root is still pending."
+    "Started support/identity": "Generated Feature metadata retains original kebab-case variants, declaration order and ordering traits. Support uses a generated BTreeSet alias preserving declaration-order serialization and duplicate normalization; its schema permits repeated input features as the native reader does. Identity metadata retains original open record, u32 pid and u64 namespace fields. Live fields convert at original codec points; native Support helpers, Feature docs and Identity authority/ownership remain unchanged. Started root is still pending.",
+    "Started recreation/worktrees": "Generated started_metadata Recreated/Auto/Skipped/Report preserve original names/traits/order, open/closed fields, native String/PathBuf tuples and optional/default emission. Auto Default is constructor-only; Report.checkout keeps its explicit Serde default. Live field bridges preserve unsanitized structural Skipped.reason and optional values; native restoration, Skipped.new normalization, worktree functions and public docs remain unchanged. Started root stays pending."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",
@@ -16600,7 +16812,11 @@
     "SupervisorStartedScopePolicy",
     "SupervisorStartedDevShellPolicy",
     "SupervisorStartedPolicy",
-    "SupervisorStartedIdentity"
+    "SupervisorStartedIdentity",
+    "SupervisorStartedSkipped",
+    "SupervisorStartedRecreated",
+    "SupervisorStartedAuto",
+    "SupervisorStartedReport"
   ],
   "x-rust-external-enums": [
     "SupervisorSpawnKind",

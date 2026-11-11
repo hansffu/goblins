@@ -1425,7 +1425,7 @@ def check_supervisor_started_policy_metadata():
     for name,value in expected.items():
         if {key:value for key,value in defs["SupervisorStarted"+name].items() if key!="description"}!=value:
             raise ValueError("private Started policy schema/Rust metadata differs: "+name)
-    if document("supervisor").get("x-pending-payload-contracts")!={"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"}}}:
+    if document("supervisor").get("x-pending-payload-contracts")!={"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"},"recreated":{"anyOf":[{"$ref":"common.json#/definitions/SupervisorStartedRecreated"},{"type":"null"}]},"auto":{"$ref":"common.json#/definitions/SupervisorStartedAuto"},"worktrees":{"$ref":"common.json#/definitions/SupervisorStartedReport"}}}:
         raise ValueError("private Started pending payload projection differs")
 
 
@@ -1452,6 +1452,33 @@ def check_supervisor_started_support_identity_metadata():
     for name,value in expected.items():
         if {key:value for key,value in defs[name].items() if key!="description"}!=value:
             raise ValueError("private Started feature/support/identity metadata differs: "+name)
+
+
+def check_supervisor_started_recreation_metadata():
+    """Pin wire restoration data without invoking native restoration policy."""
+    defs=common()["definitions"]
+    def ref(name):return {"$ref":"#/definitions/SupervisorStarted"+name}
+    def opt(value):return {"anyOf":[value,{"type":"null"}]}
+    def record(name,fields,required,derives,closed=False):
+        return {"type":"object","properties":{key:{**shape,"x-rust-field-name":key,"x-rust-type":native,**metadata} for key,(shape,native,metadata) in fields.items()},"required":required,"additionalProperties":not closed,"x-rust-name":name,"x-rust-module":"started_metadata","x-rust-field-order":list(fields),"x-rust-derives":derives}
+    string={"type":"string"};path={"$ref":"#/definitions/SupervisorPath"}
+    packages=(ref("Packages"),"Vec<(String,::std::path::PathBuf)>",{})
+    skipped=({"type":"array","items":ref("Skipped")},"Vec<Skipped>",{})
+    expected={
+        "Packages":{"type":"array","items":{"type":"array","items":[string,path],"minItems":2,"maxItems":2}},
+        "Skipped":record("Skipped",{"name":(string,"String",{}),"reason":(string,"String",{})},["name","reason"],["Clone","Debug","PartialEq","Eq","Serialize","Deserialize"],True),
+        "Recreated":record("Recreated",{"packages":packages,"auto_approve":packages,"skipped":skipped,"fresh":(opt(string),"Option<String>",{})},["packages","auto_approve","skipped"],["Serialize","Deserialize"]),
+        "Auto":record("Auto",{"rooted":packages,"skipped":skipped},["rooted","skipped"],["Default","Serialize","Deserialize"]),
+        "Report":record("Report",{
+            "folder":(opt(path),"Option<::std::path::PathBuf>",{}),
+            "checkout":({"anyOf":[path,{"type":"null"}],"default":None},"Option<::std::path::PathBuf>",{"x-rust-default":True}),
+            "worktree":(opt(string),"Option<String>",{}),
+            "detail":(opt(string),"Option<String>",{}),
+        },[],["Clone","Debug","Default","PartialEq","Eq","Serialize","Deserialize"]),
+    }
+    for name,value in expected.items():
+        if {key:value for key,value in defs["SupervisorStarted"+name].items() if key!="description"}!=value:
+            raise ValueError("private Started recreation/worktree metadata differs: "+name)
 
 
 def check_supervisor_pending_inventory():
@@ -1552,7 +1579,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary","SupervisorHostOutcome","SupervisorEventHostJobFinishedParams","SupervisorStartedEditor","SupervisorStartedOnAttach","SupervisorStartedHandlers","SupervisorStartedScopePolicy","SupervisorStartedDevShellPolicy","SupervisorStartedPolicy","SupervisorStartedIdentity"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary","SupervisorHostOutcome","SupervisorEventHostJobFinishedParams","SupervisorStartedEditor","SupervisorStartedOnAttach","SupervisorStartedHandlers","SupervisorStartedScopePolicy","SupervisorStartedDevShellPolicy","SupervisorStartedPolicy","SupervisorStartedIdentity","SupervisorStartedSkipped","SupervisorStartedRecreated","SupervisorStartedAuto","SupervisorStartedReport"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1612,6 +1639,7 @@ def check():
     check_supervisor_membership_metadata()
     check_supervisor_started_policy_metadata()
     check_supervisor_started_support_identity_metadata()
+    check_supervisor_started_recreation_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

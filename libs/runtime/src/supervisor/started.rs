@@ -116,3 +116,81 @@ pub(super) fn decode_started_identity(value: wire::Identity) -> crate::Identity 
         mountns: value.mountns,
     }
 }
+
+fn encode_skipped(values: &[crate::history::Skipped]) -> Vec<wire::Skipped> {
+    values
+        .iter()
+        .map(|v| wire::Skipped {
+            name: v.name.clone(),
+            reason: v.reason.clone(),
+        })
+        .collect()
+}
+
+fn decode_skipped(values: Vec<wire::Skipped>) -> Vec<crate::history::Skipped> {
+    values
+        .into_iter()
+        .map(|v| crate::history::Skipped {
+            name: v.name,
+            reason: v.reason,
+        })
+        .collect()
+}
+
+pub(super) fn encode_started_recreated(
+    value: &Option<Box<crate::Recreated>>,
+) -> Option<Box<wire::Recreated>> {
+    value.as_ref().map(|v| {
+        Box::new(wire::Recreated {
+            packages: v.packages.clone(),
+            auto_approve: v.auto_approve.clone(),
+            skipped: encode_skipped(&v.skipped),
+            fresh: v.fresh.clone(),
+        })
+    })
+}
+
+pub(super) fn decode_started_recreated(
+    value: Option<Box<wire::Recreated>>,
+) -> Option<Box<crate::Recreated>> {
+    value.map(|v| {
+        Box::new(crate::Recreated {
+            packages: v.packages,
+            auto_approve: v.auto_approve,
+            skipped: decode_skipped(v.skipped),
+            fresh: v.fresh,
+        })
+    })
+}
+
+pub(super) fn encode_started_auto(value: &crate::Auto) -> wire::Auto {
+    wire::Auto {
+        rooted: value.rooted.clone(),
+        skipped: encode_skipped(&value.skipped),
+    }
+}
+
+pub(super) fn decode_started_auto(value: wire::Auto) -> Box<crate::Auto> {
+    Box::new(crate::Auto {
+        rooted: value.rooted,
+        skipped: decode_skipped(value.skipped),
+    })
+}
+
+pub(super) fn encode_started_report(value: &crate::worktrees::Report) -> wire::Report {
+    wire::Report {
+        folder: value.folder.clone(),
+        checkout: value.checkout.clone(),
+        worktree: value.worktree.clone(),
+        detail: value.detail.clone(),
+    }
+}
+
+pub(super) fn decode_started_report(value: wire::Report) -> Box<crate::worktrees::Report> {
+    Box::new(crate::worktrees::Report {
+        folder: value.folder,
+        checkout: value.checkout,
+        worktree: value.worktree,
+        detail: value.detail,
+    })
+}

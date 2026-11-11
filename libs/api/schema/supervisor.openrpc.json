@@ -1760,7 +1760,7 @@
       "connection-state": "operational scope membership response"
     }
   ],
-  "x-contract-chunk": "C17d3b2",
+  "x-contract-chunk": "C17d3b3",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -1868,6 +1868,22 @@
       },
       "identity": {
         "$ref": "common.json#/definitions/SupervisorStartedIdentity"
+      },
+      "recreated": {
+        "anyOf": [
+          {
+            "$ref": "common.json#/definitions/SupervisorStartedRecreated"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "auto": {
+        "$ref": "common.json#/definitions/SupervisorStartedAuto"
+      },
+      "worktrees": {
+        "$ref": "common.json#/definitions/SupervisorStartedReport"
       }
     }
   }

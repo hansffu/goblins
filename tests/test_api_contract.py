@@ -16,6 +16,107 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17d3b3_restoration_records_tuples_and_pending_projection_instances(self):
+        fixtures = contract.read("fixtures.json"); common = contract.common()
+        for binding in fixtures["c17d3b3_restoration_bindings"]:
+            name = binding["name"]; definition = common["definitions"]["SupervisorStarted"+name]
+            self.assertIn("SupervisorStarted"+name, common["x-rust-explicit-records"])
+            self.assertEqual(definition["x-rust-name"], name)
+            self.assertEqual(definition["x-rust-module"], "started_metadata")
+            self.assertEqual(definition["x-rust-derives"], binding["derives"])
+            self.assertEqual(definition["x-rust-field-order"], binding["fields"])
+            self.assertEqual(definition["required"], binding["required"])
+            self.assertEqual(definition["additionalProperties"], not binding["closed"])
+            for key,native in zip(binding["fields"],binding["types"]):
+                field = definition["properties"][key]
+                self.assertEqual(field["x-rust-field-name"],key); self.assertEqual(field["x-rust-type"],native)
+                self.assertNotIn("x-rust-skip-serializing-if",field)
+                if name=="Report" and key=="checkout":
+                    self.assertIs(field["x-rust-default"],True); self.assertIsNone(field["default"])
+                else: self.assertNotIn("x-rust-default",field)
+        for name,cases in fixtures["c17d3b3_restoration_cases"].items():
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/"+name})
+            for case in cases:
+                with self.subTest(schema=name,case=case): self.assertEqual(validator.is_valid(case["value"]),case["valid"])
+        nullable = contract.schema_validator({"anyOf":[{"$ref":"#/definitions/SupervisorStartedRecreated"},{"type":"null"}]})
+        self.assertTrue(nullable.is_valid(None)); self.assertTrue(nullable.is_valid({"packages":[],"auto_approve":[],"skipped":[]})); self.assertFalse(nullable.is_valid({}))
+        doc = contract.document("supervisor")
+        self.assertEqual(doc["x-pending-payload-contracts"], {"Event.Started":{
+            "policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"},
+            "recreated":{"anyOf":[{"$ref":"common.json#/definitions/SupervisorStartedRecreated"},{"type":"null"}]},"auto":{"$ref":"common.json#/definitions/SupervisorStartedAuto"},"worktrees":{"$ref":"common.json#/definitions/SupervisorStartedReport"}}})
+        self.assertNotIn("Event.Started",{row["name"] for row in doc["x-notifications"]})
+        self.assertEqual(sum(len(group) for group in doc["x-pending-notifications"].values()),7)
+
+    def test_c17d3b3_restoration_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check(); original = contract.common(); cases = []
+        def changed(label,change):
+            schema = copy.deepcopy(original); change(schema); cases.append((label,schema))
+        def definition(s,name): return s["definitions"]["SupervisorStarted"+name]
+        def field(s,name,key): return definition(s,name)["properties"][key]
+        for binding in contract.read("fixtures.json")["c17d3b3_restoration_bindings"]:
+            name=binding["name"]; first=binding["fields"][0]
+            changed(name+" registry",lambda s,name=name:s["x-rust-explicit-records"].remove("SupervisorStarted"+name))
+            changed(name+" name",lambda s,name=name:definition(s,name).update({"x-rust-name":"Wrong"}))
+            changed(name+" module",lambda s,name=name:definition(s,name).update({"x-rust-module":"wrong"}))
+            changed(name+" serde traits",lambda s,name=name:definition(s,name)["x-rust-derives"].remove("Deserialize"))
+            changed(name+" order",lambda s,name=name:definition(s,name)["x-rust-field-order"].reverse())
+            changed(name+" open closed",lambda s,name=name:definition(s,name).update(additionalProperties=not definition(s,name)["additionalProperties"]))
+            changed(name+" native type",lambda s,name=name,first=first:field(s,name,first).update({"x-rust-type":"u64"}))
+            changed(name+" native field",lambda s,name=name,first=first:field(s,name,first).update({"x-rust-field-name":"other"}))
+            for key in binding["fields"]:
+                if key in binding["required"]:
+                    changed(name+" required "+key,lambda s,name=name,key=key:definition(s,name)["required"].remove(key))
+                else:
+                    changed(name+" optional missing "+key,lambda s,name=name,key=key:definition(s,name)["required"].append(key))
+                if not (name=="Report" and key=="checkout"):
+                    changed(name+" no field default "+key,lambda s,name=name,key=key:field(s,name,key).update({"x-rust-default":True}))
+                changed(name+" no skip "+key,lambda s,name=name,key=key:field(s,name,key).update({"x-rust-skip-serializing-if":"Option::is_none"}))
+        for name in ["Recreated","Auto"]:
+            for trait in ["Clone","Debug"]:
+                changed(name+" no added "+trait,lambda s,name=name,trait=trait:definition(s,name)["x-rust-derives"].insert(0,trait))
+        for name in ["Auto","Report"]:
+            changed(name+" constructor Default",lambda s,name=name:definition(s,name)["x-rust-derives"].remove("Default"))
+        changed("Skipped Eq",lambda s:definition(s,"Skipped")["x-rust-derives"].remove("Eq"))
+        changed("Skipped reason String",lambda s:field(s,"Skipped","reason").update(type="integer"))
+        changed("Skipped reason unrestricted",lambda s:field(s,"Skipped","reason").update(maxLength=256))
+        changed("Report checkout default removed",lambda s:field(s,"Report","checkout").pop("x-rust-default"))
+        changed("Report checkout default null",lambda s:field(s,"Report","checkout").update(default="future"))
+        for key in ["folder","checkout","worktree","detail"]:
+            changed("Report nullable "+key,lambda s,key=key:field(s,"Report",key)["anyOf"].pop())
+        for key in ["folder","checkout"]:
+            changed("Report path reference "+key,lambda s,key=key:field(s,"Report",key)["anyOf"][0].update({"$ref":"#/definitions/SupervisorSequence"}))
+        for key in ["worktree","detail"]:
+            changed("Report String "+key,lambda s,key=key:field(s,"Report",key)["anyOf"][0].update(type="integer"))
+        changed("Recreated fresh nullable",lambda s:field(s,"Recreated","fresh")["anyOf"].pop())
+        changed("Recreated fresh String",lambda s:field(s,"Recreated","fresh")["anyOf"][0].update(type="integer"))
+        for name,key in [("Recreated","packages"),("Recreated","auto_approve"),("Auto","rooted")]:
+            changed(name+" pair reference "+key,lambda s,name=name,key=key:field(s,name,key).update({"$ref":"#/definitions/SupervisorArguments"}))
+        for name in ["Recreated","Auto"]:
+            changed(name+" skipped reference",lambda s,name=name:field(s,name,"skipped")["items"].update({"$ref":"#/definitions/SupervisorStartedEditor"}))
+        changed("Packages array",lambda s:definition(s,"Packages").update(type="object"))
+        changed("Packages pair minimum",lambda s:definition(s,"Packages")["items"].update(minItems=1))
+        changed("Packages pair maximum",lambda s:definition(s,"Packages")["items"].update(maxItems=3))
+        changed("Packages pair String",lambda s:definition(s,"Packages")["items"]["items"][0].update(type="integer"))
+        changed("Packages pair PathBuf",lambda s:definition(s,"Packages")["items"]["items"][1].update({"$ref":"#/definitions/SupervisorSequence"}))
+        for label,schema in cases:
+            with self.subTest(mutation=label),patch.object(contract,"common",return_value=schema):
+                with self.assertRaises(ValueError): contract.check()
+
+    def test_c17d3b3_restoration_pending_projection_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check(); original=contract.document
+        for field in ["recreated","auto","worktrees"]:
+            for mutation in ["missing","wrong reference"]:
+                changed=copy.deepcopy(original("supervisor")); projection=changed["x-pending-payload-contracts"]["Event.Started"]
+                if mutation=="missing": del projection[field]
+                else: projection[field]={"$ref":"common.json#/definitions/SupervisorStartedPolicy"}
+                with self.subTest(field=field,mutation=mutation),patch.object(contract,"document",side_effect=lambda endpoint:changed if endpoint=="supervisor" else original(endpoint)):
+                    with self.assertRaises(ValueError): contract.check()
+        changed=copy.deepcopy(original("supervisor")); changed["x-pending-payload-contracts"]["Event.Started"]["recreated"]["anyOf"].pop()
+        with patch.object(contract,"document",side_effect=lambda endpoint:changed if endpoint=="supervisor" else original(endpoint)):
+            with self.assertRaises(ValueError): contract.check()
+
     def test_c17d3b2_feature_support_identity_instances_and_metadata(self):
         fixtures = contract.read("fixtures.json"); common = contract.common()
         bindings = fixtures["c17d3b2_feature_bindings"]
@@ -50,7 +151,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(doc["x-pending-payload-contracts"], {"Event.Started":{
             "policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},
             "support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},
-            "identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"}}})
+            "identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"},"recreated":{"anyOf":[{"$ref":"common.json#/definitions/SupervisorStartedRecreated"},{"type":"null"}]},"auto":{"$ref":"common.json#/definitions/SupervisorStartedAuto"},"worktrees":{"$ref":"common.json#/definitions/SupervisorStartedReport"}}})
         self.assertNotIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
         self.assertEqual(sum(len(group) for group in doc["x-pending-notifications"].values()), 7)
 
@@ -145,7 +246,7 @@ class ContractTests(unittest.TestCase):
         # Policy.description is a real String field, not schema prose.
         self.assertEqual(common["definitions"]["SupervisorStartedPolicy"]["properties"]["description"]["type"], "string")
         doc = contract.document("supervisor")
-        self.assertEqual(doc["x-pending-payload-contracts"], {"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"}}})
+        self.assertEqual(doc["x-pending-payload-contracts"], {"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"},"recreated":{"anyOf":[{"$ref":"common.json#/definitions/SupervisorStartedRecreated"},{"type":"null"}]},"auto":{"$ref":"common.json#/definitions/SupervisorStartedAuto"},"worktrees":{"$ref":"common.json#/definitions/SupervisorStartedReport"}}})
         self.assertNotIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
         self.assertEqual(len(pending), 7)
@@ -216,7 +317,7 @@ class ContractTests(unittest.TestCase):
             changed = copy.deepcopy(original("supervisor"))
             if mutation == "missing": del changed["x-pending-payload-contracts"]
             elif mutation == "wrong reference": changed["x-pending-payload-contracts"]["Event.Started"]["policy"] = {"$ref":"common.json#/definitions/SupervisorStartedEditor"}
-            elif mutation == "additional field": changed["x-pending-payload-contracts"]["Event.Started"]["worktrees"] = {"$ref":"common.json#/definitions/SupervisorArguments"}
+            elif mutation == "additional field": changed["x-pending-payload-contracts"]["Event.Started"]["docker_enabled"] = {"$ref":"common.json#/definitions/SupervisorArguments"}
             else: changed["x-pending-payload-contracts"]["Event.SandboxCall"] = {"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"}}
             with self.subTest(mutation=mutation), patch.object(contract,"document",side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
                 with self.assertRaises(ValueError):

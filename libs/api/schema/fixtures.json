@@ -36202,5 +36202,618 @@
         "valid": false
       }
     ]
+  },
+  "c17d3b3_restoration_bindings": [
+    {
+      "name": "Skipped",
+      "fields": [
+        "name",
+        "reason"
+      ],
+      "types": [
+        "String",
+        "String"
+      ],
+      "required": [
+        "name",
+        "reason"
+      ],
+      "closed": true,
+      "derives": [
+        "Clone",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    {
+      "name": "Recreated",
+      "fields": [
+        "packages",
+        "auto_approve",
+        "skipped",
+        "fresh"
+      ],
+      "types": [
+        "Vec<(String,::std::path::PathBuf)>",
+        "Vec<(String,::std::path::PathBuf)>",
+        "Vec<Skipped>",
+        "Option<String>"
+      ],
+      "required": [
+        "packages",
+        "auto_approve",
+        "skipped"
+      ],
+      "closed": false,
+      "derives": [
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    {
+      "name": "Auto",
+      "fields": [
+        "rooted",
+        "skipped"
+      ],
+      "types": [
+        "Vec<(String,::std::path::PathBuf)>",
+        "Vec<Skipped>"
+      ],
+      "required": [
+        "rooted",
+        "skipped"
+      ],
+      "closed": false,
+      "derives": [
+        "Default",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    {
+      "name": "Report",
+      "fields": [
+        "folder",
+        "checkout",
+        "worktree",
+        "detail"
+      ],
+      "types": [
+        "Option<::std::path::PathBuf>",
+        "Option<::std::path::PathBuf>",
+        "Option<String>",
+        "Option<String>"
+      ],
+      "required": [],
+      "closed": false,
+      "derives": [
+        "Clone",
+        "Debug",
+        "Default",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ]
+    }
+  ],
+  "c17d3b3_restoration_cases": {
+    "SupervisorStartedSkipped": [
+      {
+        "value": {
+          "name": "a\nb",
+          "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "name": "",
+          "reason": ""
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "name": "a\nb",
+          "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "future": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "name": "a\nb",
+          "reason": null
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          "a",
+          "b"
+        ],
+        "valid": false
+      },
+      {
+        "value": {
+          "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "name": "a\nb"
+        },
+        "valid": false
+      }
+    ],
+    "SupervisorStartedRecreated": [
+      {
+        "value": {
+          "packages": [
+            [
+              "bad pkg",
+              "relative\u0000"
+            ]
+          ],
+          "auto_approve": [
+            [
+              "",
+              "relative-auto"
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ],
+          "fresh": "new"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "packages": [],
+          "auto_approve": [],
+          "skipped": []
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "packages": [
+            [
+              "bad pkg",
+              "relative\u0000"
+            ]
+          ],
+          "auto_approve": [
+            [
+              "",
+              "relative-auto"
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ],
+          "fresh": null,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "packages": [
+            [
+              "only"
+            ]
+          ],
+          "auto_approve": [
+            [
+              "",
+              "relative-auto"
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ],
+          "fresh": "new"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "packages": [
+            [
+              "bad pkg",
+              "relative\u0000"
+            ]
+          ],
+          "auto_approve": [
+            [
+              "n",
+              0
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ],
+          "fresh": "new"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "packages": [
+            [
+              "bad pkg",
+              "relative\u0000"
+            ]
+          ],
+          "auto_approve": [
+            [
+              "",
+              "relative-auto"
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "n",
+              "reason": "r",
+              "extra": 0
+            }
+          ],
+          "fresh": "new"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "auto_approve": [
+            [
+              "",
+              "relative-auto"
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ],
+          "fresh": "new"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "packages": [
+            [
+              "bad pkg",
+              "relative\u0000"
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ],
+          "fresh": "new"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "packages": [
+            [
+              "bad pkg",
+              "relative\u0000"
+            ]
+          ],
+          "auto_approve": [
+            [
+              "",
+              "relative-auto"
+            ]
+          ],
+          "fresh": "new"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "packages": [
+            [
+              "bad pkg",
+              "relative\u0000"
+            ]
+          ],
+          "auto_approve": [
+            [
+              "",
+              "relative-auto"
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        "valid": true
+      }
+    ],
+    "SupervisorStartedAuto": [
+      {
+        "value": {
+          "rooted": [
+            [
+              "odd",
+              "relative-auto"
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "rooted": [],
+          "skipped": [],
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "rooted": []
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "skipped": []
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "rooted": [
+            [
+              "n",
+              null
+            ]
+          ],
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "skipped": [
+            {
+              "name": "a\nb",
+              "reason": "raw \r\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "rooted": [
+            [
+              "odd",
+              "relative-auto"
+            ]
+          ]
+        },
+        "valid": false
+      }
+    ],
+    "SupervisorStartedReport": [
+      {
+        "value": {},
+        "valid": true
+      },
+      {
+        "value": {
+          "folder": "relative/folder",
+          "checkout": "../checkout",
+          "worktree": "../bad-worktree",
+          "detail": "not validated"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "folder": null,
+          "checkout": null,
+          "worktree": null,
+          "detail": null,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "folder": [],
+          "checkout": "../checkout",
+          "worktree": "../bad-worktree",
+          "detail": "not validated"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "folder": "relative/folder",
+          "checkout": 0,
+          "worktree": "../bad-worktree",
+          "detail": "not validated"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "folder": "relative/folder",
+          "checkout": "../checkout",
+          "worktree": 0,
+          "detail": "not validated"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "folder": "relative/folder",
+          "checkout": "../checkout",
+          "worktree": "../bad-worktree",
+          "detail": false
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          null,
+          null,
+          null,
+          null
+        ],
+        "valid": false
+      },
+      {
+        "value": {
+          "checkout": "../checkout",
+          "worktree": "../bad-worktree",
+          "detail": "not validated"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "folder": "relative/folder",
+          "worktree": "../bad-worktree",
+          "detail": "not validated"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "folder": "relative/folder",
+          "checkout": "../checkout",
+          "detail": "not validated"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "folder": "relative/folder",
+          "checkout": "../checkout",
+          "worktree": "../bad-worktree"
+        },
+        "valid": true
+      }
+    ],
+    "SupervisorStartedPackages": [
+      {
+        "value": [],
+        "valid": true
+      },
+      {
+        "value": [
+          [
+            "",
+            "relative\u0000"
+          ],
+          [
+            "{\"$fd\":0}",
+            "../out"
+          ]
+        ],
+        "valid": true
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": [
+          [
+            "only"
+          ]
+        ],
+        "valid": false
+      },
+      {
+        "value": [
+          [
+            "n",
+            "p",
+            0
+          ]
+        ],
+        "valid": false
+      },
+      {
+        "value": [
+          [
+            0,
+            "p"
+          ]
+        ],
+        "valid": false
+      },
+      {
+        "value": [
+          [
+            "n",
+            null
+          ]
+        ],
+        "valid": false
+      }
+    ]
   }
 }
