@@ -4421,3 +4421,659 @@ fn c17b2_attach_capability_lifetimes_and_rejection_order_are_preserved() {
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
     }
 }
+mod c17c_original {
+    use super::*;
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Request {
+        pub id: String,
+        #[serde(default = "package_kind")]
+        pub kind: String,
+        pub package: String,
+        pub reason: String,
+    }
+    fn package_kind() -> String {
+        "package".into()
+    }
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Reply {
+        pub id: Option<String>,
+        pub status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub message: Option<String>,
+    }
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Changes {
+        pub update: Option<Vec<String>>,
+        pub lock: bool,
+    }
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct DevShellSummary {
+        pub identity: String,
+        pub generation: u32,
+        pub lock: Value,
+    }
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct WirePreview {
+        pub output_path: Option<PathBuf>,
+        pub in_store: bool,
+        pub download: Option<String>,
+        pub build_required: bool,
+    }
+}
+#[test]
+fn c17c_nested_original_serde_defaults_closedness_order_and_traits() {
+    fn clone_debug<T: Clone + std::fmt::Debug>() {}
+    fn default_eq<T: Default + PartialEq + Eq>() {}
+    clone_debug::<goblins_protocol::Request>();
+    clone_debug::<crate::devshell::Changes>();
+    clone_debug::<crate::policy::DevShellSummary>();
+    default_eq::<crate::devshell::Changes>();
+    let changes = crate::devshell::Changes::default();
+    assert_eq!(changes.update, None);
+    assert!(!changes.lock);
+    assert_eq!(goblins_protocol::package_kind(), "package");
+    c17b2_compare_serde::<goblins_protocol::Request, c17c_original::Request>(&[
+        r#"{"id":"","package":"../bad name","reason":""}"#,
+        r#"{"id":"r","kind":"future","package":"","reason":"雪\n"}"#,
+        r#"{"id":"r","kind":null,"package":"p","reason":"r"}"#,
+        r#"{"id":"r","package":"p","reason":"r","extra":1}"#,
+        r#"{}"#,
+        r#"{"id":"r"}"#,
+        r#"{"id":"r","package":"p"}"#,
+        r#"{"id":"a","id":"b","package":"p","reason":"r"}"#,
+        r#"["r","package","p","why"]"#,
+        r#"["r","p","why"]"#,
+        r#"["r","package","p","why",0]"#,
+        r#"null"#,
+    ]);
+    c17b2_compare_serde::<goblins_protocol::Reply, c17c_original::Reply>(&[
+        r#"{"status":"future"}"#,
+        r#"{"id":null,"status":"","message":null}"#,
+        r#"{"id":"r","status":"ok","message":"雪\n"}"#,
+        r#"{"status":"ok","extra":0}"#,
+        r#"{}"#,
+        r#"{"status":null}"#,
+        r#"{"id":"a","id":"b","status":"ok"}"#,
+        r#"[null,"ok",null]"#,
+        r#"[null,"ok"]"#,
+        r#"[]"#,
+        r#"{"id":1,"status":"ok"}"#,
+        r#"{"status":"ok","message":false}"#,
+    ]);
+    c17b2_compare_serde::<crate::devshell::Changes, c17c_original::Changes>(&[
+        r#"{"lock":false}"#,
+        r#"{"update":null,"lock":true}"#,
+        r#"{"update":[],"lock":false,"future":0}"#,
+        r#"{"update":["../invalid",""],"lock":true}"#,
+        r#"{}"#,
+        r#"{"lock":null}"#,
+        r#"{"update":[1],"lock":true}"#,
+        r#"{"lock":true,"lock":false}"#,
+        r#"[null,true]"#,
+        r#"[[],false]"#,
+        r#"[true]"#,
+        r#"[null,true,0]"#,
+    ]);
+    c17b2_compare_serde::<crate::policy::DevShellSummary, c17c_original::DevShellSummary>(&[
+        r#"{"identity":"","generation":0,"lock":null}"#,
+        r#"{"identity":"relative#?","generation":4294967295,"lock":{"$fd":0},"future":0}"#,
+        r#"{"identity":"x","generation":4294967296,"lock":{}}"#,
+        r#"{"identity":"x","generation":-1,"lock":null}"#,
+        r#"{"identity":"x","generation":1.0,"lock":null}"#,
+        r#"{"identity":"x","generation":0}"#,
+        r#"{}"#,
+        r#"{"identity":"x","generation":1,"generation":2,"lock":null}"#,
+        r#"["x",0,{"$fd":0}]"#,
+        r#"["x",0]"#,
+        r#"["x",0,null,0]"#,
+    ]);
+    let reply = goblins_protocol::Reply::new(None, "future", None);
+    assert_eq!(
+        serde_json::to_value(reply).unwrap(),
+        json!({"id":null,"status":"future"})
+    );
+}
+fn c17c_request() -> goblins_protocol::Request {
+    goblins_protocol::Request {
+        id: "".into(),
+        kind: "future".into(),
+        package: "../bad name".into(),
+        reason: "雪\n".into(),
+    }
+}
+fn c17c_preview() -> crate::catalog::Preview {
+    crate::catalog::Preview {
+        output_path: Some("relative/../output".into()),
+        in_store: false,
+        download: Some("not a size".into()),
+        build_required: true,
+    }
+}
+fn c17c_cases() -> Vec<(Message, &'static str, Value, Vec<&'static str>)> {
+    vec![
+        (
+            Message::Command(Command::Cancel(u64::MAX)),
+            "Command.Cancel",
+            json!({"id":u64::MAX}),
+            vec!["id"],
+        ),
+        (
+            Message::Command(Command::Preview {
+                approval: 0,
+                package: "../bad name".into(),
+            }),
+            "Command.Preview",
+            json!({"approval":0,"package":"../bad name"}),
+            vec!["approval", "package"],
+        ),
+        (
+            Message::Command(Command::Decide {
+                request: c17c_request(),
+                approved: false,
+                output: None,
+            }),
+            "Command.Decide",
+            json!({"request":{"id":"","kind":"future","package":"../bad name","reason":"雪\n"},"approved":false,"output":null}),
+            vec!["request", "approved", "output"],
+        ),
+        (
+            Message::Command(Command::Refresh {
+                approval: u64::MAX,
+                changes: crate::devshell::Changes {
+                    update: Some(vec![]),
+                    lock: true,
+                },
+            }),
+            "Command.Refresh",
+            json!({"approval":u64::MAX,"changes":{"update":[],"lock":true}}),
+            vec!["approval", "changes"],
+        ),
+        (
+            Message::Command(Command::Run {
+                serial: u64::MAX,
+                app: "../bad app".into(),
+            }),
+            "Command.Run",
+            json!({"serial":u64::MAX,"app":"../bad app"}),
+            vec!["serial", "app"],
+        ),
+        (
+            Message::Command(Command::Diff {
+                serial: 0,
+                changes: Default::default(),
+            }),
+            "Command.Diff",
+            json!({"serial":0,"changes":{"update":null,"lock":false}}),
+            vec!["serial", "changes"],
+        ),
+        (
+            Message::Event(Event::Preview {
+                approval: 0,
+                result: Ok(c17c_preview()),
+            }),
+            "Event.Preview",
+            json!({"approval":0,"result":{"Ok":{"output_path":"relative/../output","in_store":false,"download":"not a size","build_required":true}}}),
+            vec!["approval", "result"],
+        ),
+        (
+            Message::Event(Event::Progress {
+                request: "".into(),
+                state: "future-state".into(),
+            }),
+            "Event.Progress",
+            json!({"request":"","state":"future-state"}),
+            vec!["request", "state"],
+        ),
+        (
+            Message::Event(Event::Refresh {
+                approval: u64::MAX,
+                result: Ok((json!({"$fd":0}), "relative".into())),
+            }),
+            "Event.Refresh",
+            json!({"approval":u64::MAX,"result":"{\"Ok\":[{\"$fd\":0},\"relative\"]}"}),
+            vec!["approval", "result"],
+        ),
+        (
+            Message::Event(Event::Call {
+                serial: 0,
+                result: Err("failed\n雪".into()),
+            }),
+            "Event.Call",
+            json!({"serial":0,"result":"{\"Err\":\"failed\\n雪\"}"}),
+            vec!["serial", "result"],
+        ),
+        (
+            Message::Event(Event::DevShell {
+                summary: crate::policy::DevShellSummary {
+                    identity: "".into(),
+                    generation: u32::MAX,
+                    lock: json!({"$fd":0}),
+                },
+            }),
+            "Event.DevShell",
+            json!({"summary":"{\"identity\":\"\",\"generation\":4294967295,\"lock\":{\"$fd\":0}}"}),
+            vec!["summary"],
+        ),
+        (
+            Message::Event(Event::Granted {
+                reply: goblins_protocol::Reply::new(None, "future", None),
+                detail: None,
+                output: None,
+            }),
+            "Event.Granted",
+            json!({"reply":{"id":null,"status":"future"},"detail":null,"output":null}),
+            vec!["reply", "detail", "output"],
+        ),
+    ]
+}
+#[test]
+fn c17c_twelve_envelopes_required_nullable_roots_and_original_extraction_order() {
+    for (message, method, params, fields) in c17c_cases() {
+        let mut prepared = Encoder::default().prepare(message).unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        let frame = prepared.frames.pop_front().unwrap();
+        assert!(frame.fds.is_empty());
+        assert_eq!(
+            frame.value,
+            json!({"jsonrpc":"2.0","method":method,"params":params})
+        );
+        for field in &fields {
+            let mut value = frame.value.clone();
+            value["params"].as_object_mut().unwrap().remove(*field);
+            c16a_error(
+                Frame { value, fds: vec![] },
+                &format!("missing control field {field}"),
+            );
+        }
+        let mut value = frame.value.clone();
+        value["params"] = json!({});
+        c16a_error(
+            Frame { value, fds: vec![] },
+            &format!("missing control field {}", fields[0]),
+        );
+        let mut value = frame.value.clone();
+        value["params"]["extra"] = json!(true);
+        c16a_error(Frame { value, fds: vec![] }, "unexpected control field");
+        let mut value = frame.value.clone();
+        value["params"] = json!([]);
+        c16a_error(Frame { value, fds: vec![] }, "expected control object");
+        let expected = frame.value.clone();
+        let received = Decoder::default().receive(frame).unwrap().unwrap();
+        assert!(received.adopted.is_none());
+        assert_eq!(c16a_frame(received.message).value, expected);
+    }
+    roundtrip(Message::Command(Command::Decide {
+        request: c17c_request(),
+        approved: true,
+        output: Some("relative".into()),
+    }));
+    roundtrip(Message::Event(Event::Granted {
+        reply: goblins_protocol::Reply::new(Some("r".into()), "ok", Some("detail".into())),
+        detail: Some("more".into()),
+        output: Some("relative".into()),
+    }));
+    roundtrip(Message::Event(Event::Preview {
+        approval: u64::MAX,
+        result: Err("failed".into()),
+    }));
+}
+#[test]
+fn c17c_scalar_nested_and_nullable_errors_precede_root_finish() {
+    fn err<T: DeserializeOwned>(v: Value) -> String {
+        serde_json::from_value::<T>(v).err().unwrap().to_string()
+    }
+    let bad_u64 = err::<u64>(json!(1.0));
+    let bad_string = err::<String>(json!(null));
+    let cases = vec![
+        ("Command.Cancel", "id", json!(1.0), bad_u64.clone()),
+        ("Command.Preview", "approval", json!(1.0), bad_u64.clone()),
+        (
+            "Command.Preview",
+            "package",
+            json!(null),
+            bad_string.clone(),
+        ),
+        (
+            "Command.Decide",
+            "request",
+            json!({}),
+            err::<c17c_original::Request>(json!({})),
+        ),
+        (
+            "Command.Decide",
+            "approved",
+            json!(null),
+            err::<bool>(json!(null)),
+        ),
+        (
+            "Command.Decide",
+            "output",
+            json!([]),
+            err::<Option<PathBuf>>(json!([])),
+        ),
+        ("Command.Refresh", "approval", json!(1.0), bad_u64.clone()),
+        (
+            "Command.Refresh",
+            "changes",
+            json!({}),
+            err::<c17c_original::Changes>(json!({})),
+        ),
+        ("Command.Run", "serial", json!(1.0), bad_u64.clone()),
+        ("Command.Run", "app", json!(null), bad_string.clone()),
+        ("Command.Diff", "serial", json!(1.0), bad_u64.clone()),
+        (
+            "Command.Diff",
+            "changes",
+            json!({}),
+            err::<c17c_original::Changes>(json!({})),
+        ),
+        ("Event.Preview", "approval", json!(1.0), bad_u64.clone()),
+        (
+            "Event.Preview",
+            "result",
+            json!({"Ok":{}}),
+            err::<Result<c17c_original::WirePreview, String>>(json!({"Ok":{}})),
+        ),
+        ("Event.Progress", "request", json!(null), bad_string.clone()),
+        ("Event.Progress", "state", json!(null), bad_string.clone()),
+        ("Event.Refresh", "approval", json!(1.0), bad_u64.clone()),
+        (
+            "Event.Refresh",
+            "result",
+            json!({}),
+            err::<String>(json!({})),
+        ),
+        ("Event.Call", "serial", json!(1.0), bad_u64),
+        ("Event.Call", "result", json!({}), err::<String>(json!({}))),
+        (
+            "Event.DevShell",
+            "summary",
+            json!({}),
+            err::<String>(json!({})),
+        ),
+        (
+            "Event.Granted",
+            "reply",
+            json!({}),
+            err::<c17c_original::Reply>(json!({})),
+        ),
+        (
+            "Event.Granted",
+            "detail",
+            json!([]),
+            err::<Option<String>>(json!([])),
+        ),
+        (
+            "Event.Granted",
+            "output",
+            json!([]),
+            err::<Option<PathBuf>>(json!([])),
+        ),
+    ];
+    for (method, field, bad, expected) in cases {
+        let (_, _, params, fields) = c17c_cases()
+            .into_iter()
+            .find(|(_, name, _, _)| *name == method)
+            .unwrap();
+        let mut params = params;
+        // Invalid current field wins over missing later fields and root extras.
+        let index = fields.iter().position(|name| *name == field).unwrap();
+        for later in &fields[index + 1..] {
+            params.as_object_mut().unwrap().remove(*later);
+        }
+        params[field] = bad;
+        params["extra"] = json!(true);
+        c16a_error(
+            Frame {
+                value: json!({"jsonrpc":"2.0","method":method,"params":params}),
+                fds: vec![],
+            },
+            &expected,
+        );
+    }
+}
+#[test]
+fn c17c_preview_private_mapping_preserves_public_skip_and_original_wire_forms() {
+    let preview = c17c_preview();
+    assert_eq!(
+        serde_json::to_value(&preview).unwrap(),
+        json!({"in_store":false,"download":"not a size","build_required":true})
+    );
+    assert_eq!(
+        encode_preview(&Ok(preview)),
+        json!({"Ok":{"output_path":"relative/../output","in_store":false,"download":"not a size","build_required":true}})
+    );
+    for input in [
+        json!({"Ok":{"output_path":"relative","in_store":false,"download":null,"build_required":true}}),
+        json!({"Ok":{"in_store":true,"build_required":false}}),
+        json!({"Ok":{"output_path":null,"in_store":false,"download":"arbitrary","build_required":true}}),
+        json!({"Ok":[null,true,null,false]}),
+        json!({"Err":"failed\n雪"}),
+        json!({"Err":null}),
+        json!({"Ok":{}}),
+        json!({"Ok":{"in_store":true,"build_required":false,"extra":0}}),
+        json!({"Ok":{"in_store":null,"build_required":false}}),
+        json!({"Ok":{"in_store":true,"build_required":false,"output_path":[]}}),
+        json!({"Ok":{"in_store":true,"build_required":false,"download":0}}),
+        json!({"Ok":[null,true,null]}),
+        json!({"Ok":[null,true,null,false,0]}),
+        json!({"Other":null}),
+        json!({"Ok":null}),
+        json!({"Ok":{},"Err":"e"}),
+    ] {
+        let old=serde_json::from_value::<Result<c17c_original::WirePreview,String>>(input.clone())
+            .map(|result|result.map(|p|json!({"output_path":p.output_path,"in_store":p.in_store,"download":p.download,"build_required":p.build_required})))
+            .map_err(|error|error.to_string());
+        let actual=decode_preview(input.clone())
+            .map(|result|result.map(|p|json!({"output_path":p.output_path,"in_store":p.in_store,"download":p.download,"build_required":p.build_required})))
+            .map_err(|error|error.to_string());
+        assert_eq!(actual, old, "preview {input}");
+        let mut frame = c16a_frame(Message::Event(Event::Preview {
+            approval: 0,
+            result: Err("seed".into()),
+        }));
+        frame.value["params"]["result"] = input;
+        if let Err(expected) = old {
+            frame.value["params"]["extra"] = json!(true);
+            c16a_error(frame, &expected);
+        } else {
+            let received = Decoder::default().receive(frame).unwrap().unwrap();
+            assert!(received.adopted.is_none());
+            if let Message::Event(Event::Preview { result: Ok(p), .. }) = received.message {
+                assert_eq!(
+                    serde_json::to_value(&p).unwrap().as_object().unwrap().len(),
+                    3
+                );
+                assert!(
+                    serde_json::to_value(&p)
+                        .unwrap()
+                        .get("output_path")
+                        .is_none()
+                );
+            }
+        }
+    }
+}
+#[test]
+fn c17c_opaque_call_refresh_summary_preserve_json_data_and_parser_order() {
+    let _no_forks = unix::no_forks();
+    for data in [
+        json!(null),
+        json!(false),
+        json!(-1),
+        json!(1.5),
+        json!("雪\n"),
+        json!([null, true]),
+        json!({"$fd":0,"nested":{"$fd":999}}),
+    ] {
+        for message in [
+            Message::Event(Event::Call {
+                serial: u64::MAX,
+                result: Ok(data.clone()),
+            }),
+            Message::Event(Event::Refresh {
+                approval: u64::MAX,
+                result: Ok((data.clone(), "relative#?".into())),
+            }),
+            Message::Event(Event::DevShell {
+                summary: crate::policy::DevShellSummary {
+                    identity: "".into(),
+                    generation: u32::MAX,
+                    lock: data.clone(),
+                },
+            }),
+        ] {
+            let mut prepared = Encoder::default().prepare(message).unwrap();
+            assert!(!prepared.needs_adoption());
+            assert_eq!(prepared.frames.len(), 1);
+            let mut frame = prepared.frames.pop_front().unwrap();
+            assert!(frame.fds.is_empty());
+            let field = if frame.value["method"] == "Event.DevShell" {
+                "summary"
+            } else {
+                "result"
+            };
+            assert!(frame.value["params"][field].is_string());
+            let expected = frame.value.clone();
+            let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut sender = channel::Channel::new(left).unwrap();
+            let mut receiver = channel::Channel::new(right).unwrap();
+            sender.queue(&frame.value, &mut frame.fds).unwrap();
+            sender.flush().unwrap();
+            assert!(!sender.wants_write());
+            let received = Decoder::default()
+                .receive_channel(&mut receiver)
+                .unwrap()
+                .unwrap();
+            assert!(received.adopted.is_none());
+            match &received.message {
+                Message::Event(Event::Call {
+                    result: Ok(actual), ..
+                }) => assert_eq!(actual, &data),
+                Message::Event(Event::Refresh {
+                    result: Ok((actual, path)),
+                    ..
+                }) => {
+                    assert_eq!(actual, &data);
+                    assert_eq!(path, "relative#?");
+                }
+                Message::Event(Event::DevShell { summary }) => assert_eq!(summary.lock, data),
+                _ => panic!("wrong opaque event"),
+            }
+            assert_eq!(c16a_frame(received.message).value, expected);
+        }
+    }
+    for message in [
+        Message::Event(Event::Call {
+            serial: 0,
+            result: Err("failed".into()),
+        }),
+        Message::Event(Event::Refresh {
+            approval: 0,
+            result: Err("failed".into()),
+        }),
+    ] {
+        roundtrip(message);
+    }
+    for (_, method, params, _) in c17c_cases().into_iter().filter(|(_, method, _, _)| {
+        ["Event.Call", "Event.Refresh", "Event.DevShell"].contains(method)
+    }) {
+        let field = if method == "Event.DevShell" {
+            "summary"
+        } else {
+            "result"
+        };
+        for text in [
+            "{",
+            "null",
+            "{}",
+            r#"{"Err":null}"#,
+            r#"{"Ok":[],"Err":"e"}"#,
+            r#"{"Ok":[null]}"#,
+            r#"{"identity":"x","generation":4294967296,"lock":null}"#,
+        ] {
+            let error = match method {
+                "Event.Call" => serde_json::from_str::<Result<Value, String>>(text)
+                    .err()
+                    .map(|e| e.to_string()),
+                "Event.Refresh" => serde_json::from_str::<Result<(Value, String), String>>(text)
+                    .err()
+                    .map(|e| e.to_string()),
+                _ => serde_json::from_str::<c17c_original::DevShellSummary>(text)
+                    .err()
+                    .map(|e| e.to_string()),
+            };
+            let mut value = json!({"jsonrpc":"2.0","method":method,"params":params});
+            value["params"][field] = json!(text);
+            if let Some(expected) = error {
+                value["params"]["extra"] = json!(true);
+                c16a_error(
+                    Frame {
+                        value: value.clone(),
+                        fds: vec![],
+                    },
+                    &expected,
+                );
+                if method != "Event.DevShell" {
+                    let first = if method == "Event.Call" {
+                        "serial"
+                    } else {
+                        "approval"
+                    };
+                    value["params"].as_object_mut().unwrap().remove(first);
+                    c16a_error(
+                        Frame { value, fds: vec![] },
+                        &format!("missing control field {first}"),
+                    );
+                }
+            } else {
+                // A valid Result<Value, String> can contain structurally odd data.
+                let received = Decoder::default()
+                    .receive(Frame { value, fds: vec![] })
+                    .unwrap()
+                    .unwrap();
+                assert!(received.adopted.is_none());
+            }
+        }
+    }
+}
+#[test]
+fn c17c_path_serialization_errors_and_preview_skip_boundary_are_original() {
+    use std::os::unix::ffi::OsStringExt;
+    let bad = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+    let expected = serde_json::to_value(&bad).unwrap_err().to_string();
+    for message in [
+        Message::Command(Command::Decide {
+            request: c17c_request(),
+            approved: false,
+            output: Some(bad.clone()),
+        }),
+        Message::Event(Event::Granted {
+            reply: goblins_protocol::Reply::new(None, "", None),
+            detail: None,
+            output: Some(bad.clone()),
+        }),
+    ] {
+        let error = match Encoder::default().prepare(message) {
+            Err(error) => error,
+            Ok(_) => panic!("serialized non-UTF8 path"),
+        };
+        assert_eq!(error.to_string(), expected);
+    }
+    let preview = crate::catalog::Preview {
+        output_path: Some(bad),
+        in_store: false,
+        download: None,
+        build_required: false,
+    };
+    // Public Preview skips output_path; private encode_preview explicitly serializes it.
+    assert_eq!(
+        serde_json::to_value(&preview).unwrap(),
+        json!({"in_store":false,"download":null,"build_required":false})
+    );
+    assert!(std::panic::catch_unwind(|| encode_preview(&Ok(preview))).is_err());
+}

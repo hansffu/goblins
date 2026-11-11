@@ -13367,6 +13367,237 @@ Positional parameters:
 }
 #+end_src
 
+** Notification =Command.Cancel=
+
+Cancel queued or running work by its approval or serial id: Preview/Refresh use approval, while Run/Diff use serial. Existing cancellation policy stays unchanged.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational work cancellation command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.Preview=
+
+Request package preview by approval id and package string. No package-name policy is added at the wire boundary.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational approval command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "approval": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "package": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "approval",
+    "package"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.Decide=
+
+Deliver the original approval Request, decision boolean and required nullable output path, preserving request/approved/output extraction order.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational approval command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "$ref": "#/definitions/SupervisorApprovalRequest"
+    },
+    "approved": {
+      "type": "boolean"
+    },
+    "output": {
+      "$ref": "#/definitions/SupervisorOptionalPath"
+    }
+  },
+  "required": [
+    "request",
+    "approved",
+    "output"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Preview=
+
+Private preview result uses output_path, including null, plus in_store/download/build_required; public catalog Preview still skips output_path. The original private json! non-UTF8 path panic boundary is retained.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational approval event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "approval": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "result": {
+      "$ref": "#/definitions/SupervisorPreviewOutcome"
+    }
+  },
+  "required": [
+    "approval",
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Progress=
+
+Report original request and state strings without introducing new state validation.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational approval event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request",
+    "state"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Granted=
+
+Deliver original Reply (null id and omitted absent message) plus required nullable detail and output path, preserving reply/detail/output extraction order.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational approval event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "reply": {
+      "$ref": "#/definitions/SupervisorApprovalReply",
+      "x-rust-field-name": "reply",
+      "x-rust-type": "crate::contract::approval_metadata::Reply"
+    },
+    "detail": {
+      "$ref": "#/definitions/SupervisorOptionalString",
+      "x-rust-field-name": "detail",
+      "x-rust-type": "Option<String>"
+    },
+    "output": {
+      "$ref": "#/definitions/SupervisorOptionalPath",
+      "x-rust-field-name": "output",
+      "x-rust-type": "Option<::std::path::PathBuf>"
+    }
+  },
+  "required": [
+    "reply",
+    "detail",
+    "output"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "SupervisorEventGrantedParams",
+  "x-rust-field-order": [
+    "reply",
+    "detail",
+    "output"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * supervisor actor method phases
 
 These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.
@@ -13453,18 +13684,12 @@ These existing messages remain assigned to later migration slices; their payload
 #+begin_src json
 {
   "C17c-approvals-devshell": [
-    "Command.Cancel",
-    "Command.Preview",
-    "Command.Decide",
     "Command.Refresh",
     "Command.Run",
     "Command.Diff",
-    "Event.Preview",
-    "Event.Progress",
     "Event.Refresh",
     "Event.Call",
-    "Event.DevShell",
-    "Event.Granted"
+    "Event.DevShell"
   ],
   "C17d-lifecycle-host-jobs": [
     "Command.ScopeFailed",
@@ -13877,6 +14102,17 @@ Original Serde container names, field order, required nullable sequence slots an
     "required-nullable": [
       "error"
     ]
+  },
+  "SupervisorCommandDecideParams": {
+    "name": "SupervisorCommandDecideParams",
+    "order": [
+      "request",
+      "approved",
+      "output"
+    ],
+    "required-nullable": [
+      "output"
+    ]
   }
 }
 #+end_src
@@ -13896,6 +14132,8 @@ Original Serde container names, field order, required nullable sequence slots an
 - =Process records= :: Process metadata retains full original u64/i32 structural ranges, required nullable argv/cwd/code/signal slots, environment string tuples and generated WireStdio. Descriptor duplication/consumption remains at the original stdio field point; process/signal policy and execution stay handwritten and are not narrowed by these schemas.
 - =Terminal metadata= :: Generated TerminalId/TerminalStatus and terminal_metadata::{Source,Condition,Call} preserve original Rust names, traits, defaults, open struct payloads, optional emission and legacy Serde forms. Nested module avoids the existing JSON-RPC Call name. Wire numeric ranges stay native; terminal semantic limits/regex checks remain at their existing call sites.
 - =Terminal result= :: The root record result remains a String containing standard Result<Value,String>. Its x-json-content-schema documents inner canonical values; actual inner parsing and errors stay at the original opaque field extraction point. Arbitrary JSON and descriptor-looking inner data stay opaque.
+- =Approval metadata= :: Generated approval_metadata::{Request,Reply} preserve original closed structs, names, traits, Request package_kind default, Reply null id and omitted None message; public protocol paths reexport them. Native optional paths and strings remain wire metadata, with no approval policy validation.
+- =Preview result= :: Generated WirePreview and standard Result<WirePreview,String> describe private output_path/in_store/download/build_required. Native catalog::Preview retains its public skipped output_path and domain semantics. Private producer retains its original json! path serialization panic on non-UTF8 output_path before typed conversion; missing optional named fields and legacy record/Result forms remain accepted at the original Value boundary.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -27876,6 +28114,350 @@ Original Serde container names, field order, required nullable sequence slots an
     "result"
   ],
   "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorApprovalRequest=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "x-rust-field-name": "id",
+      "x-rust-type": "String"
+    },
+    "kind": {
+      "type": "string",
+      "default": "package",
+      "x-rust-field-name": "kind",
+      "x-rust-type": "String",
+      "x-rust-default": "crate::package_kind"
+    },
+    "package": {
+      "type": "string",
+      "x-rust-field-name": "package",
+      "x-rust-type": "String"
+    },
+    "reason": {
+      "type": "string",
+      "x-rust-field-name": "reason",
+      "x-rust-type": "String"
+    }
+  },
+  "required": [
+    "id",
+    "package",
+    "reason"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "Request",
+  "x-rust-field-order": [
+    "id",
+    "kind",
+    "package",
+    "reason"
+  ],
+  "x-rust-derives": [
+    "Clone",
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ],
+  "x-rust-module": "approval_metadata"
+}
+#+end_src
+
+** =SupervisorApprovalReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorOptionalString",
+      "x-rust-field-name": "id",
+      "x-rust-type": "Option<String>"
+    },
+    "status": {
+      "type": "string",
+      "x-rust-field-name": "status",
+      "x-rust-type": "String"
+    },
+    "message": {
+      "$ref": "#/definitions/SupervisorOptionalString",
+      "x-rust-field-name": "message",
+      "x-rust-type": "Option<String>",
+      "x-rust-skip-serializing-if": "Option::is_none"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "Reply",
+  "x-rust-field-order": [
+    "id",
+    "status",
+    "message"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ],
+  "x-rust-module": "approval_metadata"
+}
+#+end_src
+
+** =SupervisorPreview=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "output_path": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorPath"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-field-name": "output_path",
+      "x-rust-type": "Option<::std::path::PathBuf>"
+    },
+    "in_store": {
+      "type": "boolean",
+      "x-rust-field-name": "in_store",
+      "x-rust-type": "bool"
+    },
+    "download": {
+      "$ref": "#/definitions/SupervisorOptionalString",
+      "x-rust-field-name": "download",
+      "x-rust-type": "Option<String>"
+    },
+    "build_required": {
+      "type": "boolean",
+      "x-rust-field-name": "build_required",
+      "x-rust-type": "bool"
+    }
+  },
+  "required": [
+    "in_store",
+    "build_required"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "WirePreview",
+  "x-rust-field-order": [
+    "output_path",
+    "in_store",
+    "download",
+    "build_required"
+  ],
+  "x-rust-derives": [
+    "Clone",
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =SupervisorPreviewOutcome=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Ok": {
+          "$ref": "#/definitions/SupervisorPreview"
+        }
+      },
+      "required": [
+        "Ok"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Err": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Err"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorOptionalPath=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorCommandCancelParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorCommandPreviewParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "approval": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "package": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "approval",
+    "package"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorCommandDecideParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "$ref": "#/definitions/SupervisorApprovalRequest"
+    },
+    "approved": {
+      "type": "boolean"
+    },
+    "output": {
+      "$ref": "#/definitions/SupervisorOptionalPath"
+    }
+  },
+  "required": [
+    "request",
+    "approved",
+    "output"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventPreviewParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "approval": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "result": {
+      "$ref": "#/definitions/SupervisorPreviewOutcome"
+    }
+  },
+  "required": [
+    "approval",
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventProgressParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request",
+    "state"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventGrantedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "reply": {
+      "$ref": "#/definitions/SupervisorApprovalReply",
+      "x-rust-field-name": "reply",
+      "x-rust-type": "crate::contract::approval_metadata::Reply"
+    },
+    "detail": {
+      "$ref": "#/definitions/SupervisorOptionalString",
+      "x-rust-field-name": "detail",
+      "x-rust-type": "Option<String>"
+    },
+    "output": {
+      "$ref": "#/definitions/SupervisorOptionalPath",
+      "x-rust-field-name": "output",
+      "x-rust-type": "Option<::std::path::PathBuf>"
+    }
+  },
+  "required": [
+    "reply",
+    "detail",
+    "output"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "SupervisorEventGrantedParams",
+  "x-rust-field-order": [
+    "reply",
+    "detail",
+    "output"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
 }
 #+end_src
 

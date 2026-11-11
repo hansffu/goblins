@@ -1,6 +1,5 @@
 use super::*;
-use contract::{WireDirectory, WireHandoff, WireLease, WireSource, WireStdio};
-use serde::Deserialize;
+use contract::{WireDirectory, WireHandoff, WireLease, WirePreview, WireSource, WireStdio};
 
 pub(super) fn encode_stdio_wire(stdio: &Stdio, b: &mut Builder) -> io::Result<WireStdio> {
     Ok(match stdio {
@@ -236,33 +235,40 @@ fn decode_leases(leases: Vec<WireLease>, d: &mut Descriptors) -> io::Result<Vec<
         .map(|l| ResourceLease::from_parts(l.directory, d.take(l.lock)?).map_err(other))
         .collect()
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WirePreview {
-    output_path: Option<PathBuf>,
-    in_store: bool,
-    download: Option<String>,
-    build_required: bool,
-}
-pub(super) fn encode_preview(result: &Result<crate::catalog::Preview, String>) -> Value {
+pub(super) fn encode_preview_wire(
+    result: &Result<crate::catalog::Preview, String>,
+) -> Result<WirePreview, String> {
     match result {
         Ok(p) => {
-            json!({"Ok":{"output_path":p.output_path,"in_store":p.in_store,"download":p.download,"build_required":p.build_required}})
+            // Preserve the original private json! non-UTF8 path panic boundary.
+            let _ = json!(&p.output_path);
+            Ok(WirePreview {
+                output_path: p.output_path.clone(),
+                in_store: p.in_store,
+                download: p.download.clone(),
+                build_required: p.build_required,
+            })
         }
-        Err(e) => json!({"Err":e}),
+        Err(error) => Err(error.clone()),
     }
 }
+#[cfg(test)]
+pub(super) fn encode_preview(result: &Result<crate::catalog::Preview, String>) -> Value {
+    serde_json::to_value(encode_preview_wire(result)).unwrap()
+}
+pub(super) fn decode_preview_wire(
+    value: Result<WirePreview, String>,
+) -> Result<crate::catalog::Preview, String> {
+    value.map(|p| crate::catalog::Preview {
+        output_path: p.output_path,
+        in_store: p.in_store,
+        download: p.download,
+        build_required: p.build_required,
+    })
+}
+#[cfg(test)]
 pub(super) fn decode_preview(value: Value) -> io::Result<Result<crate::catalog::Preview, String>> {
-    Ok(
-        serde_json::from_value::<Result<WirePreview, String>>(value)?.map(|p| {
-            crate::catalog::Preview {
-                output_path: p.output_path,
-                in_store: p.in_store,
-                download: p.download,
-                build_required: p.build_required,
-            }
-        }),
-    )
+    Ok(decode_preview_wire(serde_json::from_value(value)?))
 }
 enum Target {
     Startup(SupervisorStart),

@@ -236,15 +236,24 @@ fn main() {
     }
     for name in common["x-rust-explicit-records"].as_array().unwrap() {
         let name = name.as_str().unwrap();
-        settings.with_replacement(
-            name,
-            format!(
-                "crate::contract::{}",
-                common["definitions"][name]["x-rust-name"].as_str().unwrap()
-            ),
-            [].into_iter(),
-        );
+        let schema = &common["definitions"][name];
+        let rust = schema["x-rust-name"].as_str().unwrap();
+        let path = match schema["x-rust-module"].as_str() {
+            Some(module) => format!("crate::contract::{module}::{rust}"),
+            None => format!("crate::contract::{rust}"),
+        };
+        settings.with_replacement(name, path, [].into_iter());
     }
+    settings.with_replacement(
+        "SupervisorOptionalPath",
+        "Option<::std::path::PathBuf>",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "SupervisorPreviewOutcome",
+        "Result<crate::contract::WirePreview,String>",
+        [].into_iter(),
+    );
     settings.with_replacement("SupervisorDescriptorIndex", "usize", [].into_iter());
     settings.with_replacement(
         "SupervisorOptionalDescriptor",
@@ -451,6 +460,8 @@ fn main() {
     let mut output = quote::quote!(#generated).to_string();
     // A canonical explicit record preserves externally visible Rust field names
     // when the wire property (such as $fd) is not that Rust identifier.
+    let mut metadata_modules: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     for name in common["x-rust-explicit-records"].as_array().unwrap() {
         let name = name.as_str().unwrap();
         let schema = &common["definitions"][name];
@@ -471,10 +482,11 @@ fn main() {
         } else {
             ""
         };
+        let mut record_output = String::new();
         if let Some(description) = schema["description"].as_str() {
-            output.push_str(&format!("#[doc = {description:?}]"));
+            record_output.push_str(&format!("#[doc = {description:?}]"));
         }
-        output.push_str(&format!(
+        record_output.push_str(&format!(
             "#[derive({derives})] {closed} pub struct {rust} {{"
         ));
         for field in schema["x-rust-field-order"].as_array().unwrap() {
@@ -483,17 +495,31 @@ fn main() {
             let field = property["x-rust-field-name"].as_str().unwrap();
             let ty = property["x-rust-type"].as_str().unwrap();
             if property["x-rust-default"] == true {
-                output.push_str("#[serde(default)]");
+                record_output.push_str("#[serde(default)]");
+            } else if let Some(path) = property["x-rust-default"].as_str() {
+                record_output.push_str(&format!("#[serde(default={path:?})]"));
             }
-            output.push_str(&format!("#[serde(rename={wire:?})] pub {field}: {ty},"));
+            if let Some(path) = property["x-rust-skip-serializing-if"].as_str() {
+                record_output.push_str(&format!("#[serde(skip_serializing_if={path:?})]"));
+            }
+            record_output.push_str(&format!("#[serde(rename={wire:?})] pub {field}: {ty},"));
         }
-        output.push_str("}\n");
-        output.push_str(&format!("pub type {name} = {rust};\n"));
+        record_output.push_str("}\n");
+        if let Some(module) = schema["x-rust-module"].as_str() {
+            metadata_modules
+                .entry(module.to_owned())
+                .or_default()
+                .push_str(&record_output);
+            output.push_str(&format!("pub type {name} = {module}::{rust};\n"));
+        } else {
+            output.push_str(&record_output);
+            if name != rust {
+                output.push_str(&format!("pub type {name} = {rust};\n"));
+            }
+        }
     }
     // Default external-tag Serde enums retain their original public variants
     // and payload permissiveness; canonical branch metadata supplies fields.
-    let mut external_modules: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
     for name in common["x-rust-external-enums"].as_array().unwrap() {
         let name = name.as_str().unwrap();
         let schema = &common["definitions"][name];
@@ -558,7 +584,7 @@ fn main() {
         }
         enum_output.push_str("}\n");
         if let Some(module) = schema["x-rust-module"].as_str() {
-            external_modules
+            metadata_modules
                 .entry(module.to_owned())
                 .or_default()
                 .push_str(&enum_output);
@@ -568,7 +594,7 @@ fn main() {
             output.push_str(&format!("pub type {name} = {rust};\n"));
         }
     }
-    for (module, content) in external_modules {
+    for (module, content) in metadata_modules {
         output.push_str(&format!("pub mod {module} {{ {content} }}\n"));
     }
     // Generate the original internally tagged enum directly from its canonical

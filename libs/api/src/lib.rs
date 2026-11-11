@@ -1,5 +1,4 @@
 //! Public request data and shared pure wire contracts; no launcher, Nix or approval authority.
-use serde::{Deserialize, Serialize};
 
 pub const MAX_FRAME: usize = 4096;
 /// Host exec stdio: one PTY slave or stdin, stdout and stderr.
@@ -64,25 +63,9 @@ pub fn scope_name(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Request {
-    pub id: String,
-    #[serde(default = "package_kind")]
-    pub kind: String,
-    pub package: String,
-    pub reason: String,
-}
+pub use contract::approval_metadata::{Reply, Request};
 pub fn package_kind() -> String {
     "package".into()
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Reply {
-    pub id: Option<String>,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
 }
 impl Reply {
     pub fn new(id: Option<String>, status: &str, message: Option<String>) -> Self {

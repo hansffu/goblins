@@ -932,9 +932,208 @@
       "sender": "supervisor",
       "receiver": "daemon",
       "connection-state": "operational terminal event"
+    },
+    {
+      "name": "Command.Cancel",
+      "x-rust-name": "CommandCancel",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Cancel queued or running work by its approval or serial id: Preview/Refresh use approval, while Run/Diff use serial. Existing cancellation policy stays unchanged.",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandCancelParams/properties/id"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandCancelParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational work cancellation command"
+    },
+    {
+      "name": "Command.Preview",
+      "x-rust-name": "CommandPreview",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Request package preview by approval id and package string. No package-name policy is added at the wire boundary.",
+      "params": [
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandPreviewParams/properties/approval"
+          }
+        },
+        {
+          "name": "package",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandPreviewParams/properties/package"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandPreviewParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational approval command"
+    },
+    {
+      "name": "Command.Decide",
+      "x-rust-name": "CommandDecide",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Deliver the original approval Request, decision boolean and required nullable output path, preserving request/approved/output extraction order.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandDecideParams/properties/request"
+          }
+        },
+        {
+          "name": "approved",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandDecideParams/properties/approved"
+          }
+        },
+        {
+          "name": "output",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandDecideParams/properties/output"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandDecideParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational approval command"
+    },
+    {
+      "name": "Event.Preview",
+      "x-rust-name": "EventPreview",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Private preview result uses output_path, including null, plus in_store/download/build_required; public catalog Preview still skips output_path. The original private json! non-UTF8 path panic boundary is retained.",
+      "params": [
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventPreviewParams/properties/approval"
+          }
+        },
+        {
+          "name": "result",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventPreviewParams/properties/result"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventPreviewParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational approval event"
+    },
+    {
+      "name": "Event.Progress",
+      "x-rust-name": "EventProgress",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report original request and state strings without introducing new state validation.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventProgressParams/properties/request"
+          }
+        },
+        {
+          "name": "state",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventProgressParams/properties/state"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventProgressParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational approval event"
+    },
+    {
+      "name": "Event.Granted",
+      "x-rust-name": "EventGranted",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Deliver original Reply (null id and omitted absent message) plus required nullable detail and output path, preserving reply/detail/output extraction order.",
+      "params": [
+        {
+          "name": "reply",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventGrantedParams/properties/reply"
+          }
+        },
+        {
+          "name": "detail",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventGrantedParams/properties/detail"
+          }
+        },
+        {
+          "name": "output",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventGrantedParams/properties/output"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventGrantedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational approval event"
     }
   ],
-  "x-contract-chunk": "C17b2",
+  "x-contract-chunk": "C17c1",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -1021,18 +1220,12 @@
   ],
   "x-pending-notifications": {
     "C17c-approvals-devshell": [
-      "Command.Cancel",
-      "Command.Preview",
-      "Command.Decide",
       "Command.Refresh",
       "Command.Run",
       "Command.Diff",
-      "Event.Preview",
-      "Event.Progress",
       "Event.Refresh",
       "Event.Call",
-      "Event.DevShell",
-      "Event.Granted"
+      "Event.DevShell"
     ],
     "C17d-lifecycle-host-jobs": [
       "Command.ScopeFailed",

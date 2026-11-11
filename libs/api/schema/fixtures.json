@@ -31019,5 +31019,843 @@
       },
       "valid": false
     }
+  ],
+  "c17c1_approval_schema_cases": {
+    "SupervisorApprovalRequest": [
+      {
+        "value": {
+          "id": "",
+          "kind": "future",
+          "package": "../bad name",
+          "reason": "雪\n"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "id": "r",
+          "package": "",
+          "reason": ""
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "id": "",
+          "kind": "future",
+          "package": "../bad name",
+          "reason": "雪\n",
+          "extra": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "id": "",
+          "kind": null,
+          "package": "../bad name",
+          "reason": "雪\n"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "id": "",
+          "kind": "future",
+          "package": 0,
+          "reason": "雪\n"
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          "r",
+          "package",
+          "p",
+          "reason"
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorApprovalReply": [
+      {
+        "value": {
+          "status": "future"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "id": null,
+          "status": "",
+          "message": null
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "id": "r",
+          "status": "ok",
+          "message": "雪\n"
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "status": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "status": "ok",
+          "extra": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "status": "ok",
+          "id": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "status": "ok",
+          "message": false
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          null,
+          "ok",
+          null
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorPreview": [
+      {
+        "value": {
+          "output_path": "relative/../output",
+          "in_store": false,
+          "download": "not a size",
+          "build_required": true
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "in_store": true,
+          "build_required": false
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "output_path": null,
+          "in_store": false,
+          "download": null,
+          "build_required": false
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "output_path": "relative/../output",
+          "in_store": false,
+          "download": "not a size",
+          "build_required": true,
+          "extra": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "output_path": "relative/../output",
+          "in_store": false,
+          "download": "not a size",
+          "build_required": true,
+          "output": "wrong field"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "output_path": "relative/../output",
+          "in_store": null,
+          "download": "not a size",
+          "build_required": true
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "output_path": "relative/../output",
+          "in_store": false,
+          "download": "not a size",
+          "build_required": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "output_path": [],
+          "in_store": false,
+          "download": "not a size",
+          "build_required": true
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "output_path": "relative/../output",
+          "in_store": false,
+          "download": 3,
+          "build_required": true
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          null,
+          true,
+          null,
+          false
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorPreviewOutcome": [
+      {
+        "value": {
+          "Ok": {
+            "output_path": "relative/../output",
+            "in_store": false,
+            "download": "not a size",
+            "build_required": true
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": {
+            "in_store": false,
+            "build_required": true
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Err": "failed\n雪"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": {
+            "output_path": "relative/../output",
+            "in_store": false,
+            "download": "not a size",
+            "build_required": true
+          },
+          "Err": "x"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Err": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": {}
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Other": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      }
+    ]
+  },
+  "c17c1_notification_cases": [
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Cancel",
+        "params": {
+          "id": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Cancel",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Cancel",
+        "params": {
+          "id": 18446744073709551615,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Cancel",
+        "params": {
+          "id": 18446744073709551615
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Cancel",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Preview",
+        "params": {
+          "approval": 0,
+          "package": "../bad name"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Preview",
+        "params": {
+          "package": "../bad name"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Preview",
+        "params": {
+          "approval": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Preview",
+        "params": {
+          "approval": 0,
+          "package": "../bad name",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Preview",
+        "params": {
+          "approval": 0,
+          "package": "../bad name"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Preview",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Decide",
+        "params": {
+          "request": {
+            "id": "",
+            "kind": "future",
+            "package": "../bad name",
+            "reason": "雪\n"
+          },
+          "approved": false,
+          "output": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Decide",
+        "params": {
+          "approved": false,
+          "output": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Decide",
+        "params": {
+          "request": {
+            "id": "",
+            "kind": "future",
+            "package": "../bad name",
+            "reason": "雪\n"
+          },
+          "output": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Decide",
+        "params": {
+          "request": {
+            "id": "",
+            "kind": "future",
+            "package": "../bad name",
+            "reason": "雪\n"
+          },
+          "approved": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Decide",
+        "params": {
+          "request": {
+            "id": "",
+            "kind": "future",
+            "package": "../bad name",
+            "reason": "雪\n"
+          },
+          "approved": false,
+          "output": null,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Decide",
+        "params": {
+          "request": {
+            "id": "",
+            "kind": "future",
+            "package": "../bad name",
+            "reason": "雪\n"
+          },
+          "approved": false,
+          "output": null
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Decide",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Preview",
+        "params": {
+          "approval": 18446744073709551615,
+          "result": {
+            "Ok": {
+              "output_path": "relative/../output",
+              "in_store": false,
+              "download": "not a size",
+              "build_required": true
+            }
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Preview",
+        "params": {
+          "result": {
+            "Ok": {
+              "output_path": "relative/../output",
+              "in_store": false,
+              "download": "not a size",
+              "build_required": true
+            }
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Preview",
+        "params": {
+          "approval": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Preview",
+        "params": {
+          "approval": 18446744073709551615,
+          "result": {
+            "Ok": {
+              "output_path": "relative/../output",
+              "in_store": false,
+              "download": "not a size",
+              "build_required": true
+            }
+          },
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Preview",
+        "params": {
+          "approval": 18446744073709551615,
+          "result": {
+            "Ok": {
+              "output_path": "relative/../output",
+              "in_store": false,
+              "download": "not a size",
+              "build_required": true
+            }
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Preview",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Progress",
+        "params": {
+          "request": "",
+          "state": "future-state"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Progress",
+        "params": {
+          "state": "future-state"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Progress",
+        "params": {
+          "request": ""
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Progress",
+        "params": {
+          "request": "",
+          "state": "future-state",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Progress",
+        "params": {
+          "request": "",
+          "state": "future-state"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Progress",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Granted",
+        "params": {
+          "reply": {
+            "id": null,
+            "status": "future"
+          },
+          "detail": null,
+          "output": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Granted",
+        "params": {
+          "detail": null,
+          "output": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Granted",
+        "params": {
+          "reply": {
+            "id": null,
+            "status": "future"
+          },
+          "output": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Granted",
+        "params": {
+          "reply": {
+            "id": null,
+            "status": "future"
+          },
+          "detail": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Granted",
+        "params": {
+          "reply": {
+            "id": null,
+            "status": "future"
+          },
+          "detail": null,
+          "output": null,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Granted",
+        "params": {
+          "reply": {
+            "id": null,
+            "status": "future"
+          },
+          "detail": null,
+          "output": null
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Granted",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Decide",
+        "params": {
+          "request": {
+            "id": "r",
+            "package": "",
+            "reason": ""
+          },
+          "approved": true,
+          "output": "relative"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Granted",
+        "params": {
+          "reply": {
+            "status": "future",
+            "message": null
+          },
+          "detail": "more",
+          "output": "relative"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Preview",
+        "params": {
+          "approval": 0,
+          "result": {
+            "Err": "failed"
+          }
+        }
+      },
+      "valid": true
+    }
   ]
 }

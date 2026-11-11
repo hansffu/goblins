@@ -1222,6 +1222,57 @@ def check_supervisor_terminal_metadata():
         raise ValueError("private terminal event serde slots differ")
 
 
+def check_supervisor_approval_metadata():
+    """Pin approval records to the original private/public shared Serde shapes."""
+    schema=common();defs=schema["definitions"]
+    def ref(name):return {"$ref":"#/definitions/Supervisor"+name}
+    def opt(value):return {"anyOf":[value,{"type":"null"}]}
+    def obj(props,required=None):
+        return {"type":"object","properties":props,"required":list(props) if required is None else required,"additionalProperties":False}
+    def explicit(rust,fields,derives,required=None,module=None):
+        value=obj({name:{**shape,"x-rust-field-name":name,"x-rust-type":native,**metadata} for name,(shape,native,metadata) in fields.items()},required)
+        value.update({"x-rust-name":rust,"x-rust-field-order":list(fields),"x-rust-derives":derives})
+        if module is not None:value["x-rust-module"]=module
+        return value
+    serde=["Serialize","Deserialize"]
+    expected={
+        "ApprovalRequest":explicit("Request",{
+            "id":({"type":"string"},"String",{}),
+            "kind":({"type":"string","default":"package"},"String",{"x-rust-default":"crate::package_kind"}),
+            "package":({"type":"string"},"String",{}),
+            "reason":({"type":"string"},"String",{}),
+        },["Clone","Debug"]+serde,["id","package","reason"],"approval_metadata"),
+        "ApprovalReply":explicit("Reply",{
+            "id":(ref("OptionalString"),"Option<String>",{}),
+            "status":({"type":"string"},"String",{}),
+            "message":(ref("OptionalString"),"Option<String>",{"x-rust-skip-serializing-if":"Option::is_none"}),
+        },["Debug"]+serde,["status"],"approval_metadata"),
+        "Preview":explicit("WirePreview",{
+            "output_path":(opt(ref("Path")),"Option<::std::path::PathBuf>",{}),
+            "in_store":({"type":"boolean"},"bool",{}),
+            "download":(ref("OptionalString"),"Option<String>",{}),
+            "build_required":({"type":"boolean"},"bool",{}),
+        },["Clone","Debug"]+serde,["in_store","build_required"]),
+        "PreviewOutcome":{"oneOf":[obj({"Ok":ref("Preview")}),obj({"Err":{"type":"string"}})]},
+        "OptionalPath":opt(ref("Path")),
+        "CommandCancelParams":obj({"id":ref("Sequence")}),
+        "CommandPreviewParams":obj({"approval":ref("Sequence"),"package":{"type":"string"}}),
+        "CommandDecideParams":obj({"request":ref("ApprovalRequest"),"approved":{"type":"boolean"},"output":ref("OptionalPath")}),
+        "EventPreviewParams":obj({"approval":ref("Sequence"),"result":ref("PreviewOutcome")}),
+        "EventProgressParams":obj({"request":{"type":"string"},"state":{"type":"string"}}),
+        "EventGrantedParams":explicit("SupervisorEventGrantedParams",{
+            "reply":(ref("ApprovalReply"),"crate::contract::approval_metadata::Reply",{}),
+            "detail":(ref("OptionalString"),"Option<String>",{}),
+            "output":(ref("OptionalPath"),"Option<::std::path::PathBuf>",{}),
+        },["Debug"]+serde),
+    }
+    for name,value in expected.items():
+        if {key:value for key,value in defs["Supervisor"+name].items() if key!="description"}!=value:
+            raise ValueError("private approval schema/Rust metadata differs: "+name)
+    if schema["x-rust-serde-records"].get("SupervisorCommandDecideParams")!={"name":"SupervisorCommandDecideParams","order":["request","approved","output"],"required-nullable":["output"]}:
+        raise ValueError("private approval decision serde slots differ")
+
+
 def check_supervisor_pending_inventory():
     """Retire covered methods from their original remaining family, without loss."""
     families={
@@ -1266,6 +1317,12 @@ def check_private_contracts():
         'Command.TerminalCancel':('daemon-to-supervisor','SupervisorCommandTerminalCancelParams',['request']),
         'Event.Terminal':('supervisor-to-daemon','SupervisorEventTerminalParams',['terminal', 'status', 'error']),
         'Event.TerminalResult':('supervisor-to-daemon','SupervisorEventTerminalResultParams',['request', 'result']),
+        'Command.Cancel':('daemon-to-supervisor','SupervisorCommandCancelParams',['id']),
+        'Command.Preview':('daemon-to-supervisor','SupervisorCommandPreviewParams',['approval', 'package']),
+        'Command.Decide':('daemon-to-supervisor','SupervisorCommandDecideParams',['request', 'approved', 'output']),
+        'Event.Preview':('supervisor-to-daemon','SupervisorEventPreviewParams',['approval', 'result']),
+        'Event.Progress':('supervisor-to-daemon','SupervisorEventProgressParams',['request', 'state']),
+        'Event.Granted':('supervisor-to-daemon','SupervisorEventGrantedParams',['reply', 'detail', 'output']),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1291,7 +1348,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1344,6 +1401,7 @@ def check():
     check_supervisor_handoff_roots()
     check_supervisor_process_metadata()
     check_supervisor_terminal_metadata()
+    check_supervisor_approval_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

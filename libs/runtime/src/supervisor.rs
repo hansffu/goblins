@@ -444,7 +444,6 @@ macro_rules! put {
     ($b:ident, plain, $name:expr, $v:expr) => { $b.value($name, $v) };
     ($b:ident, opaque, $name:expr, $v:expr) => { $b.opaque($name, $v) };
     ($b:ident, membership, $name:expr, $v:expr) => {{ let value: Result<Descriptor,String> = match $v { Ok(fd) => Ok($b.fd(fd)?), Err(error) => Err(error.clone()) }; $b.value($name, &value) }};
-    ($b:ident, preview, $name:expr, $v:expr) => { $b.value($name, &encode_preview($v)) };
     ($b:ident, call, $name:expr, $v:expr) => { $b.opaque($name, &json!({"jsonrpc":$v.jsonrpc,"id":$v.id,"method":$v.method,"params":$v.params})) };
 }
 macro_rules! get {
@@ -460,9 +459,6 @@ macro_rules! get {
             Err(e) => Err(e),
         }
     };
-    ($p:ident, $d:ident, preview, $name:expr, $ty:ty) => {
-        decode_preview($p.take($name)?)?
-    };
     ($p:ident, $d:ident, call, $name:expr, $ty:ty) => {
         $p.opaque::<$ty>($name)?
     };
@@ -471,7 +467,7 @@ macro_rules! command_codec {
     ($($v:ident { $($f:ident : $ty:ty => $kind:ident),* $(,)? }),* $(,)?) => {
         fn encode_command(command: &Command, b: &mut Builder) -> io::Result<()> {
             match command {
-                Command::Cancel(id) => { b.method="Command.Cancel"; b.value("id",id)?; }
+                Command::Cancel(id) => b.notification::<contract::supervisor_notifications::CommandCancel>(contract::SupervisorCommandCancelParams { id:*id })?,
                 Command::Stop => b.method="Command.Stop",
                 Command::Start(handoff) => {
                     let handoff=encode_handoff_wire(handoff,b)?;
@@ -496,13 +492,18 @@ macro_rules! command_codec {
                 Command::Resize { terminal,rows,cols } => b.notification::<contract::supervisor_notifications::CommandResize>(contract::SupervisorCommandResizeParams { terminal:*terminal,rows:*rows,cols:*cols })?,
                 Command::TerminalCall { request,terminal,call } => b.notification::<contract::supervisor_notifications::CommandTerminalCall>(contract::SupervisorCommandTerminalCallParams { request:*request,terminal:*terminal,call:call.clone() })?,
                 Command::TerminalCancel { request } => b.notification::<contract::supervisor_notifications::CommandTerminalCancel>(contract::SupervisorCommandTerminalCancelParams { request:*request })?,
+                Command::Preview { approval,package } => b.notification::<contract::supervisor_notifications::CommandPreview>(contract::SupervisorCommandPreviewParams { approval:*approval,package:package.clone() })?,
+                Command::Decide { request,approved,output } => b.notification::<contract::supervisor_notifications::CommandDecide>(contract::SupervisorCommandDecideParams { request:request.clone(),approved:*approved,output:output.clone() })?,
                 $(Command::$v { $($f),* } => { b.method=concat!("Command.", stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
             }
             Ok(())
         }
         fn decode_command(method:&str, mut p:Params, d:&mut Descriptors) -> io::Result<Command> {
             let command=match method {
-                "Command.Cancel" => Command::Cancel(p.take("id")?),
+                name if name==contract::supervisor_notifications::CommandCancel::NAME => {
+                    let wire=contract::SupervisorCommandCancelParams { id:p.take("id")? };
+                    Command::Cancel(wire.id)
+                },
                 "Command.Stop" => Command::Stop,
                 name if name==contract::supervisor_notifications::CommandSpawn::NAME => {
                     let wire=contract::SupervisorCommandSpawnParams {
@@ -545,6 +546,14 @@ macro_rules! command_codec {
                     let wire=contract::SupervisorCommandTerminalCancelParams { request:p.take("request")? };
                     Command::TerminalCancel { request:wire.request }
                 },
+                name if name==contract::supervisor_notifications::CommandPreview::NAME => {
+                    let wire=contract::SupervisorCommandPreviewParams { approval:p.take("approval")?,package:p.take("package")? };
+                    Command::Preview { approval:wire.approval,package:wire.package }
+                },
+                name if name==contract::supervisor_notifications::CommandDecide::NAME => {
+                    let wire=contract::SupervisorCommandDecideParams { request:p.take("request")?,approved:p.take("approved")?,output:p.take("output")? };
+                    Command::Decide { request:wire.request,approved:wire.approved,output:wire.output }
+                },
                 $(concat!("Command.",stringify!($v)) => Command::$v { $($f:get!(p,d,$kind,stringify!($f),$ty)),* }),*,
                 _ => return Err(invalid("unknown supervisor command")),
             };
@@ -558,8 +567,6 @@ command_codec! {
     SandboxClose { connection:u64=>plain },
     ScopeFailed {},
     ScopeMembership { result:Result<Fd,String> =>membership },
-    Preview { approval:u64=>plain, package:String=>plain },
-    Decide { request:goblins_protocol::Request=>plain, approved:bool=>plain, output:Option<PathBuf> =>plain },
     Refresh { approval:u64=>plain, changes:crate::devshell::Changes=>plain },
     Run { serial:u64=>plain, app:String=>plain },
     Diff { serial:u64=>plain, changes:crate::devshell::Changes=>plain },
@@ -605,6 +612,12 @@ macro_rules! event_codec {
                     let result=serde_json::to_string(result)?;
                     b.notification::<contract::supervisor_notifications::EventTerminalResult>(contract::SupervisorEventTerminalResultParams { request:*request,result })?;
                 },
+                Event::Preview { approval,result } => {
+                    let result=encode_preview_wire(result);
+                    b.notification::<contract::supervisor_notifications::EventPreview>(contract::SupervisorEventPreviewParams { approval:*approval,result })?;
+                },
+                Event::Progress { request,state } => b.notification::<contract::supervisor_notifications::EventProgress>(contract::SupervisorEventProgressParams { request:request.clone(),state:state.clone() })?,
+                Event::Granted { reply,detail,output } => b.notification::<contract::supervisor_notifications::EventGranted>(contract::SupervisorEventGrantedParams { reply:goblins_protocol::Reply { id:reply.id.clone(),status:reply.status.clone(),message:reply.message.clone() },detail:detail.clone(),output:output.clone() })?,
                 $(Event::$v { $($f),* } => { b.method=concat!("Event.",stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
                 Event::InitLost => b.method="Event.InitLost",
                 Event::PayloadExited => b.method="Event.PayloadExited",
@@ -638,6 +651,18 @@ macro_rules! event_codec {
                     let result=serde_json::from_str(&wire.result).map_err(other)?;
                     Event::TerminalResult { request:wire.request,result }
                 },
+                name if name==contract::supervisor_notifications::EventPreview::NAME => {
+                    let wire=contract::SupervisorEventPreviewParams { approval:p.take("approval")?,result:p.take("result")? };
+                    Event::Preview { approval:wire.approval,result:decode_preview_wire(wire.result) }
+                },
+                name if name==contract::supervisor_notifications::EventProgress::NAME => {
+                    let wire=contract::SupervisorEventProgressParams { request:p.take("request")?,state:p.take("state")? };
+                    Event::Progress { request:wire.request,state:wire.state }
+                },
+                name if name==contract::supervisor_notifications::EventGranted::NAME => {
+                    let wire=contract::SupervisorEventGrantedParams { reply:p.take("reply")?,detail:p.take("detail")?,output:p.take("output")? };
+                    Event::Granted { reply:wire.reply,detail:wire.detail,output:wire.output }
+                },
                 $(concat!("Event.",stringify!($v))=>Event::$v { $($f:get!(p,_d,$kind,stringify!($f),$ty)),* }),*,
                 _=>return Err(invalid("unknown supervisor event")),
             };
@@ -648,14 +673,11 @@ macro_rules! event_codec {
 event_codec! {
     ScopeFailed { name:String=>plain },
     ScopeNeeded { name:String=>plain },
-    Preview { approval:u64=>plain, result:Result<crate::catalog::Preview,String> =>preview },
     Started { docker_enabled:bool=>plain, policy:Box<crate::policy::Policy> =>plain, support:crate::policy::Support=>plain, dev_shell:Option<crate::policy::DevShellSummary> =>opaque, identity:crate::Identity=>plain, recreated:Option<Box<crate::Recreated>> =>plain, auto:Box<crate::Auto> =>plain, worktrees:Box<crate::worktrees::Report> =>plain },
-    Progress { request:String=>plain, state:String=>plain },
     Mode { server:bool=>plain },
     Refresh { approval:u64=>plain, result:Result<(Value,String),String> =>opaque },
     Call { serial:u64=>plain, result:Result<Value,String> =>opaque },
     DevShell { summary:crate::policy::DevShellSummary=>opaque },
-    Granted { reply:goblins_protocol::Reply=>plain, detail:Option<String> =>plain, output:Option<PathBuf> =>plain },
     SandboxOpened { connection:u64=>plain },
     SandboxCall { connection:u64=>plain, call:goblins_jsonrpc::Call=>call },
     SandboxClosed { connection:u64=>plain },
