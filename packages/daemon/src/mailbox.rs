@@ -173,7 +173,7 @@ impl Mailbox {
             .ok_or_else(absent)
     }
 
-    pub fn record(
+    fn record(
         &mut self,
         actor: &str,
         kind: &str,

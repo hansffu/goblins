@@ -398,13 +398,10 @@ pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Va
         {
             return Err("communications log has a sequence gap or mixed instances".into());
         }
-        if event.kind == "session.started" {
-            // Logs written with the ownership tree carry the tree path,
-            // whose last segment was the agent name.
-            let name = event.data["agent_name"]
-                .as_str()
-                .or_else(|| event.data["path"].as_str()?.rsplit('/').next())
-                .unwrap_or("");
+        if let Some(session) = event.session_started() {
+            // The compatible generated projection preserves legacy path and
+            // empty-name precedence without changing the raw stored payload.
+            let name = session.name();
             known.insert(
                 event.actor.clone(),
                 mailbox::Session {
@@ -970,6 +967,196 @@ mod tests {
                 assert_eq!(w.journal.events.len(), 4);
             }
         }
+    }
+
+    // Local retained files exercise the reader directly, without daemon startup.
+    struct C13b3Log(std::path::PathBuf);
+    impl C13b3Log {
+        fn new(events: &[Value]) -> Self {
+            let root = goblins_unix::temp_directory().unwrap();
+            let log = Self(root.join("events.jsonl"));
+            let mut bytes = Vec::new();
+            for event in events {
+                serde_json::to_writer(&mut bytes, event).unwrap();
+                bytes.push(b'\n');
+            }
+            std::fs::write(&log.0, bytes).unwrap();
+            log
+        }
+    }
+    impl Drop for C13b3Log {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(self.0.parent().unwrap()).unwrap();
+        }
+    }
+    fn c13b3_event(sequence: u64, kind: &str, actor: &str, data: Value) -> Value {
+        json!({"instance":INSTANCE,"sequence":sequence,"timestamp":9,
+                "kind":kind,"actor":actor,"sessions":[actor],"data":data})
+    }
+
+    #[test]
+    fn c13b3_offline_session_name_fallbacks_preserve_original_events() {
+        for (data, name) in [
+            (
+                json!({"agent_name":"current","path":"/tree/legacy","future":true}),
+                "current",
+            ),
+            (json!({"path":"/tree/legacy"}), "legacy"),
+            (json!({"agent_name":null,"path":"/tree/legacy"}), "legacy"),
+            (json!({"agent_name":7,"path":"/tree/legacy"}), "legacy"),
+            (json!({"agent_name":"","path":"/tree/legacy"}), ""),
+            (json!({"path":"/tree/"}), ""),
+            (json!({"path":""}), ""),
+            (json!({"path":7}), ""),
+            (json!({}), ""),
+            (Value::Null, ""),
+            (json!(["legacy"]), ""),
+            (json!(7), ""),
+        ] {
+            let events = vec![
+                c13b3_event(1, "session.started", "a", data),
+                c13b3_event(2, "future.event", "a", json!({"anything":[null,1,"é\0"]})),
+            ];
+            let log = C13b3Log::new(&events);
+            for target in [None, Some("a".into()), Some(name.into())] {
+                assert_eq!(offline_log(&log.0, target).unwrap(), events);
+            }
+            assert_eq!(
+                offline_log(&log.0, Some("absent".into()))
+                    .unwrap_err()
+                    .to_string(),
+                "offline session selection requires a session ID or agent name from session.started"
+            );
+        }
+        // An exact ID wins over a name; historical duplicate names remain ambiguous.
+        let events = vec![
+            c13b3_event(1, "session.started", "a", json!({"agent_name":"duplicate"})),
+            c13b3_event(2, "session.started", "b", json!({"path":"/old/duplicate"})),
+        ];
+        let log = C13b3Log::new(&events);
+        assert_eq!(
+            offline_log(&log.0, Some("a".into())).unwrap(),
+            vec![events[0].clone()]
+        );
+        assert_eq!(
+            offline_log(&log.0, Some("duplicate".into()))
+                .unwrap_err()
+                .to_string(),
+            "ambiguous session; use its ID"
+        );
+    }
+
+    #[test]
+    fn c13b3_offline_known_and_future_payloads_remain_opaque() {
+        let kinds = [
+            "message.accepted",
+            "message.claimed",
+            "message.replied",
+            "message.completed",
+            "message.requeued",
+            "inbox.empty",
+            "operation.retried",
+            "recipient.stopped",
+            "session.exited",
+            "raid.created",
+            "raid.joined",
+            "raid.role",
+            "raid.left",
+            "raid.paused",
+            "raid.owner",
+            "raid.dissolved",
+            "raid.notice",
+            "operation.requested",
+            "operation.decided",
+            "operation.completed",
+            "operation.duplicate",
+            "future.event",
+        ];
+        let mut events = vec![c13b3_event(
+            1,
+            "session.started",
+            "a",
+            json!({"path":"/old/scout"}),
+        )];
+        for kind in kinds {
+            for data in [
+                json!({}),
+                Value::Null,
+                json!(7),
+                json!(["future", null]),
+                json!({"change":{"message":{"id":"m","sender_path":"/old/a","recipient_path":"/old/b",
+                        "future":true},"claim_generation":"malformed"},"notice":{"id":"n","operation":{"status":"future"}}}),
+            ] {
+                events.push(c13b3_event(events.len() as u64 + 1, kind, "a", data));
+            }
+        }
+        // More than one page; an unrelated last event advances the global cursor.
+        events.push(c13b3_event(
+            events.len() as u64 + 1,
+            "future.event",
+            "other",
+            json!(false),
+        ));
+        let log = C13b3Log::new(&events);
+        assert_eq!(offline_log(&log.0, None).unwrap(), events);
+        assert_eq!(
+            offline_log(&log.0, Some("scout".into())).unwrap(),
+            events[..events.len() - 1]
+        );
+    }
+
+    #[test]
+    fn c13b3_offline_retains_envelope_and_file_errors() {
+        let first = c13b3_event(1, "session.started", "a", json!({"agent_name":"scout"}));
+        for field in [
+            "instance",
+            "sequence",
+            "timestamp",
+            "kind",
+            "actor",
+            "sessions",
+            "data",
+        ] {
+            let mut broken = first.clone();
+            broken.as_object_mut().unwrap().remove(field);
+            let log = C13b3Log::new(&[broken]);
+            assert!(
+                offline_log(&log.0, None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&format!("missing field `{field}`")),
+                "{field}"
+            );
+        }
+        for mut second in [
+            c13b3_event(3, "future.event", "a", json!({})),
+            c13b3_event(2, "future.event", "a", json!({})),
+        ] {
+            if second["sequence"] == 2 {
+                second["instance"] = json!("different");
+            }
+            let log = C13b3Log::new(&[first.clone(), second]);
+            assert_eq!(
+                offline_log(&log.0, None).unwrap_err().to_string(),
+                "communications log has a sequence gap or mixed instances"
+            );
+        }
+        let log = C13b3Log::new(&[first]);
+        let mut bytes = std::fs::read(&log.0).unwrap();
+        bytes.pop();
+        std::fs::write(&log.0, bytes).unwrap();
+        assert_eq!(
+            offline_log(&log.0, None).unwrap_err().to_string(),
+            "oversized or incomplete communications log"
+        );
+        std::fs::write(&log.0, b"\n\n").unwrap();
+        assert!(offline_log(&log.0, None).unwrap().is_empty());
+        assert_eq!(
+            offline_log(log.0.parent().unwrap(), None)
+                .unwrap_err()
+                .to_string(),
+            "communications log must be a regular file"
+        );
     }
 
 }

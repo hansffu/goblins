@@ -364,6 +364,20 @@ fn main() {
         output.push_str(&format!("pub struct {name}; impl crate::contract::CommunicationKind for {name} {{ type Data={data}; const KIND:&'static str={kind:?}; }}\n"));
     }
     output.push_str(&format!("pub const KINDS:&[&str]=&{kinds:?}; }}\n"));
+    // Compatible views project fields independently before using the DTO.
+    // Malformed or nonobject retained data stays raw in the event envelope.
+    for row in common["x-communication-string-readers"].as_array().unwrap() {
+        let record = row["record"].as_str().unwrap();
+        let binding = row["binding"].as_str().unwrap();
+        output.push_str(&format!(
+            "impl {record} {{ pub const KIND: &'static str = <communication_events::{binding} as crate::contract::CommunicationKind>::KIND; pub fn project(value: &::serde_json::Value) -> Self {{ Self {{"
+        ));
+        for field in row["fields"].as_array().unwrap() {
+            let name = field.as_str().unwrap();
+            output.push_str(&format!("{name}: value.get({name:?}).and_then(::serde_json::Value::as_str).map(str::to_owned),"));
+        }
+        output.push_str("} } }\n");
+    }
     let mut decoded = std::collections::BTreeSet::from([
         "InitializeReply".to_string(),
         "ServerStatusReply".to_string(),

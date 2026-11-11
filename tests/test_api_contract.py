@@ -16,6 +16,107 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def _c13b3_check_coverage(self, *, sources=None, schema=None):
+        """Supply the proposed override API, or equivalent overlays on the old checker."""
+        import inspect
+        from unittest.mock import patch
+        check = contract.check_communication_readers_and_producers
+        if "sources" in inspect.signature(check).parameters:
+            return check(sources=sources, schema=schema)
+        # This shim lets the unchanged assertions expose the old scanner bug
+        # before its override API exists; after implementation use the real API.
+        schema = contract.common() if schema is None else schema
+        original_read = Path.read_text
+        def read(path, *args, **kwargs):
+            relative = str(path.relative_to(contract.ROOT)) if path.is_relative_to(contract.ROOT) else None
+            if relative in (sources or {}):
+                return sources[relative]
+            return original_read(path, *args, **kwargs)
+        with patch.object(contract, "common", return_value=schema), patch.object(Path, "read_text", read):
+            return check()
+
+    def test_c13b3_constructor_scanner_accepts_current_sources(self):
+        self._c13b3_check_coverage()
+
+    def test_c13b3_constructor_scanner_rejects_missing_or_changed_constructor(self):
+        path = "packages/daemon/src/raid.rs"
+        source = (contract.ROOT / path).read_text()
+        constructor = "CommunicationPayload::new::<kinds::RaidCreated>"
+        self.assertEqual(source.count(constructor), 1)
+        self.assertIn("contract::communication_events::RaidCreated::KIND", source)
+        for replacement in ("removed_constructor", "CommunicationPayload::new::<kinds::RaidJoined>"):
+            with self.subTest(replacement=replacement), self.assertRaises(ValueError):
+                self._c13b3_check_coverage(sources={path: source.replace(constructor, replacement)})
+
+    def test_c13b3_constructor_scanner_ignores_comments_and_raw_strings(self):
+        path = "packages/daemon/src/raid.rs"
+        source = (contract.ROOT / path).read_text()
+        constructor = "CommunicationPayload::new::<kinds::RaidCreated>"
+        missing = source.replace(constructor, "removed_constructor")
+        for decoy in ("// " + constructor + "\n",
+                      "/* outer /* nested */ " + constructor + " */\n",
+                      'const DECOY: &str = r###"' + constructor + '"###;\n',
+                      'const DECOY: &str = "CommunicationPayload::new::<kinds::RaidCreated>";\n'):
+            with self.subTest(decoy=decoy), self.assertRaises(ValueError):
+                self._c13b3_check_coverage(sources={path: decoy + missing})
+
+    def test_c13b3_constructor_scanner_rejects_wrong_alias(self):
+        path = "packages/daemon/src/raid.rs"
+        source = (contract.ROOT / path).read_text()
+        alias = "use contract::communication_events as kinds;"
+        self.assertEqual(source.count(alias), 1)
+        with self.assertRaises(ValueError):
+            self._c13b3_check_coverage(sources={path: source.replace(alias, "use unrelated::communication_events as kinds;")})
+
+    def test_c13b3_constructor_scanner_rejects_raw_boundary_escape(self):
+        path = "packages/daemon/src/mailbox.rs"
+        source = (contract.ROOT / path).read_text()
+        self.assertIn("    fn record(\n", source)
+        for visibility in ("pub", "pub(crate)"):
+            with self.subTest(visibility=visibility), self.assertRaises(ValueError):
+                self._c13b3_check_coverage(sources={path: source.replace("    fn record(\n", f"    {visibility} fn record(\n", 1)})
+        worker = "packages/daemon/src/messaging.rs"
+        worker_source = (contract.ROOT / worker).read_text()
+        escape = '\nfn untyped_escape(mailbox: &mut Mailbox) { mailbox.record("a", "future.kind", serde_json::json!({}), 0, journal); }\n'
+        worker_source = worker_source.replace("\n#[cfg(test)]", escape + "\n#[cfg(test)]", 1)
+        with self.assertRaises(ValueError):
+            self._c13b3_check_coverage(sources={worker: worker_source})
+
+    def test_c13b3_constructor_scanner_rejects_reader_kind_retargeting(self):
+        schema = copy.deepcopy(contract.common())
+        reader = next(row for row in schema["x-communication-string-readers"]
+                      if row["record"] == "CommunicationSessionStartedRead")
+        self.assertEqual(reader["kind"], "session.started")
+        reader["kind"] = "session.exited"
+        with self.assertRaises(ValueError):
+            self._c13b3_check_coverage(schema=schema)
+
+    def test_c13b3_constructor_scanner_rejects_restricted_raw_visibility(self):
+        path = "packages/daemon/src/mailbox.rs"
+        source = (contract.ROOT / path).read_text()
+        declaration = "    fn record(\n"
+        self.assertEqual(source.count(declaration), 1)
+        # crate and this defining module are valid visibility ancestors.
+        for visibility in ("pub(in crate)", "pub(in crate::mailbox)"):
+            with self.subTest(visibility=visibility), self.assertRaises(ValueError):
+                self._c13b3_check_coverage(sources={
+                    path: source.replace(declaration, f"    {visibility} fn record(\n", 1)})
+
+    def test_c13b3_constructor_scanner_rejects_ufcs_raw_publication(self):
+        path = "packages/daemon/src/mailbox.rs"
+        source = (contract.ROOT / path).read_text()
+        wrapper = source.index("    pub fn record_typed<")
+        delegation = "        self.record(actor, kind, data, now, audit)"
+        insertion = source.index(delegation, wrapper)
+        for receiver in ("Self", "Mailbox"):
+            escape = f'        {receiver}::record(self, actor, "unbound.kind", json!({{}}), now, audit)?;\n'
+            modified = source[:insertion] + escape + source[insertion:]
+            # The proper typed delegation is retained: the extra UFCS call
+            # must be detected in addition to the ordinary .record call.
+            self.assertEqual(modified.count(delegation), 1)
+            with self.subTest(receiver=receiver), self.assertRaises(ValueError):
+                self._c13b3_check_coverage(sources={path: modified})
+
     def test_communication_payload_kind_pairing_and_notice_correlations(self):
         for case in contract.read("fixtures.json")["communication_payload_cases"]:
             event=dict(instance="i",sequence=1,timestamp=9,kind=case["kind"],actor="host",sessions=["s"],data=case["data"])

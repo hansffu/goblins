@@ -7825,7 +7825,7 @@
         "data"
       ],
       "additionalProperties": true,
-      "description": "The stored envelope retains original Serde name/order and open String/Value reading for unknown or older logs. Known producers bind kind/data using generated payload markers; canonical schemas check known pairs. Remaining producer families/consumers are recorded in x-migration-pending.",
+      "description": "The stored envelope retains original Serde name/order and open String/Value reading for unknown or older logs. All known current producers bind kind/data using generated payload markers; canonical schemas check known pairs. Compatible retained-log and Emacs views are specified separately in the communication reader catalogs.",
       "allOf": [
         {
           "if": {
@@ -9330,6 +9330,33 @@
       "type": "string",
       "minLength": 1,
       "x-max-bytes": 512
+    },
+    "CommunicationSessionStartedRead": {
+      "type": "object",
+      "properties": {
+        "agent_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "description": "Compatible retained-log projection: read string fields independently, treating missing, null, malformed fields and non-object payloads as absent before decoding. Empty strings retain precedence. Resolve agent_name first, otherwise the last slash-separated path segment, otherwise empty. Preserve original raw event data separately."
     }
   },
   "x-api-version": 1,
@@ -11731,9 +11758,6 @@
       ]
     }
   },
-  "x-migration-pending": {
-    "C13b3": "Compatible known-payload readers, retained-log/offline and Emacs consumers, producer coverage closure."
-  },
   "x-communications-payloads": [
     {
       "kind": "raid.created",
@@ -11889,5 +11913,196 @@
         "$ref": "#/definitions/CommSessionExitedData"
       }
     }
-  ]
+  ],
+  "x-communication-string-readers": [
+    {
+      "record": "CommunicationSessionStartedRead",
+      "kind": "session.started",
+      "fields": [
+        "agent_name",
+        "path"
+      ],
+      "binding": "SessionStarted"
+    }
+  ],
+  "x-elisp-communication-readers": [
+    {
+      "name": "communication-envelope",
+      "schemas": [
+        "CommunicationsEvent"
+      ],
+      "fields": [
+        "kind",
+        "data",
+        "actor",
+        "timestamp"
+      ]
+    },
+    {
+      "name": "communication-data",
+      "schemas": [
+        "CommRaidCreatedData",
+        "CommRaidJoinedData",
+        "CommRaidRoleData",
+        "CommRaidLeftData",
+        "CommRaidPausedData",
+        "CommRaidOwnerData",
+        "CommRaidDissolvedData",
+        "CommRaidNoticeData",
+        "CommOperationRequestedData",
+        "CommOperationDecidedData",
+        "CommOperationCompletedData",
+        "CommOperationDuplicateData",
+        "CommMessageAcceptedData",
+        "CommMessageClaimedData",
+        "CommInboxEmptyData",
+        "CommMessageRepliedData",
+        "CommMessageCompletedData",
+        "CommMessageRequeuedData",
+        "CommOperationRetriedData",
+        "CommRecipientStoppedData",
+        "CommSessionStartedData",
+        "CommSessionExitedData"
+      ],
+      "fields": [
+        "change",
+        "messages",
+        "raid",
+        "name",
+        "notice"
+      ]
+    },
+    {
+      "name": "communication-change",
+      "schemas": [
+        "CommMessageAcceptedChange",
+        "CommMessageClaimedChange",
+        "CommInboxEmptyChange",
+        "CommMessageRepliedChange",
+        "CommMessageCompletedChange",
+        "CommMessageRequeuedChange"
+      ],
+      "fields": [
+        "message",
+        "raid",
+        "completed"
+      ]
+    },
+    {
+      "name": "message",
+      "schemas": [
+        "MailboxMessage"
+      ],
+      "fields": [
+        "id",
+        "in_reply_to",
+        "conversation",
+        "sender",
+        "sender_name",
+        "sender_path",
+        "recipient",
+        "recipient_name",
+        "recipient_path",
+        "body",
+        "created_at",
+        "state",
+        "failure"
+      ],
+      "legacy-fields": {
+        "sender_path": "Older ownership-tree logs used a path rather than sender_name.",
+        "recipient_path": "Older ownership-tree logs used a path rather than recipient_name."
+      }
+    }
+  ],
+  "x-communications-producers": [
+    {
+      "source": "packages/daemon/src/raid.rs",
+      "bindings": [
+        "RaidCreated",
+        "RaidJoined",
+        "RaidRole",
+        "RaidLeft",
+        "RaidPaused",
+        "RaidOwner",
+        "RaidDissolved"
+      ],
+      "functions": {
+        "payload": [
+          "RaidCreated",
+          "RaidJoined",
+          "RaidRole",
+          "RaidLeft",
+          "RaidPaused",
+          "RaidOwner",
+          "RaidDissolved"
+        ]
+      }
+    },
+    {
+      "source": "packages/daemon/src/operation.rs",
+      "bindings": [
+        "OperationRequested",
+        "OperationDecided",
+        "OperationCompleted"
+      ],
+      "functions": {
+        "payload": [
+          "OperationRequested",
+          "OperationDecided",
+          "OperationCompleted"
+        ]
+      }
+    },
+    {
+      "source": "packages/daemon/src/mailbox.rs",
+      "bindings": [
+        "RaidNotice",
+        "OperationDuplicate",
+        "OperationRetried",
+        "MessageAccepted",
+        "MessageClaimed",
+        "InboxEmpty",
+        "MessageReplied",
+        "MessageCompleted",
+        "MessageRequeued",
+        "RecipientStopped"
+      ],
+      "functions": {
+        "notify_resumed": [
+          "RaidNotice"
+        ],
+        "record_operations": [
+          "OperationDuplicate"
+        ],
+        "execute": [
+          "OperationRetried"
+        ],
+        "prepare": [
+          "MessageAccepted",
+          "MessageClaimed",
+          "InboxEmpty",
+          "MessageReplied",
+          "MessageCompleted",
+          "MessageRequeued"
+        ],
+        "stop_recipient": [
+          "RecipientStopped"
+        ]
+      }
+    },
+    {
+      "source": "packages/daemon/src/messaging.rs",
+      "bindings": [
+        "SessionStarted",
+        "SessionExited"
+      ],
+      "functions": {
+        "handle": [
+          "SessionStarted",
+          "SessionExited"
+        ]
+      }
+    }
+  ],
+  "x-communications-read-compatibility": "Strict current-producer schemas do not constrain retained-log or Emacs payload acceptance. Stored envelopes retain required fields and sequence/instance/file checks; raw payloads, including future kinds and malformed/partial known data, are preserved. Rust independently projects only session.started strings; schema-generated Emacs lazy record views preserve plist-get behavior and errors, field evaluation order, legacy paths, cache mutation order and unknown-kind notice fallback. None of these views validates a whole current-producer payload."
 }

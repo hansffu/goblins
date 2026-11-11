@@ -26,6 +26,7 @@
 (require 'goblins)
 (require 'goblins-views)
 (require 'goblins-raids)
+(require 'goblins-api-generated)
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
@@ -91,25 +92,26 @@ In a narrower window the reader goes below the list."
 (defun goblins--messages-add (message raid)
   "Record MESSAGE, a message object from the log, sent within RAID if non-nil.
 A reply belongs to the raid of the message it answers."
-  (let ((id (plist-get message :id))
-        (reply-to (plist-get message :in_reply_to)))
+  (let* ((message (goblins-api-message message))
+         (id (goblins-api-message-id message))
+         (reply-to (goblins-api-message-in-reply-to message)))
     (when (stringp id)
       (unless (gethash id goblins--messages) (push id goblins--messages-order))
       (puthash id
                (list :id id
-                     :conversation (or (plist-get message :conversation) id)
-                     :sender (plist-get message :sender)
+                     :conversation (or (goblins-api-message-conversation message) id)
+                     :sender (goblins-api-message-sender message)
                      ;; Older logs name goblins by their tree path.
-                     :sender-name (or (plist-get message :sender_name)
-                                      (plist-get message :sender_path))
-                     :recipient (plist-get message :recipient)
-                     :recipient-name (or (plist-get message :recipient_name)
-                                         (plist-get message :recipient_path))
-                     :body (plist-get message :body)
-                     :created (plist-get message :created_at)
+                     :sender-name (or (goblins-api-message-sender-name message)
+                                     (goblins-api-message-sender-path message))
+                     :recipient (goblins-api-message-recipient message)
+                     :recipient-name (or (goblins-api-message-recipient-name message)
+                                        (goblins-api-message-recipient-path message))
+                     :body (goblins-api-message-body message)
+                     :created (goblins-api-message-created-at message)
                      :reply-to (and (stringp reply-to) reply-to)
-                     :state (plist-get message :state)
-                     :failure (plist-get message :failure)
+                     :state (goblins-api-message-state message)
+                     :failure (goblins-api-message-failure message)
                      :raid (if (stringp raid) raid
                              (plist-get (goblins--messages-get reply-to) :raid)))
                goblins--messages))))
@@ -123,33 +125,41 @@ A reply belongs to the raid of the message it answers."
 
 (defun goblins--messages-ingest (event)
   "Apply EVENT, a communications log event, to the cache."
-  (let* ((kind (plist-get event :kind))
-         (data (plist-get event :data))
-         (change (and (listp data) (plist-get data :change))))
+  (let* ((event (goblins-api-communication-envelope event))
+         (kind (goblins-api-communication-envelope-kind event))
+         (data (goblins-api-communication-data
+                (goblins-api-communication-envelope-data event)))
+         (change (goblins-api-communication-change
+                  (and (listp (goblins-api-communication-data-raw data))
+                       (goblins-api-communication-data-change data)))))
     (pcase kind
       ((or "message.accepted" "message.replied")
-       (goblins--messages-add (plist-get change :message) (plist-get change :raid))
-       (when (stringp (plist-get change :completed))
-         (goblins--messages-update (plist-get change :completed) :state "completed")))
+       (goblins--messages-add (goblins-api-communication-change-message change)
+                              (goblins-api-communication-change-raid change))
+       (when (stringp (goblins-api-communication-change-completed change))
+         (goblins--messages-update (goblins-api-communication-change-completed change)
+                                   :state "completed")))
       ("message.claimed"
-       (goblins--messages-update (plist-get change :message) :state "claimed"
-                                 :claimed-by (plist-get event :actor)
-                                 :claimed-at (plist-get event :timestamp)))
+       (goblins--messages-update (goblins-api-communication-change-message change) :state "claimed"
+                                 :claimed-by (goblins-api-communication-envelope-actor event)
+                                 :claimed-at (goblins-api-communication-envelope-timestamp event)))
       ("message.completed"
-       (goblins--messages-update (plist-get change :message) :state "completed"))
+       (goblins--messages-update (goblins-api-communication-change-message change) :state "completed"))
       ("message.requeued"
-       (goblins--messages-update (plist-get change :message) :state "queued"))
+       (goblins--messages-update (goblins-api-communication-change-message change) :state "queued"))
       ("recipient.stopped"
        (mapc (lambda (id) (goblins--messages-update id :state "failed"
                                                     :failure "recipient stopped"))
-             (plist-get data :messages)))
+             (goblins-api-communication-data-messages data)))
       ("raid.created"
-       (when (stringp (plist-get data :raid))
-         (puthash (plist-get data :raid) (plist-get data :name) goblins--messages-raids)))
+       (when (stringp (goblins-api-communication-data-raid data))
+         (puthash (goblins-api-communication-data-raid data)
+                  (goblins-api-communication-data-name data) goblins--messages-raids)))
       (_
        ;; An operation's outcome is delivered as a notice from goblins.
-       (let ((notice (and (listp data) (plist-get data :notice))))
-         (when (and (listp notice) (plist-get notice :id))
+       (let ((notice (and (listp (goblins-api-communication-data-raw data))
+                          (goblins-api-communication-data-notice data))))
+         (when (and (listp notice) (goblins-api-message-id (goblins-api-message notice)))
            (goblins--messages-add notice nil)))))))
 
 (defun goblins--messages-records ()

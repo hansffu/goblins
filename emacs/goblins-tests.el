@@ -5988,3 +5988,166 @@ m2, and m3, which failed when beta stopped."
               (should (equal (car calls) '(connection communications.list (:after 1 :limit 100))))
               (should (equal ingested (list event))))))
       (kill-buffer source))))
+
+(ert-deftest goblins-c13b3-message-event-projections ()
+  (require 'goblins-messages)
+  (with-temp-buffer
+    (goblins--messages-reset nil "i")
+    (goblins--messages-ingest
+     '(:kind "message.accepted" :data
+       (:change (:raid "r" :message
+                 (:id "m" :sender "a" :recipient "b" :sender_path "/old/a"
+                  :recipient_path "/old/b" :body "héllo\0\n" :created_at 9
+                  :state "queued" :in_reply_to 7 :future t)))))
+    (should (equal (goblins--messages-get "m")
+                   '(:id "m" :conversation "m" :sender "a" :sender-name "/old/a"
+                     :recipient "b" :recipient-name "/old/b" :body "héllo\0\n"
+                     :created 9 :reply-to nil :state "queued" :failure nil :raid "r")))
+    (goblins--messages-ingest
+     '(:kind "message.claimed" :actor "b" :timestamp 10
+       :data (:change (:message "m" :claim_generation "ignored"))))
+    (should (equal (plist-get (goblins--messages-get "m") :state) "claimed"))
+    (should (equal (plist-get (goblins--messages-get "m") :claimed-by) "b"))
+    (should (= (plist-get (goblins--messages-get "m") :claimed-at) 10))
+    (goblins--messages-ingest '(:kind "message.requeued" :data (:change (:message "m"))))
+    (should (equal (plist-get (goblins--messages-get "m") :state) "queued"))
+    ;; Requeue keeps the original claim metadata in the UI projection.
+    (should (= (plist-get (goblins--messages-get "m") :claimed-at) 10))
+    (goblins--messages-ingest
+     '(:kind "message.replied" :data
+       (:change (:completed "m" :message
+                 (:id "reply" :in_reply_to "m" :sender_name "current"
+                  :sender_path "/old/name" :recipient_name "" :recipient_path "/old/b"
+                  :state "queued")))))
+    (should (equal (goblins--messages-get "reply")
+                   '(:id "reply" :conversation "reply" :sender nil :sender-name "current"
+                     :recipient nil :recipient-name "" :body nil :created nil
+                     :reply-to "m" :state "queued" :failure nil :raid "r")))
+    (should (equal (plist-get (goblins--messages-get "m") :state) "completed"))
+    (goblins--messages-ingest '(:kind "message.completed" :data (:change (:message "reply"))))
+    (should (equal (plist-get (goblins--messages-get "reply") :state) "completed"))
+    (goblins--messages-ingest '(:kind "recipient.stopped" :data (:messages ["reply" "absent"])))
+    (should (equal (plist-get (goblins--messages-get "reply") :state) "failed"))
+    (should (equal (plist-get (goblins--messages-get "reply") :failure) "recipient stopped"))
+    (should (equal goblins--messages-order '("reply" "m")))
+    ;; Replacing an existing message does not duplicate its order entry.
+    (goblins--messages-ingest '(:kind "message.accepted" :data (:change (:message (:id "m" :body "replacement")))) )
+    (should (equal goblins--messages-order '("reply" "m")))
+    (should (equal (plist-get (goblins--messages-get "m") :body) "replacement"))))
+
+(ert-deftest goblins-c13b3-future-notices-and-partial-payloads ()
+  (require 'goblins-messages)
+  (with-temp-buffer
+    (goblins--messages-reset nil "i")
+    (dolist (event '((:kind "future.kind" :data (:future [1 2]))
+                     (:kind "message.accepted")
+                     (:kind "message.accepted" :data (:change (:message (:body "no id"))))
+                     (:kind "message.accepted" :data (:change (:message (:id 7))))
+                     (:kind "message.claimed" :data (:change (:message "absent")))
+                     (:kind "message.completed" :data (:change (:message "absent")))
+                     (:kind "message.requeued" :data (:change (:message "absent")))
+                     (:kind "recipient.stopped" :data (:messages ["absent"]))))
+      (goblins--messages-ingest event))
+    (should (= (hash-table-count goblins--messages) 0))
+    (dolist (kind '("future.kind" "operation.completed" "raid.notice"))
+      (goblins--messages-ingest
+       (list :kind kind :data (list :notice (list :id kind :sender "goblins"
+                                                :body "notice" :state "queued"
+                                                :operation '(:status "future")))))
+      (should (equal (plist-get (goblins--messages-get kind) :body) "notice")))
+    (should (= (hash-table-count goblins--messages) 3))
+    (goblins--messages-ingest '(:kind "raid.created" :data (:raid "r" :name "review")))
+    (should (equal (gethash "r" goblins--messages-raids) "review"))
+    ;; A malformed optional value is preserved by the field projection.
+    (goblins--messages-ingest
+     '(:kind "message.accepted" :data (:change (:message (:id "partial" :body 17 :sender_name 23)))))
+    (should (= (plist-get (goblins--messages-get "partial") :body) 17))
+    (should (= (plist-get (goblins--messages-get "partial") :sender-name) 23))))
+
+(defun goblins-test--c13b3-cache-state ()
+  "Copy all cache state affected by event ingestion."
+  (let (messages raids)
+    (maphash (lambda (id record) (push (cons id (copy-tree record)) messages)) goblins--messages)
+    (maphash (lambda (id name) (push (cons id name) raids)) goblins--messages-raids)
+    (list (sort messages (lambda (a b) (string< (car a) (car b))))
+          (copy-sequence goblins--messages-order)
+          (sort raids (lambda (a b) (string< (car a) (car b)))))))
+
+(ert-deftest goblins-c13b3-malformed-events-preserve-original-noops ()
+  (require 'goblins-messages)
+  (with-temp-buffer
+    (goblins--messages-reset nil "i")
+    (goblins--messages-add '(:id "old" :body "original" :state "queued") "r")
+    (puthash "r" "review" goblins--messages-raids)
+    (let ((before (goblins-test--c13b3-cache-state)))
+      ;; The pinned original plist reader tolerates these malformed shapes.
+      (dolist (event '(17 "bad" [1] (:kind . broken)
+                       (:kind "message.accepted" :data 17)
+                       (:kind "message.accepted" :data (:change 17))
+                       (:kind "message.accepted" :data (:change [1]))
+                       (:kind "message.accepted" :data (:change (:message 17)))
+                       (:kind "message.accepted" :data (:change (:message [1])))
+                       (:kind "message.accepted" :data (:change (:message (:body . broken))))
+                       (:kind "raid.created" :data (:raid 17 :name "ignored"))))
+        (goblins--messages-ingest event)
+        (should (equal (goblins-test--c13b3-cache-state) before))))))
+
+(ert-deftest goblins-c13b3-malformed-recipient-sequences-preserve-error-and-cache ()
+  (require 'goblins-messages)
+  (dolist (case '((17 (wrong-type-argument sequencep 17))
+                  (("old" . broken) (wrong-type-argument listp broken))))
+    (with-temp-buffer
+      (goblins--messages-reset nil "i")
+      (goblins--messages-add '(:id "old" :body "original" :state "queued") "r")
+      (puthash "r" "review" goblins--messages-raids)
+      (let ((before (goblins-test--c13b3-cache-state)))
+        (should (equal
+                 (should-error
+                  (goblins--messages-ingest
+                   (list :kind "recipient.stopped" :data (list :messages (car case))))
+                  :type 'wrong-type-argument)
+                 (cadr case)))
+        ;; Even the valid first ID in an improper sequence is not changed.
+        (should (equal (goblins-test--c13b3-cache-state) before))))))
+
+(ert-deftest goblins-c13b3-late-field-errors-preserve-partial-cache-effects ()
+  (require 'goblins-messages)
+  ;; Malformed plist atoms themselves are tolerated. Inject a read failure to
+  ;; freeze evaluation order and state when a later field access signals.
+  (dolist (id '("new" "old"))
+    (dolist (field '(:id :in_reply_to :conversation :sender :failure))
+      (with-temp-buffer
+        (goblins--messages-reset nil "i")
+        (goblins--messages-add '(:id "old" :body "original" :state "queued") "r")
+        (puthash "r" "review" goblins--messages-raids)
+        (let* ((before (goblins-test--c13b3-cache-state))
+               (message (list :id id :in_reply_to nil :conversation "conversation" :body "new"))
+               (original-get (symbol-function 'plist-get))
+               (failure (list 'wrong-type-argument 'listp (list :malformed field)))
+               (error
+                (cl-letf (((symbol-function 'plist-get)
+                           (lambda (plist property &rest args)
+                             (if (and (eq plist message) (eq property field))
+                                 (signal (car failure) (cdr failure))
+                               (apply original-get plist property args)))))
+                  (condition-case error
+                      (progn
+                        (goblins--messages-ingest
+                         (list :kind "message.replied" :data
+                               (list :change (list :message message :completed "old"))))
+                        nil)
+                    (error error)))))
+          (should (equal error failure))
+          (let ((after (goblins-test--c13b3-cache-state)))
+            (should (equal (car after) (car before)))
+            (should (equal (nth 2 after) (nth 2 before)))
+            (should (equal (cadr after)
+                           (if (and (equal id "new") (not (memq field '(:id :in_reply_to))))
+                               '("new" "old") '("old")))))
+          ;; A retry after a late error adds the absent hash entry and retains
+          ;; the original duplicate order effect; the failed reply never
+          ;; completed the old record.
+          (when (and (equal id "new") (eq field :sender))
+            (goblins--messages-add message "r")
+            (should (equal goblins--messages-order '("new" "new" "old")))
+            (should (equal (plist-get (goblins--messages-get "old") :state) "queued"))))))))

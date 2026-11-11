@@ -30,6 +30,22 @@ impl Response for CommunicationsPageReply {
     }
 }
 
+/// Resolve only the historical fields this reader has always consumed.
+impl CommunicationSessionStartedRead {
+    pub fn name(&self) -> &str {
+        self.agent_name
+            .as_deref()
+            .or_else(|| self.path.as_deref()?.rsplit('/').next())
+            .unwrap_or("")
+    }
+}
+impl CommunicationsEvent {
+    pub fn session_started(&self) -> Option<CommunicationSessionStartedRead> {
+        (self.kind == CommunicationSessionStartedRead::KIND)
+            .then(|| CommunicationSessionStartedRead::project(&self.data))
+    }
+}
+
 /// A generated kind/data binding. It describes data, never publication rights.
 pub trait CommunicationKind {
     type Data: Serialize;
