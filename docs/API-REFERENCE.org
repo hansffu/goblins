@@ -5357,6 +5357,185 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+* attach
+
+** Notification =attach.hello=
+
+attach.sock begins with a frontend-to-daemon attach.hello notification (no id); named and ordered version,rows,cols,terminal positional parameters retain the existing Serde forms. Version 1 and nonzero u16 dimensions are checked after structural decoding; bad version or zero dimensions retain the unsupported-version diagnostic. A supplied terminal requires 1..500 dimensions during target attachment, after the existing state/policy checks. Hello has a 4 KiB body and 3-second frame deadline, eight pending hellos per goblin and at most four accepts per tick. The daemon reads exactly the hello frame and consumes no following raw bytes.
+
+Direction: =client-to-server=. Sender: frontend. Receiver: daemon attach.sock. State: first frame only, before raw terminal bytes.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "version": {
+      "$ref": "#/definitions/AttachVersion"
+    },
+    "rows": {
+      "$ref": "#/definitions/AttachDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/AttachDimension"
+    },
+    "terminal": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "version",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "$ref": "#/definitions/AttachVersion"
+    },
+    {
+      "$ref": "#/definitions/AttachDimension"
+    },
+    {
+      "$ref": "#/definitions/AttachDimension"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  ],
+  "minItems": 3,
+  "maxItems": 4
+}
+#+end_src
+
+** Notification =attach.waiting=
+
+While startup or required onAttach variables are pending, the daemon sends attach.waiting with a required missing array, initially/periodically at one-second intervals. Empty missing means startup/draining; nonempty names identify variables that must be fresh and nonempty this run. A live competing attachment refuses without resizing. An exited onAttach client retains its physical stream until the frontend closes; new hellos receive empty waiting notices during that drain.
+
+Direction: =server-to-client=. Sender: daemon attach.sock. Receiver: frontend. State: after hello, before fixed-id completion.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "missing"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+Legacy client classification follows =attach-client-compatibility=; the normalized DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "has_missing": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "has_missing"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** Completion exchange =attach.reply=
+
+Completion after a valid modern hello and any waiting notifications. Modern attach.sock and legacy terminal.sock complete with a correlated JSON-RPC response of id 0: result attached=true, or error -32009 with a diagnostic. Only success switches the stream to raw bytes. terminal.sock is server-first with no hello; it retains stopped output, waits for configuration/readiness and refuses onAttach goblins with an upgrade message. Modern named-terminal attachments answer at once without waiting notices and redraw before live output. The generic runtime Terminal::attach retains its private caller-supplied id (including nonzero test ids); public entrypoints pass 0. Byte queues, refusal-before-resize, descriptor ownership, cancellation and framed/raw boundaries remain handwritten.
+
+Socket: =attach.sock=. Direction: =server-to-client=. Fixed response ID: =0=.
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "attached": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "attached"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Errors: -32009.
+
+** Completion exchange =legacy.attach=
+
+Server-first legacy completion; the frontend sends no hello. Modern attach.sock and legacy terminal.sock complete with a correlated JSON-RPC response of id 0: result attached=true, or error -32009 with a diagnostic. Only success switches the stream to raw bytes. terminal.sock is server-first with no hello; it retains stopped output, waits for configuration/readiness and refuses onAttach goblins with an upgrade message. Modern named-terminal attachments answer at once without waiting notices and redraw before live output. The generic runtime Terminal::attach retains its private caller-supplied id (including nonzero test ids); public entrypoints pass 0. Byte queues, refusal-before-resize, descriptor ownership, cancellation and framed/raw boundaries remain handwritten.
+
+Socket: =terminal.sock=. Direction: =server-to-client=. Fixed response ID: =0=.
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "attached": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "attached"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Errors: -32009.
+
 * Envelopes (handwritten transport, schema checked)
 
 #+begin_src json
@@ -10202,6 +10381,126 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =AttachVersion=
+
+#+begin_src json
+{
+  "type": "integer",
+  "format": "uint64",
+  "minimum": 0,
+  "maximum": 18446744073709551615,
+  "x-json-integer": true,
+  "enum": [
+    1
+  ]
+}
+#+end_src
+
+** =AttachDimension=
+
+#+begin_src json
+{
+  "type": "integer",
+  "format": "uint16",
+  "minimum": 1,
+  "maximum": 65535,
+  "x-json-integer": true
+}
+#+end_src
+
+** =AttachHelloParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "version": {
+      "$ref": "#/definitions/AttachVersion"
+    },
+    "rows": {
+      "$ref": "#/definitions/AttachDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/AttachDimension"
+    },
+    "terminal": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "version",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =AttachWaitingParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "missing"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =AttachWaitingReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "has_missing": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "has_missing"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =AttachResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "attached": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "attached"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -10227,6 +10526,10 @@ Cross-field request constraints (existing semantic validation):
 - =terminal-io-parameters= :: Host read/send/wait accept named objects or positional arrays in their field order: session,terminal then source,lines for read; text,keys for send; match,regex,exit,timeout,lines for wait. Only session and terminal are required structurally. Sandbox calls omit session and retain object-only/null-as-empty rules. Send needs a string text (even empty) or nonempty keys; empty/null text and keys are distinguished. Wait selects one nonempty match string, Rust regex string, or exit=true; match/regex allow exit absent/null/false. Source, line/timeout/text/key bounds and regex compilation remain existing semantic validators in their original order. Request constraints separately describe cross-field requirements without changing generated record/default decoding. Multi-character key names are ASCII-lowercased before modifier processing: alt+X sends ESC+x; a single-character X keeps its case. Alt modifiers accept only ASCII graphic characters (! through ~), excluding space.
 - =terminal-io-results= :: Read returns text,alternate_screen,rows,cols and optional truncated=true. Wait returns matched+line, timeout, or exited+nullable code/signal+text; truncated=true is present only when output is cut. Matching final output precedes exit reporting. Existing 256 KiB text and 4 KiB line limits remain. Legacy CLI readers independently normalize string text/status/line and signed 64-bit code/signal; missing/malformed/non-object values retain their old fallback, with unknown wait status reported as timeout. Send/detach/resize callers ignore successful result bodies. Current producers use generated precise DTOs; private runtime relays stay JSON until their owning migration.
 - =terminal-io-ownership= :: Read/send/wait first validate command-specific input, then resolve a live session/terminal; pending waits remain connection-owned, count toward the per-session limit of 16 and are withdrawn on disconnect. A connection serves no other call while waiting. Host detach ends only the frontend and keeps the program alive; the frontend stream remains reserved until it closes. Resize validates 1..500 rows/cols before target resolution and updates the existing screen/PTY through runtime commands. Sandbox attach/detach/resize remain unavailable and never enter its callable allowlist.
+- =attach-exchanges= :: attach.sock begins with a frontend-to-daemon attach.hello notification (no id); named and ordered version,rows,cols,terminal positional parameters retain the existing Serde forms. Version 1 and nonzero u16 dimensions are checked after structural decoding; bad version or zero dimensions retain the unsupported-version diagnostic. A supplied terminal requires 1..500 dimensions during target attachment, after the existing state/policy checks. Hello has a 4 KiB body and 3-second frame deadline, eight pending hellos per goblin and at most four accepts per tick. The daemon reads exactly the hello frame and consumes no following raw bytes.
+- =attach-waiting= :: While startup or required onAttach variables are pending, the daemon sends attach.waiting with a required missing array, initially/periodically at one-second intervals. Empty missing means startup/draining; nonempty names identify variables that must be fresh and nonempty this run. A live competing attachment refuses without resizing. An exited onAttach client retains its physical stream until the frontend closes; new hellos receive empty waiting notices during that drain.
+- =attach-completion= :: Modern attach.sock and legacy terminal.sock complete with a correlated JSON-RPC response of id 0: result attached=true, or error -32009 with a diagnostic. Only success switches the stream to raw bytes. terminal.sock is server-first with no hello; it retains stopped output, waits for configuration/readiness and refuses onAttach goblins with an upgrade message. Modern named-terminal attachments answer at once without waiting notices and redraw before live output. The generic runtime Terminal::attach retains its private caller-supplied id (including nonzero test ids); public entrypoints pass 0. Byte queues, refusal-before-resize, descriptor ownership, cancellation and framed/raw boundaries remain handwritten.
+- =attach-client-compatibility= :: The existing Rust client classifies a waiting frame by method=attach.waiting alone, without tightening its envelope or missing-item types; a nonempty params.missing array triggers Starting once, and other values mean no missing names. This named compatibility normalization produces AttachWaitingReply. Final frames retain strict existing JSON-RPC envelope/correlation checks for id 0, accept any otherwise-valid error code and require attached=true; result additions are ignored. Each waiting frame renews only the next frame first-byte deadline. STOP interrupts the wait; resize signals do not end it. Emacs invokes this host CLI and has no separate attach JSON parser.
 
 * Common errors
 
@@ -10270,3 +10573,6 @@ Cross-field request constraints (existing semantic validation):
 - =terminal-cli-normalization= :: Current terminal producers are precise. Legacy create CLI results read only a string id, otherwise print ?. List readers iterate only an array terminals, treat other envelopes as empty, and normalize each item independently: string identity/display fields or absent, attached only a JSON boolean, rows/cols rendered as their original JSON values (missing means null). Close readers ignore their result. Named client normalization profiles retain these behaviors around generated DTOs, including malformed fields and non-object results.
 - =terminal-io-validation= :: TerminalReadSource, TerminalKey, TerminalRegex and TerminalSendText map to String; TerminalLines to usize; TerminalTimeout to u64; TerminalKeys to Vec<String>. Existing source matching, key_bytes, terminal::validate and Rust regex compilation preserve syntax, byte/count/line/timeout bounds, cross-field choices and diagnostics/refusal order. x-request-constraints publishes cross-field JSON Schema separately from generated structural DTOs. Rust regex syntax/compiled size remains a named semantic constraint, not a JSON Schema format.
 - =terminal-io-producers= :: Supervisor screen/read and matched/timeout/exited/send producers construct generated public DTOs, then retain their existing Value runtime envelope until C17. Controller parameter decoding and command ownership/cancellation stay handwritten; no private descriptor or lifecycle transport is changed.
+- =attach-validation= :: AttachVersion maps to u64 and AttachDimension to u16. Existing hello version/nonzero checks retain unsupported-version versus invalid-parameter diagnostics. Named-terminal 1..500 sizing remains after existing state/policy checks. Generated notification decoders retain positional hello order; waiting producers are named only.
+- =attach-waiting-compatibility= :: The existing Rust client classifies a waiting frame by method=attach.waiting alone, without tightening its envelope or missing-item types; a nonempty params.missing array triggers Starting once, and other values mean no missing names. This named compatibility normalization produces AttachWaitingReply. Final frames retain strict existing JSON-RPC envelope/correlation checks for id 0, accept any otherwise-valid error code and require attached=true; result additions are ignored. Each waiting frame renews only the next frame first-byte deadline. STOP interrupts the wait; resize signals do not end it. Emacs invokes this host CLI and has no separate attach JSON parser.
+- =attach-runtime-id= :: The generic runtime Terminal::attach keeps its caller-supplied id and byte-queue API. Public modern/legacy entrypoints pass the fixed 0 id; generated completion payload DTOs are used without rewriting private nonzero-id support. Public completion consumers and refusal constructors bind to generated exchange metadata.

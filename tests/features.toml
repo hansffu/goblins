@@ -41,7 +41,7 @@ paths = ["tests/request_socket_redirect.c", "packages/daemon/src/server.rs", "li
 
 [features.exec]
 description = "Command execution, signals, terminals and attachment"
-python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected", "test_terminal_support"]
+python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected", "test_terminal_support", "test_api_contract.HistoricalClientTests.test_attachment_cli_preserves_exchanges_and_raw_switch"]
 checks = ["rust"]
 paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs", "packages/daemon/src/host.rs", "libs/runtime/src/exec.rs", "libs/api/src/init.rs", "libs/unix/src/ancillary.rs"]
 

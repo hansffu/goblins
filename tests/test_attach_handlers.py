@@ -18,6 +18,7 @@ from build_support import fixture_app, nix_bin
 from daemon_support import Daemon, RPC, receive
 from terminal_support import Terminal
 from test_exec import host_processes
+from api_contract import validate_completion, validate_notification
 
 BASH = ["--noprofile", "--norc", "-c"]
 
@@ -83,7 +84,9 @@ class AttachHandlerTests(unittest.TestCase):
         """The reply after any waiting notifications, and how many there were."""
         notices = 0
         while (frame := receive(peer)).get("method") == "attach.waiting":
+            validate_notification("attach", "server-to-client", frame)
             notices += 1
+        validate_completion("attach.reply", frame)
         return frame, notices
 
     def client_size(self):

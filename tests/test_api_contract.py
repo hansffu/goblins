@@ -15,6 +15,37 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_attachment_notification_and_completion_contract_corpora(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["attach_hello_parameter_cases"]:
+            wire=dict(jsonrpc="2.0",method="attach.hello",params=case["params"])
+            if case["valid"]:self.assertTrue(contract.validate_notification("attach","client-to-server",wire))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_notification("attach","client-to-server",wire)
+        for case in fixtures["attach_waiting_cases"]:
+            wire=case["frame"]
+            self.assertEqual(contract.validate_notification("attach","server-to-client",wire,compatibility=True),case["has_missing"] is not None)
+            try:valid=contract.validate_notification("attach","server-to-client",wire)
+            except ValidationError:valid=False
+            self.assertEqual(valid,case["valid"],str(case))
+        for case in fixtures["attach_completion_cases"]:
+            for name in ("attach.reply","legacy.attach"):
+                for compatible,expected in ((False,case["valid"]),(True,case["compatible"])):
+                    if expected:self.assertTrue(contract.validate_completion(name,case["reply"],compatibility=compatible))
+                    else:
+                        with self.assertRaises(ValidationError,msg=str(case)):contract.validate_completion(name,case["reply"],compatibility=compatible)
+        self.assertEqual(contract.document("attach")["methods"],[])
+
+    def test_attachment_coverage_requires_notification_and_completion_peers(self):
+        sources=contract.implementation_sources()
+        changed=dict(sources)
+        changed["attach_client"]=sources["attach_client"].replace("contract::attach_exchanges::LegacyAttach","contract::attach_exchanges::Unassigned",1)
+        self.assertNotEqual(changed["attach_client"],sources["attach_client"])
+        with self.assertRaisesRegex(ValueError,"unassigned generated completion"):contract.check_coverage(sources=changed)
+        changed=dict(sources)
+        changed["attach_server"]=sources["attach_server"]+'\nfn new_notice() { let _ = json!({"jsonrpc":"2.0","method":"attach.new","params":{}}); }\n'
+        with self.assertRaisesRegex(ValueError,"notification endpoint"):contract.check_coverage(sources=changed)
+
     def test_terminal_io_contract_constraints_and_precise_results(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["terminal_io_parameter_cases"]:
@@ -276,6 +307,83 @@ class ContractTests(unittest.TestCase):
 
 
 class HistoricalClientTests(unittest.TestCase):
+    def test_attachment_cli_preserves_exchanges_and_raw_switch(self):
+        from terminal_support import Terminal
+        binary=os.environ.get("GOBLINS_LOCAL_CONTROLLER")
+        if binary is None:
+            import re
+            binary=re.search(r'exec (\S+)',app().read_text()).group(1)
+        fixtures=contract.read("fixtures.json")
+        waiting=[dict(jsonrpc="2.0",method="attach.waiting",params=dict(missing=[])),
+                 dict(jsonrpc="old",id=None,method="attach.waiting",params=dict(missing=[7])),
+                 dict(method="attach.waiting",params=dict(missing="bad"))]
+        success=dict(jsonrpc="2.0",id=0,result=dict(attached=True,future=1))
+        cases=[(True,waiting,success,None),(False,[],success,None),
+               (True,[],dict(jsonrpc="2.0",id=1,result=dict(attached=True)),"invalid correlated response"),
+               (True,[],dict(jsonrpc="2.0",id=0,result=dict(attached=False)),"invalid terminal handshake"),
+               (False,[],dict(jsonrpc="2.0",id=0,error=dict(code=-32602,message="old refusal")),"old refusal")]
+        payload=b"RAW_C06\nContent-Length: 2\r\n\r\n{}\n"
+        for modern,notices,completion,error in cases:
+            with self.subTest(modern=modern,completion=completion),tempfile.TemporaryDirectory(prefix="gc-attach-") as root:
+                state=Path(root);errors=[];calls=[];hellos=[];inputs=[];ready=threading.Event()
+                init=copy.deepcopy(fixtures["host_initialize"])
+                if modern:init["features"].append("attach-handlers")
+                record=copy.deepcopy(fixtures["original_api1"]["host_session"])
+                record.update(attach=str(state/"attach.sock"),terminal=str(state/"terminal.sock"),state="stopped",pty_eof=True,terminal_complete=True,terminal_interrupted=False,terminal_detached=False,exit_code=0)
+                output=state/"output";output.touch()
+                with socket.socket(socket.AF_UNIX) as host,socket.socket(socket.AF_UNIX) as terminal:
+                    host.settimeout(5);host.bind(str(state/"host.sock"));host.listen()
+                    terminal.settimeout(5);terminal.bind(record["attach"] if modern else record["terminal"]);terminal.listen()
+                    def control():
+                        try:
+                            peer,_=host.accept()
+                            with peer:
+                                peer.settimeout(5);request=receive(peer)
+                                if not ready.wait(timeout=5):raise AssertionError("frontend window not configured")
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=request["id"],result=init)))
+                                while True:
+                                    try:request=receive(peer)
+                                    except EOFError:break
+                                    calls.append(request)
+                                    if request["method"]=="sessions.get":result=record
+                                    elif request["method"]=="sessions.resize":result=dict(accepted=True)
+                                    else:raise AssertionError(request)
+                                    peer.sendall(frame(dict(jsonrpc="2.0",id=request["id"],result=result)))
+                        except Exception as failure:errors.append(failure)
+                    def stream():
+                        try:
+                            peer,_=terminal.accept()
+                            with peer:
+                                peer.settimeout(5)
+                                if modern:hellos.append(receive(peer))
+                                peer.sendall(b"".join(frame(n) for n in notices)+frame(completion)+payload)
+                                peer.shutdown(socket.SHUT_WR)
+                                try:
+                                    while data:=peer.recv(4096):inputs.append(data)
+                                except ConnectionResetError:
+                                    if error is None:raise
+                        except Exception as failure:errors.append(failure)
+                    threads=[threading.Thread(target=f,daemon=True) for f in (control,stream)]
+                    started=[]
+                    client=Terminal([binary,"--state-dir",str(state),"attach",record["id"]],output=str(output))
+                    try:
+                        for thread in threads:thread.start();started.append(thread)
+                        ready.set()
+                        code=client.wait()
+                        self.assertEqual(code==0,error is None,client.buffer)
+                        if error:self.assertIn(error.encode(),client.buffer)
+                        self.assertEqual(client.buffer.count(b"Starting"),1 if notices else 0)
+                        self.assertEqual(output.read_bytes(),payload if error is None else b"")
+                    finally:
+                        client.close();ready.set()
+                        for thread in started:thread.join(timeout=6)
+                        self.assertFalse(any(thread.is_alive() for thread in started))
+                    self.assertEqual(errors,[]);self.assertEqual(inputs,[])
+                    if modern:
+                        self.assertEqual(hellos,[dict(jsonrpc="2.0",method="attach.hello",params=dict(version=1,rows=24,cols=100))])
+                    else:self.assertEqual(hellos,[])
+                    self.assertTrue(calls);self.assertEqual(calls[0]["method"],"sessions.get")
+
     def terminal_io_cli_cases(self, member=False):
         target=["t1"] if member else ["a","t1"]
         base={} if member else dict(session="a")

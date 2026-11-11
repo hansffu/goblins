@@ -1,0 +1,133 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "Goblins attachment exchanges",
+    "version": "1"
+  },
+  "methods": [],
+  "x-notifications": [
+    {
+      "name": "attach.hello",
+      "x-rust-name": "AttachHello",
+      "direction": "client-to-server",
+      "sender": "frontend",
+      "receiver": "daemon attach.sock",
+      "connection-state": "first frame only, before raw terminal bytes",
+      "description": "attach.sock begins with a frontend-to-daemon attach.hello notification (no id); named and ordered version,rows,cols,terminal positional parameters retain the existing Serde forms. Version 1 and nonzero u16 dimensions are checked after structural decoding; bad version or zero dimensions retain the unsupported-version diagnostic. A supplied terminal requires 1..500 dimensions during target attachment, after the existing state/policy checks. Hello has a 4 KiB body and 3-second frame deadline, eight pending hellos per goblin and at most four accepts per tick. The daemon reads exactly the hello frame and consumes no following raw bytes.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "version",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/AttachHelloParams/properties/version"
+          }
+        },
+        {
+          "name": "rows",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/AttachHelloParams/properties/rows"
+          }
+        },
+        {
+          "name": "cols",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/AttachHelloParams/properties/cols"
+          }
+        },
+        {
+          "name": "terminal",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/AttachHelloParams/properties/terminal"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/AttachHelloParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/AttachHelloParams"
+      },
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/AttachHelloParams"
+      }
+    },
+    {
+      "name": "attach.waiting",
+      "x-rust-name": "AttachWaiting",
+      "direction": "server-to-client",
+      "sender": "daemon attach.sock",
+      "receiver": "frontend",
+      "connection-state": "after hello, before fixed-id completion",
+      "description": "While startup or required onAttach variables are pending, the daemon sends attach.waiting with a required missing array, initially/periodically at one-second intervals. Empty missing means startup/draining; nonempty names identify variables that must be fresh and nonempty this run. A live competing attachment refuses without resizing. An exited onAttach client retains its physical stream until the frontend closes; new hellos receive empty waiting notices during that drain.",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "missing",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/AttachWaitingParams/properties/missing"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/AttachWaitingParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "x-client-normalization": "attach-waiting-legacy",
+      "x-client-params-schema": {
+        "$ref": "common.json#/definitions/AttachWaitingReply"
+      }
+    }
+  ],
+  "x-completions": [
+    {
+      "name": "attach.reply",
+      "x-rust-name": "Reply",
+      "socket": "attach.sock",
+      "direction": "server-to-client",
+      "id": 0,
+      "description": "Completion after a valid modern hello and any waiting notifications. Modern attach.sock and legacy terminal.sock complete with a correlated JSON-RPC response of id 0: result attached=true, or error -32009 with a diagnostic. Only success switches the stream to raw bytes. terminal.sock is server-first with no hello; it retains stopped output, waits for configuration/readiness and refuses onAttach goblins with an upgrade message. Modern named-terminal attachments answer at once without waiting notices and redraw before live output. The generic runtime Terminal::attach retains its private caller-supplied id (including nonzero test ids); public entrypoints pass 0. Byte queues, refusal-before-resize, descriptor ownership, cancellation and framed/raw boundaries remain handwritten.",
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/AttachResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32009,
+          "message": "Attachment refused"
+        }
+      ],
+      "x-client-error-policy": "any-valid-correlated-error"
+    },
+    {
+      "name": "legacy.attach",
+      "x-rust-name": "LegacyAttach",
+      "socket": "terminal.sock",
+      "direction": "server-to-client",
+      "id": 0,
+      "description": "Server-first legacy completion; the frontend sends no hello. Modern attach.sock and legacy terminal.sock complete with a correlated JSON-RPC response of id 0: result attached=true, or error -32009 with a diagnostic. Only success switches the stream to raw bytes. terminal.sock is server-first with no hello; it retains stopped output, waits for configuration/readiness and refuses onAttach goblins with an upgrade message. Modern named-terminal attachments answer at once without waiting notices and redraw before live output. The generic runtime Terminal::attach retains its private caller-supplied id (including nonzero test ids); public entrypoints pass 0. Byte queues, refusal-before-resize, descriptor ownership, cancellation and framed/raw boundaries remain handwritten.",
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/AttachResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32009,
+          "message": "Attachment refused"
+        }
+      ],
+      "x-client-error-policy": "any-valid-correlated-error",
+      "x-shared-payload-with": "attach.reply"
+    }
+  ]
+}

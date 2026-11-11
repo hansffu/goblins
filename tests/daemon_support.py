@@ -10,7 +10,7 @@ import tempfile
 import time
 import uuid
 from build_support import daemon_environment, fixture_app
-from api_contract import validate_reply
+from api_contract import validate_reply, validate_completion
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -219,6 +219,7 @@ class Daemon:
         peer.settimeout(10)
         peer.connect(launch["terminal"])
         reply = receive(peer)
+        validate_completion("legacy.attach", reply)
         assert reply.get("result", {}).get("attached"), reply
         return peer
 

@@ -6,7 +6,6 @@ use goblins_controller::host::Client;
 use goblins_protocol::contract;
 use goblins_protocol::terminal::size;
 use goblins_unix as unix;
-use serde_json::json;
 use std::{os::fd::AsRawFd, path::PathBuf, sync::atomic::Ordering};
 
 /// Host launch choices; the wire request also adds nonce, cwd and terminal size.
@@ -197,17 +196,20 @@ pub fn handshake(
     let attach = record["attach"]
         .as_str()
         .filter(|_| terminal.is_some() || control.features.iter().any(|f| f == "attach-handlers"));
+    let modern = attach.is_some();
     let mut terminal_stream = match attach {
         Some(path) => {
             let mut stream = UnixStream::connect(path)?;
             let d = size(0)?;
-            let mut params = json!({"version":1,"rows":d.ws_row.max(1),"cols":d.ws_col.max(1)});
-            if let Some(terminal) = terminal {
-                params["terminal"] = json!(terminal);
-            }
-            stream.write_all(&rpc::encode(
-                &json!({"jsonrpc":"2.0","method":"attach.hello","params":params}),
-            )?)?;
+            let params = contract::AttachHelloParams {
+                version: contract::ATTACH_VERSION,
+                rows: d.ws_row.max(1),
+                cols: d.ws_col.max(1),
+                terminal: terminal.map(str::to_owned),
+            };
+            stream.write_all(&rpc::encode(&contract::notification::<
+                contract::attach_notifications::AttachHello,
+            >(params)?)?)?;
             stream
         }
         None => UnixStream::connect(record["terminal"].as_str().ok_or("missing terminal path")?)?,
@@ -232,28 +234,19 @@ pub fn handshake(
             }
         }
         let frame = rpc::read(&mut terminal_stream)?;
-        if frame["method"] != "attach.waiting" {
+        let Some(waiting) = contract::attach_waiting(&frame) else {
             break frame;
-        }
+        };
         // Shown once the goblin itself runs and its client waits.
-        if !starting
-            && frame["params"]["missing"]
-                .as_array()
-                .is_some_and(|m| !m.is_empty())
-        {
+        if !starting && waiting.has_missing {
             eprintln!("Starting…");
             starting = true;
         }
     };
-    rpc::validate_response(&hello, &json!(0))?;
-    if let Some(error) = hello.get("error") {
-        return Err(error["message"]
-            .as_str()
-            .unwrap_or("attachment rejected")
-            .into());
-    }
-    if hello["result"]["attached"] != true {
-        return Err("invalid terminal handshake".into());
-    }
+    let _ = if modern {
+        contract::decode_completion::<contract::attach_exchanges::Reply>(hello)?
+    } else {
+        contract::decode_completion::<contract::attach_exchanges::LegacyAttach>(hello)?
+    };
     Ok(terminal_stream)
 }

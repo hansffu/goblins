@@ -102,28 +102,7 @@
       "chunk": "C15"
     }
   ],
-  "exchanges": [
-    {
-      "endpoint": "attach",
-      "name": "attach.hello",
-      "chunk": "C06"
-    },
-    {
-      "endpoint": "attach",
-      "name": "attach.waiting",
-      "chunk": "C06"
-    },
-    {
-      "endpoint": "attach",
-      "name": "attach.reply",
-      "chunk": "C06"
-    },
-    {
-      "endpoint": "attach",
-      "name": "legacy.attach",
-      "chunk": "C06"
-    }
-  ],
+  "exchanges": [],
   "refusals": [
     {
       "endpoint": "sandbox",

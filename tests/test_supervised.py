@@ -11,6 +11,7 @@ import uuid
 
 from build_support import fixture_app
 from daemon_support import Daemon, frame, receive
+from api_contract import validate_completion, validate_notification
 
 
 class SupervisedTests(unittest.TestCase):
@@ -189,7 +190,8 @@ class SupervisedTests(unittest.TestCase):
         peer.connect(launch["attach"])
         peer.sendall(frame({"jsonrpc": "2.0", "method": "attach.hello", "params": {"version": 1, "rows": 24, "cols": 80}}))
         while (hello := receive(peer)).get("method") == "attach.waiting":
-            pass
+            validate_notification("attach", "server-to-client", hello)
+        validate_completion("attach.reply", hello)
         self.assertTrue(hello["result"]["attached"])
         self.d.wait(lambda: self.d.get(launch["session"])["terminal_attached"])
         os.kill(supervisor, signal.SIGKILL)

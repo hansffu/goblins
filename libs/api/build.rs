@@ -56,6 +56,8 @@ fn main() {
     settings.with_replacement("TerminalLines", "usize", [].into_iter());
     settings.with_replacement("TerminalTimeout", "u64", [].into_iter());
     settings.with_replacement("TerminalKeys", "std::vec::Vec<String>", [].into_iter());
+    settings.with_replacement("AttachVersion", "u64", [].into_iter());
+    settings.with_replacement("AttachDimension", "u16", [].into_iter());
     for name in ["LaunchOptions", "HostLaunchOptions"] {
         settings.with_replacement(
             name,
@@ -72,6 +74,10 @@ fn main() {
         "\npub const API_VERSION: u32 = {};\n",
         common["x-api-version"]
     ));
+    output.push_str(&format!(
+        "pub const ATTACH_VERSION: u64 = {};\n",
+        common["x-attach-version"]
+    ));
     let mut decoded = std::collections::BTreeSet::from([
         "InitializeReply".to_string(),
         "ServerStatusReply".to_string(),
@@ -83,13 +89,16 @@ fn main() {
         "TerminalCloseReply".to_string(),
         "TerminalReadReply".to_string(),
         "TerminalWaitReply".to_string(),
+        "AttachResult".to_string(),
     ]);
-    for endpoint in ["host", "sandbox"] {
+    for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(
             &fs::read_to_string(format!("schema/{endpoint}.openrpc.json")).unwrap(),
         )
         .unwrap();
-        output.push_str(&format!("pub mod {endpoint} {{ use super::*;\n"));
+        output.push_str(&format!(
+            "pub mod {endpoint} {{ #[allow(unused_imports)] use super::*;\n"
+        ));
         let mut names = Vec::new();
         for method in document["methods"].as_array().unwrap() {
             let name = method["name"].as_str().unwrap();
@@ -180,14 +189,16 @@ fn main() {
                 .unwrap()
                 .strip_prefix("common.json#/definitions/")
                 .unwrap();
-            let reference = notification["x-positional-schema"]["$ref"]
-                .as_str()
-                .unwrap()
-                .strip_prefix("common.json#")
-                .unwrap();
-            let minimum = common.pointer(reference).unwrap()["minItems"]
-                .as_u64()
-                .unwrap();
+            let positional = &notification["x-positional-schema"];
+            let positional = if let Some(reference) = positional["$ref"].as_str() {
+                common
+                    .pointer(reference.strip_prefix("common.json#").unwrap())
+                    .unwrap()
+            } else {
+                positional
+            };
+            let minimum = positional["minItems"].as_u64().unwrap_or(0);
+            let positional_allowed = notification["paramStructure"] != "by-name";
             let order: Vec<_> = notification["params"]
                 .as_array()
                 .unwrap()
@@ -195,11 +206,31 @@ fn main() {
                 .map(|p| p["name"].as_str().unwrap())
                 .collect();
             let direction = notification["direction"].as_str().unwrap();
-            output.push_str(&format!("pub struct {rust}; impl crate::contract::Notification for {rust} {{ type Params = {params}; const NAME: &'static str = {name:?}; const DIRECTION: &'static str = {direction:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; }}\n"));
+            output.push_str(&format!("pub struct {rust}; impl crate::contract::Notification for {rust} {{ type Params = {params}; const NAME: &'static str = {name:?}; const DIRECTION: &'static str = {direction:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const POSITIONAL: bool = {positional_allowed}; }}\n"));
             notifications.push(name);
         }
         output.push_str(&format!(
             "pub const NOTIFICATIONS: &[&str] = &{notifications:?}; }}\n"
+        ));
+        output.push_str(&format!(
+            "pub mod {endpoint}_exchanges {{ #[allow(unused_imports)] use super::*;\n"
+        ));
+        let mut exchanges = Vec::new();
+        for exchange in document["x-completions"].as_array().into_iter().flatten() {
+            let name = exchange["name"].as_str().unwrap();
+            let rust = exchange["x-rust-name"].as_str().unwrap();
+            let result = exchange["result"]["schema"]["$ref"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("common.json#/definitions/")
+                .unwrap();
+            let id = exchange["id"].as_u64().unwrap();
+            let error = exchange["errors"][0]["code"].as_i64().unwrap();
+            output.push_str(&format!("pub struct {rust}; impl crate::contract::Completion for {rust} {{ type Produced = {result}; type Result = {result}; const NAME: &'static str = {name:?}; const ID: u64 = {id}; const ERROR_CODE: i32 = {error}; }}\n"));
+            exchanges.push(name);
+        }
+        output.push_str(&format!(
+            "pub const COMPLETIONS: &[&str] = &{exchanges:?}; }}\n"
         ));
     }
     fs::write(

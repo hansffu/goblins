@@ -8335,5 +8335,397 @@
       },
       "valid": false
     }
+  ],
+  "attach_hello_parameter_cases": [
+    {
+      "params": {
+        "version": 1,
+        "rows": 24,
+        "cols": 100
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "params": [
+        1,
+        24,
+        100
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "params": [
+        1,
+        24,
+        100,
+        "app"
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "params": {
+        "version": 1,
+        "rows": 65535,
+        "cols": 1,
+        "terminal": null
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "params": {
+        "version": 1,
+        "rows": 500,
+        "cols": 500,
+        "terminal": "app"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "params": {
+        "version": 0,
+        "rows": 24,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "params": {
+        "version": 1,
+        "rows": 0,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "params": {
+        "version": 1,
+        "rows": 501,
+        "cols": 80,
+        "terminal": "app"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "params": {
+        "version": 1,
+        "rows": 65536,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": {
+        "version": 1.0,
+        "rows": 24,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": {
+        "version": 1,
+        "rows": true,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": {
+        "version": 1,
+        "rows": 24,
+        "cols": 80,
+        "extra": 1
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": {
+        "version": 1,
+        "rows": 24,
+        "cols": 80,
+        "terminal": 1
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": {},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": [],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": [
+        1,
+        24
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": [
+        1,
+        24,
+        80,
+        null,
+        1
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "params": null,
+      "valid": false,
+      "decoded": false
+    }
+  ],
+  "attach_waiting_cases": [
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "attach.waiting",
+        "params": {
+          "missing": []
+        }
+      },
+      "valid": true,
+      "has_missing": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "attach.waiting",
+        "params": {
+          "missing": [
+            "session_id"
+          ]
+        }
+      },
+      "valid": true,
+      "has_missing": true
+    },
+    {
+      "frame": {
+        "method": "attach.waiting"
+      },
+      "valid": false,
+      "has_missing": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "old",
+        "id": null,
+        "method": "attach.waiting",
+        "params": {
+          "missing": [
+            7
+          ]
+        }
+      },
+      "valid": false,
+      "has_missing": true
+    },
+    {
+      "frame": {
+        "method": "attach.waiting",
+        "params": {
+          "missing": "bad"
+        }
+      },
+      "valid": false,
+      "has_missing": false
+    },
+    {
+      "frame": {
+        "method": "attach.waiting",
+        "params": [
+          [
+            "x"
+          ]
+        ]
+      },
+      "valid": false,
+      "has_missing": false
+    },
+    {
+      "frame": {
+        "method": "other"
+      },
+      "valid": false,
+      "has_missing": null
+    },
+    {
+      "frame": null,
+      "valid": false,
+      "has_missing": null
+    },
+    {
+      "frame": [],
+      "valid": false,
+      "has_missing": null
+    }
+  ],
+  "attach_completion_cases": [
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "attached": true
+        }
+      },
+      "valid": true,
+      "compatible": true
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "attached": true,
+          "future": 1
+        }
+      },
+      "valid": true,
+      "compatible": true
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "error": {
+          "code": -32009,
+          "message": "refused"
+        }
+      },
+      "valid": true,
+      "compatible": true
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "error": {
+          "code": -32602,
+          "message": "old refusal"
+        }
+      },
+      "valid": false,
+      "compatible": true
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "attached": false
+        }
+      },
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "attached": 1
+        }
+      },
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": null
+      },
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "attached": true
+        }
+      },
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0.0,
+        "result": {
+          "attached": true
+        }
+      },
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "attached": true
+        },
+        "extra": 1
+      },
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": {
+        "jsonrpc": "old",
+        "id": 0,
+        "result": {
+          "attached": true
+        }
+      },
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "error": {
+          "code": -32009,
+          "message": null
+        }
+      },
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": null,
+      "valid": false,
+      "compatible": false
+    },
+    {
+      "reply": [],
+      "valid": false,
+      "compatible": false
+    }
   ]
 }

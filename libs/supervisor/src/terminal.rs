@@ -1,6 +1,7 @@
 //! Runtime-owned PTY with one terminal consumer at a time.
 //! A framed acceptance precedes raw bytes; detach half-closes that stream.
 use crate::{Result, screen::Screen};
+use goblins_protocol::contract::{self, Completion};
 use goblins_unix as unix;
 use std::{
     fs::{self, File},
@@ -313,7 +314,9 @@ impl Terminal {
         peer.set_nonblocking(true)?;
         self.hello = goblins_jsonrpc::encode(&goblins_jsonrpc::result(
             id,
-            serde_json::json!({"attached":true}),
+            contract::completion_payload::<contract::attach_exchanges::Reply>(
+                contract::AttachResult { attached: true },
+            )?,
         ))?;
         // Keep framing separate from raw output: an abandoned handshake must
         // never become terminal text when a later client attaches.
@@ -373,15 +376,17 @@ impl Terminal {
                     let writer = peer.try_clone()?;
                     let attached = match &self.refusal {
                         Some(refusal) => Err(refusal.as_str().into()),
-                        None => self.attach(writer, json!(0)),
+                        None => self.attach(
+                            writer,
+                            json!(contract::attach_exchanges::LegacyAttach::ID),
+                        ),
                     };
                     if let Err(error) = attached {
                         peer.set_nonblocking(true)?;
-                        let _ = peer.write_all(&rpc::encode(&rpc::error(
-                            json!(0),
-                            -32009,
-                            &error.to_string(),
-                        ))?);
+                        let error = contract::completion_error::<
+                            contract::attach_exchanges::LegacyAttach,
+                        >(&error.to_string());
+                        let _ = peer.write_all(&rpc::encode(&error)?);
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -499,6 +504,24 @@ mod tests {
     use super::*;
     use goblins_jsonrpc as rpc;
     use std::time::Duration;
+
+    #[test]
+    fn generated_completion_payload_keeps_private_nonzero_response_ids() {
+        let _no_forks = unix::no_forks();
+        let mut f = Fixture::new();
+        let (server, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        f.terminal.attach(server, serde_json::json!(123)).unwrap();
+        f.terminal.tick().unwrap();
+        assert_eq!(
+            rpc::read(&mut peer).unwrap(),
+            rpc::result(
+                serde_json::json!(123),
+                serde_json::json!({"attached":true}),
+            )
+        );
+        close(peer);
+    }
 
     struct Fixture {
         terminal: Terminal,

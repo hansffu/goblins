@@ -1,7 +1,7 @@
 //! Terminal I/O stays with the runtime after the sandbox stops, until its
 //! retained output and frontend handoff no longer need it.
 use crate::{engine::EVENTS, screen::Matcher, server_log::ServerLog, terminal::Terminal};
-use goblins_protocol::contract;
+use goblins_protocol::contract::{self, Completion};
 use goblins_runtime::{
     Event, TerminalId, TerminalStatus,
     terminal::{self, Call, Condition},
@@ -403,7 +403,10 @@ impl Terminals {
             Some(entry) => {
                 entry.exposed = true;
                 stream.try_clone().map_err(Into::into).and_then(|peer| {
-                    entry.io.attach(peer, serde_json::json!(0))?;
+                    entry.io.attach(
+                        peer,
+                        serde_json::json!(contract::attach_exchanges::Reply::ID),
+                    )?;
                     if entry.pane.is_some() {
                         entry.io.redraw();
                     }
@@ -423,11 +426,10 @@ impl Terminals {
             // The daemon has already reserved the slot; report the actual
             // state even when the terminal disappeared before Attach arrived.
             let _ = stream.set_nonblocking(true);
-            if let Ok(bytes) = goblins_jsonrpc::encode(&goblins_jsonrpc::error(
-                serde_json::json!(0),
-                -32009,
+            let error = contract::completion_error::<contract::attach_exchanges::Reply>(
                 &error.to_string(),
-            )) {
+            );
+            if let Ok(bytes) = goblins_jsonrpc::encode(&error) {
                 let _ = stream.write_all(&bytes);
             }
         }

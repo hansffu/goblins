@@ -6,6 +6,7 @@
 use super::Active;
 use super::Controller;
 use goblins_jsonrpc as rpc;
+use goblins_protocol::contract;
 use goblins_runtime::Command;
 use goblins_runtime::Event;
 use goblins_runtime::SpawnKind;
@@ -13,8 +14,7 @@ use goblins_runtime::Stdio;
 use goblins_runtime::config;
 use goblins_runtime::policy::Operation;
 use goblins_runtime::{TerminalId, TerminalStatus};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
@@ -29,26 +29,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The `attach.hello` version this daemon speaks.
-const VERSION: u64 = 1;
 /// Frontends that have connected but not yet attached, per goblin.
 const HELLOS: usize = 8;
 /// Between `attach.waiting` notifications.
 const NOTICE: Duration = Duration::from_secs(1);
 /// What `onDetach` may take before the client is cancelled.
 const ON_DETACH: Duration = Duration::from_secs(5);
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HelloParams {
-    version: u64,
-    rows: u16,
-    cols: u16,
-    /// A terminal of the goblin (`terminals.create`), by ID or name, instead
-    /// of the goblin's own.
-    #[serde(default)]
-    terminal: Option<String>,
-}
-
 struct Hello {
     stream: UnixStream,
     decoder: rpc::Decoder,
@@ -107,14 +93,19 @@ fn frame(stream: &mut UnixStream, value: &Value) -> bool {
 }
 
 pub(super) fn refuse(stream: &mut UnixStream, message: &str) {
-    frame(stream, &rpc::error(json!(0), -32009, message));
+    frame(
+        stream,
+        &contract::completion_error::<contract::attach_exchanges::Reply>(message),
+    );
 }
 
 fn waiting(stream: &mut UnixStream, missing: &[String]) -> bool {
-    frame(
-        stream,
-        &json!({"jsonrpc":"2.0","method":"attach.waiting","params":{"missing":missing}}),
+    contract::notification::<contract::attach_notifications::AttachWaiting>(
+        contract::AttachWaitingParams {
+            missing: missing.to_vec(),
+        },
     )
+    .is_ok_and(|value| frame(stream, &value))
 }
 
 /// The frontend closed its end.
@@ -220,9 +211,11 @@ impl Attach {
                     Ok((_, Some(body))) => {
                         break rpc::call(&body)
                             .ok()
-                            .filter(|call| call.method == "attach.hello" && call.id.is_none())
                             .and_then(|call| {
-                                serde_json::from_value::<HelloParams>(call.params).ok()
+                                contract::decode_notification::<
+                                    contract::attach_notifications::AttachHello,
+                                >(call)
+                                .ok()
                             })
                             .ok_or("invalid attach.hello");
                     }
@@ -233,7 +226,7 @@ impl Attach {
                 }
             };
             match parsed {
-                Ok(p) if p.version == VERSION && p.rows > 0 && p.cols > 0 => {
+                Ok(p) if p.version == contract::ATTACH_VERSION && p.rows > 0 && p.cols > 0 => {
                     hello.size = Some((p.rows, p.cols));
                     hello.terminal = p.terminal;
                     true

@@ -37,6 +37,47 @@ pub trait Notification {
     const DIRECTION: &'static str;
     const PARAM_ORDER: &'static [&'static str];
     const MIN_POSITIONAL: usize;
+    const POSITIONAL: bool = true;
+}
+
+/// Completion exchanges are separate from callable methods and notifications.
+pub trait Completion {
+    type Produced: Serialize;
+    type Result: Response;
+    const NAME: &'static str;
+    const ID: u64;
+    const ERROR_CODE: i32;
+}
+
+pub fn completion_payload<C: Completion>(value: C::Produced) -> serde_json::Result<Value> {
+    serde_json::to_value(value)
+}
+
+pub fn completion_error<C: Completion>(message: &str) -> Value {
+    rpc::error(serde_json::json!(C::ID), C::ERROR_CODE, message)
+}
+
+pub fn decode_completion<C: Completion>(value: Value) -> io::Result<C::Result> {
+    rpc::validate_response(&value, &serde_json::json!(C::ID))?;
+    if let Some(error) = value.get("error") {
+        return Err(io::Error::other(
+            error["message"].as_str().unwrap_or("attachment rejected"),
+        ));
+    }
+    C::Result::decode(value["result"].clone())
+}
+
+/// Preserve the old client's method-only waiting classification and its
+/// nonempty-array test, without tightening legacy peer envelopes or elements.
+pub fn attach_waiting(value: &Value) -> Option<AttachWaitingReply> {
+    (value.get("method").and_then(Value::as_str) == Some(attach_notifications::AttachWaiting::NAME))
+        .then(|| AttachWaitingReply {
+            has_missing: value
+                .get("params")
+                .and_then(|p| p.get("missing"))
+                .and_then(Value::as_array)
+                .is_some_and(|m| !m.is_empty()),
+        })
 }
 
 pub fn notification<N: Notification>(params: N::Params) -> serde_json::Result<Value> {
@@ -49,6 +90,11 @@ pub fn decode_notification<N: Notification>(call: rpc::Call) -> serde_json::Resu
     if call.id.is_some() || call.method != N::NAME {
         return Err(<serde_json::Error as serde::de::Error>::custom(
             "unexpected notification",
+        ));
+    }
+    if call.params.is_array() && !N::POSITIONAL {
+        return Err(<serde_json::Error as serde::de::Error>::custom(
+            "params must be an object",
         ));
     }
     decode_ordered(call.params, N::PARAM_ORDER, N::MIN_POSITIONAL)
@@ -86,6 +132,16 @@ pub trait Response: DeserializeOwned {
     const SCHEMA: &'static str;
     fn decode(value: Value) -> io::Result<Self> {
         validate_result_shape(&value, Self::SCHEMA)?;
+        serde_json::from_value(value).map_err(io::Error::other)
+    }
+}
+
+impl Response for AttachResult {
+    const SCHEMA: &'static str = "AttachResult";
+    fn decode(value: Value) -> io::Result<Self> {
+        if value.get("attached") != Some(&Value::Bool(true)) {
+            return Err(io::Error::other("invalid terminal handshake"));
+        }
         serde_json::from_value(value).map_err(io::Error::other)
     }
 }
@@ -518,6 +574,91 @@ mod tests {
 
     fn fixtures() -> Value {
         serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap()
+    }
+
+    #[test]
+    fn attachment_hello_preserves_legacy_notification_decoding_and_order() {
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyHello {
+            version: u64,
+            rows: u16,
+            cols: u16,
+            #[serde(default)]
+            terminal: Option<String>,
+        }
+        for case in fixtures()["attach_hello_parameter_cases"]
+            .as_array()
+            .unwrap()
+        {
+            let old = serde_json::from_value::<LegacyHello>(case["params"].clone());
+            let call = rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: None,
+                method: attach_notifications::AttachHello::NAME.into(),
+                params: case["params"].clone(),
+            };
+            let new = decode_notification::<attach_notifications::AttachHello>(call);
+            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
+            assert_eq!(new.is_ok(), case["decoded"].as_bool().unwrap(), "{case}");
+            if let (Ok(old), Ok(new)) = (old, new) {
+                assert_eq!(
+                    (old.version, old.rows, old.cols, old.terminal),
+                    (new.version, new.rows, new.cols, new.terminal)
+                );
+            }
+        }
+        assert!(attach::METHODS.is_empty());
+        assert_eq!(attach_exchanges::Reply::ID, 0);
+        assert_eq!(attach_exchanges::LegacyAttach::ID, 0);
+        let value = notification::<attach_notifications::AttachHello>(AttachHelloParams {
+            version: ATTACH_VERSION,
+            rows: 24,
+            cols: 100,
+            terminal: None,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"jsonrpc":"2.0","method":"attach.hello","params":{"version":1,"rows":24,"cols":100}})
+        );
+    }
+
+    #[test]
+    fn attachment_waiting_and_completions_keep_old_client_acceptance() {
+        for case in fixtures()["attach_waiting_cases"].as_array().unwrap() {
+            let actual = attach_waiting(&case["frame"]).map(|p| p.has_missing);
+            assert_eq!(actual, case["has_missing"].as_bool(), "{case}");
+        }
+        fn old(value: &Value) -> io::Result<()> {
+            rpc::validate_response(value, &serde_json::json!(0))?;
+            if let Some(error) = value.get("error") {
+                return Err(io::Error::other(
+                    error["message"].as_str().unwrap_or("attachment rejected"),
+                ));
+            }
+            if value["result"]["attached"] != true {
+                return Err(io::Error::other("invalid terminal handshake"));
+            }
+            Ok(())
+        }
+        for case in fixtures()["attach_completion_cases"].as_array().unwrap() {
+            let wire = &case["reply"];
+            let expected = old(wire);
+            for actual in [
+                decode_completion::<attach_exchanges::Reply>(wire.clone()),
+                decode_completion::<attach_exchanges::LegacyAttach>(wire.clone()),
+            ] {
+                assert_eq!(actual.is_ok(), expected.is_ok(), "{case}");
+                if let (Err(actual), Err(expected)) = (actual, &expected) {
+                    assert_eq!(actual.to_string(), expected.to_string(), "{case}");
+                }
+            }
+        }
+        assert_eq!(
+            completion_payload::<attach_exchanges::Reply>(AttachResult { attached: true }).unwrap(),
+            serde_json::json!({"attached":true})
+        );
     }
 
     #[test]
