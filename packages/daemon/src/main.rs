@@ -1,5 +1,6 @@
 //! Headless daemon entry point, host API frontends and raw terminal client.
 //! The controller library never opens the approval terminal.
+use goblins_protocol::contract::Method;
 mod attachment;
 mod cli;
 mod exec;
@@ -94,8 +95,9 @@ fn execute(cli: Cli) -> Result<i32> {
             let key = goblins_protocol::messages::operation_key(key)?;
             return mailbox_command(
                 &state,
-                "messages.send",
-                serde_json::json!({"key":key,"to":recipient,"body":body}),
+                goblins_protocol::contract::host::MessagesSend::NAME,
+                goblins_protocol::messages::send_request(key, recipient, body)
+                    .map_err(|e| e.to_string())?,
             );
         }
         Command::Reply {
@@ -109,8 +111,14 @@ fn execute(cli: Cli) -> Result<i32> {
             let key = goblins_protocol::messages::operation_key(key)?;
             return mailbox_command(
                 &state,
-                "messages.reply",
-                serde_json::json!({"key":key,"message":message_id,"claim_generation":claim_generation,"body":body}),
+                goblins_protocol::contract::host::MessagesReply::NAME,
+                serde_json::to_value(goblins_protocol::messages::Reply {
+                    key,
+                    message: message_id,
+                    claim_generation,
+                    body,
+                })
+                .map_err(|e| e.to_string())?,
             );
         }
         Command::Inbox { command } => {

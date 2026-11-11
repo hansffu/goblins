@@ -92,8 +92,9 @@ fn run() -> Result<i32, String> {
                 let key =
                     goblins_protocol::messages::operation_key(key).map_err(|e| e.to_string())?;
                 return mailbox_command(
-                    "messages.send",
-                    json!({"key":key,"to":recipient,"body":body}),
+                    goblins_protocol::contract::sandbox::MessagesSend::NAME,
+                    goblins_protocol::messages::send_request(key, recipient, body)
+                        .map_err(|e| e.to_string())?,
                 );
             }
             cli::Command::Reply {
@@ -108,8 +109,14 @@ fn run() -> Result<i32, String> {
                 let key =
                     goblins_protocol::messages::operation_key(key).map_err(|e| e.to_string())?;
                 return mailbox_command(
-                    "messages.reply",
-                    json!({"key":key,"message":message_id,"claim_generation":claim_generation,"body":body}),
+                    goblins_protocol::contract::sandbox::MessagesReply::NAME,
+                    serde_json::to_value(goblins_protocol::messages::Reply {
+                        key,
+                        message: message_id,
+                        claim_generation,
+                        body,
+                    })
+                    .map_err(|e| e.to_string())?,
                 );
             }
             cli::Command::Inbox { command } => {

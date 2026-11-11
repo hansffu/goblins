@@ -2,22 +2,12 @@
   "pending": {
     "C12": {
       "host": [
-        "messages.send",
         "messages.get",
-        "messages.reply",
-        "inbox.status",
-        "inbox.next",
-        "inbox.complete",
-        "inbox.requeue"
+        "inbox.status"
       ],
       "sandbox": [
-        "messages.send",
         "messages.get",
-        "messages.reply",
-        "inbox.status",
-        "inbox.next",
-        "inbox.complete",
-        "inbox.requeue"
+        "inbox.status"
       ]
     },
     "C13": {

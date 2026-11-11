@@ -12,46 +12,12 @@ pub const FEATURE: &str = "agent-inbox-v1";
 pub const MAX_BODY: usize = 8 * 1024;
 pub const MAX_REQUEST: usize = 64 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Send {
-    pub key: String,
-    pub to: String,
-    pub body: String,
-    pub conversation: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Next {
-    pub key: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Claim {
-    pub key: String,
-    pub message: String,
-    pub claim_generation: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Reply {
-    pub key: String,
-    pub message: String,
-    pub claim_generation: u64,
-    pub body: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Requeue {
-    pub key: String,
-    pub message: String,
-    pub claim_generation: u64,
-    pub reason: String,
-}
+use crate::contract::{self, Method};
+pub use crate::contract::{
+    MailboxClaimParams as Claim, MailboxMessage as Message, MailboxNextParams as Next,
+    MailboxOperation as Operation, MailboxRaidNotice as RaidNotice, MailboxReplyParams as Reply,
+    MailboxRequeueParams as Requeue, MailboxSendParams as Send, MailboxState as State,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -80,11 +46,11 @@ impl Mutation {
 
     pub fn method(&self) -> &'static str {
         match self {
-            Self::Send(_) => "messages.send",
-            Self::Next(_) => "inbox.next",
-            Self::Reply(_) => "messages.reply",
-            Self::Complete(_) => "inbox.complete",
-            Self::Requeue(_) => "inbox.requeue",
+            Self::Send(_) => contract::host::MessagesSend::NAME,
+            Self::Next(_) => contract::host::InboxNext::NAME,
+            Self::Reply(_) => contract::host::MessagesReply::NAME,
+            Self::Complete(_) => contract::host::InboxComplete::NAME,
+            Self::Requeue(_) => contract::host::InboxRequeue::NAME,
         }
     }
 
@@ -245,77 +211,24 @@ pub fn print_outcome(result: io::Result<Result<Value, Value>>, key: Option<&str>
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum State {
-    Queued,
-    Claimed,
-    Completed,
-    Failed,
-}
-
 impl State {
     pub fn unresolved(self) -> bool {
         matches!(self, Self::Queued | Self::Claimed)
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Message {
-    pub id: String,
-    pub conversation: String,
-    pub sender: String,
-    pub recipient: String,
-    /// Agent names when the message was accepted; `host` and `goblins` for
-    /// those senders.
-    #[serde(alias = "sender_path")]
-    pub sender_name: String,
-    #[serde(alias = "recipient_path")]
-    pub recipient_name: String,
-    pub in_reply_to: Option<String>,
-    pub body: String,
-    pub created_sequence: u64,
-    /// Milliseconds since the UTC Unix epoch; event sequence is authoritative order.
-    pub created_at: u64,
-    pub state: State,
-    pub claim_generation: u64,
-    pub failure: Option<String>,
-    /// Set only on daemon-authored operation completion notices.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation: Option<Operation>,
-    /// Set only on daemon-authored raid notices.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raid: Option<RaidNotice>,
-}
-
-/// Sender of operation completion notices. Not a session or the host.
+/// Sender of daemon-authored operation and raid notices.
 pub const NOTICE_SENDER: &str = "goblins";
 
-/// The terminal outcome of a Goblins-owned operation a sandbox requested,
-/// correlated by the daemon-issued request ID.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Operation {
-    pub request: String,
-    /// `package`, `docker` or `devshell`.
-    pub kind: String,
-    /// The package, Docker scope or refresh the request named.
-    pub subject: String,
-    /// `ready`, `denied`, `failed`, `withdrawn` or `cancelled`.
-    pub status: String,
-    /// The sandbox-facing explanation, never a host diagnostic.
-    pub message: Option<String>,
-}
-
-/// A raid change a member asked to hear about, such as a paused raid it
-/// could not message resuming.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RaidNotice {
-    pub id: String,
-    pub name: String,
-    /// `resumed`.
-    pub event: String,
-    /// Session ID of the new owner.
-    pub owner: String,
+/// CLI send retains its original absent conversation field.
+pub fn send_request(key: String, to: String, body: String) -> serde_json::Result<Value> {
+    let mut params = serde_json::to_value(Send {
+        key,
+        to,
+        body,
+        conversation: None,
+    })?;
+    params.as_object_mut().unwrap().remove("conversation");
+    Ok(params)
 }
 
 #[cfg(test)]

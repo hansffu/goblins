@@ -15,6 +15,57 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_mailbox_mutation_contracts_and_result_relationships(self):
+        fixtures=contract.read("fixtures.json")
+        for endpoint in ("host","sandbox"):
+            for case in fixtures["mailbox_mutation_cases"]:
+                if case["valid"]:self.assertTrue(contract.validate_params(endpoint,case["method"],case["params"]))
+                else:
+                    with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params(endpoint,case["method"],case["params"])
+            for case in fixtures["mailbox_byte_cases"]:
+                params={**case["base"],case["field"]:case["unit"]*case["repeat"]+case["suffix"]}
+                self.assertEqual(len(params[case["field"]].encode("utf-8")),case["bytes"])
+                positional=[params[p["name"]] for p in contract.method(endpoint,case["method"])["params"]]
+                for wire in (params,positional):
+                    if case["valid"]:self.assertTrue(contract.validate_params(endpoint,case["method"],wire))
+                    else:
+                        with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params(endpoint,case["method"],wire)
+            for case in fixtures["mailbox_mutation_results"]:
+                self.assertTrue(contract.validate_reply(endpoint,case["method"],dict(jsonrpc="2.0",id=1,result=case["result"])))
+            for case in fixtures["mailbox_next_cases"]:
+                reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+                if case["valid"]:self.assertTrue(contract.validate_reply(endpoint,"inbox.next",reply))
+                else:
+                    with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply(endpoint,"inbox.next",reply)
+            for value in [dict(message=None,claim_generation=1),dict(message=fixtures["mailbox_message"],claim_generation=None)]:
+                with self.assertRaises(ValidationError):contract.validate_reply(endpoint,"inbox.next",dict(jsonrpc="2.0",id=1,result=value))
+            with self.assertRaises(ValidationError):contract.validate_reply(endpoint,"inbox.complete",dict(jsonrpc="2.0",id=1,result=dict(message="m",state="queued")))
+
+    def test_mailbox_u64_schema_matches_original_wire_integer_ranges(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["mailbox_u64_cases"]:
+            for endpoint in ("host","sandbox"):
+                for name,base in [("messages.reply",dict(key="k",message="m",body="hello")),("inbox.complete",dict(key="k",message="m")),("inbox.requeue",dict(key="k",message="m",reason="later"))]:
+                    params={**base,"claim_generation":case["value"]}
+                    positional=[params[p["name"]] for p in contract.method(endpoint,name)["params"]]
+                    for wire in (params,positional):
+                        if case["claim"]:self.assertTrue(contract.validate_params(endpoint,name,wire))
+                        else:
+                            with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params(endpoint,name,wire)
+                for field in ("created_sequence","created_at","claim_generation"):
+                    message={**fixtures["mailbox_message"],field:case["value"]}
+                    if case["unsigned"]:self.assertTrue(contract.validate_reply(endpoint,"messages.send",dict(jsonrpc="2.0",id=1,result=message)))
+                    else:
+                        with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply(endpoint,"messages.send",dict(jsonrpc="2.0",id=1,result=message))
+                result=dict(message="m",claim_generation=case["value"])
+                if case["unsigned"]:self.assertTrue(contract.validate_reply(endpoint,"inbox.requeue",dict(jsonrpc="2.0",id=1,result=result)))
+                else:
+                    with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply(endpoint,"inbox.requeue",dict(jsonrpc="2.0",id=1,result=result))
+                result=dict(message=None if case["value"] is None else {**fixtures["mailbox_message"],"state":"claimed","claim_generation":case["value"]},claim_generation=case["value"])
+                if case["claim"] or case["value"] is None:self.assertTrue(contract.validate_reply(endpoint,"inbox.next",dict(jsonrpc="2.0",id=1,result=result)))
+                else:
+                    with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply(endpoint,"inbox.next",dict(jsonrpc="2.0",id=1,result=result))
+
     def test_sandbox_raid_and_ui_parameter_contracts(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["sandbox_raid_parameter_cases"]:

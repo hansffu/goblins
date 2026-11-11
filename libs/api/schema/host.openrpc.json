@@ -1900,6 +1900,438 @@
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/RaidSetRoleParams"
       }
+    },
+    {
+      "name": "messages.send",
+      "x-rust-name": "MessagesSend",
+      "description": "Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxSendParams/properties/key"
+          }
+        },
+        {
+          "name": "to",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxSendParams/properties/to"
+          }
+        },
+        {
+          "name": "body",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxSendParams/properties/body"
+          }
+        },
+        {
+          "name": "conversation",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxSendParams/properties/conversation"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxMessage"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid mutation parameters or semantic values"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or unavailable"
+        },
+        {
+          "code": -32009,
+          "message": "Stale/conflicting claim, refused routing or audit failure"
+        },
+        {
+          "code": -32010,
+          "message": "Mailbox/audit capacity reached"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxSendParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        ],
+        "minItems": 4,
+        "maxItems": 4
+      },
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/MailboxSendParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body",
+      "x-positional-required": [
+        "conversation"
+      ]
+    },
+    {
+      "name": "messages.reply",
+      "x-rust-name": "MessagesReply",
+      "description": "Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxReplyParams/properties/key"
+          }
+        },
+        {
+          "name": "message",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxReplyParams/properties/message"
+          }
+        },
+        {
+          "name": "claim_generation",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxReplyParams/properties/claim_generation"
+          }
+        },
+        {
+          "name": "body",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxReplyParams/properties/body"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxReplyResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid mutation parameters or semantic values"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or unavailable"
+        },
+        {
+          "code": -32009,
+          "message": "Stale/conflicting claim, refused routing or audit failure"
+        },
+        {
+          "code": -32010,
+          "message": "Mailbox/audit capacity reached"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxReplyParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "format": "uint64",
+            "x-json-integer": true
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 4,
+        "maxItems": 4
+      },
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/MailboxReplyParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "inbox.next",
+      "x-rust-name": "InboxNext",
+      "description": "Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxNextParams/properties/key"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxNextResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid mutation parameters or semantic values"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or unavailable"
+        },
+        {
+          "code": -32009,
+          "message": "Stale/conflicting claim, refused routing or audit failure"
+        },
+        {
+          "code": -32010,
+          "message": "Mailbox/audit capacity reached"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxNextParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/MailboxNextParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "inbox.complete",
+      "x-rust-name": "InboxComplete",
+      "description": "Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxClaimParams/properties/key"
+          }
+        },
+        {
+          "name": "message",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxClaimParams/properties/message"
+          }
+        },
+        {
+          "name": "claim_generation",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxClaimParams/properties/claim_generation"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxCompleteResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid mutation parameters or semantic values"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or unavailable"
+        },
+        {
+          "code": -32009,
+          "message": "Stale/conflicting claim, refused routing or audit failure"
+        },
+        {
+          "code": -32010,
+          "message": "Mailbox/audit capacity reached"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxClaimParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "format": "uint64",
+            "x-json-integer": true
+          }
+        ],
+        "minItems": 3,
+        "maxItems": 3
+      },
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/MailboxClaimParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "inbox.requeue",
+      "x-rust-name": "InboxRequeue",
+      "description": "Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxRequeueParams/properties/key"
+          }
+        },
+        {
+          "name": "message",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxRequeueParams/properties/message"
+          }
+        },
+        {
+          "name": "claim_generation",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxRequeueParams/properties/claim_generation"
+          }
+        },
+        {
+          "name": "reason",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxRequeueParams/properties/reason"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxRequeueResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid mutation parameters or semantic values"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or unavailable"
+        },
+        {
+          "code": -32009,
+          "message": "Stale/conflicting claim, refused routing or audit failure"
+        },
+        {
+          "code": -32010,
+          "message": "Mailbox/audit capacity reached"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxRequeueParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "format": "uint64",
+            "x-json-integer": true
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 4,
+        "maxItems": 4
+      },
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/MailboxRequeueParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
     }
   ],
   "x-notifications": [

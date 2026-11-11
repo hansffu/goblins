@@ -1013,3 +1013,91 @@ fn other_events_leave_queued_messages_room_to_be_fetched_and_completed() {
         f.complete("c", &message, &format!("{key}-done")).unwrap();
     }
 }
+
+#[test]
+fn generated_mutation_result_producers_match_original_wire_expressions() {
+    fn check(f: &Fixture, actor: &str, method: &str, params: Value) {
+        let command = Mutation::parse(method, params).unwrap();
+        let change = f
+            .mailbox
+            .prepare(actor, &command, &f.directory, 123, 456)
+            .unwrap();
+        let old = match command {
+            Mutation::Send(_) => json!(change.messages[0]),
+            Mutation::Next(_) => match change.messages.first() {
+                Some(message) => {
+                    json!({"message":message,"claim_generation":message.claim_generation})
+                }
+                None => json!({"message":null,"claim_generation":null}),
+            },
+            Mutation::Reply(_) => {
+                json!({"reply":change.messages[1],"completed":change.messages[0].id})
+            }
+            Mutation::Complete(_) => {
+                json!({"message":change.messages[0].id,"state":change.messages[0].state})
+            }
+            Mutation::Requeue(_) => {
+                json!({"message":change.messages[0].id,"claim_generation":change.messages[0].claim_generation})
+            }
+        };
+        if method == "inbox.next" && !change.messages.is_empty() {
+            assert_eq!(change.result["message"]["state"], "claimed");
+            assert_eq!(
+                change.result["message"]["claim_generation"],
+                change.result["claim_generation"]
+            );
+            assert!(change.result["claim_generation"].as_u64().unwrap() > 0);
+        }
+        assert_eq!(change.result, old, "{method}");
+    }
+    let mut f = Fixture::new();
+    check(&f, "c", "inbox.next", json!({"key":"empty"}));
+    check(
+        &f,
+        "host",
+        "messages.send",
+        json!({"key":"send","to":"scout","body":"hello"}),
+    );
+    let message = f.mailbox.new_message(
+        "host",
+        "c",
+        "hello",
+        "conversation".into(),
+        None,
+        &f.directory,
+        123,
+        456,
+    );
+    assert_eq!(
+        json!(message),
+        json!({"id":format!("{INSTANCE}-m123"),"conversation":"conversation","sender":"host","recipient":"c","sender_name":"host","recipient_name":"scout","in_reply_to":null,"body":"hello","created_sequence":123,"created_at":456,"state":"queued","claim_generation":0,"failure":null})
+    );
+    f.send("host", "scout", "one", "hello");
+    check(&f, "c", "inbox.next", json!({"key":"fetch"}));
+    let claim = f.next("c", "fetch")["message"].clone();
+    for (method, params) in [
+        (
+            "messages.reply",
+            json!({"key":"reply","message":claim["id"],"claim_generation":claim["claim_generation"],"body":"answer"}),
+        ),
+        (
+            "inbox.complete",
+            json!({"key":"done","message":claim["id"],"claim_generation":claim["claim_generation"]}),
+        ),
+        (
+            "inbox.requeue",
+            json!({"key":"retry","message":claim["id"],"claim_generation":claim["claim_generation"],"reason":"later"}),
+        ),
+    ] {
+        check(&f, "c", method, params);
+    }
+    f.call("c","inbox.requeue",json!({"key":"requeue","message":claim["id"],"claim_generation":claim["claim_generation"],"reason":"later"})).unwrap();
+    check(&f, "c", "inbox.next", json!({"key":"fetch-again"}));
+    f.mailbox
+        .messages
+        .iter_mut()
+        .find(|m| m.id == claim["id"].as_str().unwrap())
+        .unwrap()
+        .claim_generation = u64::MAX;
+    check(&f, "c", "inbox.next", json!({"key":"fetch-maximum"}));
+}

@@ -7107,6 +7107,459 @@
         "generation"
       ],
       "additionalProperties": false
+    },
+    "MailboxSendParams": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "conversation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "to",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "MailboxNextParams": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "additionalProperties": false
+    },
+    "MailboxClaimParams": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "claim_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        }
+      },
+      "required": [
+        "key",
+        "message",
+        "claim_generation"
+      ],
+      "additionalProperties": false
+    },
+    "MailboxReplyParams": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "claim_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "body": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "message",
+        "claim_generation",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "MailboxRequeueParams": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "claim_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "message",
+        "claim_generation",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "MailboxState": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "claimed",
+        "completed",
+        "failed"
+      ]
+    },
+    "MailboxOperation": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "request",
+        "kind",
+        "subject",
+        "status",
+        "message"
+      ],
+      "additionalProperties": true,
+      "description": "Daemon-authored operation or terminal-exit notice. Existing kinds include package, docker, devshell, host-command and terminal; statuses include ready, denied, failed, withdrawn, cancelled, finished and exited. Strings remain open for future producers. message is a nullable sandbox-facing explanation, never a host diagnostic."
+    },
+    "MailboxRaidNotice": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "event": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "event",
+        "owner"
+      ],
+      "additionalProperties": true,
+      "description": "Daemon raid notice; current producer event is resumed, with the new owner session ID. Descriptive strings remain open."
+    },
+    "MailboxMessage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "conversation": {
+          "type": "string"
+        },
+        "sender": {
+          "type": "string"
+        },
+        "recipient": {
+          "type": "string"
+        },
+        "sender_name": {
+          "type": "string"
+        },
+        "recipient_name": {
+          "type": "string"
+        },
+        "in_reply_to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "body": {
+          "type": "string"
+        },
+        "created_sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "state": {
+          "$ref": "#/definitions/MailboxState"
+        },
+        "claim_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MailboxOperation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raid": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MailboxRaidNotice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "conversation",
+        "sender",
+        "recipient",
+        "sender_name",
+        "recipient_name",
+        "in_reply_to",
+        "body",
+        "created_sequence",
+        "created_at",
+        "state",
+        "claim_generation",
+        "failure"
+      ],
+      "additionalProperties": true,
+      "description": "Current producer emits every first thirteen field, including nullable in_reply_to/failure, and omits absent operation/raid notices. created_at is UTC Unix milliseconds; created_sequence is authoritative. Authenticated routing supplies sender/recipient. Legacy reader retains sender_path/recipient_path aliases and original positional order; no semantic validation moves into the DTO."
+    },
+    "MailboxNextResult": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MailboxMessage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "claim_generation": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "message",
+        "claim_generation"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "message": {
+                  "type": "null"
+                },
+                "claim_generation": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "message": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/MailboxMessage"
+                    },
+                    {
+                      "properties": {
+                        "state": {
+                          "const": "claimed"
+                        },
+                        "claim_generation": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 18446744073709551615,
+                          "format": "uint64",
+                          "x-json-integer": true
+                        }
+                      }
+                    }
+                  ]
+                },
+                "claim_generation": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 18446744073709551615,
+                  "format": "uint64",
+                  "x-json-integer": true
+                }
+              },
+              "x-equal-fields": [
+                "/message/claim_generation",
+                "/claim_generation"
+              ]
+            }
+          ]
+        }
+      ],
+      "description": "Empty inbox emits both fields as null. A claim emits a message and its positive claim_generation; both generation values are equal in the existing state machine.",
+      "x-generator-omit": [
+        "allOf"
+      ]
+    },
+    "MailboxReplyResult": {
+      "type": "object",
+      "properties": {
+        "reply": {
+          "$ref": "#/definitions/MailboxMessage"
+        },
+        "completed": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reply",
+        "completed"
+      ],
+      "additionalProperties": true
+    },
+    "MailboxCompleteResult": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/MailboxState"
+        }
+      },
+      "required": [
+        "message",
+        "state"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "completed"
+            }
+          }
+        }
+      ],
+      "x-generator-omit": [
+        "allOf"
+      ]
+    },
+    "MailboxRequeueResult": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "claim_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        }
+      },
+      "required": [
+        "message",
+        "claim_generation"
+      ],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -8649,6 +9102,99 @@
           "$ref": "#/definitions/RaidNameRule"
         }
       }
+    },
+    "MailboxSendParams": {
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "x-max-bytes": 512
+        },
+        "conversation": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OperationKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "body": {
+          "type": "string",
+          "x-max-bytes": 8192
+        }
+      }
+    },
+    "MailboxNextParams": {
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        }
+      }
+    },
+    "MailboxClaimParams": {
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "message": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "claim_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        }
+      }
+    },
+    "MailboxReplyParams": {
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "message": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "claim_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "body": {
+          "type": "string",
+          "x-max-bytes": 8192
+        }
+      }
+    },
+    "MailboxRequeueParams": {
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "message": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "claim_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "x-max-bytes": 512
+        }
+      }
     }
   },
   "x-attach-version": 1,
@@ -9210,6 +9756,106 @@
           "maxItems": 5
         }
       ]
+    }
+  },
+  "x-rust-serde-records": {
+    "MailboxSendParams": {
+      "order": [
+        "key",
+        "to",
+        "body",
+        "conversation"
+      ],
+      "required-nullable": [
+        "conversation"
+      ],
+      "name": "Send"
+    },
+    "MailboxNextParams": {
+      "order": [
+        "key"
+      ],
+      "name": "Next"
+    },
+    "MailboxClaimParams": {
+      "order": [
+        "key",
+        "message",
+        "claim_generation"
+      ],
+      "name": "Claim"
+    },
+    "MailboxReplyParams": {
+      "order": [
+        "key",
+        "message",
+        "claim_generation",
+        "body"
+      ],
+      "name": "Reply"
+    },
+    "MailboxRequeueParams": {
+      "order": [
+        "key",
+        "message",
+        "claim_generation",
+        "reason"
+      ],
+      "name": "Requeue"
+    },
+    "MailboxMessage": {
+      "order": [
+        "id",
+        "conversation",
+        "sender",
+        "recipient",
+        "sender_name",
+        "recipient_name",
+        "in_reply_to",
+        "body",
+        "created_sequence",
+        "created_at",
+        "state",
+        "claim_generation",
+        "failure",
+        "operation",
+        "raid"
+      ],
+      "required-nullable": [
+        "in_reply_to",
+        "failure"
+      ],
+      "aliases": {
+        "sender_name": [
+          "sender_path"
+        ],
+        "recipient_name": [
+          "recipient_path"
+        ]
+      },
+      "name": "Message"
+    },
+    "MailboxOperation": {
+      "order": [
+        "request",
+        "kind",
+        "subject",
+        "status",
+        "message"
+      ],
+      "required-nullable": [
+        "message"
+      ],
+      "name": "Operation"
+    },
+    "MailboxRaidNotice": {
+      "order": [
+        "id",
+        "name",
+        "event",
+        "owner"
+      ],
+      "name": "RaidNotice"
     }
   }
 }

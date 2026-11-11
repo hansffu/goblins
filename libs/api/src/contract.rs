@@ -236,6 +236,8 @@ pub trait Response: DeserializeOwned {
 
 mod host_job;
 pub use host_job::{HostJob, host_submitted};
+#[cfg(test)]
+mod mailbox;
 mod raid;
 pub use raid::{decode_session_raid, raid_display_reply};
 mod permission;

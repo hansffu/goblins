@@ -40,13 +40,13 @@ struct Empty {}
 pub fn messaging(method: &str) -> bool {
     matches!(
         method,
-        "messages.send"
+        contract::sandbox::MessagesSend::NAME
             | "messages.get"
-            | "messages.reply"
-            | "inbox.next"
+            | contract::sandbox::MessagesReply::NAME
+            | contract::sandbox::InboxNext::NAME
             | "inbox.status"
-            | "inbox.complete"
-            | "inbox.requeue"
+            | contract::sandbox::InboxComplete::NAME
+            | contract::sandbox::InboxRequeue::NAME
     )
 }
 

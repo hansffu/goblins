@@ -4887,6 +4887,799 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =messages.send=
+
+Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    },
+    "conversation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "key",
+    "to",
+    "body"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  ],
+  "minItems": 4,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "conversation": {
+      "type": "string"
+    },
+    "sender": {
+      "type": "string"
+    },
+    "recipient": {
+      "type": "string"
+    },
+    "sender_name": {
+      "type": "string"
+    },
+    "recipient_name": {
+      "type": "string"
+    },
+    "in_reply_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "body": {
+      "type": "string"
+    },
+    "created_sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "created_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "state": {
+      "$ref": "#/definitions/MailboxState"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxOperation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxRaidNotice"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "conversation",
+    "sender",
+    "recipient",
+    "sender_name",
+    "recipient_name",
+    "in_reply_to",
+    "body",
+    "created_sequence",
+    "created_at",
+    "state",
+    "claim_generation",
+    "failure"
+  ],
+  "additionalProperties": true,
+  "description": "Current producer emits every first thirteen field, including nullable in_reply_to/failure, and omits absent operation/raid notices. created_at is UTC Unix milliseconds; created_sequence is authoritative. Authenticated routing supplies sender/recipient. Legacy reader retains sender_path/recipient_path aliases and original positional order; no semantic validation moves into the DTO."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "x-max-bytes": 512
+    },
+    "conversation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/OperationKey"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "body": {
+      "type": "string",
+      "x-max-bytes": 8192
+    }
+  }
+}
+#+end_src
+
+** =messages.reply=
+
+Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "body": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation",
+    "body"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 4,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "reply": {
+      "$ref": "#/definitions/MailboxMessage"
+    },
+    "completed": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reply",
+    "completed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "message": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "body": {
+      "type": "string",
+      "x-max-bytes": 8192
+    }
+  }
+}
+#+end_src
+
+** =inbox.next=
+
+Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxMessage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "claim_generation": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "message": {
+              "type": "null"
+            },
+            "claim_generation": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "message": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/MailboxMessage"
+                },
+                {
+                  "properties": {
+                    "state": {
+                      "const": "claimed"
+                    },
+                    "claim_generation": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 18446744073709551615,
+                      "format": "uint64",
+                      "x-json-integer": true
+                    }
+                  }
+                }
+              ]
+            },
+            "claim_generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            }
+          },
+          "x-equal-fields": [
+            "/message/claim_generation",
+            "/claim_generation"
+          ]
+        }
+      ]
+    }
+  ],
+  "description": "Empty inbox emits both fields as null. A claim emits a message and its positive claim_generation; both generation values are equal in the existing state machine.",
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    }
+  }
+}
+#+end_src
+
+** =inbox.complete=
+
+Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  ],
+  "minItems": 3,
+  "maxItems": 3
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/MailboxState"
+    }
+  },
+  "required": [
+    "message",
+    "state"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "properties": {
+        "state": {
+          "const": "completed"
+        }
+      }
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "message": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  }
+}
+#+end_src
+
+** =inbox.requeue=
+
+Authenticated host mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation",
+    "reason"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 4,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "message": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "x-max-bytes": 512
+    }
+  }
+}
+#+end_src
+
 ** Notification =exec.signal=
 
 exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.
@@ -9116,6 +9909,799 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =messages.send=
+
+Authenticated sandbox mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    },
+    "conversation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "key",
+    "to",
+    "body"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  ],
+  "minItems": 4,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "conversation": {
+      "type": "string"
+    },
+    "sender": {
+      "type": "string"
+    },
+    "recipient": {
+      "type": "string"
+    },
+    "sender_name": {
+      "type": "string"
+    },
+    "recipient_name": {
+      "type": "string"
+    },
+    "in_reply_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "body": {
+      "type": "string"
+    },
+    "created_sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "created_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "state": {
+      "$ref": "#/definitions/MailboxState"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxOperation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxRaidNotice"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "conversation",
+    "sender",
+    "recipient",
+    "sender_name",
+    "recipient_name",
+    "in_reply_to",
+    "body",
+    "created_sequence",
+    "created_at",
+    "state",
+    "claim_generation",
+    "failure"
+  ],
+  "additionalProperties": true,
+  "description": "Current producer emits every first thirteen field, including nullable in_reply_to/failure, and omits absent operation/raid notices. created_at is UTC Unix milliseconds; created_sequence is authoritative. Authenticated routing supplies sender/recipient. Legacy reader retains sender_path/recipient_path aliases and original positional order; no semantic validation moves into the DTO."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "x-max-bytes": 512
+    },
+    "conversation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/OperationKey"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "body": {
+      "type": "string",
+      "x-max-bytes": 8192
+    }
+  }
+}
+#+end_src
+
+** =messages.reply=
+
+Authenticated sandbox mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "body": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation",
+    "body"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 4,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "reply": {
+      "$ref": "#/definitions/MailboxMessage"
+    },
+    "completed": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reply",
+    "completed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "message": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "body": {
+      "type": "string",
+      "x-max-bytes": 8192
+    }
+  }
+}
+#+end_src
+
+** =inbox.next=
+
+Authenticated sandbox mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxMessage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "claim_generation": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "message": {
+              "type": "null"
+            },
+            "claim_generation": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "message": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/MailboxMessage"
+                },
+                {
+                  "properties": {
+                    "state": {
+                      "const": "claimed"
+                    },
+                    "claim_generation": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 18446744073709551615,
+                      "format": "uint64",
+                      "x-json-integer": true
+                    }
+                  }
+                }
+              ]
+            },
+            "claim_generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            }
+          },
+          "x-equal-fields": [
+            "/message/claim_generation",
+            "/claim_generation"
+          ]
+        }
+      ]
+    }
+  ],
+  "description": "Empty inbox emits both fields as null. A claim emits a message and its positive claim_generation; both generation values are equal in the existing state machine.",
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    }
+  }
+}
+#+end_src
+
+** =inbox.complete=
+
+Authenticated sandbox mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  ],
+  "minItems": 3,
+  "maxItems": 3
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/MailboxState"
+    }
+  },
+  "required": [
+    "message",
+    "state"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "properties": {
+        "state": {
+          "const": "completed"
+        }
+      }
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "message": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  }
+}
+#+end_src
+
+** =inbox.requeue=
+
+Authenticated sandbox mailbox mutation. Closed named parameters and original positional forms; null params refused. The caller-chosen key identifies an exact retry, recovered before target/liveness resolution. Caller identity never comes from parameters. Existing semantic validation keeps 1..64 ASCII identifier keys/IDs, positive claim generations, recipient/reason limits of 512 UTF-8 bytes, and bodies (including empty strings) up to 8192 UTF-8 bytes (schema x-max-bytes records these limits; runtime semantic enforcement stays handwritten, including escaped JSON). Each request uses the existing 65536-byte frame limit. Shared unpaused logged raid membership authorizes goblin routes, while host routes remain independent. Audit acceptance precedes publication; stale claims, capacity, audit failures, no-reply notices, name reuse, and deterministic retry behavior stay in the state machine. Successful CLI bodies remain uninterpreted and are printed unchanged, with the local operation key added only by the CLI. Send CLI omits absent conversation; raw API accepts absent/null conversation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation",
+    "reason"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 4,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "message": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "x-max-bytes": 512
+    }
+  }
+}
+#+end_src
+
 ** Notification =host.submitted=
 
 For attached permissions.request host-command work, the daemon sends this notification after the request is registered and before its terminal result. It identifies the sandbox output file. Detached submissions return pending acceptance and do not emit this notification. The host CLI legacy reader classifies by method only, even for nonstandard envelopes, and independently reads a string params.request or an empty string fallback. Preserve that behavior separately from the canonical closed producer params.
@@ -9342,6 +10928,113 @@ Socket: =terminal.sock=. Direction: =server-to-client=. Fixed response ID: =0=.
 #+end_src
 
 Errors: -32009.
+
+* Generated Serde reader details
+
+Original Serde container names, field order, required nullable sequence slots and legacy named aliases are generated from:
+
+#+begin_src json
+{
+  "MailboxSendParams": {
+    "order": [
+      "key",
+      "to",
+      "body",
+      "conversation"
+    ],
+    "required-nullable": [
+      "conversation"
+    ],
+    "name": "Send"
+  },
+  "MailboxNextParams": {
+    "order": [
+      "key"
+    ],
+    "name": "Next"
+  },
+  "MailboxClaimParams": {
+    "order": [
+      "key",
+      "message",
+      "claim_generation"
+    ],
+    "name": "Claim"
+  },
+  "MailboxReplyParams": {
+    "order": [
+      "key",
+      "message",
+      "claim_generation",
+      "body"
+    ],
+    "name": "Reply"
+  },
+  "MailboxRequeueParams": {
+    "order": [
+      "key",
+      "message",
+      "claim_generation",
+      "reason"
+    ],
+    "name": "Requeue"
+  },
+  "MailboxMessage": {
+    "order": [
+      "id",
+      "conversation",
+      "sender",
+      "recipient",
+      "sender_name",
+      "recipient_name",
+      "in_reply_to",
+      "body",
+      "created_sequence",
+      "created_at",
+      "state",
+      "claim_generation",
+      "failure",
+      "operation",
+      "raid"
+    ],
+    "required-nullable": [
+      "in_reply_to",
+      "failure"
+    ],
+    "aliases": {
+      "sender_name": [
+        "sender_path"
+      ],
+      "recipient_name": [
+        "recipient_path"
+      ]
+    },
+    "name": "Message"
+  },
+  "MailboxOperation": {
+    "order": [
+      "request",
+      "kind",
+      "subject",
+      "status",
+      "message"
+    ],
+    "required-nullable": [
+      "message"
+    ],
+    "name": "Operation"
+  },
+  "MailboxRaidNotice": {
+    "order": [
+      "id",
+      "name",
+      "event",
+      "owner"
+    ],
+    "name": "RaidNotice"
+  }
+}
+#+end_src
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -17721,6 +19414,524 @@ Errors: -32009.
 }
 #+end_src
 
+** =MailboxSendParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    },
+    "conversation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "key",
+    "to",
+    "body"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MailboxNextParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MailboxClaimParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MailboxReplyParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "body": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation",
+    "body"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MailboxRequeueParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "message",
+    "claim_generation",
+    "reason"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =MailboxState=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "queued",
+    "claimed",
+    "completed",
+    "failed"
+  ]
+}
+#+end_src
+
+** =MailboxOperation=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "request",
+    "kind",
+    "subject",
+    "status",
+    "message"
+  ],
+  "additionalProperties": true,
+  "description": "Daemon-authored operation or terminal-exit notice. Existing kinds include package, docker, devshell, host-command and terminal; statuses include ready, denied, failed, withdrawn, cancelled, finished and exited. Strings remain open for future producers. message is a nullable sandbox-facing explanation, never a host diagnostic."
+}
+#+end_src
+
+** =MailboxRaidNotice=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "event": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "event",
+    "owner"
+  ],
+  "additionalProperties": true,
+  "description": "Daemon raid notice; current producer event is resumed, with the new owner session ID. Descriptive strings remain open."
+}
+#+end_src
+
+** =MailboxMessage=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "conversation": {
+      "type": "string"
+    },
+    "sender": {
+      "type": "string"
+    },
+    "recipient": {
+      "type": "string"
+    },
+    "sender_name": {
+      "type": "string"
+    },
+    "recipient_name": {
+      "type": "string"
+    },
+    "in_reply_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "body": {
+      "type": "string"
+    },
+    "created_sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "created_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "state": {
+      "$ref": "#/definitions/MailboxState"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxOperation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxRaidNotice"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "conversation",
+    "sender",
+    "recipient",
+    "sender_name",
+    "recipient_name",
+    "in_reply_to",
+    "body",
+    "created_sequence",
+    "created_at",
+    "state",
+    "claim_generation",
+    "failure"
+  ],
+  "additionalProperties": true,
+  "description": "Current producer emits every first thirteen field, including nullable in_reply_to/failure, and omits absent operation/raid notices. created_at is UTC Unix milliseconds; created_sequence is authoritative. Authenticated routing supplies sender/recipient. Legacy reader retains sender_path/recipient_path aliases and original positional order; no semantic validation moves into the DTO."
+}
+#+end_src
+
+** =MailboxNextResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxMessage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "claim_generation": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "message": {
+              "type": "null"
+            },
+            "claim_generation": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "message": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/MailboxMessage"
+                },
+                {
+                  "properties": {
+                    "state": {
+                      "const": "claimed"
+                    },
+                    "claim_generation": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 18446744073709551615,
+                      "format": "uint64",
+                      "x-json-integer": true
+                    }
+                  }
+                }
+              ]
+            },
+            "claim_generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            }
+          },
+          "x-equal-fields": [
+            "/message/claim_generation",
+            "/claim_generation"
+          ]
+        }
+      ]
+    }
+  ],
+  "description": "Empty inbox emits both fields as null. A claim emits a message and its positive claim_generation; both generation values are equal in the existing state machine.",
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+** =MailboxReplyResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "reply": {
+      "$ref": "#/definitions/MailboxMessage"
+    },
+    "completed": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reply",
+    "completed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =MailboxCompleteResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/MailboxState"
+    }
+  },
+  "required": [
+    "message",
+    "state"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "properties": {
+        "state": {
+          "const": "completed"
+        }
+      }
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+** =MailboxRequeueResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -17821,3 +20032,5 @@ Errors: -32009.
 - =raid-display-reader= :: RaidDisplayReply/RaidMemberDisplay are generated normalized display DTOs. A named projection independently reads string fields or -, boolean flags, members only when an array and string-created_by presence. Options retain the existing launch_choices escaping, sorted keys, non-string ? fallback and comma-spacing replacement. Raw JSON is retained for JSON printing and the compatibility formatter; sandbox callers now bind the generated member display result.
 - =raid-owner-ui-param-profile= :: The TUI request profile preserves raw shown id/generation/member-id JSON and explicit null guard keys rather than coercing malformed legacy preview values into absent guards. Generated method-bound ParamsProfile types carry those fields as Value while raid remains String and optional stop_members is emitted only when true. Canonical host params remain strict String/u64, so malformed requests still receive the old receiver refusals. The profile does not grant authority.
 - =raid-membership-generated-domain-wrapper= :: Local RaidMembership is a transparent wrapper around generated SessionRaid data with its former Eq/PartialEq traits. A named legacy decoder maps original [id,name,role,owner,paused?] order/minimum four and old named missing nullable/paused defaults through SessionRaidReply before constructing SessionRaid. This preserves direct and nested legacy deserialization while removing C02 field-by-field copies; mutable raid ownership still lives in the domain.
+- =mailbox-serde-records= :: Generated message, notice and mutation DTOs retain schema-declared original Rust struct names with schema-name aliases for exposed malformed-request diagnostics and original field order for direct Serde sequence readers; nullable fields without old Serde defaults keep their positional requirement and serialized nulls. Message reader aliases sender_path and recipient_path remain accepted while current producers emit sender_name/recipient_name. The generator edits the Rust syntax tree, checks every field/order/alias and preserves all unrelated generated code. Semantic byte limits, identifiers, claims, routing, idempotency and authority stay in the existing mutation/state machine.
+- =mailbox-result-constraints= :: Only MailboxNextResult and MailboxCompleteResult allOf constraints are removed from the temporary generator input; canonical schemas retain coherent null/non-null claim pairs, claimed message state, matching generations via x-equal-fields, and completed state. Existing producers select matching message/generation values and completed state, with independent producer wire-equivalence tests. CLI successful bodies still use IgnoredResult/raw JSON rather than imposing a new legacy refusal. Draft 7 cross-instance-value equality is declared through x-equal-fields and checked by the repository contract validator. Read-side typed projections, adapter inbox handling and unfinished-operation/health records remain C12b.

@@ -494,6 +494,40 @@ complete -c goblin -f -a '(__fish_goblin_candidates)'
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inbox_mutation_requests_preserve_original_method_fields_and_key() {
+        use serde_json::json;
+        let key = Some("fixed-key".to_owned());
+        for (command, method, params) in [
+            (
+                super::InboxCommand::Next { key: key.clone() },
+                "inbox.next",
+                json!({"key":"fixed-key"}),
+            ),
+            (
+                super::InboxCommand::Complete {
+                    message: "m".into(),
+                    claim_generation: 7,
+                    key: key.clone(),
+                },
+                "inbox.complete",
+                json!({"key":"fixed-key","message":"m","claim_generation":7}),
+            ),
+            (
+                super::InboxCommand::Requeue {
+                    message: "m".into(),
+                    claim_generation: 7,
+                    key,
+                    reason: "later".into(),
+                },
+                "inbox.requeue",
+                json!({"key":"fixed-key","message":"m","claim_generation":7,"reason":"later"}),
+            ),
+        ] {
+            assert_eq!(command.request().unwrap(), (method, params));
+        }
+    }
+
     use super::*;
     #[test]
     fn restricted_commands_and_completion_positions() {
@@ -704,18 +738,28 @@ pub enum InboxCommand {
 }
 impl InboxCommand {
     pub fn request(self) -> std::io::Result<(&'static str, serde_json::Value)> {
-        use goblins_protocol::messages::operation_key;
+        use goblins_protocol::contract::{self, Method};
+        use goblins_protocol::messages::{Claim, Next, Requeue, operation_key};
         use serde_json::json;
         Ok(match self {
             Self::Status => ("inbox.status", json!({})),
-            Self::Next { key } => ("inbox.next", json!({"key":operation_key(key)?})),
+            Self::Next { key } => (
+                contract::sandbox::InboxNext::NAME,
+                serde_json::to_value(Next {
+                    key: operation_key(key)?,
+                })?,
+            ),
             Self::Complete {
                 message,
                 claim_generation,
                 key,
             } => (
-                "inbox.complete",
-                json!({"message":message,"claim_generation":claim_generation,"key":operation_key(key)?}),
+                contract::sandbox::InboxComplete::NAME,
+                serde_json::to_value(Claim {
+                    message,
+                    claim_generation,
+                    key: operation_key(key)?,
+                })?,
             ),
             Self::Requeue {
                 message,
@@ -723,8 +767,13 @@ impl InboxCommand {
                 key,
                 reason,
             } => (
-                "inbox.requeue",
-                json!({"message":message,"claim_generation":claim_generation,"key":operation_key(key)?,"reason":reason}),
+                contract::sandbox::InboxRequeue::NAME,
+                serde_json::to_value(Requeue {
+                    message,
+                    claim_generation,
+                    key: operation_key(key)?,
+                    reason,
+                })?,
             ),
         })
     }

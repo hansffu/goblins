@@ -3,6 +3,7 @@
 //! The caller supplies authenticated identity and trusted session metadata.
 //! Execute this core on a serialized host worker: its audit sink may block.
 //! A transition is published only after the sink accepts its audit record.
+use goblins_protocol::contract;
 use goblins_protocol::messages::{Message, Mutation, NOTICE_SENDER, Operation, RaidNotice, State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -744,7 +745,10 @@ impl Mailbox {
                         message.claim_generation = 1;
                     }
                     Ok(Change {
-                        result: json!({"message":message,"claim_generation":message.claim_generation}),
+                        result: json!(contract::MailboxNextResult {
+                            message: Some(message.clone()),
+                            claim_generation: Some(message.claim_generation)
+                        }),
                         data: json!({"message":message.id,"claim_generation":message.claim_generation}),
                         messages: vec![message],
                         kind: "message.claimed",
@@ -752,7 +756,10 @@ impl Mailbox {
                 } else {
                     Ok(Change {
                         messages: vec![],
-                        result: json!({"message":null,"claim_generation":null}),
+                        result: json!(contract::MailboxNextResult {
+                            message: None,
+                            claim_generation: None
+                        }),
                         kind: "inbox.empty",
                         data: json!({}),
                     })
@@ -801,7 +808,10 @@ impl Mailbox {
                 );
                 original.state = State::Completed;
                 Ok(Change {
-                    result: json!({"reply":reply,"completed":original.id}),
+                    result: json!(contract::MailboxReplyResult {
+                        reply: reply.clone(),
+                        completed: original.id.clone()
+                    }),
                     data: json!({"message":reply,"completed":original.id}),
                     messages: vec![original, reply],
                     kind: "message.replied",
@@ -811,7 +821,10 @@ impl Mailbox {
                 let mut message = self.claim(actor, &p.message, p.claim_generation)?.clone();
                 message.state = State::Completed;
                 Ok(Change {
-                    result: json!({"message":message.id,"state":message.state}),
+                    result: json!(contract::MailboxCompleteResult {
+                        message: message.id.clone(),
+                        state: message.state
+                    }),
                     data: json!({"message":message.id,"claim_generation":message.claim_generation}),
                     messages: vec![message],
                     kind: "message.completed",
@@ -833,7 +846,10 @@ impl Mailbox {
                     .checked_add(1)
                     .ok_or_else(capacity)?;
                 Ok(Change {
-                    result: json!({"message":message.id,"claim_generation":message.claim_generation}),
+                    result: json!(contract::MailboxRequeueResult {
+                        message: message.id.clone(),
+                        claim_generation: message.claim_generation
+                    }),
                     data: json!({"message":message.id,"claim_generation":message.claim_generation,"reason":p.reason}),
                     messages: vec![message],
                     kind: "message.requeued",

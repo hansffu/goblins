@@ -16732,5 +16732,2636 @@
       },
       "canonical": false
     }
+  ],
+  "mailbox_message": {
+    "id": "i-m1",
+    "conversation": "i-c1",
+    "sender": "host",
+    "recipient": "a",
+    "sender_name": "host",
+    "recipient_name": "alpha",
+    "in_reply_to": null,
+    "body": "hello\n\ud83d\udc1f",
+    "created_sequence": 1,
+    "created_at": 9,
+    "state": "queued",
+    "claim_generation": 0,
+    "failure": null
+  },
+  "mailbox_message_cases": [
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null
+      },
+      "decoded": true
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "operation": {
+          "request": "r",
+          "kind": "terminal",
+          "subject": "build",
+          "status": "exited",
+          "message": "exit code 0\nlines"
+        }
+      },
+      "decoded": true
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "raid": {
+          "id": "r",
+          "name": "crew",
+          "event": "resumed",
+          "owner": "a"
+        }
+      },
+      "decoded": true
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "operation": {
+          "request": "r",
+          "kind": "extension",
+          "subject": "build",
+          "status": "future",
+          "message": null
+        }
+      },
+      "decoded": true
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "sender_path": "host",
+        "recipient_path": "alpha"
+      },
+      "decoded": true
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "extension": {
+          "ignored": true
+        }
+      },
+      "decoded": true
+    },
+    {
+      "value": [
+        "i-m1",
+        "i-c1",
+        "host",
+        "a",
+        "host",
+        "alpha",
+        null,
+        "hello\n\ud83d\udc1f",
+        1,
+        9,
+        "queued",
+        0,
+        null
+      ],
+      "decoded": true
+    },
+    {
+      "value": [
+        "i-m1",
+        "i-c1",
+        "host",
+        "a",
+        "host",
+        "alpha",
+        null,
+        "hello\n\ud83d\udc1f",
+        1,
+        9,
+        "queued",
+        0,
+        null,
+        {
+          "request": "r",
+          "kind": "terminal",
+          "subject": "build",
+          "status": "exited",
+          "message": "exit code 0\nlines"
+        }
+      ],
+      "decoded": true
+    },
+    {
+      "value": [
+        "i-m1",
+        "i-c1",
+        "host",
+        "a",
+        "host",
+        "alpha",
+        null,
+        "hello\n\ud83d\udc1f",
+        1,
+        9,
+        "queued",
+        0,
+        null,
+        null,
+        {
+          "id": "r",
+          "name": "crew",
+          "event": "resumed",
+          "owner": "a"
+        }
+      ],
+      "decoded": true
+    },
+    {
+      "value": [
+        "i-m1",
+        "i-c1",
+        "host",
+        "a",
+        "host",
+        "alpha",
+        null,
+        "hello\n\ud83d\udc1f",
+        1,
+        9,
+        "queued",
+        0
+      ],
+      "decoded": false
+    },
+    {
+      "value": [
+        "i-m1",
+        "i-c1",
+        "host",
+        "a",
+        "host",
+        "alpha",
+        null,
+        "hello\n\ud83d\udc1f",
+        1,
+        9,
+        "queued",
+        0,
+        null,
+        null,
+        null,
+        7
+      ],
+      "decoded": false
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "sender_path": "duplicate"
+      },
+      "decoded": false
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": -1,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null
+      },
+      "decoded": false
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "future",
+        "claim_generation": 0,
+        "failure": null
+      },
+      "decoded": false
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "operation": {
+          "request": "r",
+          "kind": "terminal",
+          "subject": "build",
+          "status": "exited"
+        }
+      },
+      "decoded": true
+    },
+    {
+      "value": null,
+      "decoded": false
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "operation": []
+      },
+      "decoded": false
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "operation": true
+      },
+      "decoded": false
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null,
+        "raid": []
+      },
+      "decoded": false
+    },
+    {
+      "value": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": null,
+        "claim_generation": 0,
+        "failure": null
+      },
+      "decoded": false
+    }
+  ],
+  "mailbox_mutation_cases": [
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k",
+        "alpha",
+        "hello",
+        null
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "k",
+        "m",
+        1,
+        "hello"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": "k"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.next",
+      "params": [
+        "k"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "k",
+        "m",
+        1
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "k",
+        "m",
+        1,
+        "later"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "sender": "host"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": 7,
+        "to": "alpha",
+        "body": "hello"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "",
+        "to": "alpha",
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "to": "alpha",
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "bad key",
+        "to": "alpha",
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello",
+        "sender": "host"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": 7,
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "bad key",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": "k",
+        "sender": "host"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": 7
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": ""
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": "bad key"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "sender": "host"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": 7,
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "",
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "bad key",
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later",
+        "sender": "host"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": 7,
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "bad key",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k",
+        "alpha",
+        "hello"
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k",
+        "to": "",
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k",
+        "to": "alpha",
+        "body": "",
+        "conversation": null
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 0
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k\n",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k\n",
+        "alpha",
+        "hello",
+        null
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k\r\n",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k\r\n",
+        "alpha",
+        "hello",
+        null
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "alpha",
+        "hello",
+        null
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": "k\n"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k",
+        "alpha",
+        "hello",
+        "k\n"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": "k\r\n"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k",
+        "alpha",
+        "hello",
+        "k\r\n"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k",
+        "alpha",
+        "hello",
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "k\n",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "k\n",
+        "m",
+        1,
+        "hello"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "k\r\n",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "k\r\n",
+        "m",
+        1,
+        "hello"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "m",
+        1,
+        "hello"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "k",
+        "message": "k\n",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "k",
+        "k\n",
+        1,
+        "hello"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "k",
+        "message": "k\r\n",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "k",
+        "k\r\n",
+        1,
+        "hello"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": "k",
+        "message": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "k",
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        1,
+        "hello"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": "k\n"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": [
+        "k\n"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": "k\r\n"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": [
+        "k\r\n"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.next",
+      "params": [
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "k\n",
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "k\n",
+        "m",
+        1
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "k\r\n",
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "k\r\n",
+        "m",
+        1
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "m",
+        1
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "k",
+        "message": "k\n",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "k",
+        "k\n",
+        1
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "k",
+        "message": "k\r\n",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "k",
+        "k\r\n",
+        1
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": "k",
+        "message": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "claim_generation": 1
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "k",
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        1
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "k\n",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "k\n",
+        "m",
+        1,
+        "later"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "k\r\n",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "k\r\n",
+        "m",
+        1,
+        "later"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "m",
+        1,
+        "later"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "k",
+        "message": "k\n",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "k",
+        "k\n",
+        1,
+        "later"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "k",
+        "message": "k\r\n",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "k",
+        "k\r\n",
+        1,
+        "later"
+      ],
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": "k",
+        "message": "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "k",
+        "K_-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        1,
+        "later"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "params": true,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": 7,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": "wrong",
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k",
+        "alpha",
+        "hello"
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        "k",
+        "alpha",
+        "hello",
+        null,
+        null
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": {
+        "key": null,
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "params": [
+        null,
+        "alpha",
+        "hello",
+        null
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": true,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": 7,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": "wrong",
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "k",
+        "m",
+        1
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        "k",
+        "m",
+        1,
+        "hello",
+        null
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": {
+        "key": null,
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "params": [
+        null,
+        "m",
+        1,
+        "hello"
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": true,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": 7,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": "wrong",
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": [
+        "k",
+        null
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": {
+        "key": null
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.next",
+      "params": [
+        null
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": true,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": 7,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": "wrong",
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "k",
+        "m"
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        "k",
+        "m",
+        1,
+        null
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": {
+        "key": null,
+        "message": "m",
+        "claim_generation": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.complete",
+      "params": [
+        null,
+        "m",
+        1
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": true,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": 7,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": "wrong",
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "k",
+        "m",
+        1
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        "k",
+        "m",
+        1,
+        "later",
+        null
+      ],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": {
+        "key": null,
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "params": [
+        null,
+        "m",
+        1,
+        "later"
+      ],
+      "decoded": false,
+      "valid": false
+    }
+  ],
+  "mailbox_mutation_results": [
+    {
+      "method": "messages.send",
+      "result": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null
+      }
+    },
+    {
+      "method": "messages.reply",
+      "result": {
+        "reply": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": "m0",
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "queued",
+          "claim_generation": 0,
+          "failure": null
+        },
+        "completed": "m0"
+      }
+    },
+    {
+      "method": "inbox.next",
+      "result": {
+        "message": null,
+        "claim_generation": null
+      }
+    },
+    {
+      "method": "inbox.next",
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "claimed",
+          "claim_generation": 1,
+          "failure": null
+        },
+        "claim_generation": 1
+      }
+    },
+    {
+      "method": "inbox.complete",
+      "result": {
+        "message": "m",
+        "state": "completed"
+      }
+    },
+    {
+      "method": "inbox.requeue",
+      "result": {
+        "message": "m",
+        "claim_generation": 2
+      }
+    }
+  ],
+  "mailbox_byte_cases": [
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "a",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "a",
+      "repeat": 512,
+      "suffix": "",
+      "bytes": 512,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "a",
+      "repeat": 512,
+      "suffix": "a",
+      "bytes": 513,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 128,
+      "suffix": "",
+      "bytes": 512,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 128,
+      "suffix": "a",
+      "bytes": 513,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\u0000",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\u0000",
+      "repeat": 512,
+      "suffix": "",
+      "bytes": 512,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "to",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\u0000",
+      "repeat": 512,
+      "suffix": "a",
+      "bytes": 513,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "a",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "a",
+      "repeat": 8192,
+      "suffix": "",
+      "bytes": 8192,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "a",
+      "repeat": 8192,
+      "suffix": "a",
+      "bytes": 8193,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 2048,
+      "suffix": "",
+      "bytes": 8192,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 2048,
+      "suffix": "a",
+      "bytes": 8193,
+      "valid": false
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\u0000",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\u0000",
+      "repeat": 8192,
+      "suffix": "",
+      "bytes": 8192,
+      "valid": true
+    },
+    {
+      "method": "messages.send",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "to": "alpha",
+        "body": "hello",
+        "conversation": null
+      },
+      "unit": "\u0000",
+      "repeat": 8192,
+      "suffix": "a",
+      "bytes": 8193,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "a",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "a",
+      "repeat": 8192,
+      "suffix": "",
+      "bytes": 8192,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "a",
+      "repeat": 8192,
+      "suffix": "a",
+      "bytes": 8193,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 2048,
+      "suffix": "",
+      "bytes": 8192,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 2048,
+      "suffix": "a",
+      "bytes": 8193,
+      "valid": false
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "\u0000",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "\u0000",
+      "repeat": 8192,
+      "suffix": "",
+      "bytes": 8192,
+      "valid": true
+    },
+    {
+      "method": "messages.reply",
+      "field": "body",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "body": "hello"
+      },
+      "unit": "\u0000",
+      "repeat": 8192,
+      "suffix": "a",
+      "bytes": 8193,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "a",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "a",
+      "repeat": 512,
+      "suffix": "",
+      "bytes": 512,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "a",
+      "repeat": 512,
+      "suffix": "a",
+      "bytes": 513,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 128,
+      "suffix": "",
+      "bytes": 512,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "\ud83d\udc1f",
+      "repeat": 128,
+      "suffix": "a",
+      "bytes": 513,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "\u0000",
+      "repeat": 0,
+      "suffix": "",
+      "bytes": 0,
+      "valid": false
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "\u0000",
+      "repeat": 512,
+      "suffix": "",
+      "bytes": 512,
+      "valid": true
+    },
+    {
+      "method": "inbox.requeue",
+      "field": "reason",
+      "base": {
+        "key": "k",
+        "message": "m",
+        "claim_generation": 1,
+        "reason": "later"
+      },
+      "unit": "\u0000",
+      "repeat": 512,
+      "suffix": "a",
+      "bytes": 513,
+      "valid": false
+    }
+  ],
+  "mailbox_u64_cases": [
+    {
+      "value": -1,
+      "unsigned": false,
+      "claim": false
+    },
+    {
+      "value": 0,
+      "unsigned": true,
+      "claim": false
+    },
+    {
+      "value": 1,
+      "unsigned": true,
+      "claim": true
+    },
+    {
+      "value": 1.0,
+      "unsigned": false,
+      "claim": false
+    },
+    {
+      "value": 0.0,
+      "unsigned": false,
+      "claim": false
+    },
+    {
+      "value": 1.5,
+      "unsigned": false,
+      "claim": false
+    },
+    {
+      "value": 18446744073709551615,
+      "unsigned": true,
+      "claim": true
+    },
+    {
+      "value": 18446744073709551616,
+      "unsigned": false,
+      "claim": false
+    },
+    {
+      "value": true,
+      "unsigned": false,
+      "claim": false
+    },
+    {
+      "value": null,
+      "unsigned": false,
+      "claim": false
+    }
+  ],
+  "mailbox_next_cases": [
+    {
+      "result": {
+        "message": null,
+        "claim_generation": null
+      },
+      "valid": true
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "claimed",
+          "claim_generation": 1,
+          "failure": null
+        },
+        "claim_generation": 1
+      },
+      "valid": true
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "queued",
+          "claim_generation": 1,
+          "failure": null
+        },
+        "claim_generation": 1
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "completed",
+          "claim_generation": 1,
+          "failure": null
+        },
+        "claim_generation": 1
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "claimed",
+          "claim_generation": 2,
+          "failure": null
+        },
+        "claim_generation": 1
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "claimed",
+          "claim_generation": 1,
+          "failure": null
+        },
+        "claim_generation": 2
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "claimed",
+          "claim_generation": 0,
+          "failure": null
+        },
+        "claim_generation": 1
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "claimed",
+          "claim_generation": 1,
+          "failure": null
+        },
+        "claim_generation": 0
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "claimed",
+          "claim_generation": 18446744073709551615,
+          "failure": null
+        },
+        "claim_generation": 18446744073709551615
+      },
+      "valid": true
+    },
+    {
+      "result": {
+        "message": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "a",
+          "sender_name": "host",
+          "recipient_name": "alpha",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "claimed",
+          "claim_generation": 18446744073709551615,
+          "failure": null
+        },
+        "claim_generation": 18446744073709551614
+      },
+      "valid": false
+    }
   ]
 }

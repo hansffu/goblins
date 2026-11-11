@@ -157,6 +157,28 @@ fn main() {
         "std::collections::BTreeMap<String,String>",
         [].into_iter(),
     );
+    for name in [
+        "MailboxSendParams",
+        "MailboxNextParams",
+        "MailboxClaimParams",
+        "MailboxReplyParams",
+        "MailboxRequeueParams",
+        "MailboxMessage",
+        "MailboxOperation",
+        "MailboxRaidNotice",
+    ] {
+        settings.with_patch(
+            name,
+            typify::TypeSpacePatch::default()
+                .with_derive("PartialEq")
+                .with_derive("Eq")
+                .with_rename(
+                    common["x-rust-serde-records"][name]["name"]
+                        .as_str()
+                        .unwrap(),
+                ),
+        );
+    }
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -177,10 +199,87 @@ fn main() {
             .remove("allOf")
             .is_some()
     );
+    for name in ["MailboxNextResult", "MailboxCompleteResult"] {
+        assert_eq!(
+            generation_schema["definitions"][name]["x-generator-omit"],
+            serde_json::json!(["allOf"])
+        );
+        assert!(
+            generation_schema["definitions"][name]
+                .as_object_mut()
+                .unwrap()
+                .remove("allOf")
+                .is_some()
+        );
+    }
     types
         .add_root_schema(serde_json::from_value(generation_schema).unwrap())
         .unwrap();
-    let mut output = types.to_stream().to_string();
+    // Keep schema-declared Serde details in generated fields, including direct
+    // sequence readers used by the mailbox's existing public Rust records.
+    let mut generated: syn::File = syn::parse2(types.to_stream()).unwrap();
+    for (name, record) in common["x-rust-serde-records"].as_object().unwrap() {
+        let legacy_name = record["name"].as_str().unwrap();
+        let item = generated
+            .items
+            .iter_mut()
+            .find_map(|item| match item {
+                syn::Item::Struct(item) if item.ident == legacy_name => Some(item),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing generated Serde record {name}"));
+        let fields = match &mut item.fields {
+            syn::Fields::Named(fields) => fields,
+            _ => panic!("record must have named fields"),
+        };
+        let mut by_name: std::collections::BTreeMap<_, _> = std::mem::take(&mut fields.named)
+            .into_iter()
+            .map(|f| (f.ident.as_ref().unwrap().to_string(), f))
+            .collect();
+        for key in record["order"].as_array().unwrap() {
+            let key = key.as_str().unwrap();
+            let mut field = by_name
+                .remove(key)
+                .unwrap_or_else(|| panic!("unknown Serde field {name}.{key}"));
+            if record["required-nullable"]
+                .as_array()
+                .is_some_and(|keys| keys.iter().any(|v| v == key))
+            {
+                for attr in &mut field.attrs {
+                    if attr.path().is_ident("serde") {
+                        let entries=attr.parse_args_with(syn::punctuated::Punctuated::<syn::Meta,syn::Token![,]>::parse_terminated).unwrap();
+                        let entries: syn::punctuated::Punctuated<syn::Meta, syn::Token![,]> =
+                            entries
+                                .into_iter()
+                                .filter(|m| {
+                                    !m.path().is_ident("default")
+                                        && !m.path().is_ident("skip_serializing_if")
+                                })
+                                .collect();
+                        *attr = syn::parse_quote!(#[serde(#entries)]);
+                    }
+                }
+            }
+            for alias in record["aliases"][key].as_array().into_iter().flatten() {
+                let alias = alias.as_str().unwrap();
+                field
+                    .attrs
+                    .push(syn::parse_quote!(#[serde(alias = #alias)]));
+            }
+            fields.named.push(field);
+        }
+        assert!(
+            by_name.is_empty(),
+            "Serde order must contain every generated field of {name}"
+        );
+    }
+    let mut output = quote::quote!(#generated).to_string();
+    for (name, record) in common["x-rust-serde-records"].as_object().unwrap() {
+        let legacy_name = record["name"].as_str().unwrap();
+        if name != legacy_name {
+            output.push_str(&format!("pub type {name} = {legacy_name};\n"));
+        }
+    }
     output.push_str(&format!(
         "\npub const API_VERSION: u32 = {};\n",
         common["x-api-version"]

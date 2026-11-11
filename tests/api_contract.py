@@ -148,7 +148,28 @@ def host_command_bytes(validator, maximum, instance, schema):
         yield ValidationError(f"host command exceeds {maximum} UTF-8 bytes")
 
 
-Validator = validators.extend(Draft7Validator, {"x-max-bytes": byte_limit, "x-json-integer": integer_representation,"x-host-command-bytes":host_command_bytes})
+def equal_fields(validator, pointers, instance, schema):
+    """Require equal values at the declared JSON object pointers.
+
+    Draft 7 cannot compare two instance values. The canonical schema uses
+    this extension in the nonempty inbox.next branch; DTO/legacy decoding
+    and runtime authority remain unchanged.
+    """
+    if not isinstance(instance,dict):return
+    missing=object()
+    def value_at(pointer):
+        value=instance
+        for field in pointer.split("/")[1:]:
+            field=field.replace("~1","/").replace("~0","~")
+            if not isinstance(value,dict) or field not in value:return missing
+            value=value[field]
+        return value
+    values=[value_at(pointer) for pointer in pointers]
+    if any(value is missing for value in values) or any(value!=values[0] for value in values[1:]):
+        yield ValidationError("correlated fields must be present and equal: "+", ".join(pointers))
+
+
+Validator = validators.extend(Draft7Validator, {"x-max-bytes": byte_limit, "x-json-integer": integer_representation,"x-host-command-bytes":host_command_bytes,"x-equal-fields":equal_fields})
 
 
 @lru_cache
@@ -292,6 +313,8 @@ def reference():
                 lines.extend([f"Legacy client classification follows ={behavior}=; the normalized DTO is:","","#+begin_src json",json.dumps(resolve(entry["x-client-params-schema"]),indent=2),"#+end_src",""])
         for entry in document(endpoint).get("x-completions",[]):
             lines.extend([f"** Completion exchange ={entry['name']}=","",entry["description"],"",f"Socket: ={entry['socket']}=. Direction: ={entry['direction']}=. Fixed response ID: ={entry['id']}=.","","#+begin_src json",json.dumps(resolve(entry["result"]["schema"]),indent=2),"#+end_src","","Errors: "+", ".join(str(e["code"]) for e in entry["errors"])+".",""])
+    if common().get("x-rust-serde-records"):
+        lines.extend(["* Generated Serde reader details","","Original Serde container names, field order, required nullable sequence slots and legacy named aliases are generated from:","","#+begin_src json",json.dumps(common()["x-rust-serde-records"],indent=2),"#+end_src",""])
     lines.extend(["* Envelopes (handwritten transport, schema checked)", "", "#+begin_src json", json.dumps(common()["x-envelope-schemas"], indent=2), "#+end_src", "", "* Shared records", ""])
     for name, schema in common()["definitions"].items():
         lines.extend([f"** ={name}=", "", "#+begin_src json", json.dumps(schema, indent=2), "#+end_src", ""])
@@ -559,6 +582,17 @@ def check_references(documents=None):
 
 def check():
     check_references()
+    for name, record in common().get("x-rust-serde-records",{}).items():
+        props=common()["definitions"][name]["properties"]
+        if "name" in record and (type(record["name"]) is not str or not record["name"]):raise ValueError("invalid generated Serde container name")
+        if len(record["order"])!=len(set(record["order"])) or set(record["order"])!=set(props):raise ValueError("invalid generated Serde field order")
+        for field in record.get("required-nullable",[]):
+            if field not in props or not schema_validator({"$ref":"common.json#/definitions/"+name+"/properties/"+field}).is_valid(None):raise ValueError("invalid required nullable Serde field")
+        aliases=[]
+        for field,names in record.get("aliases",{}).items():
+            if field not in props or not names or any(type(n) is not str or n in props for n in names):raise ValueError("invalid generated Serde alias")
+            aliases.extend(names)
+        if len(aliases)!=len(set(aliases)):raise ValueError("duplicate generated Serde alias")
     registry = Registry()
     for uri, path in (("https://meta.json-schema.tools/", "vendor/json-schema-tools.json"), ("https://meta.json-schema.tools", "vendor/json-schema-tools.json")):
         registry = registry.with_resource(uri, Resource.from_contents(read(path), default_specification=DRAFT7))
@@ -617,7 +651,7 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("raids.create","raids.leave","raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("messages.send","messages.reply","inbox.next","inbox.complete","inbox.requeue","raids.create","raids.leave","raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"$ref":"common.json#/x-client-result-schemas/PermissionListReply"} if entry["name"]=="permissions.list" else {"$ref":"common.json#/x-client-result-schemas/PermissionRecordReply"} if entry["name"]=="permissions.get" else {"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-client-param-normalization" in entry:
