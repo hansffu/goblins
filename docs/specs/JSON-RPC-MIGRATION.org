@@ -2,7 +2,7 @@
 #+date: 2026-11-10
 #+startup: showall
 
-Status: plan reviewed by Nikka and implementation authorized on 2026-11-10. C01 is committed as =2cb8e32=. The user authorized continuing all remaining chunks on 2026-11-11 and will perform final validation and decide merge. C02a (self reporting) is committed as =5bdb5db= after review by Nikka. C02b (session records/reads) is implemented and its available checks passed; full integration validation is blocked by the sandbox namespace restriction; C03-C19 remain pending. Each chunk records validation and review before completion.
+Status: plan reviewed by Nikka and implementation authorized on 2026-11-10. C01 is committed as =2cb8e32=. The user authorized continuing all remaining chunks on 2026-11-11 and will perform final validation and decide merge. C02a (self reporting) is committed as =5bdb5db= after review by Nikka. C02b (session records/reads) is committed as =ccba2b7= after review by Nikka; its full integration validation remains blocked by the sandbox namespace restriction. C03 (launch/targets/lifecycle) has passed its available serial validation and awaits final sign-off from Nikka; C04-C19 remain pending. Each chunk records validation and review before completion.
 
 The user wants the full JSON-RPC contract, implemented in vertical chunks. Each chunk follows this order: define its JSON-RPC specification, generate types where possible, migrate its producers and consumers, then validate. Do not implement all schemas first, all generators next and all consumers last.
 
@@ -86,6 +86,8 @@ Depends on: C02. Current definition: local =Start= and runtime gate =MemberStart
 2. *Generate*: generate each endpoint's distinct parameters, launch acceptance, target descriptions/options and acknowledgement results.
 3. *Migrate*: both dispatch paths, sandbox gate, launch/resume/target clients and frontend calls; retain domain policy and fixed accepted launch arguments.
 4. *Validate*: replayed/conflicting launch keys, same-name reuse, owner authorization, stopped/failed launches, resize limits and detach connection closure. Preserve sandbox =sessions.attach='s specific =-32601= refusal and its existing error precedence; classify it as refusal behavior, not an available method. Feature areas: lifecycle, raids, worktrees, history, exec, emacs.
+
+C03 validation (2026-11-11): =just test-rust= passed 548 tests with four standard helper/driver ignores; 22 contract and actual CLI compatibility tests and 178 Emacs tests passed. The CLI checks preserve positional field order, historical nullable slots and exact null/omission profiles; the sandbox CLI fixture uses an inherited fake peer under a child-only connect-denial filter, independently proved with a private sentinel listener. Final schema/reference consistency, generated workspace compilation, feature mapping for all 392 discovered Python tests and =just test-nix= passed on the unchanged reviewed code/schema/API candidate. Logs and matching pre/post input hashes are retained in =target/c03-validation/=. The required =just test-feature full= passed its Rust phase, then failed sandbox integration launches with namespace =EPERM= and was stopped; the compatibility follow-ups received the serial checks above. Full integration/native, packaged smoke validation and the final =just test-merge= gate remain pending in a host-capable environment. No merge has been performed.
 
 ** C04: Exec and process control
 

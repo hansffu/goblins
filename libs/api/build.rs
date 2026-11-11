@@ -24,6 +24,23 @@ fn main() {
         "crate::contract::HistoryStatus",
         [].into_iter(),
     );
+    for name in [
+        "OperationKey",
+        "LaunchConfigurationName",
+        "LaunchAgentName",
+        "LaunchScope",
+        "LaunchManifest",
+    ] {
+        settings.with_replacement(name, "std::string::String", [].into_iter());
+    }
+    settings.with_replacement("LaunchDimension", "u16", [].into_iter());
+    for name in ["LaunchOptions", "HostLaunchOptions"] {
+        settings.with_replacement(
+            name,
+            "std::collections::BTreeMap<String, String>",
+            [].into_iter(),
+        );
+    }
     let mut types = typify::TypeSpace::new(&settings);
     types
         .add_root_schema(serde_json::from_value(common.clone()).unwrap())
@@ -71,7 +88,46 @@ fn main() {
                     "impl crate::contract::Response for {reply} {{ const SCHEMA: &'static str = {reply:?}; }}\n"
                 ));
             }
-            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; }}\n"));
+            let positional = &method["x-positional-schema"];
+            let positional = if let Some(reference) = positional.get("$ref").and_then(Value::as_str)
+            {
+                common
+                    .pointer(reference.strip_prefix("common.json#").unwrap())
+                    .unwrap()
+            } else {
+                positional
+            };
+            let minimum = positional["minItems"].as_u64().unwrap();
+            let omit_empty: Vec<_> = method
+                .get("x-client-omit-empty-objects")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let presence = &method["x-client-param-presence"];
+            let switch = presence.get("switch").and_then(Value::as_str);
+            let nullable: Vec<_> = presence
+                .get("absent-null-fields")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let empty_strings: Vec<_> = presence
+                .get("present-empty-strings")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let order: Vec<_> = method["params"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["name"].as_str().unwrap())
+                .collect();
+            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
             names.push(name);
         }
         output.push_str(&format!("pub const METHODS: &[&str] = &{names:?}; }}\n"));

@@ -206,7 +206,10 @@
       "x-rust-name": "SessionsSetWorktree",
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/SetWorktreeReply"
-      }
+      },
+      "x-positional-required": [
+        "name"
+      ]
     },
     {
       "name": "sessions.list",
@@ -272,6 +275,195 @@
       "x-rust-name": "SessionsGet",
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/SandboxSessionReply"
+      }
+    },
+    {
+      "name": "sessions.start",
+      "description": "Accept a member launch in the caller-owned raid with its fixed policy, workspace and launch options.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberLaunchParams/properties/key"
+          }
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberLaunchParams/properties/name"
+          }
+        },
+        {
+          "name": "agent_name",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberLaunchParams/properties/agent_name"
+          }
+        },
+        {
+          "name": "detached",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberLaunchParams/properties/detached"
+          }
+        },
+        {
+          "name": "worktree",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberLaunchParams/properties/worktree"
+          }
+        },
+        {
+          "name": "options",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/MemberLaunchParams/properties/options"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MemberLaunchResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or no longer retained"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or unavailable runtime"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MemberLaunchParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SandboxSessionsStartPositional"
+      },
+      "x-rust-name": "SessionsStart",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/MemberLaunchReply"
+      },
+      "x-positional-required": [
+        "agent_name"
+      ],
+      "x-client-param-presence": {
+        "absent-null-fields": [
+          "agent_name"
+        ]
+      }
+    },
+    {
+      "name": "sessions.stop",
+      "description": "Request teardown of a currently controlled member; authority is rechecked for every call.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32004,
+          "message": "Record absent or no longer retained"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SessionSelectorParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SandboxSessionsStopPositional"
+      },
+      "x-rust-name": "SessionsStop"
+    },
+    {
+      "name": "sessions.detach",
+      "description": "Detach this sandbox terminal and close the connection after replying; it cannot select another sandbox.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32600,
+          "message": "Unexpected trailing input"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or unavailable runtime"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SandboxSessionsDetachPositional"
+      },
+      "x-rust-name": "SessionsDetach"
+    },
+    {
+      "name": "targets.list",
+      "description": "List allowed run configurations in caller allowlist order, omitting missing current-manifest targets; requires a known manifest.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RunTargetList"
+        }
+      },
+      "errors": [
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SandboxTargetsListPositional"
+      },
+      "x-rust-name": "TargetsList",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/RunTargetListReply"
       }
     }
   ],

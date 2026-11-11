@@ -250,12 +250,22 @@ fn execute(cli: Cli) -> Result<i32> {
         Command::Stop { id_or_name } | Command::Kill { id_or_name } => println!(
             "{}",
             Client::connect(&state)?
-                .call("sessions.stop", serde_json::json!({"session":id_or_name}))?
+                .call_typed_with_wire::<goblins_protocol::contract::host::SessionsStop>(
+                    goblins_protocol::contract::SessionSelectorParams {
+                        session: id_or_name
+                    }
+                )?
+                .1
         ),
         Command::Detach { id_or_name } => println!(
             "{}",
             Client::connect(&state)?
-                .call("sessions.detach", serde_json::json!({"session":id_or_name}))?
+                .call_typed_with_wire::<goblins_protocol::contract::host::SessionsDetach>(
+                    goblins_protocol::contract::SessionSelectorParams {
+                        session: id_or_name
+                    }
+                )?
+                .1
         ),
         Command::Host { command } => {
             let mut client = Client::connect(&state)?;

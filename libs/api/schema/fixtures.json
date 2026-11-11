@@ -424,7 +424,47 @@
       "future": {
         "ignored": true
       }
-    }
+    },
+    "host_launch": {
+      "session": "session-id",
+      "agent_name": "goblin",
+      "state": "starting",
+      "terminal": "/host/terminal.sock",
+      "attach": "/host/attach.sock",
+      "future": {
+        "ignored": true
+      }
+    },
+    "member_launch": {
+      "session": "session-id",
+      "agent_name": "goblin",
+      "state": "starting",
+      "future": {
+        "ignored": true
+      }
+    },
+    "run_targets": [
+      {
+        "name": "shell",
+        "description": "Shell",
+        "options": {
+          "model": {
+            "description": null,
+            "choices": {
+              "fast": {
+                "description": null,
+                "future": true
+              },
+              "careful": {
+                "description": "More reasoning"
+              }
+            },
+            "future": true
+          }
+        },
+        "future": true
+      }
+    ]
   },
   "historical_api1": {
     "host_initialize": {
@@ -704,7 +744,7 @@
     {
       "method": "sessions.set-worktree",
       "params": [],
-      "valid": true
+      "valid": false
     },
     {
       "method": "sessions.set-worktree",
@@ -2468,6 +2508,1058 @@
       "terminal_interrupted": false,
       "exit_code": null,
       "detail": null
+    },
+    "host_launch": {
+      "session": "session-id",
+      "state": "starting",
+      "terminal": "/host/terminal.sock"
+    }
+  },
+  "lifecycle_parameter_cases": [
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": [
+        "launch-key",
+        "/host/manifest",
+        "shell",
+        null,
+        null,
+        null,
+        null,
+        24,
+        80
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": [
+        "launch-key",
+        "/host/manifest",
+        "shell",
+        null,
+        null,
+        null,
+        null,
+        24,
+        80,
+        true,
+        "raid",
+        null,
+        {}
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "resume-key",
+        "configuration": "/host/manifest",
+        "rows": 24,
+        "cols": 80,
+        "recreate": "record-id"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": [
+        "launch-key",
+        "/host/manifest",
+        "shell",
+        null,
+        null,
+        null,
+        null,
+        24
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": [
+        "launch-key",
+        "/host/manifest",
+        "shell",
+        null,
+        null,
+        null,
+        null,
+        24,
+        80,
+        true,
+        null,
+        null,
+        {},
+        "extra"
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 65536,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": true,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 1.0,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80,
+        "recorded": {}
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80,
+        "worktree": "branch"
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80,
+        "options": {
+          "model": false
+        }
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 0,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 1001
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "!",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "relative",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80,
+        "agent_name": "UPPER"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80,
+        "scope": "bad scope"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "bad!",
+        "rows": 24,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.start",
+      "params": {
+        "key": "launch-key",
+        "configuration": "/host/manifest",
+        "name": "shell",
+        "rows": 24,
+        "cols": 80,
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "member-key",
+        "name": "shell"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": [
+        "member-key",
+        "shell"
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": [
+        "member-key",
+        "shell",
+        null,
+        true,
+        "branch",
+        {
+          "model": "fast"
+        }
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": [
+        "member-key"
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "k",
+        "name": "shell",
+        "session": "other"
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "k",
+        "name": "shell",
+        "detached": null
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "k",
+        "name": "shell",
+        "options": {
+          "model": false
+        }
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "!",
+        "name": "shell"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "k",
+        "name": "bad!"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "k",
+        "name": "shell",
+        "agent_name": "UPPER"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "k",
+        "name": "shell",
+        "worktree": "../branch"
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "k",
+        "name": "shell",
+        "options": {
+          "model": "bad=choice"
+        }
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {
+        "key": "k",
+        "name": "shell",
+        "options": {
+          "a0": "x",
+          "a1": "x",
+          "a2": "x",
+          "a3": "x",
+          "a4": "x",
+          "a5": "x",
+          "a6": "x",
+          "a7": "x",
+          "a8": "x",
+          "a9": "x",
+          "a10": "x",
+          "a11": "x",
+          "a12": "x",
+          "a13": "x",
+          "a14": "x",
+          "a15": "x",
+          "a16": "x"
+        }
+      },
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": {
+        "session": "session-id",
+        "rows": 30,
+        "cols": 120
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": [
+        "session-id",
+        30,
+        120
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": {},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": [
+        "session-id",
+        30
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": [
+        30,
+        120,
+        "session-id"
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": [
+        "s",
+        30,
+        120,
+        0
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": {
+        "session": "s",
+        "rows": 1.0,
+        "cols": 80
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": [
+        "s",
+        0,
+        80
+      ],
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.resize",
+      "params": [
+        "s",
+        24,
+        1001
+      ],
+      "valid": false,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.stop",
+      "params": {
+        "session": "goblin"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.stop",
+      "params": [
+        "session-id"
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.stop",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.stop",
+      "params": {},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.stop",
+      "params": [],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.stop",
+      "params": {
+        "session": "s",
+        "extra": true
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.detach",
+      "params": {
+        "session": "goblin"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.detach",
+      "params": [
+        "session-id"
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.detach",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.detach",
+      "params": {},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.detach",
+      "params": [],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "host",
+      "method": "sessions.detach",
+      "params": {
+        "session": "s",
+        "extra": true
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.stop",
+      "params": {
+        "session": "goblin"
+      },
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.stop",
+      "params": [
+        "session-id"
+      ],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.stop",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.stop",
+      "params": {},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.stop",
+      "params": [],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.stop",
+      "params": {
+        "session": "s",
+        "extra": true
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.detach",
+      "params": {},
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.detach",
+      "params": [],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.detach",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.detach",
+      "params": {
+        "session": "other"
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.detach",
+      "params": [
+        1
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "targets.list",
+      "params": {},
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "targets.list",
+      "params": [],
+      "valid": true,
+      "decoded": true
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "targets.list",
+      "params": null,
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "targets.list",
+      "params": {
+        "session": "other"
+      },
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "targets.list",
+      "params": [
+        1
+      ],
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": [
+        "member-key",
+        "shell",
+        null
+      ],
+      "valid": true,
+      "decoded": true
+    }
+  ],
+  "host_launch": {
+    "session": "session-id",
+    "agent_name": "goblin",
+    "state": "starting",
+    "terminal": "/host/terminal.sock",
+    "attach": "/host/attach.sock"
+  },
+  "member_launch": {
+    "session": "session-id",
+    "agent_name": "goblin",
+    "state": "starting"
+  },
+  "run_targets": [
+    {
+      "name": "shell",
+      "description": "Shell",
+      "options": {
+        "model": {
+          "description": null,
+          "choices": {
+            "fast": {
+              "description": null
+            },
+            "careful": {
+              "description": "More reasoning"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "legacy_run_targets": [
+    {
+      "name": "shell",
+      "description": "Shell"
+    }
+  ],
+  "lifecycle_result_cases": [
+    {
+      "schema": "HostLaunchReply",
+      "result": {
+        "session": "session-id",
+        "state": "starting",
+        "terminal": "/host/terminal.sock"
+      },
+      "valid": true
+    },
+    {
+      "schema": "HostLaunchReply",
+      "result": {
+        "session": "s",
+        "state": "accepted"
+      },
+      "valid": true
+    },
+    {
+      "schema": "MemberLaunchReply",
+      "result": {
+        "session": "s"
+      },
+      "valid": true
+    },
+    {
+      "schema": "RunTargetListReply",
+      "result": [
+        {
+          "name": "shell",
+          "description": "Shell"
+        }
+      ],
+      "valid": true
+    },
+    {
+      "schema": "HostLaunchReply",
+      "result": {
+        "session": false
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostLaunchReply",
+      "result": {
+        "session": "s",
+        "terminal": []
+      },
+      "valid": false
+    },
+    {
+      "schema": "MemberLaunchReply",
+      "result": [],
+      "valid": false
+    },
+    {
+      "schema": "RunTargetListReply",
+      "result": [
+        []
+      ],
+      "valid": false
+    },
+    {
+      "schema": "RunTargetListReply",
+      "result": [
+        {
+          "name": "shell",
+          "options": []
+        }
+      ],
+      "valid": false
+    },
+    {
+      "schema": "RunTargetListReply",
+      "result": [
+        {
+          "name": "shell",
+          "options": {
+            "model": {
+              "choices": {
+                "fast": []
+              }
+            }
+          }
+        }
+      ],
+      "valid": false
+    }
+  ],
+  "pre_launch_options_api1": {
+    "source": "857091adfdc4825f303d9eec4891e59471f0dea4:packages/daemon/src/controller.rs Start before d8362e5",
+    "host_start_params": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "configuration": {
+          "$ref": "#/definitions/LaunchManifest"
+        },
+        "name": {
+          "$ref": "#/definitions/LaunchConfigurationName",
+          "default": ""
+        },
+        "agent_name": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LaunchAgentName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LaunchScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dev_shell": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rows": {
+          "$ref": "#/definitions/LaunchDimension"
+        },
+        "cols": {
+          "$ref": "#/definitions/LaunchDimension"
+        },
+        "detached": {
+          "type": "boolean",
+          "default": false
+        },
+        "raid": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recreate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "configuration",
+        "rows",
+        "cols"
+      ],
+      "additionalProperties": false
     }
   }
 }

@@ -1,19 +1,5 @@
 {
   "pending": {
-    "C03": {
-      "host": [
-        "sessions.start",
-        "sessions.stop",
-        "sessions.resize",
-        "sessions.detach"
-      ],
-      "sandbox": [
-        "sessions.start",
-        "sessions.stop",
-        "sessions.detach",
-        "targets.list"
-      ]
-    },
     "C04": {
       "host": [
         "sessions.exec",

@@ -1,6 +1,5 @@
 //! Restricted CLI. Authorization always lives in the daemon, not this parser.
 use clap::{CommandFactory, Parser, Subcommand};
-use goblins_jsonrpc as rpc;
 use serde_json::json;
 
 #[derive(Parser)]
@@ -366,24 +365,21 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
     if let Slot::Option(config, named) = slot {
         // Every NAME=CHOICE of the configuration, or the named option's
         // choices after Bash split at `=`; the shell filters them.
-        let targets = rpc::exchange(&mut socket, json!(1), "targets.list", json!({}))
-            .map_err(|e| e.to_string())?;
-        let target = targets
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|t| t["name"] == config.as_str());
+        let targets = goblins_protocol::contract::exchange::<
+            goblins_protocol::contract::sandbox::TargetsList,
+        >(
+            &mut socket,
+            json!(1),
+            goblins_protocol::contract::EmptyParams {},
+        )
+        .map_err(|e| e.to_string())?;
+        let target = targets.0.iter().find(|t| t.name == config);
         for (option, declared) in target
-            .and_then(|t| t["options"].as_object())
+            .and_then(|t| t.options.as_ref())
             .into_iter()
             .flatten()
         {
-            for choice in declared["choices"]
-                .as_object()
-                .into_iter()
-                .flatten()
-                .map(|(c, _)| c)
-            {
+            for choice in declared.choices.iter().flatten().map(|(c, _)| c) {
                 if !goblins_protocol::launch_option_name(option)
                     || !goblins_protocol::launch_choice(choice)
                 {

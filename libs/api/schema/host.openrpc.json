@@ -183,6 +183,292 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/HostSessionReply"
       }
+    },
+    {
+      "name": "sessions.start",
+      "description": "Accept a host launch or recreate; retry keys return the original acceptance, not current readiness. For API-1 compatibility typed clients omit the empty host options map; nonempty maps remain present and are refused by host policy.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/key"
+          }
+        },
+        {
+          "name": "configuration",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/configuration"
+          }
+        },
+        {
+          "name": "name",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/name"
+          }
+        },
+        {
+          "name": "agent_name",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/agent_name"
+          }
+        },
+        {
+          "name": "cwd",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/cwd"
+          }
+        },
+        {
+          "name": "scope",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/scope"
+          }
+        },
+        {
+          "name": "dev_shell",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/dev_shell"
+          }
+        },
+        {
+          "name": "rows",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/rows"
+          }
+        },
+        {
+          "name": "cols",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/cols"
+          }
+        },
+        {
+          "name": "detached",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/detached"
+          }
+        },
+        {
+          "name": "raid",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/raid"
+          }
+        },
+        {
+          "name": "recreate",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/recreate"
+          }
+        },
+        {
+          "name": "options",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HostLaunchParams/properties/options"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostLaunchResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or no longer retained"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or unavailable runtime"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostLaunchParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostSessionsStartPositional"
+      },
+      "x-rust-name": "SessionsStart",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/HostLaunchReply"
+      },
+      "x-positional-required": [
+        "agent_name"
+      ],
+      "x-client-omit-empty-objects": [
+        "options"
+      ],
+      "x-client-param-presence": {
+        "switch": "recreate",
+        "absent-null-fields": [
+          "agent_name",
+          "scope",
+          "dev_shell"
+        ],
+        "present-empty-strings": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "sessions.stop",
+      "description": "Request teardown by immutable id or live agent name; acceptance does not mean cleanup finished.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32004,
+          "message": "Record absent or no longer retained"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SessionSelectorParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostSessionsStopPositional"
+      },
+      "x-rust-name": "SessionsStop"
+    },
+    {
+      "name": "sessions.detach",
+      "description": "Detach the current terminal consumer, retaining the goblin.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32004,
+          "message": "Record absent or no longer retained"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or unavailable runtime"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SessionSelectorParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostSessionsDetachPositional"
+      },
+      "x-rust-name": "SessionsDetach"
+    },
+    {
+      "name": "sessions.resize",
+      "description": "Resize by exact session id; dimensions are 1..1000 and a handler client must be attached.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionResizeParams/properties/session"
+          }
+        },
+        {
+          "name": "rows",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionResizeParams/properties/rows"
+          }
+        },
+        {
+          "name": "cols",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionResizeParams/properties/cols"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or no longer retained"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or unavailable runtime"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SessionResizeParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HostSessionsResizePositional"
+      },
+      "x-rust-name": "SessionsResize"
     }
   ],
   "x-notifications": [],

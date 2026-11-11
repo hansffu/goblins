@@ -1,7 +1,7 @@
 //! Bounded raw terminal relay shared by host and sandbox clients.
 //! Control calls and the authenticated stream are supplied by the caller.
 use crate::contract;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     io,
     os::{
@@ -71,9 +71,13 @@ pub fn relay(
         terminal,
         &mut control,
         |control, rows, cols| {
-            control(
-                "sessions.resize",
-                json!({"session":session,"rows":rows,"cols":cols}),
+            contract::invoke::<contract::host::SessionsResize, _>(
+                contract::SessionResizeParams {
+                    session: session.into(),
+                    rows,
+                    cols,
+                },
+                control,
             )
             .map(drop)
         },
@@ -262,6 +266,7 @@ fn wait_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn completion_record(outcome: Value) -> Value {
         let mut record = serde_json::from_str::<Value>(include_str!("../schema/fixtures.json"))
             .unwrap()["host_session_legacy"]

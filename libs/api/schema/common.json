@@ -2481,6 +2481,544 @@
       "items": {
         "$ref": "#/definitions/SandboxSessionReply"
       }
+    },
+    "OperationKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "not": {
+        "pattern": "[^A-Za-z0-9_-]"
+      }
+    },
+    "LaunchConfigurationName": {
+      "type": "string",
+      "maxLength": 64,
+      "not": {
+        "pattern": "[^A-Za-z0-9_-]"
+      },
+      "description": "Empty only for recreate; non-recreate requires identifier(name). Existing controller validation determines refusal order."
+    },
+    "LaunchAgentName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[a-z]",
+      "not": {
+        "pattern": "[^a-z0-9-]"
+      }
+    },
+    "LaunchScope": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z_]",
+      "not": {
+        "pattern": "[^A-Za-z0-9_-]"
+      }
+    },
+    "LaunchDimension": {
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 1,
+      "maximum": 1000,
+      "x-json-integer": true,
+      "description": "Existing dimensions validator enforces 1..1000 after parameter decoding."
+    },
+    "LaunchOptions": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32,
+        "pattern": "^[A-Za-z_]",
+        "not": {
+          "pattern": "[^A-Za-z0-9_-]"
+        }
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9_]",
+        "not": {
+          "pattern": "[^A-Za-z0-9._-]"
+        }
+      }
+    },
+    "HostLaunchOptions": {
+      "type": "object",
+      "maxProperties": 0,
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Host launches take no nonempty options map; the existing controller diagnoses this after ordinary launch/recreate validation."
+    },
+    "HostLaunchParams": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "configuration": {
+          "$ref": "#/definitions/LaunchManifest"
+        },
+        "name": {
+          "$ref": "#/definitions/LaunchConfigurationName",
+          "default": ""
+        },
+        "agent_name": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LaunchAgentName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LaunchScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dev_shell": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rows": {
+          "$ref": "#/definitions/LaunchDimension"
+        },
+        "cols": {
+          "$ref": "#/definitions/LaunchDimension"
+        },
+        "detached": {
+          "type": "boolean",
+          "default": false
+        },
+        "raid": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recreate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "$ref": "#/definitions/HostLaunchOptions",
+          "default": {}
+        }
+      },
+      "required": [
+        "key",
+        "configuration",
+        "rows",
+        "cols"
+      ],
+      "additionalProperties": false,
+      "description": "name is required/nonempty for an ordinary launch and empty/omitted for recreate. Recreate forbids explicit agent_name,cwd,scope,dev_shell,raid; it resolves the record and retries before ordinary validation. cwd must be absolute; dev_shell is an absolute PATH[#ATTR] reference; raid has the existing raid-name grammar. Domain validators retain diagnostics and refusal order."
+    },
+    "MemberLaunchParams": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "name": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "agent_name": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LaunchAgentName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detached": {
+          "type": "boolean",
+          "default": false
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorktreeName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "$ref": "#/definitions/LaunchOptions",
+          "default": {}
+        }
+      },
+      "required": [
+        "key",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "SessionResizeParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "rows": {
+          "$ref": "#/definitions/LaunchDimension"
+        },
+        "cols": {
+          "$ref": "#/definitions/LaunchDimension"
+        }
+      },
+      "required": [
+        "session",
+        "rows",
+        "cols"
+      ],
+      "additionalProperties": false
+    },
+    "LaunchState": {
+      "type": "string",
+      "enum": [
+        "starting"
+      ]
+    },
+    "HostLaunchResult": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/LaunchState"
+        },
+        "terminal": {
+          "$ref": "#/definitions/HostPath"
+        },
+        "attach": {
+          "$ref": "#/definitions/HostPath"
+        }
+      },
+      "required": [
+        "session",
+        "agent_name",
+        "state",
+        "terminal",
+        "attach"
+      ],
+      "additionalProperties": true
+    },
+    "HostLaunchReply": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "agent_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attach": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "additionalProperties": true
+    },
+    "MemberLaunchResult": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/LaunchState"
+        }
+      },
+      "required": [
+        "session",
+        "agent_name",
+        "state"
+      ],
+      "additionalProperties": true
+    },
+    "MemberLaunchReply": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "agent_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "additionalProperties": true
+    },
+    "TargetChoice": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "additionalProperties": true
+    },
+    "TargetOption": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "choices": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/TargetChoice"
+          }
+        }
+      },
+      "required": [
+        "description",
+        "choices"
+      ],
+      "additionalProperties": true
+    },
+    "RunTarget": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/TargetOption"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "options"
+      ],
+      "additionalProperties": true
+    },
+    "TargetChoiceReply": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "TargetOptionReply": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "choices": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/TargetChoiceReply"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": true
+    },
+    "RunTargetReply": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/TargetOptionReply"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": true
+    },
+    "RunTargetList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RunTarget"
+      }
+    },
+    "RunTargetListReply": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RunTargetReply"
+      }
+    },
+    "LaunchManifest": {
+      "type": "string",
+      "pattern": "^/",
+      "description": "Absolute runtime manifest path, validated by the existing controller."
     }
   },
   "x-api-version": 1,
@@ -2507,7 +3045,9 @@
     "result_extensions": "Result objects, including nested limits and history variants, may gain fields. Clients ignore unknown result fields; known fields and history owner discrimination remain validated. Request parameters stay closed.",
     "api1_compatibility": "Producer result schemas describe the current daemon precisely. x-client-result-schema describes compatible API-1 replies accepted by clients: configuration/limits and newer server.status history/manifest/worktree metadata may be absent. Clients retain absence as optional data and use advertised features rather than inventing values.",
     "self_reporting": "sessions.status exposes only the caller and its policy/activity. Worktree paths are deliberately visible. Activity is independent of lifecycle; variables update atomically and empty values remove keys. Missing or null set-worktree name clears the record; names are validated before filesystem access.",
-    "session-records": "Current session read producers emit complete endpoint-specific records. Host sessions include descriptor-free process identities and host paths; sandbox records exclude them, except the intentionally shared Worktree.path. API-1 reader schemas retain the defaults and omissions previously accepted by Rust snapshot clients. The controller retains domain records; explicit projections and a generated-read adapter preserve snapshot consumers until C15. Nested terminal and raid summaries are typed public data; their methods migrate in C05 and C11."
+    "session-records": "Current session read producers emit complete endpoint-specific records. Host sessions include descriptor-free process identities and host paths; sandbox records exclude them, except the intentionally shared Worktree.path. API-1 reader schemas retain the defaults and omissions previously accepted by Rust snapshot clients. The controller retains domain records; explicit projections and a generated-read adapter preserve snapshot consumers until C15. Nested terminal and raid summaries are typed public data; their methods migrate in C05 and C11.",
+    "launch-lifecycle": "Launch keys bind endpoint actor and decoded parameters; identical retries return the original acceptance, including during recreate after the record becomes reserved. Recreate record resolution precedes normal launch validation. Acceptance state starting is not readiness. Public DTOs contain no recorded-history capability or host-selectable member worktree. Sandbox start uses current owner/run-target policy and fixed member launch arguments. Stop acceptance is not completed cleanup; host resize uses an exact session id, and sandbox detach closes its one-shot connection after acceptance. Sandbox sessions.attach remains refusal-only (-32601), before its existing trailing-input handling.",
+    "positional-parameters": "Method descriptors retain original Serde field order. Generated structs are named DTOs; decode_params<M> maps positional arrays to those names before generated decoding because Typify sorts struct fields. Optional omissions and trailing defaults remain the original ones. Schema defaults do not authorize or perform lifecycle transitions. Nullable fields without an original Serde default still require an array position; x-positional-required records this independently of named-object optionality. Member launch requires its third agent_name position (null is valid); set-worktree requires [name] or [null], while {} still clears it."
   },
   "x-envelope-schemas": {
     "Id": {
@@ -2658,7 +3198,7 @@
           ]
         }
       ],
-      "minItems": 0,
+      "minItems": 1,
       "maxItems": 1
     },
     "SessionSelectorPositional": {
@@ -2670,6 +3210,196 @@
       ],
       "minItems": 1,
       "maxItems": 1
+    },
+    "HostSessionsStartPositional": {
+      "type": "array",
+      "items": [
+        {
+          "$ref": "#/definitions/OperationKey"
+        },
+        {
+          "$ref": "#/definitions/LaunchManifest"
+        },
+        {
+          "$ref": "#/definitions/LaunchConfigurationName",
+          "default": ""
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LaunchAgentName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LaunchScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "$ref": "#/definitions/LaunchDimension"
+        },
+        {
+          "$ref": "#/definitions/LaunchDimension"
+        },
+        {
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "$ref": "#/definitions/HostLaunchOptions",
+          "default": {}
+        }
+      ],
+      "minItems": 9,
+      "maxItems": 13
+    },
+    "HostSessionsStopPositional": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "HostSessionsDetachPositional": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "HostSessionsResizePositional": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/LaunchDimension"
+        },
+        {
+          "$ref": "#/definitions/LaunchDimension"
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "SandboxSessionsStartPositional": {
+      "type": "array",
+      "items": [
+        {
+          "$ref": "#/definitions/OperationKey"
+        },
+        {
+          "$ref": "#/definitions/OperationKey"
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LaunchAgentName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorktreeName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "$ref": "#/definitions/LaunchOptions",
+          "default": {}
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 6
+    },
+    "SandboxSessionsStopPositional": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "SandboxSessionsDetachPositional": {
+      "type": "array",
+      "items": false,
+      "minItems": 0,
+      "maxItems": 0
+    },
+    "SandboxTargetsListPositional": {
+      "type": "array",
+      "items": false,
+      "minItems": 0,
+      "maxItems": 0
     }
   }
 }

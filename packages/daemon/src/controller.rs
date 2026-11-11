@@ -784,12 +784,26 @@ struct Start {
     #[serde(default)]
     options: BTreeMap<String, String>,
 }
-use goblins_protocol::contract::SetWorktreeParams as SetWorktree;
-use goblins_runtime::sandbox::MemberStart;
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Stop {
-    session: String,
+impl From<contract::HostLaunchParams> for Start {
+    fn from(p: contract::HostLaunchParams) -> Self {
+        Self {
+            key: p.key,
+            configuration: p.configuration,
+            name: p.name,
+            agent_name: p.agent_name,
+            cwd: p.cwd,
+            scope: p.scope,
+            dev_shell: p.dev_shell,
+            rows: p.rows,
+            cols: p.cols,
+            detached: p.detached,
+            raid: p.raid,
+            recreate: p.recreate,
+            options: p.options,
+            recorded: None,
+            worktree: None,
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -808,13 +822,6 @@ struct Decision {
     request: String,
     approval: String,
     approved: bool,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Resize {
-    session: String,
-    rows: u16,
-    cols: u16,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -852,6 +859,9 @@ struct AutoApprove {
 }
 fn params<T: DeserializeOwned>(v: Value) -> std::result::Result<T, Fault> {
     serde_json::from_value(v).map_err(|e| (-32602, e.to_string()))
+}
+fn contract_params<M: contract::Method>(value: Value) -> std::result::Result<M::Params, Fault> {
+    contract::decode_params::<M>(value).map_err(|e| (-32602, e.to_string()))
 }
 fn missing() -> Fault {
     (-32004, "record absent or no longer retained".into())
@@ -1609,36 +1619,49 @@ impl Controller {
     /// allowlist, fixed when it started, with their descriptions and launch
     /// options from the current manifest. A target that manifest no longer
     /// has is left out, since it could not be run either.
-    fn run_targets(&self, caller: &str) -> Value {
+    fn run_targets(&self, caller: &str) -> contract::RunTargetList {
         let allowed = self.sessions[caller]
             .policy
             .as_ref()
             .map_or(&[][..], |p| &p.run_targets[..]);
-        let targets: Vec<_> = allowed
-            .iter()
-            .filter_map(|name| {
-                let entry = self.catalogue.goblins.get(name)?;
-                let options: serde_json::Map<_, _> = entry
-                    .launch_options
-                    .iter()
-                    .map(|(option, declared)| {
-                        let choices: serde_json::Map<_, _> = declared
-                            .choices
-                            .iter()
-                            .map(|(choice, c)| {
-                                (choice.clone(), json!({"description":c.description}))
-                            })
-                            .collect();
-                        (
-                            option.clone(),
-                            json!({"description":declared.description,"choices":choices}),
-                        )
+        contract::RunTargetList(
+            allowed
+                .iter()
+                .filter_map(|name| {
+                    let entry = self.catalogue.goblins.get(name)?;
+                    let options = entry
+                        .launch_options
+                        .iter()
+                        .map(|(name, declared)| {
+                            let choices = declared
+                                .choices
+                                .iter()
+                                .map(|(name, c)| {
+                                    (
+                                        name.clone(),
+                                        contract::TargetChoice {
+                                            description: c.description.clone(),
+                                        },
+                                    )
+                                })
+                                .collect();
+                            (
+                                name.clone(),
+                                contract::TargetOption {
+                                    description: declared.description.clone(),
+                                    choices,
+                                },
+                            )
+                        })
+                        .collect();
+                    Some(contract::RunTarget {
+                        name: name.clone(),
+                        description: entry.description.clone(),
+                        options,
                     })
-                    .collect();
-                Some(json!({"name":name,"description":entry.description,"options":options}))
-            })
-            .collect();
-        json!(targets)
+                })
+                .collect(),
+        )
     }
     fn sandbox_record(&self, record: &SessionRecord) -> contract::SandboxSession {
         let r = contract::HostSession::from(record);
@@ -1718,7 +1741,7 @@ impl Controller {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
         if a.handlers.is_some() {
             self.detach_client(id).map_err(|e| (-32009, e))?;
-            return Ok(json!({"accepted":true}));
+            return Ok(json!(contract::ServerStopResult { accepted: true }));
         }
         if !a.terminal.connected || a.terminal.detached || a.terminal.complete {
             return Err((-32009, "terminal is not attached".into()));
@@ -1735,7 +1758,7 @@ impl Controller {
         a.record.terminal_attached = a.terminal.attached;
         a.record.terminal_detached = a.terminal.detached;
         self.dirty = true;
-        Ok(json!({"accepted":true}))
+        Ok(json!(contract::ServerStopResult { accepted: true }))
     }
     fn stop(&mut self, id: &str, reason: Option<String>) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
@@ -1782,7 +1805,7 @@ impl Controller {
         self.end_edits(id);
         self.end_host_jobs(id);
         self.dirty = true;
-        Ok(json!({"accepted":true}))
+        Ok(json!(contract::ServerStopResult { accepted: true }))
     }
     fn reply_permission(&mut self, id: &str, status: &str, message: Option<String>) {
         for c in &mut self.connections {
@@ -2107,7 +2130,13 @@ impl Controller {
             checkout: None,
             options: p.options.clone(),
         };
-        let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal,"attach":record.attach});
+        let result = json!(contract::HostLaunchResult {
+            session: id.clone(),
+            agent_name: record.agent_name.clone(),
+            state: contract::LaunchState::Starting,
+            terminal: record.terminal.clone().into(),
+            attach: record.attach.clone().into()
+        });
         self.sessions.insert(
             id.clone(),
             Active {
@@ -2300,7 +2329,7 @@ impl Controller {
                 Ok(json!(contract::ServerStopResult { accepted: true }))
             }
             contract::sandbox::SessionsSetWorktree::NAME => {
-                let p: SetWorktree = params(value)?;
+                let p = contract_params::<contract::sandbox::SessionsSetWorktree>(value)?;
                 let a = self.sessions.get(scope).ok_or_else(missing)?;
                 if a.record.state != "running" || !a.live() {
                     return Err(conflict());
@@ -2457,15 +2486,15 @@ impl Controller {
                 let id = self.resolve_member(&p.session, scope)?;
                 Ok(json!(self.sandbox_record(&self.sessions[&id].record)))
             }
-            "targets.list" => {
-                let _: Empty = params(value)?;
+            contract::sandbox::TargetsList::NAME => {
+                let _ = contract_params::<contract::sandbox::TargetsList>(value)?;
                 if self.current_manifest.is_none() {
                     return Err((-32009, NO_MANIFEST.into()));
                 }
-                Ok(self.run_targets(scope))
+                Ok(json!(self.run_targets(scope)))
             }
-            "sessions.start" => {
-                let p: MemberStart = params(value)?;
+            contract::sandbox::SessionsStart::NAME => {
+                let p = contract_params::<contract::sandbox::SessionsStart>(value)?;
                 let result = self.start(
                     Start {
                         key: p.key,
@@ -2486,13 +2515,16 @@ impl Controller {
                     },
                     Some(scope),
                 )?;
-                Ok(
-                    json!({"session":result["session"],"agent_name":result["agent_name"],
-                    "state":result["state"]}),
-                )
+                let result: contract::HostLaunchResult =
+                    serde_json::from_value(result).expect("controller launch acceptance");
+                Ok(json!(contract::MemberLaunchResult {
+                    session: result.session,
+                    agent_name: result.agent_name,
+                    state: result.state
+                }))
             }
-            "sessions.stop" => {
-                let p: Stop = params(value)?;
+            contract::sandbox::SessionsStop::NAME => {
+                let p = contract_params::<contract::sandbox::SessionsStop>(value)?;
                 let id = self.resolve_member(&p.session, scope)?;
                 let reason = format!(
                     "stopped by raid owner {} ({scope})",
@@ -2700,18 +2732,21 @@ impl Controller {
                     &self.sessions[&id].record
                 )))
             }
-            "sessions.start" => self.start(params(value)?, None),
+            contract::host::SessionsStart::NAME => self.start(
+                contract_params::<contract::host::SessionsStart>(value)?.into(),
+                None,
+            ),
             "history.list" => {
                 let _: Empty = params(value)?;
                 self.history_list()
             }
-            "sessions.stop" => {
-                let p: Stop = params(value)?;
+            contract::host::SessionsStop::NAME => {
+                let p = contract_params::<contract::host::SessionsStop>(value)?;
                 let id = self.resolve_session(&p.session)?;
                 self.stop(&id, Some("stopped by host".into()))
             }
-            "sessions.detach" => {
-                let p: SessionId = params(value)?;
+            contract::host::SessionsDetach::NAME => {
+                let p = contract_params::<contract::host::SessionsDetach>(value)?;
                 let id = self.resolve_session(&p.session)?;
                 self.detach(&id)
             }
@@ -2719,8 +2754,8 @@ impl Controller {
                 let p: SessionId = params(value)?;
                 self.kill_execs(&p.session)
             }
-            "sessions.resize" => {
-                let p: Resize = params(value)?;
+            contract::host::SessionsResize::NAME => {
+                let p = contract_params::<contract::host::SessionsResize>(value)?;
                 if !dimensions(p.rows, p.cols) {
                     return Err((-32602, "invalid dimensions".into()));
                 }
@@ -2739,7 +2774,7 @@ impl Controller {
                         })
                         .map_err(|_| capacity())?;
                 }
-                Ok(json!({"accepted":true}))
+                Ok(json!(contract::ServerStopResult { accepted: true }))
             }
             "permissions.list" => {
                 let p: Filter = params(value)?;
@@ -2983,8 +3018,8 @@ impl Controller {
                     {
                         return Err(conflict());
                     }
-                    if call.method == "sessions.detach" {
-                        let _: Empty = params(call.params)?;
+                    if call.method == contract::sandbox::SessionsDetach::NAME {
+                        let _ = contract_params::<contract::sandbox::SessionsDetach>(call.params)?;
                         // Endpoint identity selects this sandbox. No caller-
                         // supplied session/name can affect another sandbox.
                         let session = session.clone();
@@ -4235,6 +4270,107 @@ mod tests {
         json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
                "agent_name":agent_name,"rows":24,"cols":100})
     }
+    #[test]
+    fn generated_launch_dispatch_preserves_positional_retry_identity_and_private_fields() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _) = connection(Role::Host);
+        let named = launch("positional-key", Some("goblin"));
+        let first = d.host(&mut host, "sessions.start", named.clone()).unwrap();
+        let positional = json!([
+            "positional-key",
+            "/missing-goblins-test-manifest",
+            "shell",
+            "goblin",
+            null,
+            null,
+            null,
+            24,
+            100
+        ]);
+        assert_eq!(
+            d.host(&mut host, "sessions.start", positional.clone())
+                .unwrap(),
+            first
+        );
+        let mut changed = positional;
+        changed[7] = json!(30);
+        assert_eq!(
+            d.host(&mut host, "sessions.start", changed).unwrap_err().0,
+            -32009
+        );
+        let count = d.sessions.len();
+        for field in ["recorded", "worktree"] {
+            let mut private = named.clone();
+            private[field] = json!("forbidden");
+            assert_eq!(
+                d.host(&mut host, "sessions.start", private).unwrap_err().0,
+                -32602
+            );
+            assert_eq!(d.sessions.len(), count);
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn generated_resize_and_self_detach_use_ordered_dimensions_and_endpoint_identity() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut(&id).unwrap().runtime = Some(Box::new(runtime));
+        let (mut host, _) = connection(Role::Host);
+        assert_eq!(
+            d.host(&mut host, "sessions.resize", json!([id, 30, 120]))
+                .unwrap(),
+            json!({"accepted":true})
+        );
+        assert!(matches!(
+            received.lock().unwrap().pop_front(),
+            Some(Command::Resize {
+                rows: 30,
+                cols: 120,
+                ..
+            })
+        ));
+        assert_eq!(
+            d.host(&mut host, "sessions.resize", json!([id, 0, 120]))
+                .unwrap_err(),
+            (-32602, "invalid dimensions".into())
+        );
+        d.sessions.get_mut(&id).unwrap().terminal.connected = true;
+        let (mut caller, _) = connection(Role::Sandbox(id.clone()));
+        caller.initialized = true;
+        let refused = dispatch(
+            &mut d,
+            &mut caller,
+            "sessions.detach",
+            json!({"session":"other"}),
+            Some(json!(1)),
+        );
+        assert_eq!(refused["error"]["code"], -32602);
+        let (mut caller, _) = connection(Role::Sandbox(id));
+        caller.initialized = true;
+        let accepted = dispatch(
+            &mut d,
+            &mut caller,
+            "sessions.detach",
+            json!([]),
+            Some(json!(1)),
+        );
+        assert_eq!(accepted["result"], json!({"accepted":true}));
+        assert!(caller.close);
+        assert!(matches!(
+            received.lock().unwrap().pop_front(),
+            Some(Command::Detach {
+                terminal: TerminalId::Main
+            })
+        ));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn exec_descriptors_wait_for_their_whole_request() {
         let mut d = daemon();

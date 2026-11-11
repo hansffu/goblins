@@ -67,7 +67,7 @@ Session parameters named =session= accept a session ID or the agent name of a li
 
 * Initialization (both endpoints)
 
-The schema-first migration currently covers =initialize=, host =server.status= / =server.stop=, sandbox =sessions.status= / =sessions.set-state= / =sessions.set-variables= / =sessions.set-worktree=, and host/sandbox =sessions.list= / =sessions.get=. Their machine-readable contracts are in =libs/api/schema/=, with the generated [[file:API-REFERENCE.org][covered-method reference]]. Other surfaces remain specified here and assigned to later chunks in =libs/api/schema/coverage.json=. Generated types supplement the existing transport, policy and lifecycle checks.
+The schema-first migration currently covers =initialize=, host =server.status= / =server.stop=, sandbox =sessions.status= / =sessions.set-state= / =sessions.set-variables= / =sessions.set-worktree=, host/sandbox =sessions.list= / =sessions.get= / =sessions.start= / =sessions.stop= / =sessions.detach=, host =sessions.resize=, and sandbox =targets.list=. Their machine-readable contracts are in =libs/api/schema/=, with the generated [[file:API-REFERENCE.org][covered-method reference]]. Other surfaces remain specified here and assigned to later chunks in =libs/api/schema/coverage.json=. Generated types supplement the existing transport, policy and lifecycle checks.
 
 The result descriptions specify what the current daemon produces. Compatible API-1 clients also accept older replies without additive metadata: =configuration= and limits information in =initialize=, and =history=, =manifest= and =worktrees_directory= in =server.status=. The =x-client-result-schema= extension defines those generated client reply types; missing information remains optional, and clients use advertised features before relying on capabilities. Tests of the current daemon still enforce the current producer schema.
 
@@ -138,9 +138,11 @@ Returns one session record by immutable ID, including a retained stopped record,
 
 Launches a goblin from a configuration, or recreates a recorded one. Returns once the launch is accepted; follow its state through =sessions.get= or the subscription.
 
+The positional form is =[key, configuration, name, agent_name, cwd, scope, dev_shell, rows, cols, detached?, raid?, recreate?, options?]=. All first nine slots through =cols= are required. Use null for unset nullable slots; =name= is an empty string for recreate. This order is the original decoder order and is independent of generated Rust field order.
+
 - Input :: ={"key", "configuration", "name", "agent_name", "cwd", "scope", "dev_shell", "rows", "cols", "detached", "raid", "recreate", "options"}=
   - =key= (required): a retry key, 1–64 of =[A-Za-z0-9_-]=. Repeating a start with the same key and parameters returns the original acceptance; different parameters conflict.
-  - =configuration= (required): absolute path of the runtime manifest directory.
+  - =configuration= (required): absolute path of the runtime manifest file.
   - =name=: the configuration key (for example =shell=), 1–64 of =[A-Za-z0-9_-]=. Omitted or empty for a recreate.
   - =agent_name= (optional, may be null): the goblin's name, matching =[a-z][a-z0-9-]{0,31}= and unique among live goblins; omitted or null picks one from the name list.
   - =cwd=, =scope=, =dev_shell= (optional): absolute launch directory; scope to join, matching =[A-Za-z_][A-Za-z0-9_-]{0,63}=; absolute =PATH[#ATTR]= of a host flake dev shell.
@@ -148,28 +150,28 @@ Launches a goblin from a configuration, or recreates a recorded one. Returns onc
   - =detached= (optional): start without a terminal consumer.
   - =raid= (optional): join this raid, creating it with the new goblin as owner. Raid names match =[a-z][a-z0-9-]{0,31}=.
   - =recreate= (optional): history record ID, unique prefix or unique agent name to recreate.
-  - =options= (optional): launch options are only for members a raid owner runs; a non-empty map is refused with =-32602= =launch options are only for raid members=.
+  - =options= (optional): typed host clients omit an empty map, retaining compatibility with API-1 daemons predating this field. Host run retains explicit null =agent_name=, =scope= and =dev_shell= fields when unset; host resume omits =name= and those unset fields. Launch options are only for members a raid owner runs; a non-empty map is refused with =-32602= =launch options are only for raid members=.
 - Output :: ={"session", "agent_name", "state": "starting", "terminal", "attach"}=. =terminal= and =attach= are the paths of the session's attachment sockets (see Terminal attachment).
 
 *** =sessions.stop=
 
 Requests teardown. Acceptance does not mean cleanup has finished.
 
-- Input :: ={"session"}=
+- Input :: ={"session"}= or =[session]=
 - Output :: ={"accepted": true}=
 
 *** =sessions.detach=
 
 Detaches the current terminal consumer; the goblin keeps running. For a goblin with =onAttach= this runs =onDetach= and ends the attached client.
 
-- Input :: ={"session"}=
+- Input :: ={"session"}= or =[session]=
 - Output :: ={"accepted": true}=
 
 *** =sessions.resize=
 
 Resizes the session's PTY, or for a goblin with =onAttach= the attached client's PTY (=-32009= when none is attached).
 
-- Input :: ={"session", "rows", "cols"}= (=session= is a session ID; rows and cols 1–1000)
+- Input :: ={"session", "rows", "cols"}= or =[session, rows, cols]= (=session= is an exact session ID; rows and cols 1–1000)
 - Output :: ={"accepted": true}=
 
 *** =sessions.exec=
@@ -451,7 +453,7 @@ Stores variables in the caller's history record (for example the agent's =sessio
 
 Detaches the caller's own terminal, as the host's =sessions.detach= does. The connection closes after the reply.
 
-- Input :: ={}=
+- Input :: ={}= or =[]=
 - Output :: ={"accepted": true}=
 
 ** Permissions
@@ -517,21 +519,21 @@ A raid owner sees and stops only the goblins it ran in its raid, while it owns i
 
 *** =sessions.start=
 
-Runs a member in the caller's raid, sharing its workspace, scope, dev shell and approvals.
+Runs a member in the caller's raid, sharing its workspace, scope, dev shell and approvals. The positional form is =[key, name, agent_name, detached?, worktree?, options?]=: the third =agent_name= position is required even though the named field may be omitted, and null selects an available name. The RPC default for =detached= is false; =goblin run= sends true. The sandbox CLI retains an explicit null =agent_name= when unset and always sends the options map, including ={}=. Acceptance reports =state: starting= and does not imply readiness. The generated request contains only these member parameters; owner policy supplies the other launch data.
 
 - Input :: ={"key", "name", "agent_name", "detached"?, "worktree"?, "options"?}=. =options= (optional) maps launch option names to choices, as =goblin run -o NAME=CHOICE= does: at most 16 entries, names matching =[A-Za-z_][A-Za-z0-9_-]{0,31}= and choices =[A-Za-z0-9_][A-Za-z0-9._-]{0,63}=, checked before anything else (=-32602= =invalid launch parameters=). The daemon then checks them against the configuration's =launch_options= in its current manifest and refuses an unknown one with =-32602= =unknown launch option 'NAME'; options: A, B= or =option 'NAME' has no choice 'CHOICE'; choices: A, B=. It fixes the member's arguments at acceptance: the =args= of the configuration's variant for the caller's scope, then each chosen choice's =args= in the order of the option names. Without options the member runs its configuration's =args= as before. See [[file:specs/LAUNCH-OPTIONS.org][LAUNCH-OPTIONS]]. =worktree= (optional, may be null) is the name of a worktree in the caller's worktree folder to start the member in, as =goblin run --worktree= does. The member's working directory is =FOLDER/NAME=, opened like a host launch's, and its launch is refused with a =detail= unless that directory is a worktree whose =.git= file and the checkout's record of it agree. The call is refused (=-32009=) when the caller has no worktree folder, and the member's launch when its configuration has =worktrees.enable = false=.
 - Output :: ={"session", "agent_name", "state"}=
 
 *** =targets.list=
 
-The configurations the caller may run, with their launch options.
+The configurations the caller may run, with their launch options, in the caller's allowlist order. Targets missing from the current manifest are omitted; without a known manifest the call returns =-32009=. Each result is ={"name": STRING, "description": STRING, "options": {OPTION: {"description": STRING_OR_NULL, "choices": {CHOICE: {"description": STRING_OR_NULL}}}}}=. Current producers include the nullable description fields; compatible readers also accept older replies without options or descriptions, and ignore new result fields.
 
-- Input :: ={}=
+- Input :: ={}= or =[]=
 - Output :: =[{"name", "description", "options": {OPTION: {"description", "choices": {CHOICE: {"description"}}}}}]=, in the order of the caller's own run targets, fixed when it started. Details come from the daemon's current manifest; a target it no longer has is left out. Descriptions may be null. Choices' arguments are not returned. Without a current manifest the call fails with =-32009=.
 
 *** =sessions.stop=
 
-- Input :: ={"session"}=
+- Input :: ={"session"}= or =[session]=
 - Output :: ={"accepted": true}=
 
 ** Worktrees
@@ -540,7 +542,7 @@ The configurations the caller may run, with their launch options.
 
 Records the worktree the goblin works in, which Emacs and other host clients follow and a resume restores. The daemon does not watch the filesystem: a removed worktree stays set until the goblin changes it or stops. Refused (=-32009=) for a goblin without a worktree folder: it was not launched at a repository's root or in one of its worktrees, or worktrees are off for its configuration (its =detail= says why).
 
-- Input :: ={"name"}= or ={"name": null}=. =name= must match =[A-Za-z0-9][A-Za-z0-9._-]{0,99}= and be a directory in the goblin's worktree folder, not a symlink, holding a =.git= file. =null= or an omitted =name= (={}= or =[]=) clears the worktree: the goblin works in its main checkout (=Session.checkout=), even if it was launched in a worktree.
+- Input :: ={"name"}= or ={"name": null}=. =name= must match =[A-Za-z0-9][A-Za-z0-9._-]{0,99}= and be a directory in the goblin's worktree folder, not a symlink, holding a =.git= file. Positional input is =[name]= or =[null]=; =[]= is refused with =-32602=. =null= or an omitted =name= in ={}= clears the worktree: the goblin works in its main checkout (=Session.checkout=), even if it was launched in a worktree.
 - Output :: ={"worktree": Worktree_OR_NULL}=
 
 ** Raids

@@ -32,31 +32,10 @@ fn invalid(message: impl Into<String>) -> Refusal {
 fn parse<T: DeserializeOwned>(value: &Value) -> Result<T, Refusal> {
     serde_json::from_value(value.clone()).map_err(|e| invalid(e.to_string()))
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MemberStart {
-    pub key: String,
-    pub name: String,
-    pub agent_name: Option<String>,
-    #[serde(default)]
-    pub detached: bool,
-    /// Start in this worktree of the owner's folder (`goblin run --worktree`).
-    #[serde(default)]
-    pub worktree: Option<String>,
-    /// Launch options (`goblin run -o NAME=CHOICE`); the daemon checks them
-    /// against the configuration.
-    #[serde(default)]
-    pub options: std::collections::BTreeMap<String, String>,
-}
-use goblins_protocol::contract::SetWorktreeParams as SetWorktree;
+pub use goblins_protocol::contract::MemberLaunchParams as MemberStart;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Session {
-    session: String,
-}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Job {
@@ -213,7 +192,10 @@ pub fn check(
             Some(Operation::DevShellDiff)
         }
         "sessions.start" => {
-            let p: MemberStart = parse(&call.params)?;
+            let p = goblins_protocol::contract::decode_params::<
+                goblins_protocol::contract::sandbox::SessionsStart,
+            >(call.params.clone())
+            .map_err(|e| invalid(e.to_string()))?;
             if !goblins_protocol::identifier(&p.key)
                 || !goblins_protocol::identifier(&p.name)
                 || p.worktree
@@ -256,7 +238,10 @@ pub fn check(
             None
         }
         "sessions.set-worktree" => {
-            let p: SetWorktree = parse(&call.params)?;
+            let p = goblins_protocol::contract::decode_params::<
+                goblins_protocol::contract::sandbox::SessionsSetWorktree,
+            >(call.params.clone())
+            .map_err(|e| invalid(e.to_string()))?;
             if p.name
                 .as_deref()
                 .is_some_and(|n| !crate::worktrees::valid_name(n))
@@ -270,7 +255,30 @@ pub fn check(
             None
         }
         "sessions.stop" => {
-            let Session { session: _session } = parse(&call.params)?;
+            let _ = goblins_protocol::contract::decode_params::<
+                goblins_protocol::contract::sandbox::SessionsStop,
+            >(call.params.clone())
+            .map_err(|e| invalid(e.to_string()))?;
+            None
+        }
+        "targets.list" => {
+            let _ = goblins_protocol::contract::decode_params::<
+                goblins_protocol::contract::sandbox::TargetsList,
+            >(call.params.clone())
+            .map_err(|e| invalid(e.to_string()))?;
+            None
+        }
+        "sessions.detach" => {
+            let _ = goblins_protocol::contract::decode_params::<
+                goblins_protocol::contract::sandbox::SessionsDetach,
+            >(call.params.clone())
+            .map_err(|e| invalid(e.to_string()))?;
+            if trailing {
+                return Err(Refusal::Policy {
+                    code: -32600,
+                    message: "unexpected trailing input".into(),
+                });
+            }
             None
         }
         "host.status" | "host.cancel" => {
@@ -292,12 +300,6 @@ pub fn check(
         }
         _ => {
             let _: Empty = parse(&call.params)?;
-            if method == "sessions.detach" && trailing {
-                return Err(Refusal::Policy {
-                    code: -32600,
-                    message: "unexpected trailing input".into(),
-                });
-            }
             if method == "devshell.lock" && capabilities.policy.dev_shell.is_none() {
                 return Err(invalid("this sandbox was not started with a dev shell"));
             }

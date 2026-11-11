@@ -1046,6 +1046,491 @@ Compatible API-1 client reply (additive information may be absent):
 }
 #+end_src
 
+** =sessions.start=
+
+Accept a host launch or recreate; retry keys return the original acceptance, not current readiness. For API-1 compatibility typed clients omit the empty host options map; nonempty maps remain present and are refused by host policy.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "configuration": {
+      "$ref": "#/definitions/LaunchManifest"
+    },
+    "name": {
+      "$ref": "#/definitions/LaunchConfigurationName",
+      "default": ""
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchAgentName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HostPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchScope"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dev_shell": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rows": {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    "detached": {
+      "type": "boolean",
+      "default": false
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recreate": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "$ref": "#/definitions/HostLaunchOptions",
+      "default": {}
+    }
+  },
+  "required": [
+    "key",
+    "configuration",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": false,
+  "description": "name is required/nonempty for an ordinary launch and empty/omitted for recreate. Recreate forbids explicit agent_name,cwd,scope,dev_shell,raid; it resolves the record and retries before ordinary validation. cwd must be absolute; dev_shell is an absolute PATH[#ATTR] reference; raid has the existing raid-name grammar. Domain validators retain diagnostics and refusal order."
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "$ref": "#/definitions/OperationKey"
+    },
+    {
+      "$ref": "#/definitions/LaunchManifest"
+    },
+    {
+      "$ref": "#/definitions/LaunchConfigurationName",
+      "default": ""
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchAgentName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HostPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchScope"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    {
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "$ref": "#/definitions/HostLaunchOptions",
+      "default": {}
+    }
+  ],
+  "minItems": 9,
+  "maxItems": 13
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/LaunchState"
+    },
+    "terminal": {
+      "$ref": "#/definitions/HostPath"
+    },
+    "attach": {
+      "$ref": "#/definitions/HostPath"
+    }
+  },
+  "required": [
+    "session",
+    "agent_name",
+    "state",
+    "terminal",
+    "attach"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible API-1 client reply (additive information may be absent):
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "terminal": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HostPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attach": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HostPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =sessions.stop=
+
+Request teardown by immutable id or live agent name; acceptance does not mean cleanup finished.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32004, -32009. Common envelope/connection errors also apply.
+
+** =sessions.detach=
+
+Detach the current terminal consumer, retaining the goblin.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+** =sessions.resize=
+
+Resize by exact session id; dimensions are 1..1000 and a handler client must be attached.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "rows": {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/LaunchDimension"
+    }
+  },
+  "required": [
+    "session",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    {
+      "$ref": "#/definitions/LaunchDimension"
+    }
+  ],
+  "minItems": 3,
+  "maxItems": 3
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
 * sandbox
 
 ** =initialize=
@@ -1752,7 +2237,7 @@ Positional parameters:
       ]
     }
   ],
-  "minItems": 0,
+  "minItems": 1,
   "maxItems": 1
 }
 #+end_src
@@ -2176,6 +2661,327 @@ Compatible API-1 client reply (additive information may be absent):
     "terminal_interrupted"
   ],
   "additionalProperties": true
+}
+#+end_src
+
+** =sessions.start=
+
+Accept a member launch in the caller-owned raid with its fixed policy, workspace and launch options.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "name": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchAgentName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "detached": {
+      "type": "boolean",
+      "default": false
+    },
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorktreeName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "$ref": "#/definitions/LaunchOptions",
+      "default": {}
+    }
+  },
+  "required": [
+    "key",
+    "name"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "$ref": "#/definitions/OperationKey"
+    },
+    {
+      "$ref": "#/definitions/OperationKey"
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchAgentName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "type": "boolean",
+      "default": false
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorktreeName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "$ref": "#/definitions/LaunchOptions",
+      "default": {}
+    }
+  ],
+  "minItems": 3,
+  "maxItems": 6
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/LaunchState"
+    }
+  },
+  "required": [
+    "session",
+    "agent_name",
+    "state"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004, -32009, -32010. Common envelope/connection errors also apply.
+
+Compatible API-1 client reply (additive information may be absent):
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =sessions.stop=
+
+Request teardown of a currently controlled member; authority is rechecked for every call.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32004, -32009. Common envelope/connection errors also apply.
+
+** =sessions.detach=
+
+Detach this sandbox terminal and close the connection after replying; it cannot select another sandbox.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32600, -32009, -32010. Common envelope/connection errors also apply.
+
+** =targets.list=
+
+List allowed run configurations in caller allowlist order, omitting missing current-manifest targets; requires a known manifest.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": {
+    "$ref": "#/definitions/RunTarget"
+  }
+}
+#+end_src
+
+Method errors: -32009. Common envelope/connection errors also apply.
+
+Compatible API-1 client reply (additive information may be absent):
+
+#+begin_src json
+{
+  "type": "array",
+  "items": {
+    "$ref": "#/definitions/RunTargetReply"
+  }
 }
 #+end_src
 
@@ -5016,6 +5822,664 @@ Compatible API-1 client reply (additive information may be absent):
 }
 #+end_src
 
+** =OperationKey=
+
+#+begin_src json
+{
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 64,
+  "not": {
+    "pattern": "[^A-Za-z0-9_-]"
+  }
+}
+#+end_src
+
+** =LaunchConfigurationName=
+
+#+begin_src json
+{
+  "type": "string",
+  "maxLength": 64,
+  "not": {
+    "pattern": "[^A-Za-z0-9_-]"
+  },
+  "description": "Empty only for recreate; non-recreate requires identifier(name). Existing controller validation determines refusal order."
+}
+#+end_src
+
+** =LaunchAgentName=
+
+#+begin_src json
+{
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 32,
+  "pattern": "^[a-z]",
+  "not": {
+    "pattern": "[^a-z0-9-]"
+  }
+}
+#+end_src
+
+** =LaunchScope=
+
+#+begin_src json
+{
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 64,
+  "pattern": "^[A-Za-z_]",
+  "not": {
+    "pattern": "[^A-Za-z0-9_-]"
+  }
+}
+#+end_src
+
+** =LaunchDimension=
+
+#+begin_src json
+{
+  "type": "integer",
+  "format": "uint16",
+  "minimum": 1,
+  "maximum": 1000,
+  "x-json-integer": true,
+  "description": "Existing dimensions validator enforces 1..1000 after parameter decoding."
+}
+#+end_src
+
+** =LaunchOptions=
+
+#+begin_src json
+{
+  "type": "object",
+  "maxProperties": 16,
+  "propertyNames": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 32,
+    "pattern": "^[A-Za-z_]",
+    "not": {
+      "pattern": "[^A-Za-z0-9_-]"
+    }
+  },
+  "additionalProperties": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 64,
+    "pattern": "^[A-Za-z0-9_]",
+    "not": {
+      "pattern": "[^A-Za-z0-9._-]"
+    }
+  }
+}
+#+end_src
+
+** =HostLaunchOptions=
+
+#+begin_src json
+{
+  "type": "object",
+  "maxProperties": 0,
+  "additionalProperties": {
+    "type": "string"
+  },
+  "description": "Host launches take no nonempty options map; the existing controller diagnoses this after ordinary launch/recreate validation."
+}
+#+end_src
+
+** =HostLaunchParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "configuration": {
+      "$ref": "#/definitions/LaunchManifest"
+    },
+    "name": {
+      "$ref": "#/definitions/LaunchConfigurationName",
+      "default": ""
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchAgentName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HostPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchScope"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dev_shell": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rows": {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    "detached": {
+      "type": "boolean",
+      "default": false
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recreate": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "$ref": "#/definitions/HostLaunchOptions",
+      "default": {}
+    }
+  },
+  "required": [
+    "key",
+    "configuration",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": false,
+  "description": "name is required/nonempty for an ordinary launch and empty/omitted for recreate. Recreate forbids explicit agent_name,cwd,scope,dev_shell,raid; it resolves the record and retries before ordinary validation. cwd must be absolute; dev_shell is an absolute PATH[#ATTR] reference; raid has the existing raid-name grammar. Domain validators retain diagnostics and refusal order."
+}
+#+end_src
+
+** =MemberLaunchParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "name": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LaunchAgentName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "detached": {
+      "type": "boolean",
+      "default": false
+    },
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorktreeName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "$ref": "#/definitions/LaunchOptions",
+      "default": {}
+    }
+  },
+  "required": [
+    "key",
+    "name"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SessionResizeParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "rows": {
+      "$ref": "#/definitions/LaunchDimension"
+    },
+    "cols": {
+      "$ref": "#/definitions/LaunchDimension"
+    }
+  },
+  "required": [
+    "session",
+    "rows",
+    "cols"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =LaunchState=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "starting"
+  ]
+}
+#+end_src
+
+** =HostLaunchResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/LaunchState"
+    },
+    "terminal": {
+      "$ref": "#/definitions/HostPath"
+    },
+    "attach": {
+      "$ref": "#/definitions/HostPath"
+    }
+  },
+  "required": [
+    "session",
+    "agent_name",
+    "state",
+    "terminal",
+    "attach"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =HostLaunchReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "terminal": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HostPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attach": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HostPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =MemberLaunchResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/LaunchState"
+    }
+  },
+  "required": [
+    "session",
+    "agent_name",
+    "state"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =MemberLaunchReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "session": {
+      "type": "string"
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "session"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TargetChoice=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "description"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TargetOption=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "choices": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/TargetChoice"
+      }
+    }
+  },
+  "required": [
+    "description",
+    "choices"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =RunTarget=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/TargetOption"
+      }
+    }
+  },
+  "required": [
+    "name",
+    "description",
+    "options"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TargetChoiceReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =TargetOptionReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "choices": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/TargetChoiceReply"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =RunTargetReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/TargetOptionReply"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =RunTargetList=
+
+#+begin_src json
+{
+  "type": "array",
+  "items": {
+    "$ref": "#/definitions/RunTarget"
+  }
+}
+#+end_src
+
+** =RunTargetListReply=
+
+#+begin_src json
+{
+  "type": "array",
+  "items": {
+    "$ref": "#/definitions/RunTargetReply"
+  }
+}
+#+end_src
+
+** =LaunchManifest=
+
+#+begin_src json
+{
+  "type": "string",
+  "pattern": "^/",
+  "description": "Absolute runtime manifest path, validated by the existing controller."
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -5029,6 +6493,8 @@ Compatible API-1 client reply (additive information may be absent):
 - =api1_compatibility= :: Producer result schemas describe the current daemon precisely. x-client-result-schema describes compatible API-1 replies accepted by clients: configuration/limits and newer server.status history/manifest/worktree metadata may be absent. Clients retain absence as optional data and use advertised features rather than inventing values.
 - =self_reporting= :: sessions.status exposes only the caller and its policy/activity. Worktree paths are deliberately visible. Activity is independent of lifecycle; variables update atomically and empty values remove keys. Missing or null set-worktree name clears the record; names are validated before filesystem access.
 - =session-records= :: Current session read producers emit complete endpoint-specific records. Host sessions include descriptor-free process identities and host paths; sandbox records exclude them, except the intentionally shared Worktree.path. API-1 reader schemas retain the defaults and omissions previously accepted by Rust snapshot clients. The controller retains domain records; explicit projections and a generated-read adapter preserve snapshot consumers until C15. Nested terminal and raid summaries are typed public data; their methods migrate in C05 and C11.
+- =launch-lifecycle= :: Launch keys bind endpoint actor and decoded parameters; identical retries return the original acceptance, including during recreate after the record becomes reserved. Recreate record resolution precedes normal launch validation. Acceptance state starting is not readiness. Public DTOs contain no recorded-history capability or host-selectable member worktree. Sandbox start uses current owner/run-target policy and fixed member launch arguments. Stop acceptance is not completed cleanup; host resize uses an exact session id, and sandbox detach closes its one-shot connection after acceptance. Sandbox sessions.attach remains refusal-only (-32601), before its existing trailing-input handling.
+- =positional-parameters= :: Method descriptors retain original Serde field order. Generated structs are named DTOs; decode_params<M> maps positional arrays to those names before generated decoding because Typify sorts struct fields. Optional omissions and trailing defaults remain the original ones. Schema defaults do not authorize or perform lifecycle transitions. Nullable fields without an original Serde default still require an array position; x-positional-required records this independently of named-object optionality. Member launch requires its third agent_name position (null is valid); set-worktree requires [name] or [null], while {} still clears it.
 
 * Common errors
 
@@ -5056,7 +6522,11 @@ Compatible API-1 client reply (additive information may be absent):
 - =API-1-client-compatibility= :: Method::Produced retains the current producer DTO; Method::Result uses the generated x-client-result-schema reply DTO when older API-1 daemons omitted additive information. Optional metadata without a prior fallback stays absent. Session compatibility records explicitly preserve the defaults already used by snapshot views; direct JSON commands retain original wire presence via exchange_with_wire.
 - =Variables= :: Generated parameter structs use BTreeMap<String,String>; existing SetVariables::validate enforces names/count/UTF-8 bytes/control characters in the gate and CLI, preserving diagnostics and validation order.
 - =WorktreeName= :: Generated request name is String; the existing runtime worktrees::valid_name validator retains syntax checks and refusal order. Missing/null optional name still clears the record.
-- =positional-parameters= :: The generated named parameter struct is the Serde decoder for both named objects and positional arrays. Explicit x-positional-schemas describe those arrays and are validated against the shared parameter corpus; they are not separate Rust tuple DTOs (Typify cannot represent optional trailing tuple entries).
+- =positional-parameters= :: Typify orders generated struct fields alphabetically and gives optional object fields Serde defaults. decode_params<M> maps positional arrays using generated PARAM_ORDER and MIN_POSITIONAL before generated named decoding. OpenRPC x-positional-required records nullable fields that the original sequence decoder required despite named-object optionality. Legacy reference decoders prove original field mapping, acceptance and default values. Positional array schemas stay in x-positional-schemas rather than generating tuple DTOs.
 - =result-shapes= :: Serde structs accept positional arrays even for result objects. Response::decode applies validate_result_shape recursively using the checked-in schema to require object/array kinds, required field presence and union discriminants before generated deserialization. This is a structural guard, not a general JSON Schema validator: other constraints retain their generated or named validators. Optional API-1 metadata remains optional and nullable.
 - =session-record-bridges= :: Controller lifecycle/domain records retain their ownership and existing types. HostSession/SandboxSession and SelfStatus explicitly project descriptor-free identity/worktree/creator/raid/terminal data and parse trusted lifecycle/origin strings into generated wire enums. The snapshot reader decodes generated HostSessionReply before converting to the legacy TUI/domain view until C15; its existing defaults and docker_scope alias/conflict rules remain unchanged. Terminal and raid method migrations retire their corresponding summary bridges in C05/C11.
 - =cli-json-output= :: Generated compatibility DTOs model older omission/default rules and ignore result extensions; reserializing them would lose original null/presence/extension information. exchange_with_wire validates through the associated generated result DTO then returns the original result alongside it for the JSON list commands. Readers use the typed value; JSON output uses only the already-validated original result.
+- =launch-validation= :: OperationKey, LaunchConfigurationName, LaunchAgentName, LaunchScope and LaunchManifest map to String; LaunchDimension maps to u16; option maps stay BTreeMap<String,String>. Existing controller/gate validators retain static bounds, policy checks, recreate/retry ordering and diagnostics instead of moving checks into generated deserialization. Raw decoding cases are distinct from schema-valid cases where a named semantic validator is required.
+- =launch-retry-cache= :: The controller retains its serialized acceptance cache and domain Start (including private recorded history and member worktree). Generated HostLaunchParams projects into Start; HostLaunchResult produces the acceptance. Sandbox projection decodes that known cached result into the generated DTO and emits only MemberLaunchResult fields; no host paths cross the sandbox launch reply.
+- =host-launch-omission= :: Typify cannot emit skip_serializing_if for a replaced BTreeMap field. Method OMIT_EMPTY_OBJECTS comes from x-client-omit-empty-objects and params_value<M> omits the empty host options object before a typed exchange. Nonempty options remain present and reach the existing host refusal; inbound decoding/defaults are unchanged. Strict pre-launch-options fake-daemon CLI tests cover run and resume.
+- =client-param-presence= :: ParamPresence metadata comes from x-client-param-presence. params_value<M> retains host run null agent_name/scope/dev_shell, removes the empty name for recreate, and retains sandbox run null agent_name. It never removes a nonempty supplied name or other explicit values, so invalid combinations still reach existing validation. This is caller wire-shape compatibility around generated DTOs; inbound decoding is unchanged.

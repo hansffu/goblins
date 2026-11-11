@@ -296,6 +296,29 @@ def check():
             for parameter in entry["params"]:
                 if resolve(parameter["schema"]) != params["properties"][parameter["name"]] or parameter["required"] != (parameter["name"] in params["required"]):
                     raise ValueError("parameter descriptor differs from generated params")
+            for name in entry.get("x-client-omit-empty-objects", []):
+                field=params["properties"].get(name)
+                if field is None or field.get("default") != {} or not schema_validator({"$ref":"common.json#/definitions/" + entry["x-params-schema"]["$ref"].rsplit("/",1)[1] + "/properties/" + name}).is_valid({}):
+                    raise ValueError("invalid client empty-object omission")
+            presence=entry.get("x-client-param-presence", {})
+            if presence.get("switch") is not None and presence["switch"] not in params["properties"]: raise ValueError("unknown presence switch")
+            for key, sample in [("absent-null-fields",None),("present-empty-strings","")]:
+                for name in presence.get(key,[]):
+                    if name not in params["properties"]: raise ValueError("unknown presence field")
+                    field={"$ref":entry["x-params-schema"]["$ref"]+"/properties/"+name}
+                    if not schema_validator(field).is_valid(sample): raise ValueError("invalid presence value")
+            positional = resolve(entry["x-positional-schema"])
+            order = [p["name"] for p in entry["params"]]
+            positional_required = set(entry.get("x-positional-required", []))
+            if not positional_required <= set(order): raise ValueError("unknown positional field")
+            minimum = max((i + 1 for i, name in enumerate(order) if name in params["required"] or name in positional_required), default=0)
+            def parameter_shape(value):
+                if isinstance(value, dict): return {k:parameter_shape(v) for k,v in value.items() if k != "format"}
+                if isinstance(value, list): return [parameter_shape(v) for v in value]
+                return value
+            expected_items = [params["properties"][name] for name in order] if order else False
+            if positional.get("minItems") != minimum or positional.get("maxItems") != len(order) or parameter_shape(positional.get("items")) != parameter_shape(expected_items):
+                raise ValueError(f"positional schema differs from method parameter order: {entry['name']}")
             schema_validator(entry["x-positional-schema"]).check_schema(resolve(entry["x-positional-schema"]))
             schema_validator(entry["x-params-schema"]).check_schema(params)
             schema_validator(entry["result"]["schema"]).check_schema(resolve(entry["result"]["schema"]))

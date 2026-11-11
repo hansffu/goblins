@@ -141,7 +141,12 @@ fn run() -> Result<i32, String> {
                 return worktree::run(name, base, main);
             }
             cli::Command::Targets => {
-                print!("{}", targets(&call("targets.list", json!({}))?));
+                print!(
+                    "{}",
+                    targets(&call_typed::<contract::sandbox::TargetsList>(
+                        contract::EmptyParams {}
+                    )?)
+                );
                 return Ok(0);
             }
             cli::Command::List => {
@@ -253,27 +258,38 @@ fn run() -> Result<i32, String> {
                 options,
                 ..
             } => {
-                let mut params = json!({"key":random_key()?,
-                    "name":config,"agent_name":name,"detached":true,
-                    "options":launch_options(&options)?});
-                if let Some(worktree) = worktree {
-                    params["worktree"] = json!(worktree);
-                }
-                println!("{}", call("sessions.start", params)?);
+                let params = contract::MemberLaunchParams {
+                    key: random_key()?,
+                    name: config,
+                    agent_name: name,
+                    detached: true,
+                    worktree,
+                    options: launch_options(&options)?,
+                };
+                println!(
+                    "{}",
+                    call_typed_with_wire::<contract::sandbox::SessionsStart>(params)?.1
+                );
                 return Ok(0);
             }
-            command => {
-                let (method, params) = match command {
-                    cli::Command::Kill { session } | cli::Command::Stop { session } => {
-                        ("sessions.stop", json!({"session":session}))
-                    }
-                    cli::Command::Detach => ("sessions.detach", json!({})),
-                    _ => unreachable!(),
-                };
-                let (mut socket, _) = connect()?;
-                let reply = rpc::exchange(&mut socket, json!(1), method, params)
-                    .map_err(|e| e.to_string())?;
-                println!("{reply}");
+            cli::Command::Kill { session } | cli::Command::Stop { session } => {
+                println!(
+                    "{}",
+                    call_typed_with_wire::<contract::sandbox::SessionsStop>(
+                        contract::SessionSelectorParams { session }
+                    )?
+                    .1
+                );
+                return Ok(0);
+            }
+            cli::Command::Detach => {
+                println!(
+                    "{}",
+                    call_typed_with_wire::<contract::sandbox::SessionsDetach>(
+                        contract::EmptyParams {}
+                    )?
+                    .1
+                );
                 return Ok(0);
             }
         }
@@ -513,8 +529,8 @@ fn editor_open(args: &[String]) -> Result<i32, String> {
 /// them against the configuration.
 fn launch_options(
     options: &[String],
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let mut chosen = serde_json::Map::new();
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut chosen = std::collections::BTreeMap::new();
     for option in options {
         let Some((name, choice)) = option
             .split_once('=')
@@ -524,48 +540,48 @@ fn launch_options(
                 "-o {option}: expected NAME=CHOICE (see goblin targets)"
             ));
         };
-        if chosen.insert(name.into(), json!(choice)).is_some() {
+        if chosen.insert(name.into(), choice.into()).is_some() {
             return Err(format!("-o {name} is given more than once"));
         }
     }
     Ok(chosen)
 }
 /// `goblin targets`: each configuration, then its options and choices.
-fn targets(list: &serde_json::Value) -> String {
-    let text = |v: &serde_json::Value| goblins_protocol::plain_text(v.as_str().unwrap_or(""));
+fn targets(list: &contract::RunTargetListReply) -> String {
+    let text = goblins_protocol::plain_text;
     let mut out = String::new();
-    let targets = list.as_array().map_or(&[][..], Vec::as_slice);
-    if targets.is_empty() {
+    if list.0.is_empty() {
         out.push_str("No run targets\n");
     }
-    let width = targets
+    let width = list
+        .0
         .iter()
-        .filter_map(|t| t["options"].as_object())
+        .filter_map(|t| t.options.as_ref())
         .flat_map(|o| o.keys().map(|k| k.chars().count()))
         .max()
         .unwrap_or(0);
-    for target in targets {
+    for target in &list.0 {
         out.push_str(
             format!(
                 "{}  {}",
-                text(&target["name"]),
-                text(&target["description"])
+                text(&target.name),
+                text(target.description.as_deref().unwrap_or(""))
             )
             .trim_end(),
         );
         out.push('\n');
-        for (option, declared) in target["options"].as_object().into_iter().flatten() {
-            let choices: Vec<_> = declared["choices"]
-                .as_object()
-                .into_iter()
+        for (option, declared) in target.options.iter().flatten() {
+            let choices: Vec<_> = declared
+                .choices
+                .iter()
                 .flatten()
-                .map(|(c, _)| goblins_protocol::plain_text(c))
+                .map(|(c, _)| text(c))
                 .collect();
             let line = format!(
                 "  {:width$}  {}  {}",
-                goblins_protocol::plain_text(option),
+                text(option),
                 choices.join(" | "),
-                text(&declared["description"])
+                text(declared.description.as_deref().unwrap_or(""))
             );
             out.push_str(line.trim_end());
             out.push('\n');
@@ -631,6 +647,12 @@ fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String
             Ok((2, json!(null)))
         }
     }
+}
+pub(crate) fn call_typed_with_wire<M: contract::Method>(
+    params: M::Params,
+) -> Result<(M::Result, serde_json::Value), String> {
+    let (mut socket, _) = connect()?;
+    contract::exchange_with_wire::<M>(&mut socket, json!(1), params).map_err(|e| e.to_string())
 }
 pub(crate) fn call_typed<M: contract::Method>(params: M::Params) -> Result<M::Result, String> {
     let (mut socket, _) = connect()?;
@@ -712,10 +734,15 @@ mod tests {
             {"name": "shell", "description": "", "options": {}}
         ]);
         assert_eq!(
-            targets(&list),
+            targets(&<contract::RunTargetListReply as contract::Response>::decode(list).unwrap()),
             "claude  Claude Code\n  effort  high  Reasoning effort\n  model   opus | sonnet\nshell\n"
         );
-        assert_eq!(targets(&json!([])), "No run targets\n");
+        assert_eq!(
+            targets(
+                &<contract::RunTargetListReply as contract::Response>::decode(json!([])).unwrap()
+            ),
+            "No run targets\n"
+        );
     }
     #[test]
     fn request_options_can_precede_or_follow_the_package() {

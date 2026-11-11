@@ -9,11 +9,22 @@ use std::{io, os::unix::net::UnixStream};
 #[serde(deny_unknown_fields)]
 pub struct EmptyParams {}
 
+/// Outbound field presence retained from the existing CLI callers.
+pub struct ParamPresence {
+    pub switch: Option<&'static str>,
+    pub absent_null_fields: &'static [&'static str],
+    pub present_empty_strings: &'static [&'static str],
+}
+
 pub trait Method {
     type Params: Serialize + DeserializeOwned;
     type Produced: Serialize + DeserializeOwned;
     type Result: Serialize + Response;
     const NAME: &'static str;
+    const PARAM_ORDER: &'static [&'static str];
+    const MIN_POSITIONAL: usize;
+    const OMIT_EMPTY_OBJECTS: &'static [&'static str];
+    const PRESENCE: ParamPresence;
 }
 
 mod generated {
@@ -259,12 +270,71 @@ impl Response for ServerStopResult {
     }
 }
 
+/// Decode requests using their original endpoint-specific positional field order.
+/// Typify emits alphabetic Rust fields, so wire arrays must first become named data.
+pub fn decode_params<M: Method>(value: Value) -> serde_json::Result<M::Params> {
+    let value = match value {
+        Value::Array(values) => {
+            if values.len() < M::MIN_POSITIONAL {
+                return Err(<serde_json::Error as serde::de::Error>::custom(
+                    "too few positional parameters",
+                ));
+            }
+            if values.len() > M::PARAM_ORDER.len() {
+                return Err(<serde_json::Error as serde::de::Error>::custom(
+                    "too many positional parameters",
+                ));
+            }
+            Value::Object(
+                M::PARAM_ORDER
+                    .iter()
+                    .zip(values)
+                    .map(|(name, value)| ((*name).to_string(), value))
+                    .collect(),
+            )
+        }
+        other => other,
+    };
+    serde_json::from_value(value)
+}
+
+/// Retain method-specific API-1 omission behavior that Typify cannot generate
+/// for a replaced map type. Only empty objects marked in the contract are omitted.
+pub fn params_value<M: Method>(params: M::Params) -> serde_json::Result<Value> {
+    let mut value = serde_json::to_value(params)?;
+    if let Some(object) = value.as_object_mut() {
+        let switched = M::PRESENCE
+            .switch
+            .is_some_and(|key| object.get(key).is_some_and(|v| !v.is_null()));
+        if switched {
+            for name in M::PRESENCE.present_empty_strings {
+                if object.get(*name).and_then(Value::as_str) == Some("") {
+                    object.remove(*name);
+                }
+            }
+        } else {
+            for name in M::PRESENCE.absent_null_fields {
+                object.entry((*name).to_string()).or_insert(Value::Null);
+            }
+        }
+        for name in M::OMIT_EMPTY_OBJECTS {
+            if object
+                .get(*name)
+                .is_some_and(|v| v.as_object().is_some_and(|m| m.is_empty()))
+            {
+                object.remove(*name);
+            }
+        }
+    }
+    Ok(value)
+}
+
 /// Typed dispatch for an existing transport callback, retaining its error type.
 pub fn invoke<M: Method, E: From<io::Error>>(
     params: M::Params,
     transport: impl FnOnce(&str, Value) -> Result<Value, E>,
 ) -> Result<M::Result, E> {
-    let params = serde_json::to_value(params).map_err(io::Error::other)?;
+    let params = params_value::<M>(params).map_err(io::Error::other)?;
     let reply = transport(M::NAME, params)?;
     Ok(M::Result::decode(reply)?)
 }
@@ -287,7 +357,7 @@ pub fn exchange_with_wire<M: Method>(
     id: Value,
     params: M::Params,
 ) -> io::Result<(M::Result, Value)> {
-    let wire = rpc::exchange(stream, id, M::NAME, serde_json::to_value(params)?)?;
+    let wire = rpc::exchange(stream, id, M::NAME, params_value::<M>(params)?)?;
     let result = M::Result::decode(wire.clone())?;
     Ok((result, wire))
 }
@@ -427,7 +497,7 @@ mod tests {
                 "sessions.set-state" => serde_json::from_value::<SetStateParams>(value).is_ok(),
                 "sessions.set-variables" => serde_json::from_value::<SetVariablesParams>(value)
                     .is_ok_and(|p| p.validate().is_ok()),
-                "sessions.set-worktree" => serde_json::from_value::<SetWorktreeParams>(value)
+                "sessions.set-worktree" => decode_params::<sandbox::SessionsSetWorktree>(value)
                     .is_ok_and(|p| {
                         p.name.as_ref().is_none_or(|n| {
                             (1..=100).contains(&n.len())
@@ -559,6 +629,207 @@ mod tests {
         assert_eq!(record.id, expected["id"]);
         assert_eq!(original, expected);
         server.join().unwrap();
+    }
+
+    // Reference decoders retain the original pre-migration field order and defaults.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyHostLaunch {
+        key: String,
+        configuration: String,
+        #[serde(default)]
+        name: String,
+        agent_name: Option<String>,
+        #[serde(default)]
+        cwd: Option<std::path::PathBuf>,
+        #[serde(default)]
+        scope: Option<String>,
+        #[serde(default)]
+        dev_shell: Option<String>,
+        rows: u16,
+        cols: u16,
+        #[serde(default)]
+        detached: bool,
+        #[serde(default)]
+        raid: Option<String>,
+        #[serde(default)]
+        recreate: Option<String>,
+        #[serde(skip)]
+        recorded: Option<()>,
+        #[serde(skip)]
+        worktree: Option<String>,
+        #[serde(default)]
+        options: std::collections::BTreeMap<String, String>,
+    }
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyMemberLaunch {
+        key: String,
+        name: String,
+        agent_name: Option<String>,
+        #[serde(default)]
+        detached: bool,
+        #[serde(default)]
+        worktree: Option<String>,
+        #[serde(default)]
+        options: std::collections::BTreeMap<String, String>,
+    }
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyResize {
+        session: String,
+        rows: u16,
+        cols: u16,
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacySetWorktree {
+        name: Option<String>,
+    }
+    #[test]
+    fn nullable_positional_fields_preserve_original_required_positions() {
+        for value in [
+            json!({}),
+            json!([]),
+            json!([null]),
+            json!({"name":null}),
+            json!(["branch"]),
+        ] {
+            let previous = serde_json::from_value::<LegacySetWorktree>(value.clone());
+            let current = decode_params::<sandbox::SessionsSetWorktree>(value.clone());
+            assert_eq!(previous.is_ok(), current.is_ok(), "{value}");
+            if let (Ok(previous), Ok(current)) = (previous, current) {
+                assert_eq!(previous.name, current.name);
+            }
+        }
+    }
+
+    fn lifecycle_request(endpoint: &str, method: &str, value: Value) -> serde_json::Result<Value> {
+        fn decode<M: Method>(v: Value) -> serde_json::Result<Value> {
+            serde_json::to_value(decode_params::<M>(v)?)
+        }
+        match (endpoint, method) {
+            ("host", "sessions.start") => decode::<host::SessionsStart>(value),
+            ("host", "sessions.stop") => decode::<host::SessionsStop>(value),
+            ("host", "sessions.detach") => decode::<host::SessionsDetach>(value),
+            ("host", "sessions.resize") => decode::<host::SessionsResize>(value),
+            ("sandbox", "sessions.start") => decode::<sandbox::SessionsStart>(value),
+            ("sandbox", "sessions.stop") => decode::<sandbox::SessionsStop>(value),
+            ("sandbox", "sessions.detach") => decode::<sandbox::SessionsDetach>(value),
+            ("sandbox", "targets.list") => decode::<sandbox::TargetsList>(value),
+            _ => panic!("unknown lifecycle fixture"),
+        }
+    }
+
+    #[test]
+    fn lifecycle_parameters_preserve_original_positional_order_and_defaults() {
+        for case in fixtures()["lifecycle_parameter_cases"].as_array().unwrap() {
+            let endpoint = case["endpoint"].as_str().unwrap();
+            let method = case["method"].as_str().unwrap();
+            let value = case["params"].clone();
+            let result = lifecycle_request(endpoint, method, value.clone());
+            assert_eq!(result.is_ok(), case["decoded"].as_bool().unwrap(), "{case}");
+            macro_rules! compare {
+                ($legacy:ty) => {{
+                    let previous = serde_json::from_value::<$legacy>(value);
+                    assert_eq!(previous.is_ok(), result.is_ok(), "legacy refusal: {case}");
+                    if let (Ok(previous), Ok(current)) = (previous, result) {
+                        let current = serde_json::from_value::<$legacy>(current).unwrap();
+                        assert_eq!(previous, current, "legacy field mapping: {case}");
+                    }
+                }};
+            }
+            match (endpoint, method) {
+                ("host", "sessions.start") => compare!(LegacyHostLaunch),
+                ("sandbox", "sessions.start") => compare!(LegacyMemberLaunch),
+                ("host", "sessions.resize") => compare!(LegacyResize),
+                _ => (),
+            }
+        }
+    }
+
+    #[test]
+    fn host_launch_omits_only_empty_options_from_typed_wire_requests() {
+        let value =
+            json!({"key":"k","configuration":"/manifest","name":"shell","rows":24,"cols":80});
+        let p = decode_params::<host::SessionsStart>(value.clone()).unwrap();
+        assert!(
+            params_value::<host::SessionsStart>(p)
+                .unwrap()
+                .get("options")
+                .is_none()
+        );
+        let wire = params_value::<host::SessionsStart>(
+            decode_params::<host::SessionsStart>(value.clone()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(wire["agent_name"], Value::Null);
+        assert!(wire.get("agent_name").is_some());
+        assert!(wire.get("scope").is_some());
+        assert!(wire.get("dev_shell").is_some());
+        assert_eq!(wire["detached"], false);
+        let mut resume = value.clone();
+        resume["name"] = json!("");
+        resume["recreate"] = json!("record-id");
+        let wire = params_value::<host::SessionsStart>(
+            decode_params::<host::SessionsStart>(resume.clone()).unwrap(),
+        )
+        .unwrap();
+        for field in ["name", "agent_name", "scope", "dev_shell", "options"] {
+            assert!(wire.get(field).is_none(), "{field}");
+        }
+        resume["name"] = json!("explicit-invalid");
+        assert_eq!(
+            params_value::<host::SessionsStart>(
+                decode_params::<host::SessionsStart>(resume).unwrap()
+            )
+            .unwrap()["name"],
+            "explicit-invalid"
+        );
+        let mut nonempty = value;
+        nonempty["options"] = json!({"model":"fast"});
+        let p = decode_params::<host::SessionsStart>(nonempty).unwrap();
+        assert_eq!(
+            params_value::<host::SessionsStart>(p).unwrap()["options"],
+            json!({"model":"fast"})
+        );
+        let member =
+            decode_params::<sandbox::SessionsStart>(json!({"key":"k","name":"shell"})).unwrap();
+        assert_eq!(
+            params_value::<sandbox::SessionsStart>(member).unwrap()["options"],
+            json!({})
+        );
+    }
+
+    #[test]
+    fn lifecycle_results_accept_old_metadata_and_validate_nested_records() {
+        let fixture = fixtures();
+        for case in fixture["lifecycle_result_cases"].as_array().unwrap() {
+            let value = case["result"].clone();
+            let valid = match case["schema"].as_str().unwrap() {
+                "HostLaunchReply" => HostLaunchReply::decode(value).is_ok(),
+                "MemberLaunchReply" => MemberLaunchReply::decode(value).is_ok(),
+                "RunTargetListReply" => RunTargetListReply::decode(value).is_ok(),
+                _ => panic!("unknown lifecycle result fixture"),
+            };
+            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
+        }
+        let accepted =
+            HostLaunchReply::decode(fixture["original_api1"]["host_launch"].clone()).unwrap();
+        assert!(accepted.agent_name.is_none());
+        assert!(accepted.attach.is_none());
+        assert_eq!(
+            accepted.terminal.unwrap(),
+            std::path::PathBuf::from("/host/terminal.sock")
+        );
+        assert_eq!(
+            RunTargetListReply::decode(fixture["forward_compatibility"]["run_targets"].clone())
+                .unwrap()
+                .0
+                .len(),
+            1
+        );
     }
 
     #[test]

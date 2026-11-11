@@ -6,12 +6,10 @@ use goblins_controller::host::Client;
 use goblins_protocol::contract;
 use goblins_protocol::terminal::size;
 use goblins_unix as unix;
-use serde::Serialize;
 use serde_json::json;
 use std::{os::fd::AsRawFd, path::PathBuf, sync::atomic::Ordering};
 
-/// What a host launch asks the daemon to start (`sessions.start`).
-#[derive(Serialize)]
+/// Host launch choices; the wire request also adds nonce, cwd and terminal size.
 pub struct Start {
     pub name: String,
     pub configuration: String,
@@ -19,7 +17,6 @@ pub struct Start {
     pub scope: Option<String>,
     pub dev_shell: Option<String>,
     /// Omitted when unset, so an older daemon still accepts the launch.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub raid: Option<String>,
 }
 
@@ -42,21 +39,27 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
     let mut random = [0; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let mut params = serde_json::to_value(start)?;
-    params.as_object_mut().unwrap().extend([
-        ("key".into(), json!(key)),
-        ("detached".into(), json!(detatched)),
-        ("cwd".into(), json!(std::env::current_dir()?)),
-        ("rows".into(), json!(dimensions.ws_row.max(1))),
-        ("cols".into(), json!(dimensions.ws_col.max(1))),
-    ]);
-    let launch = control.call("sessions.start", params)?;
+    let params = contract::HostLaunchParams {
+        key,
+        name: start.name,
+        configuration: start.configuration,
+        agent_name: start.agent_name,
+        scope: start.scope,
+        dev_shell: start.dev_shell,
+        raid: start.raid,
+        cwd: Some(std::env::current_dir()?),
+        rows: dimensions.ws_row.max(1),
+        cols: dimensions.ws_col.max(1),
+        detached: detatched,
+        recreate: None,
+        options: Default::default(),
+    };
+    let (launch, wire) = control.call_typed_with_wire::<contract::host::SessionsStart>(params)?;
     if detatched {
-        println!("{launch}");
+        println!("{wire}");
         return Ok(0);
     }
-    let session = launch["session"].as_str().ok_or("missing session ID")?;
-    relay(control, session, &launch)
+    relay(control, &launch.session, &wire)
 }
 
 /// `goblins resume`: recreate a recorded goblin from the current manifest,
@@ -80,16 +83,28 @@ pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool)
     let mut random = [0; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let launch = control.call(
-        "sessions.start",
-        json!({"key":key,"configuration":configuration,"recreate":id,"detached":detached,
-            "rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}),
+    let (launch, wire) = control.call_typed_with_wire::<contract::host::SessionsStart>(
+        contract::HostLaunchParams {
+            key,
+            configuration,
+            name: String::new(),
+            agent_name: None,
+            cwd: None,
+            scope: None,
+            dev_shell: None,
+            rows: dimensions.ws_row.max(1),
+            cols: dimensions.ws_col.max(1),
+            detached,
+            raid: None,
+            recreate: Some(id),
+            options: Default::default(),
+        },
     )?;
     if detached {
-        println!("{launch}");
+        println!("{wire}");
         return Ok(0);
     }
-    let session = launch["session"].as_str().ok_or("missing session ID")?;
+    let session = launch.session.as_str();
     let record = loop {
         let record =
             control.call_typed::<contract::host::SessionsGet>(contract::SessionSelectorParams {

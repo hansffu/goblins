@@ -111,6 +111,24 @@ class ContractTests(unittest.TestCase):
             self.assertNotIn(hidden, fixtures["sandbox_session"])
         self.assertEqual(fixtures["sandbox_session"]["worktree"],fixtures["host_session"]["worktree"])
 
+    def test_lifecycle_contracts_preserve_parameter_order_and_current_producers(self):
+        fixtures = contract.read("fixtures.json")
+        for case in fixtures["lifecycle_parameter_cases"]:
+            entry = contract.method(case["endpoint"],case["method"])
+            schema = entry["x-positional-schema"] if isinstance(case["params"],list) else entry["x-params-schema"]
+            self.assertEqual(contract.schema_validator(schema).is_valid(case["params"]),case["valid"],case)
+        for endpoint,name,key in [("host","sessions.start","host_launch"),("sandbox","sessions.start","member_launch"),("sandbox","targets.list","run_targets")]:
+            for result in [fixtures[key],fixtures["forward_compatibility"][key]]:
+                self.assertTrue(contract.validate_reply(endpoint,name,dict(jsonrpc="2.0",id=1,result=result)))
+        for case in fixtures["lifecycle_result_cases"]:
+            self.assertEqual(contract.schema_validator({"$ref":"common.json#/definitions/"+case["schema"]}).is_valid(case["result"]),case["valid"],case)
+        legacy=dict(jsonrpc="2.0",id=1,result=fixtures["original_api1"]["host_launch"])
+        self.assertTrue(contract.validate_reply("host","sessions.start",legacy,compatibility=True))
+        with self.assertRaises(ValidationError): contract.validate_reply("host","sessions.start",legacy)
+        for key,endpoint in [("host_launch","host"),("member_launch","sandbox")]:
+            bad=copy.deepcopy(fixtures[key]);bad["state"]="running"
+            with self.assertRaises(ValidationError): contract.validate_reply(endpoint,"sessions.start",dict(jsonrpc="2.0",id=1,result=bad))
+
     def test_shell_initialization_boundary_uses_contract_fixtures(self):
         script = (contract.ROOT / "nix/goblins/claude/rpc.sh").read_text()
         predicate = script.split("jq -e '\n", 1)[1].split("' <<<\"$init\"", 1)[0]
@@ -136,7 +154,7 @@ class ContractTests(unittest.TestCase):
 
     def test_coverage_rejects_cross_endpoint_and_notification_misassignments(self):
         wrong = copy.deepcopy(contract.read("coverage.json"))
-        wrong["pending"]["C03"]["sandbox"].remove("sessions.start")
+        wrong["pending"]["C99"] = {"sandbox":["server.status"]}
         with self.assertRaisesRegex(ValueError, "sandbox coverage"):
             contract.check_coverage(wrong)
         wrong = copy.deepcopy(contract.read("coverage.json"))
@@ -170,7 +188,7 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "host coverage"):
             contract.check_coverage(sources=changed)
         assigned = copy.deepcopy(contract.read("coverage.json"))
-        assigned["pending"]["C03"]["host"].append("server.new")
+        assigned["pending"]["C99"] = {"host":["server.new"]}
         contract.check_coverage(assigned, changed)
 
     def test_new_emitted_notification_requires_an_exchange_assignment(self):
@@ -315,6 +333,156 @@ class HistoricalClientTests(unittest.TestCase):
                 self.assertEqual(len(reads),2)
                 self.assertTrue(all(c["params"] == {"session":record["id"]} for c in reads))
 
+    def test_lifecycle_cli_binds_methods_and_preserves_ack_extensions(self):
+        binary=os.environ.get("GOBLINS_LOCAL_CONTROLLER")
+        if binary is None:
+            import re
+            binary=re.search(r'exec (\S+)',app().read_text()).group(1)
+        fixture=contract.read("fixtures.json")
+        for command,method in [("stop","sessions.stop"),("detach","sessions.detach")]:
+            with tempfile.TemporaryDirectory(prefix="gc-lifecycle-") as root:
+                state=Path(root)/"state";state.mkdir(mode=0o700)
+                result={"accepted":True,"future":{"kept":True}}; errors=[];calls=[]
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.settimeout(5);listener.bind(str(state/"host.sock"));listener.listen()
+                    def serve():
+                        try:
+                            peer,_=listener.accept()
+                            with peer:
+                                peer.settimeout(5);init=receive(peer)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=init["id"],result=fixture["historical_api1"]["host_initialize"])))
+                                call=receive(peer);calls.append(call)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=result)))
+                        except Exception as error: errors.append(error)
+                    server=threading.Thread(target=serve,daemon=True);server.start()
+                    cli=subprocess.run([binary,"--state-dir",str(state),command,"goblin"],text=True,capture_output=True,timeout=10)
+                    server.join(timeout=6);self.assertFalse(server.is_alive());self.assertEqual(errors,[])
+                    self.assertEqual(calls[0]["method"],method);self.assertEqual(calls[0]["params"],{"session":"goblin"})
+                    self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
+
+    def test_run_and_resume_omit_options_for_strict_older_daemons(self):
+        binary=os.environ.get("GOBLINS_LOCAL_CONTROLLER")
+        if binary is None:
+            import re
+            binary=re.search(r'exec (\S+)',app().read_text()).group(1)
+        fixtures=contract.read("fixtures.json")
+        legacy=contract.schema_validator(fixtures["pre_launch_options_api1"]["host_start_params"])
+        for command in ("run","resume"):
+            with tempfile.TemporaryDirectory(prefix="gc-launch-") as root:
+                root=Path(root);state=root/"state";state.mkdir(mode=0o700)
+                manifest=root/"manifest.json"
+                manifest.write_text(json.dumps({"api":2,"helper_api":6,"goblins":{"shell":{"build_spec":"/unused","args":[],"env":{},"client_package":"/unused","helper":"/unused","flake":"unused"}}}))
+                result=fixtures["forward_compatibility"]["host_launch"];errors=[];calls=[]
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.settimeout(5);listener.bind(str(state/"host.sock"));listener.listen()
+                    def serve():
+                        try:
+                            peer,_=listener.accept()
+                            with peer:
+                                peer.settimeout(5);init=receive(peer)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=init["id"],result=fixtures["historical_api1"]["host_initialize"])))
+                                call=receive(peer);calls.append(call)
+                                try: legacy.validate(call["params"])
+                                except ValidationError as error:
+                                    peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],error=dict(code=-32602,message=str(error)))))
+                                else: peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=result)))
+                        except Exception as error: errors.append(error)
+                    server=threading.Thread(target=serve,daemon=True);server.start()
+                    argument="shell" if command=="run" else "record-id"
+                    cli=subprocess.run([binary,"--runtime",str(manifest),"--state-dir",str(state),command,argument,"--detached"],text=True,capture_output=True,timeout=10)
+                    server.join(timeout=6);self.assertFalse(server.is_alive());self.assertEqual(errors,[])
+                    self.assertEqual(calls[0]["method"],"sessions.start")
+                    expected={"key","configuration","rows","cols","detached"}
+                    expected |= {"name","agent_name","scope","dev_shell","cwd"} if command=="run" else {"recreate"}
+                    self.assertEqual(set(calls[0]["params"]),expected)
+                    if command=="run":
+                        for field in ("agent_name","scope","dev_shell"): self.assertIsNone(calls[0]["params"][field])
+                    self.assertNotIn("options",calls[0]["params"])
+                    self.assertEqual(calls[0]["params"]["configuration"],str(manifest))
+                    self.assertEqual(calls[0]["params"].get("recreate"),None if command=="run" else "record-id")
+                    self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
+
+    def test_sandbox_run_keeps_exact_named_and_unset_request_fields(self):
+        import errno
+        import shlex
+        import sys
+        target=Path(os.environ.get("CARGO_TARGET_DIR",contract.ROOT/"target"))
+        binary=(target/"debug"/"goblins-client").resolve()
+        fixtures=contract.read("fixtures.json")
+        with tempfile.TemporaryDirectory(prefix="gc-member-") as root:
+            root=Path(root);library=root/"redirect.so"
+            compile=subprocess.run([*shlex.split(os.environ.get("CC","cc")),"-shared","-fPIC",str(contract.ROOT/"tests/request_socket_redirect.c"),"-o",str(library)],text=True,capture_output=True)
+            self.assertEqual(compile.returncode,0,compile.stderr)
+            import ctypes
+            guard=ctypes.CDLL(str(library),use_errno=True)
+            block_connect=guard.block_connect_syscall;block_connect.argtypes=[];block_connect.restype=ctypes.c_int
+            def isolate():
+                if block_connect()!=0: raise OSError(ctypes.get_errno(),"install connect denial before exec")
+            # Prove the guard independently of the CLI and any daemon: a
+            # private listener is reachable normally, but the guarded child
+            # must receive EACCES without creating a queued connection.
+            sentinel=root/"sentinel.sock"
+            with socket.socket(socket.AF_UNIX) as listener:
+                listener.bind(str(sentinel));listener.listen()
+                with socket.socket(socket.AF_UNIX) as reachable:
+                    reachable.connect(str(sentinel));accepted,_=listener.accept();accepted.close()
+                probe="import socket,sys; s=socket.socket(socket.AF_UNIX); print(s.connect_ex(sys.argv[1]))"
+                checked=subprocess.run([sys.executable,"-c",probe,str(sentinel)],env={**os.environ,"LD_PRELOAD":""},preexec_fn=isolate,text=True,capture_output=True,timeout=10)
+                self.assertEqual(checked.returncode,0,checked.stderr)
+                self.assertEqual(checked.stdout.strip(),str(errno.EACCES))
+                listener.setblocking(False)
+                with self.assertRaises(BlockingIOError): listener.accept()
+            # No preload means the real connect syscall is denied, with no RPC
+            # bytes reaching even the already-connected fake peer.
+            negative=root/"no-hook.sock"
+            with socket.socket(socket.AF_UNIX) as listener:
+                listener.bind(str(negative));listener.listen()
+                with socket.socket(socket.AF_UNIX) as fake:
+                    fake.connect(str(negative));peer,_=listener.accept()
+                    with peer:
+                        cli=subprocess.run([str(binary),"run","shell"],env={**os.environ,"LD_PRELOAD":""},preexec_fn=isolate,pass_fds=(fake.fileno(),),text=True,capture_output=True,timeout=10)
+                        self.assertNotEqual(cli.returncode,0)
+                        self.assertIn("(os error 13)",cli.stderr)
+                        fake.close();peer.settimeout(2);self.assertEqual(peer.recv(1),b"")
+            for named in (False,True):
+                path=root/("named.sock" if named else "unset.sock");calls=[];errors=[]
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.settimeout(5);listener.bind(str(path));listener.listen()
+                    def serve():
+                        try:
+                            peer,_=listener.accept()
+                            with peer:
+                                peer.settimeout(5);init=receive(peer)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=init["id"],result=fixtures["sandbox_initialize"])))
+                                call=receive(peer);calls.append(call)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=fixtures["forward_compatibility"]["member_launch"])))
+                        except Exception as error: errors.append(error)
+                    server=threading.Thread(target=serve,daemon=True)
+                    preload=str(library)+(":"+os.environ["LD_PRELOAD"] if os.environ.get("LD_PRELOAD") else "")
+                    fake=socket.socket(socket.AF_UNIX);fake.connect(str(path))
+                    env={**os.environ,"LD_PRELOAD":preload,"GOBLINS_TEST_FAKE_REQUEST_FD":str(fake.fileno())}
+                    args=[str(binary),"run","shell"]+(["--name","named","--worktree","branch","-o","model=fast"] if named else [])
+                    # Install the pre-exec guard before creating the server
+                    # thread, so no Python lock can be inherited from it.
+                    child=subprocess.Popen(args,env=env,pass_fds=(fake.fileno(),),preexec_fn=isolate,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                    server.start()
+                    try:
+                        output,error=child.communicate(timeout=10)
+                        cli=subprocess.CompletedProcess(args,child.returncode,output,error)
+                    finally:
+                        if child.poll() is None:
+                            child.kill();child.communicate()
+                        fake.close()
+                    server.join(timeout=6);self.assertFalse(server.is_alive());self.assertEqual(errors,[])
+                    self.assertEqual(cli.returncode,0,cli.stderr)
+                    self.assertEqual(calls[0]["method"],"sessions.start")
+                    params=calls[0]["params"]
+                    self.assertEqual(set(params),{"key","name","agent_name","detached","options"}|({"worktree"} if named else set()))
+                    self.assertEqual(params["name"],"shell");self.assertEqual(params["agent_name"],"named" if named else None)
+                    self.assertIs(params["detached"],True);self.assertEqual(params["options"],{"model":"fast"} if named else {})
+                    if named:self.assertEqual(params["worktree"],"branch")
+                    self.assertEqual(json.loads(cli.stdout),fixtures["forward_compatibility"]["member_launch"])
+
     def test_real_status_cli_accepts_historical_api1_daemon(self):
         output = self.legacy_cli("status")
         self.assertIn("Server running", output)
@@ -385,9 +553,9 @@ class ContractBoundaryTests(unittest.TestCase):
         self.assertEqual(invoke("sessions.status", {})["agent_state"], "working")
         result = invoke("sessions.set-variables", [{"session_id":"contract-test"}])
         self.assertEqual(result, {"accepted":True, "recorded":True})
-        self.assertEqual(invoke("sessions.set-worktree", []), {"worktree":None})
+        self.assertEqual(invoke("sessions.set-worktree", {}), {"worktree":None})
         self.assertEqual(invoke("sessions.set-worktree", {"name":None}), {"worktree":None})
-        for method, params in [("sessions.set-state", {"state":"running"}), ("sessions.set-variables", {"variables":{"Bad":"x"}}), ("sessions.set-worktree", {"name":"../escape"})]:
+        for method, params in [("sessions.set-state", {"state":"running"}), ("sessions.set-variables", {"variables":{"Bad":"x"}}), ("sessions.set-worktree", {"name":"../escape"}), ("sessions.set-worktree", [])]:
             with self.assertRaises(ValueError) as error:
                 invoke(method, params)
             self.assertEqual(error.exception.args[0]["code"], -32602)
