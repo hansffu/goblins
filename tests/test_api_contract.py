@@ -15,6 +15,19 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_permission_decision_contract_preserves_selectors_and_client_fallbacks(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["permission_decision_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params("host","permissions.decide",case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params("host","permissions.decide",case["params"])
+        for case in fixtures["permission_decision_result_cases"]:
+            reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+            self.assertTrue(contract.validate_reply("host","permissions.decide",reply,compatibility=True))
+            if case["valid"]:self.assertTrue(contract.validate_reply("host","permissions.decide",reply))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply("host","permissions.decide",reply)
+
     def test_editor_contract_preserves_nested_parameter_forms_and_precise_results(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["editor_parameter_cases"]:
@@ -1013,6 +1026,14 @@ class ContractBoundaryTests(unittest.TestCase):
         reply = receive(peer)
         contract.validate_reply("host", name, reply)
         return reply
+
+    def test_permission_decision_binding_at_live_host_boundary(self):
+        peer=self.raw()
+        self.assertEqual(self.exchange(peer,"permissions.decide",{},1)["error"]["code"],-32001)
+        self.exchange(peer,"initialize",dict(api=1),2)
+        for index,case in enumerate(contract.read("fixtures.json")["permission_decision_parameter_cases"],3):
+            reply=self.exchange(peer,"permissions.decide",case["params"],index)
+            self.assertEqual(reply["error"]["code"],-32004 if case["valid"] else -32602,str(case))
 
     def test_parameter_forms_bounds_and_initialization_precedence(self):
         for value in ({}, [], None, {"api": None}, {"api": True}, {"api": -1}, {"api": 2**32}, {"api": 1, "extra": 1}, [1, 2]):

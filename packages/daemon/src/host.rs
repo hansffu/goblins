@@ -170,10 +170,18 @@ impl Client {
         self.next += 1;
         goblins_protocol::messages::exchange(&mut self.stream, json!(self.next), method, params)
     }
-    pub fn decide(&mut self, p: &PermissionRecord, approved: bool) -> Result<Value> {
-        self.call(
-            "permissions.decide",
-            json!({"session":p.session,"request":p.id,"approval":p.approval,"approved":approved}),
+    pub fn decide(
+        &mut self,
+        p: &PermissionRecord,
+        approved: bool,
+    ) -> Result<(contract::PermissionDecisionReply, Value)> {
+        self.call_typed_with_wire::<contract::host::PermissionsDecide>(
+            contract::PermissionDecisionParams {
+                session: p.session.clone(),
+                request: p.id.clone(),
+                approval: p.approval.clone(),
+                approved,
+            },
         )
     }
     pub fn subscribe(mut self) -> Result<Subscription> {
@@ -262,6 +270,79 @@ pub fn decision<'a>(line: &str, snapshot: &'a Snapshot) -> Option<(&'a Permissio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_decisions_bind_generated_calls_and_preserve_plain_wire_results() {
+        use std::io::Write;
+        let _no_forks = goblins_unix::no_forks();
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        let cases = fixtures["permission_decision_result_cases"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let record = PermissionRecord {
+            kind: "package".into(),
+            id: "a".into(),
+            session: "session-a".into(),
+            agent_name: "snikk".into(),
+            approval: "approval-a".into(),
+            package: "hello".into(),
+            reason: "tests".into(),
+            state: "pending".into(),
+            approved: None,
+            preview: None,
+            message: None,
+            name: None,
+            started_at: None,
+            log: None,
+        };
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        stream.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+        peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+        // Keep the client inside the scope: unwinding closes its socket,
+        // then joins the server before the no-forks guard can be released.
+        std::thread::scope(|scope| {
+            let mut client = Client {
+                instance: "test".into(),
+                features: vec![],
+                stream,
+                next: 0,
+            };
+            let replies = cases.clone();
+            let server = scope.spawn(move || {
+                for (i, case) in replies.iter().enumerate() {
+                    let call = rpc::read(&mut peer).unwrap();
+                    assert_eq!(call["method"], contract::host::PermissionsDecide::NAME);
+                    assert_eq!(
+                        call["params"],
+                        json!({"session":"session-a","request":"a","approval":"approval-a","approved":i%2==0})
+                    );
+                    peer.write_all(
+                        &rpc::encode(&rpc::result(call["id"].clone(), case["result"].clone())).unwrap(),
+                    )
+                    .unwrap();
+                }
+            });
+            for (i, case) in cases.iter().enumerate() {
+                let (reply, wire) = client.decide(&record, i % 2 == 0).unwrap();
+                assert_eq!(wire, case["result"]);
+                assert_eq!(
+                    reply.accepted,
+                    wire.get("accepted").and_then(Value::as_bool)
+                );
+                assert_eq!(
+                    reply.request.as_deref(),
+                    wire.get("request").and_then(Value::as_str)
+                );
+                assert_eq!(
+                    reply.approved,
+                    wire.get("approved").and_then(Value::as_bool)
+                );
+            }
+            server.join().unwrap();
+        });
+    }
 
     #[test]
     fn generated_exec_send_binds_stdio_without_consuming_borrowed_descriptors() {

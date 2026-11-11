@@ -10265,5 +10265,168 @@
       },
       "valid": true
     }
+  ],
+  "permission_decision": {
+    "session": "session-a",
+    "request": "a",
+    "approval": "approval-a",
+    "approved": false
+  },
+  "permission_decision_parameter_cases": [
+    {
+      "params": {
+        "session": "session-a",
+        "request": "a",
+        "approval": "approval-a",
+        "approved": false
+      },
+      "valid": true
+    },
+    {
+      "params": [
+        "session-a",
+        "a",
+        "approval-a",
+        true
+      ],
+      "valid": true
+    },
+    {
+      "params": {
+        "session": "",
+        "request": "not an id",
+        "approval": "",
+        "approved": true
+      },
+      "valid": true
+    },
+    {
+      "params": [],
+      "valid": false
+    },
+    {
+      "params": null,
+      "valid": false
+    },
+    {
+      "params": [
+        "s",
+        "r",
+        "a"
+      ],
+      "valid": false
+    },
+    {
+      "params": [
+        "s",
+        "r",
+        "a",
+        true,
+        1
+      ],
+      "valid": false
+    },
+    {
+      "params": {
+        "session": "s",
+        "request": "r",
+        "approval": "a"
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "session": "s",
+        "request": "r",
+        "approval": "a",
+        "approved": null
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "session": "s",
+        "request": "r",
+        "approval": "a",
+        "approved": 1
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "session": "s",
+        "request": "r",
+        "approval": "a",
+        "approved": true,
+        "actor": "host"
+      },
+      "valid": false
+    }
+  ],
+  "permission_decision_result_cases": [
+    {
+      "result": {
+        "accepted": true,
+        "request": "a",
+        "approved": true
+      },
+      "valid": true
+    },
+    {
+      "result": {
+        "accepted": true,
+        "request": "a",
+        "approved": false,
+        "extension": "new"
+      },
+      "valid": true
+    },
+    {
+      "result": {
+        "accepted": false,
+        "request": "a",
+        "approved": true
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "accepted": true,
+        "request": "a"
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "accepted": true,
+        "request": 1,
+        "approved": true
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "accepted": true,
+        "request": "a",
+        "approved": 1
+      },
+      "valid": false
+    },
+    {
+      "result": {},
+      "valid": false
+    },
+    {
+      "result": null,
+      "valid": false
+    },
+    {
+      "result": [],
+      "valid": false
+    },
+    {
+      "result": "legacy",
+      "valid": false
+    }
   ]
 }

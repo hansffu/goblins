@@ -5281,6 +5281,82 @@
     "EditorDiagnostic": {
       "type": "string",
       "maxLength": 512
+    },
+    "PermissionDecisionParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "request": {
+          "type": "string"
+        },
+        "approval": {
+          "type": "string"
+        },
+        "approved": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session",
+        "request",
+        "approval",
+        "approved"
+      ],
+      "additionalProperties": false
+    },
+    "PermissionDecisionResult": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "request": {
+          "type": "string"
+        },
+        "approved": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "accepted",
+        "request",
+        "approved"
+      ],
+      "additionalProperties": true
+    },
+    "PermissionDecisionReply": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "request": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approved": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "accepted",
+        "request",
+        "approved"
+      ],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -6106,6 +6182,25 @@
       ],
       "minItems": 2,
       "maxItems": 2
+    },
+    "PermissionDecisionParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "boolean"
+        }
+      ],
+      "minItems": 4,
+      "maxItems": 4
     }
   },
   "x-request-constraints": {

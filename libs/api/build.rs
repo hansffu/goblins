@@ -126,6 +126,7 @@ fn main() {
         "DevShellLockReply".to_string(),
         "DevShellPreviewReply".to_string(),
         "EditorOpenReply".to_string(),
+        "PermissionDecisionReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(

@@ -147,6 +147,20 @@ pub trait Response: DeserializeOwned {
 mod preview;
 pub use preview::preview_reply;
 
+impl Response for PermissionDecisionReply {
+    const SCHEMA: &'static str = "PermissionDecisionReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            accepted: value.get("accepted").and_then(Value::as_bool),
+            request: value
+                .get("request")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            approved: value.get("approved").and_then(Value::as_bool),
+        })
+    }
+}
+
 impl Response for EditorOpenReply {
     const SCHEMA: &'static str = "EditorOpenReply";
     fn decode(value: Value) -> io::Result<Self> {
@@ -644,6 +658,36 @@ pub fn initialize(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn permission_decision_requests_preserve_original_decode_and_order() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Old {
+            session: String,
+            request: String,
+            approval: String,
+            approved: bool,
+        }
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+        for case in fixtures["permission_decision_parameter_cases"]
+            .as_array()
+            .unwrap()
+        {
+            let old = serde_json::from_value::<Old>(case["params"].clone());
+            let new =
+                super::decode_params::<super::host::PermissionsDecide>(case["params"].clone());
+            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
+            assert_eq!(new.is_ok(), case["valid"].as_bool().unwrap(), "{case}");
+            if let (Ok(old), Ok(new)) = (old, new) {
+                assert_eq!(old.session, new.session);
+                assert_eq!(old.request, new.request);
+                assert_eq!(old.approval, new.approval);
+                assert_eq!(old.approved, new.approved);
+            }
+        }
+    }
+
     #[test]
     fn devshell_app_requests_match_original_decoders_and_validators() {
         #[derive(serde::Deserialize)]

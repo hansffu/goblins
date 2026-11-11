@@ -1182,6 +1182,77 @@
       },
       "x-client-result-normalization": "terminal-close-fields",
       "x-client-wire-result-schema": {}
+    },
+    {
+      "name": "permissions.decide",
+      "x-rust-name": "PermissionsDecide",
+      "description": "Approve or deny a pending request by immutable session, request and approval identities. All fields are required; named or ordered [session,request,approval,approved] forms are retained, unknown fields/null params are refused. String selectors are not prevalidated as identifiers: existing record lookup and identity/state checks determine absent versus stale errors. A located raid-owner request is refused before stale-identity checks; use raid methods instead. A dev shell approval requires its prepared preview identity; denial can cancel evaluation. Live requester/cancellation and runtime capacity checks retain their order. The result acknowledges the decision, not grant readiness, and echoes request/approved. No RPC parameter selects the deciding actor; the host endpoint supplies it.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/PermissionDecisionParams/properties/session"
+          }
+        },
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/PermissionDecisionParams/properties/request"
+          }
+        },
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/PermissionDecisionParams/properties/approval"
+          }
+        },
+        {
+          "name": "approved",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/PermissionDecisionParams/properties/approved"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/PermissionDecisionResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters or raid-owner request"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale decision, withdrawn requester or unfinished dev shell preview"
+        },
+        {
+          "code": -32010,
+          "message": "Runtime capacity exceeded"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/PermissionDecisionParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/PermissionDecisionParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/PermissionDecisionReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "permission-decision-fields"
     }
   ],
   "x-notifications": [

@@ -16,6 +16,7 @@ SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
+    "permission-decision-fields": "Independently read boolean accepted/approved and string request for the typed projection; successful bodies remain otherwise ignored, and the plain frontend prints the original validated JSON.",
     "editor-open-fields": "Read signed i64 code and string message independently; absent/malformed fields and non-objects retain exit code 1 and no message as fallbacks.",
     "devshell-preview-display": "Normalize recognized preview fields independently while preserving CLI/TUI numeric display fallbacks and object/array side presence; reject non-object diff results.",
     "devshell-lock-fields": "Read string path or absent, unsigned u64 generation or zero, arbitrary lock JSON or null.",
@@ -64,6 +65,8 @@ def normalize_reply(profile, result):
     if profile == "devshell-lock-fields":
         generation=fields.get("generation")
         return dict(path=text("path"), lock=fields.get("lock"), generation=generation if type(generation) is int and 0 <= generation < 2**64 else 0)
+    if profile == "permission-decision-fields":
+        return dict(accepted=fields.get("accepted") if type(fields.get("accepted")) is bool else None,approved=fields.get("approved") if type(fields.get("approved")) is bool else None,request=text("request"))
     if profile == "editor-open-fields":
         code=fields.get("code")
         return dict(code=code if type(code) is int and -(2**63)<=code<2**63 else None,message=text("message"))
@@ -547,7 +550,7 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-request-constraints" in entry:

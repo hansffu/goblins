@@ -3,8 +3,7 @@
     "C09": {
       "host": [
         "permissions.list",
-        "permissions.get",
-        "permissions.decide"
+        "permissions.get"
       ],
       "sandbox": [
         "permissions.request"

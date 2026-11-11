@@ -295,7 +295,11 @@ Returns one permission request.
 Approves or denies a pending request. All three identities must match the pending record; a raid-owner request is resolved with =raids.set_owner= or =raids.destroy= instead.
 
 - Input :: ={"session", "request", "approval", "approved": bool}=
-- Output :: ={"accepted": true, "request", "approved"}=. Acceptance of an approval does not mean the grant is ready; follow the record's =state=.
+- Output :: ={"accepted": true, "request", "approved"}=. Acceptance of an approval does not mean the grant is ready; follow the record's =state=. All three result fields are required; =request= and =approved= echo the decision, and result additions are allowed.
+
+The positional request is =[session, request, approval, approved]=; all four fields are required. Null params, wrong types and unknown fields are refused. String selectors retain structural string decoding without an early identifier check: absent records return =-32004=, and mismatched identities/non-pending state return =-32009=. A located =raid-owner= record is refused with =-32602= before the stale-identity check. Approving a dev shell refresh requires its prepared preview identity; denial can cancel the evaluation. Withdrawn requesters and runtime capacity retain their existing checks; queue capacity is =-32010=. The host endpoint derives the actor. The same acknowledgment shape covers host-command decisions, and acceptance still does not imply that the command started or the grant is ready.
+
+Compatible frontends retain success for any otherwise-valid result body, including non-objects; they ignore the acknowledgment fields. The Rust client projects recognized fields into a generated reply while returning the original validated JSON for the plain frontend's =DECISION= output. Emacs keeps its ignored-result callback and checked request fixture.
 
 ** History
 

@@ -81,7 +81,7 @@ pub fn serve(state: PathBuf) -> Result<()> {
                 _ => {
                     if let Some((p, yes)) = decision(&command, &subscription.snapshot) {
                         match client.decide(p, yes) {
-                            Ok(r) => writeln!(output, "DECISION {}", escaped_json(&r)?)?,
+                            Ok((_, wire)) => writeln!(output, "DECISION {}", escaped_json(&wire)?)?,
                             Err(e) => writeln!(
                                 output,
                                 "DECISION rejected: {}",

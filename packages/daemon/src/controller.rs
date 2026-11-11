@@ -801,14 +801,7 @@ impl From<contract::HostLaunchParams> for Start {
 struct RequestId {
     request: String,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Decision {
-    session: String,
-    request: String,
-    approval: String,
-    approved: bool,
-}
+type Decision = contract::PermissionDecisionParams;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Filter {
@@ -2627,7 +2620,11 @@ impl Controller {
             }
         }
         self.dirty = true;
-        Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
+        Ok(json!(contract::PermissionDecisionResult {
+            accepted: true,
+            request: p.request,
+            approved: p.approved,
+        }))
     }
     /// A refresh to this sandbox's current generation, or to one in its
     /// auto-approve set, grants no new trust: the host launched or approved it.
@@ -2782,7 +2779,10 @@ impl Controller {
                         .ok_or_else(missing)?
                 ))
             }
-            "permissions.decide" => self.decide(params(value)?, "host"),
+            contract::host::PermissionsDecide::NAME => self.decide(
+                contract_params::<contract::host::PermissionsDecide>(value)?,
+                "host",
+            ),
             "state.subscribe" => {
                 let _: Empty = params(value)?;
                 if c.subscription.is_some() {
@@ -4261,6 +4261,47 @@ mod tests {
                "agent_name":agent_name,"rows":24,"cols":100})
     }
     #[test]
+    fn decision_contract_keeps_lookup_and_raid_refusal_before_identity_checks() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = connection(Role::Host);
+        let decide = |d: &mut Controller, host: &mut Connection, request: &str| {
+            d.host(
+                host,
+                contract::host::PermissionsDecide::NAME,
+                json!(["wrong session", request, "wrong approval", true]),
+            )
+        };
+        assert_eq!(
+            decide(&mut d, &mut host, "not an identifier")
+                .unwrap_err()
+                .0,
+            -32004
+        );
+        d.permissions.push_back(PermissionRecord {
+            kind: "raid-owner".into(),
+            id: "a".into(),
+            session: "session-a".into(),
+            agent_name: "snikk".into(),
+            approval: "approval-a".into(),
+            package: "raid".into(),
+            reason: "tests".into(),
+            state: "pending".into(),
+            approved: None,
+            preview: None,
+            message: None,
+            name: None,
+            started_at: None,
+            log: None,
+        });
+        assert_eq!(decide(&mut d, &mut host, "a").unwrap_err().0, -32602);
+        d.permissions.back_mut().unwrap().kind = "package".into();
+        assert_eq!(decide(&mut d, &mut host, "a").unwrap_err().0, -32009);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn generated_launch_dispatch_preserves_positional_retry_identity_and_private_fields() {
         let mut d = daemon();
         let path = d.state.clone();
@@ -5447,7 +5488,7 @@ mod tests {
             .find(|r| r.id == request)
             .unwrap()
             .clone();
-        d.decide(
+        let accepted = d.decide(
             Decision {
                 session: "a".into(),
                 request: request.clone(),
@@ -5457,6 +5498,10 @@ mod tests {
             "host",
         )
         .unwrap();
+        assert_eq!(
+            accepted,
+            json!({"accepted":true,"request":request,"approved":true})
+        );
         assert_eq!(
             d.permissions
                 .iter()
@@ -7210,7 +7255,7 @@ mod tests {
             (d.permissions.back().unwrap().clone(), peer)
         };
         let (denied, _peer) = request(&mut d, "package");
-        d.decide(
+        let accepted = d.decide(
             Decision {
                 session: "a".into(),
                 request: denied.id.clone(),
@@ -7220,6 +7265,10 @@ mod tests {
             "host",
         )
         .unwrap();
+        assert_eq!(
+            accepted,
+            json!({"accepted":true,"request":denied.id,"approved":false})
+        );
         assert_eq!(record(&d).packages.denied, ["hello"]);
         let _peer = request(&mut d, "package");
         sender

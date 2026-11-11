@@ -10,7 +10,7 @@ use super::conflict;
 use super::missing;
 use super::params;
 use goblins_jsonrpc as rpc;
-use goblins_protocol::rpc::HostCommand;
+use goblins_protocol::{contract, rpc::HostCommand};
 use goblins_runtime::Command;
 use goblins_runtime::HostOutcome;
 use serde::Deserialize;
@@ -399,7 +399,11 @@ impl Controller {
             );
         }
         self.dirty = true;
-        Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
+        Ok(json!(contract::PermissionDecisionResult {
+            accepted: true,
+            request: p.request,
+            approved: p.approved,
+        }))
     }
 
     fn finish_host_job(&mut self, job: Job, outcome: Result<HostOutcome, String>) {

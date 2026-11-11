@@ -123,6 +123,26 @@
     (should (equal (oref (magit-current-section) value) "a"))
     (should-not (string-match-p "Try a live grant" (buffer-string)))))
 
+(ert-deftest goblins-permission-decision-contract-fixture ()
+  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+                                 (file-name-directory (file-truename (locate-library "goblins")))))
+         (fixtures (with-temp-buffer
+                     (insert-file-contents file)
+                     (json-parse-buffer :object-type 'plist :false-object :json-false :null-object nil)))
+         (params (plist-get fixtures :permission_decision)))
+    (dolist (approved '(nil t))
+      (goblins-test--buffer
+        (let ((goblins--connection 'test) sent)
+          (cl-letf (((symbol-function 'goblins--request)
+                     (lambda (method request callback)
+                       (setq sent (list method request))
+                       ;; The historical callback ignores successful bodies.
+                       (funcall callback [legacy]))))
+            (goblins--decide-record (goblins-test--request "a") approved))
+          (let ((expected (copy-sequence params)))
+            (setf (plist-get expected :approved) (if approved t :json-false))
+            (should (equal sent (list 'permissions.decide expected)))))))))
+
 (ert-deftest goblins-live-details-and-approval-use-the-displayed-identity ()
   (goblins-test--buffer
     (goblins-test--goto-agent "session-a")
