@@ -3403,3 +3403,437 @@ fn c17a_manifest_owner_root_transfer_and_catalogue_error_precedence_closes_raw_f
         fs::remove_dir_all(root).unwrap();
     }
 }
+mod c17b1_original {
+    use super::*;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum SpawnKind {
+        Exec,
+        Attach,
+        Terminal { exit_report: Option<u64> },
+    }
+}
+#[test]
+fn c17b1_spawn_kind_original_raw_value_forms_traits_and_exact_diagnostics() {
+    fn required<T: Copy + Clone + std::fmt::Debug + Eq>() {}
+    required::<crate::SpawnKind>();
+    let cases = [
+        "\"Exec\"",
+        "\"Attach\"",
+        "{\"Exec\":null}",
+        "{\"Attach\":null}",
+        "{\"Terminal\":{}}",
+        "{\"Terminal\":{\"exit_report\":null}}",
+        "{\"Terminal\":{\"exit_report\":0}}",
+        "{\"Terminal\":{\"exit_report\":18446744073709551615}}",
+        "{\"Terminal\":{\"exit_report\":1.0}}",
+        "{\"Terminal\":{\"exit_report\":-1}}",
+        "{\"Terminal\":{\"exit_report\":18446744073709551616}}",
+        "{\"Terminal\":{\"exit_report\":true}}",
+        "{\"Terminal\":{\"exit_report\":\"1\"}}",
+        "{\"Terminal\":{\"extra\":true}}",
+        "{\"Terminal\":{\"exit_report\":1,\"extra\":[]}}",
+        "{\"Terminal\":[]}",
+        "{\"Terminal\":[null]}",
+        "{\"Terminal\":[1]}",
+        "{\"Terminal\":[1,2]}",
+        "{\"Terminal\":null}",
+        "\"Terminal\"",
+        "{\"Exec\":{}}",
+        "{\"Exec\":[]}",
+        "{\"Terminal\":{\"exit_report\":1,\"exit_report\":2}}",
+        "{\"Exec\":null,\"Attach\":null}",
+        "\"exec\"",
+        "\"Unknown\"",
+        "{}",
+        "null",
+        "[]",
+        "0",
+        "true",
+    ];
+    for input in cases {
+        let old = serde_json::from_str::<c17b1_original::SpawnKind>(input)
+            .map(|v| (format!("{v:?}"), serde_json::to_string(&v).unwrap()))
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_str::<crate::SpawnKind>(input)
+            .map(|v| (format!("{v:?}"), serde_json::to_string(&v).unwrap()))
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, old, "raw {input}");
+        let value: Value = serde_json::from_str(input).unwrap();
+        let old = serde_json::from_value::<c17b1_original::SpawnKind>(value.clone())
+            .map(|v| (format!("{v:?}"), serde_json::to_value(v).unwrap()))
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_value::<crate::SpawnKind>(value)
+            .map(|v| (format!("{v:?}"), serde_json::to_value(v).unwrap()))
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, old, "Value {input}");
+    }
+    let value = crate::SpawnKind::Terminal {
+        exit_report: Some(u64::MAX),
+    };
+    assert_eq!(value, value.clone());
+    assert_ne!(crate::SpawnKind::Exec, crate::SpawnKind::Attach);
+    assert_eq!(
+        serde_json::to_value(crate::SpawnKind::Terminal { exit_report: None }).unwrap(),
+        json!({"Terminal":{"exit_report":null}})
+    );
+}
+
+fn c17b1_spawn() -> Message {
+    Message::Command(Command::Spawn {
+        id: u64::MAX,
+        kind: crate::SpawnKind::Terminal { exit_report: None },
+        argv: None,
+        cwd: None,
+        env: vec![("NAME".into(), "雪\n".into())],
+        stdio: Stdio::NewPty {
+            rows: 0,
+            cols: u16::MAX,
+        },
+    })
+}
+fn c17b1_process_cases() -> Vec<(Message, &'static str, Value, Vec<&'static str>)> {
+    vec![
+        (
+            c17b1_spawn(),
+            "Command.Spawn",
+            json!({"id":u64::MAX,"kind":{"Terminal":{"exit_report":null}},"argv":null,"cwd":null,"env":[["NAME","雪\n"]],"stdio":{"kind":"NewPty","rows":0,"cols":65535}}),
+            vec!["id", "kind", "argv", "cwd", "env", "stdio"],
+        ),
+        (
+            Message::Command(Command::Signal {
+                id: 0,
+                signal: i32::MIN,
+            }),
+            "Command.Signal",
+            json!({"id":0,"signal":i32::MIN}),
+            vec!["id", "signal"],
+        ),
+        (
+            Message::Command(Command::Signal {
+                id: u64::MAX,
+                signal: i32::MAX,
+            }),
+            "Command.Signal",
+            json!({"id":u64::MAX,"signal":i32::MAX}),
+            vec!["id", "signal"],
+        ),
+        (
+            Message::Command(Command::CancelProcess {
+                id: u64::MAX,
+                everything: true,
+            }),
+            "Command.CancelProcess",
+            json!({"id":u64::MAX,"everything":true}),
+            vec!["id", "everything"],
+        ),
+        (
+            Message::Command(Command::KillAll),
+            "Command.KillAll",
+            json!({}),
+            vec![],
+        ),
+        (
+            Message::Event(Event::Spawned {
+                id: u64::MAX,
+                pid: i32::MIN,
+            }),
+            "Event.Spawned",
+            json!({"id":u64::MAX,"pid":i32::MIN}),
+            vec!["id", "pid"],
+        ),
+        (
+            Message::Event(Event::SpawnFailed {
+                id: 0,
+                code: None,
+                message: "failed\n雪".into(),
+            }),
+            "Event.SpawnFailed",
+            json!({"id":0,"code":null,"message":"failed\n雪"}),
+            vec!["id", "code", "message"],
+        ),
+        (
+            Message::Event(Event::SpawnFailed {
+                id: u64::MAX,
+                code: Some(i32::MAX),
+                message: "".into(),
+            }),
+            "Event.SpawnFailed",
+            json!({"id":u64::MAX,"code":i32::MAX,"message":""}),
+            vec!["id", "code", "message"],
+        ),
+        (
+            Message::Event(Event::Exited {
+                id: u64::MAX,
+                code: Some(i32::MIN),
+                signal: Some(i32::MAX),
+            }),
+            "Event.Exited",
+            json!({"id":u64::MAX,"code":i32::MIN,"signal":i32::MAX}),
+            vec!["id", "code", "signal"],
+        ),
+        (
+            Message::Event(Event::Exited {
+                id: 0,
+                code: None,
+                signal: None,
+            }),
+            "Event.Exited",
+            json!({"id":0,"code":null,"signal":null}),
+            vec!["id", "code", "signal"],
+        ),
+    ]
+}
+#[test]
+fn c17b1_process_producers_and_required_nullable_root_fields_are_exact() {
+    for (message, method, params, fields) in c17b1_process_cases() {
+        let mut prepared = Encoder::default().prepare(message).unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        let original = prepared.frames.pop_front().unwrap();
+        assert!(original.fds.is_empty());
+        assert_eq!(
+            original.value,
+            json!({"jsonrpc":"2.0","method":method,"params":params})
+        );
+        for field in &fields {
+            let mut value = original.value.clone();
+            value["params"].as_object_mut().unwrap().remove(*field);
+            c16a_error(
+                Frame { value, fds: vec![] },
+                &format!("missing control field {field}"),
+            );
+        }
+        if let Some(field) = fields.first() {
+            let mut value = original.value.clone();
+            value["params"] = json!({});
+            c16a_error(
+                Frame { value, fds: vec![] },
+                &format!("missing control field {field}"),
+            );
+        }
+        let mut value = original.value.clone();
+        value["params"]["extra"] = json!(true);
+        c16a_error(Frame { value, fds: vec![] }, "unexpected control field");
+        let mut value = original.value.clone();
+        value["params"] = json!([]);
+        c16a_error(Frame { value, fds: vec![] }, "expected control object");
+        let expected = original.value.clone();
+        let received = Decoder::default().receive(original).unwrap().unwrap();
+        assert!(received.adopted.is_none());
+        assert_eq!(
+            Encoder::default().prepare(received.message).unwrap().frames[0].value,
+            expected
+        );
+    }
+    for kind in [
+        crate::SpawnKind::Exec,
+        crate::SpawnKind::Attach,
+        crate::SpawnKind::Terminal {
+            exit_report: Some(u64::MAX),
+        },
+    ] {
+        let frame = c16a_frame(Message::Command(Command::Spawn {
+            id: 0,
+            kind,
+            argv: Some(vec![]),
+            cwd: Some("".into()),
+            env: vec![],
+            stdio: Stdio::NewPty { rows: 1, cols: 1 },
+        }));
+        assert_eq!(frame.value["params"]["argv"], json!([]));
+        assert_eq!(frame.value["params"]["cwd"], json!(""));
+        assert_eq!(
+            frame.value["params"]["kind"],
+            serde_json::to_value(kind).unwrap()
+        );
+        assert!(Decoder::default().receive(frame).unwrap().is_some());
+    }
+}
+
+#[test]
+fn c17b1_process_scalar_ranges_and_field_error_order_match_original() {
+    fn error<T: DeserializeOwned>(v: Value) -> String {
+        serde_json::from_value::<T>(v).err().unwrap().to_string()
+    }
+    for (method, field, values, ty) in [
+        (
+            "Command.Signal",
+            "id",
+            vec![json!(-1), json!(1.0), json!(null)],
+            "u64",
+        ),
+        (
+            "Command.Signal",
+            "signal",
+            vec![
+                json!(i32::MIN as i64 - 1),
+                json!(i32::MAX as i64 + 1),
+                json!(1.0),
+                json!(null),
+            ],
+            "i32",
+        ),
+        (
+            "Command.CancelProcess",
+            "everything",
+            vec![json!(0), json!(null)],
+            "bool",
+        ),
+        (
+            "Event.Spawned",
+            "pid",
+            vec![json!(i32::MAX as i64 + 1), json!(1.0)],
+            "i32",
+        ),
+        (
+            "Event.SpawnFailed",
+            "code",
+            vec![json!(i32::MIN as i64 - 1), json!(1.0), json!(false)],
+            "Option<i32>",
+        ),
+        (
+            "Event.Exited",
+            "signal",
+            vec![json!(i32::MAX as i64 + 1), json!(1.0)],
+            "Option<i32>",
+        ),
+    ] {
+        for v in values {
+            let mut frame = c17b1_process_cases()
+                .into_iter()
+                .find(|(_, name, _, _)| *name == method)
+                .map(|(m, _, _, _)| c16a_frame(m))
+                .unwrap();
+            let expected = match ty {
+                "u64" => error::<u64>(v.clone()),
+                "i32" => error::<i32>(v.clone()),
+                "bool" => error::<bool>(v.clone()),
+                "Option<i32>" => error::<Option<i32>>(v.clone()),
+                _ => unreachable!(),
+            };
+            frame.value["params"][field] = v;
+            c16a_error(frame, &expected);
+        }
+    }
+    for (field, value, expected) in [
+        ("argv", json!([1]), error::<Option<Vec<String>>>(json!([1]))),
+        (
+            "argv",
+            json!(false),
+            error::<Option<Vec<String>>>(json!(false)),
+        ),
+        ("cwd", json!(1), error::<Option<String>>(json!(1))),
+        (
+            "env",
+            json!([["NAME"]]),
+            error::<Vec<(String, String)>>(json!([["NAME"]])),
+        ),
+        (
+            "env",
+            json!([["NAME", null]]),
+            error::<Vec<(String, String)>>(json!([["NAME", null]])),
+        ),
+        (
+            "kind",
+            json!({"Terminal":{"exit_report":1.0}}),
+            error::<c17b1_original::SpawnKind>(json!({"Terminal":{"exit_report":1.0}})),
+        ),
+    ] {
+        let mut frame = c16a_frame(c17b1_spawn());
+        frame.value["params"][field] = value;
+        frame.value["params"]["stdio"] = json!(null);
+        c16a_error(frame, &expected);
+    }
+    let mut frame = c16a_frame(c17b1_spawn());
+    frame.value["params"]["id"] = json!(1.0);
+    frame.value["params"]["kind"] = json!("Unknown");
+    c16a_error(frame, &error::<u64>(json!(1.0)));
+}
+
+#[test]
+fn c17b1_spawn_fd_indexes_sender_lifetime_and_rejection_order_are_preserved() {
+    let _no_forks = unix::no_forks();
+    for fault in 0..6 {
+        let (reader, writer) = unix::pipe().unwrap();
+        let mut reader = fs::File::from(reader);
+        let copies = [
+            writer.try_clone().unwrap().into(),
+            writer.try_clone().unwrap().into(),
+            writer.into(),
+        ];
+        let mut prepared = Encoder::default()
+            .prepare(Message::Command(Command::Spawn {
+                id: 1,
+                kind: crate::SpawnKind::Exec,
+                argv: None,
+                cwd: None,
+                env: vec![],
+                stdio: Stdio::Fds(copies),
+            }))
+            .unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert_eq!(frame.fds.len(), 3);
+        let unique: std::collections::BTreeSet<_> =
+            frame.fds.iter().map(AsRawFd::as_raw_fd).collect();
+        assert_eq!(unique.len(), 3);
+        assert_eq!(
+            frame.value["params"]["stdio"],
+            json!({"kind":"Fds","fds":[{"$fd":0},{"$fd":1},{"$fd":2}]})
+        );
+        assert!(!prepared.needs_adoption());
+        if fault == 0 {
+            let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut sender = channel::Channel::new(left).unwrap();
+            let mut receiver = channel::Channel::new(right).unwrap();
+            sender.queue(&frame.value, &mut frame.fds).unwrap();
+            sender.flush().unwrap();
+            assert!(!sender.wants_write());
+            let received = Decoder::default()
+                .receive_channel(&mut receiver)
+                .unwrap()
+                .unwrap();
+            assert!(received.adopted.is_none());
+            drop(prepared);
+            assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+            drop(received);
+        } else {
+            frame.value["params"]["extra"] = json!(true);
+            let expected = match fault {
+                1 => {
+                    frame.value["params"]["id"] = json!(1.0);
+                    frame.value["params"]["stdio"]["fds"][1] = json!({"$fd":0});
+                    serde_json::from_value::<u64>(json!(1.0))
+                        .unwrap_err()
+                        .to_string()
+                }
+                2 => {
+                    frame.value["params"]["argv"] = json!([1]);
+                    frame.value["params"]["stdio"]["fds"][1] = json!({"$fd":0});
+                    serde_json::from_value::<Option<Vec<String>>>(json!([1]))
+                        .unwrap_err()
+                        .to_string()
+                }
+                3 => {
+                    frame.value["params"]["stdio"]["fds"][1] = json!({"$fd":0});
+                    "invalid or duplicate descriptor reference".into()
+                }
+                4 => {
+                    frame.value["params"]["stdio"] = json!({"kind":"Unknown"});
+                    serde_json::from_value::<c16b1_original::WireStdio>(json!({"kind":"Unknown"}))
+                        .err()
+                        .unwrap()
+                        .to_string()
+                }
+                5 => "unexpected control field".into(),
+                _ => unreachable!(),
+            };
+            // Raw typed Frame tests preserve decoder ordering separately from
+            // Channel's earlier descriptor-reference framing rejection.
+            c16a_error(frame, &expected);
+            assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+            drop(prepared);
+        }
+        assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    }
+}

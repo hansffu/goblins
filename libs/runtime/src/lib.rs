@@ -206,18 +206,7 @@ pub struct TerminalStatus {
 }
 
 /// What a spawned process is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpawnKind {
-    /// `goblins exec`.
-    Exec,
-    /// An attach client or its `onDetach`.
-    Attach,
-    /// A terminal the supervisor emulates (`terminals.create`), checked as
-    /// an exec. With `exit_report` the supervisor answers that request ID
-    /// with the exit and the last lines of the screen, before it reports the
-    /// exit itself: a wait made from the start, which no exit can overtake.
-    Terminal { exit_report: Option<u64> },
-}
+pub use goblins_protocol::contract::SpawnKind;
 
 /// What the daemon asks of a runtime.
 #[derive(Debug)]

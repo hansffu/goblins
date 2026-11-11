@@ -16,6 +16,100 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17b1_process_instances_and_notification_directions(self):
+        fixtures = contract.read("fixtures.json")
+        kind = contract.schema_validator({"$ref":"common.json#/definitions/SupervisorSpawnKind"})
+        for case in fixtures["c17b1_spawn_kind_cases"]:
+            with self.subTest(spawn_kind=case):
+                self.assertEqual(kind.is_valid(case["value"]), case["valid"])
+        for root in fixtures["c17b1_process_roots"]:
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + root["schema"]})
+            for case in fixtures[root["cases"]]:
+                with self.subTest(method=root["method"], case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        for case in fixtures["c17b1_notification_cases"]:
+            with self.subTest(notification=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", case["direction"], case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", case["direction"], case["frame"])
+            opposite = "supervisor-to-daemon" if case["direction"] == "daemon-to-supervisor" else "daemon-to-supervisor"
+            self.assertFalse(contract.validate_notification("supervisor", opposite, case["frame"]))
+        # Unit maps and variant sequences are old Serde compatibility tested
+        # through the actual runtime alias; canonical schemas use producer forms.
+
+    def test_c17b1_process_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def changed(label, change):
+            schema = copy.deepcopy(original)
+            change(schema)
+            cases.append((label, schema))
+        def kind(s): return s["definitions"]["SupervisorSpawnKind"]
+        def payload(s): return kind(s)["oneOf"][1]["properties"]["Terminal"]
+        changed("external registry missing", lambda s: s.update({"x-rust-external-enums":[]}))
+        changed("external registry duplicate", lambda s: s["x-rust-external-enums"].append("SupervisorSpawnKind"))
+        changed("original enum name", lambda s: kind(s).update({"x-rust-name":"OtherSpawnKind"}))
+        changed("Copy trait", lambda s: kind(s)["x-rust-derives"].remove("Copy"))
+        changed("variant name", lambda s: kind(s)["x-rust-variants"][0].update(name="Execute"))
+        changed("variant kind", lambda s: kind(s)["x-rust-variants"][2].update(kind="unit"))
+        changed("duplicate variant", lambda s: kind(s)["x-rust-variants"].append(copy.deepcopy(kind(s)["x-rust-variants"][0])))
+        changed("variant payload pointer", lambda s: kind(s)["x-rust-variants"][2].update({"schema-ref":"#/definitions/SupervisorWorktree"}))
+        changed("open Terminal payload", lambda s: payload(s).update(additionalProperties=False))
+        changed("closed external envelope", lambda s: kind(s)["oneOf"][1].update(additionalProperties=True))
+        changed("optional Terminal field", lambda s: payload(s).update(required=["exit_report"]))
+        changed("Terminal field order", lambda s: payload(s)["x-rust-field-order"].append("exit_report"))
+        changed("Terminal default flag", lambda s: payload(s)["properties"]["exit_report"].update({"x-rust-default":True}))
+        changed("Terminal native type", lambda s: payload(s)["properties"]["exit_report"].update({"x-rust-type":"Option<i32>"}))
+        changed("i32 minimum", lambda s: s["definitions"]["SupervisorI32"].update(minimum=0))
+        changed("i32 maximum", lambda s: s["definitions"]["SupervisorI32"].update(maximum=2**32-1))
+        changed("i32 exact integer", lambda s: s["definitions"]["SupervisorI32"].pop("x-json-integer"))
+        changed("optional i32 reference", lambda s: s["definitions"]["SupervisorOptionalI32"]["anyOf"][0].update({"$ref":"#/definitions/SupervisorSequence"}))
+        changed("environment tuple length", lambda s: s["definitions"]["SupervisorEnvironment"]["items"].update(maxItems=3))
+        changed("environment tuple element", lambda s: s["definitions"]["SupervisorEnvironment"]["items"]["items"][0].update(type="integer"))
+        for field, wrong in [("kind","SupervisorStdio"),("argv","SupervisorOptionalDirectory"),("cwd","SupervisorOptionalArguments"),("env","SupervisorOptionalArguments"),("stdio","SupervisorDescriptor")]:
+            changed("Spawn reference " + field, lambda s,field=field,wrong=wrong: s["definitions"]["SupervisorCommandSpawnParams"]["properties"][field].update({"$ref":"#/definitions/" + wrong}))
+        changed("signal signed type", lambda s: s["definitions"]["SupervisorCommandSignalParams"]["properties"]["signal"].update({"$ref":"#/definitions/SupervisorSequence"}))
+        changed("pid signed type", lambda s: s["definitions"]["SupervisorEventSpawnedParams"]["properties"]["pid"].update({"$ref":"#/definitions/SupervisorSequence"}))
+        changed("cancel bool type", lambda s: s["definitions"]["SupervisorCommandCancelProcessParams"]["properties"]["everything"].update(type="integer"))
+        for name, field in [("SupervisorCommandSpawnParams","argv"),("SupervisorCommandSpawnParams","cwd"),("SupervisorEventSpawnFailedParams","code"),("SupervisorEventExitedParams","signal")]:
+            changed(name + " required nullable " + field, lambda s,name=name,field=field: s["x-rust-serde-records"][name]["required-nullable"].remove(field))
+        changed("Spawn field extraction order", lambda s: s["x-rust-serde-records"]["SupervisorCommandSpawnParams"]["order"].reverse())
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract, "common", return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
+    def test_c17b1_operational_pending_inventory_rejects_completed_or_missing_methods(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.document
+        doc = original("supervisor")
+        pending = doc["x-pending-notifications"]
+        names = [name for group in pending.values() for name in group]
+        self.assertEqual(len(names), 43)
+        self.assertEqual(len(set(names)), 43)
+        completed = {r["method"] for r in contract.read("fixtures.json")["c17b1_process_roots"]}
+        declared = {r["name"] for r in doc["x-notifications"]}
+        self.assertTrue(completed <= declared)
+        self.assertFalse(set(names) & declared)
+        self.assertEqual(set(pending), {"C17b2-attachments-terminals","C17c-approvals-devshell","C17d-lifecycle-host-jobs","C17e-relay-logging"})
+        for mutation in ["completed method pending", "missing pending method", "duplicate pending method", "unknown pending method", "wrong pending family"]:
+            changed = copy.deepcopy(doc)
+            registry = changed["x-pending-notifications"]
+            group = registry["C17b2-attachments-terminals"]
+            if mutation == "completed method pending": group.append("Command.Spawn")
+            elif mutation == "missing pending method": group.pop()
+            elif mutation == "duplicate pending method": group.append(group[0])
+            elif mutation == "unknown pending method": group.append("Command.Unknown")
+            else: registry["C17c-approvals-devshell"].append(group.pop())
+            with self.subTest(mutation=mutation), patch.object(contract, "document", side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c17a_root_contract_instances_and_retired_phase_dependency(self):
         fixtures = contract.read("fixtures.json")
         for key, name in [("c17a_command_start_cases", "SupervisorCommandStartParams"),

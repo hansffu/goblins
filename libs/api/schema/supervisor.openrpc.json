@@ -436,9 +436,260 @@
       "sender": "supervisor",
       "receiver": "daemon",
       "connection-state": "existing operational result or preflight manifest result"
+    },
+    {
+      "name": "Command.Spawn",
+      "x-rust-name": "CommandSpawn",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Spawn metadata with generated kind and stdio. Decode id/kind/argv/cwd/env before stdio capabilities; consume stdio before rejecting unknown root fields. No adoption token is introduced.",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSpawnParams/properties/id"
+          }
+        },
+        {
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSpawnParams/properties/kind"
+          }
+        },
+        {
+          "name": "argv",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSpawnParams/properties/argv"
+          }
+        },
+        {
+          "name": "cwd",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSpawnParams/properties/cwd"
+          }
+        },
+        {
+          "name": "env",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSpawnParams/properties/env"
+          }
+        },
+        {
+          "name": "stdio",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSpawnParams/properties/stdio"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandSpawnParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational process command"
+    },
+    {
+      "name": "Command.Signal",
+      "x-rust-name": "CommandSignal",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Forward a structural i32 signal to a process id; existing operation policy and process lookup remain unchanged.",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSignalParams/properties/id"
+          }
+        },
+        {
+          "name": "signal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSignalParams/properties/signal"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandSignalParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational process command"
+    },
+    {
+      "name": "Command.CancelProcess",
+      "x-rust-name": "CommandCancelProcess",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "With everything=false, cancel the exec process group below its keeper. With everything=true, cancel every process below that exec keeper, including the original group and processes that left it.",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandCancelProcessParams/properties/id"
+          }
+        },
+        {
+          "name": "everything",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandCancelProcessParams/properties/everything"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandCancelProcessParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational process command"
+    },
+    {
+      "name": "Command.KillAll",
+      "x-rust-name": "CommandKillAll",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "End all processes started by Spawn; no fields and no change to existing cancellation barriers.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEmptyParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational process command"
+    },
+    {
+      "name": "Event.Spawned",
+      "x-rust-name": "EventSpawned",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Process id and native i32 pid metadata; no new process-policy validation.",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSpawnedParams/properties/id"
+          }
+        },
+        {
+          "name": "pid",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSpawnedParams/properties/pid"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventSpawnedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational process result"
+    },
+    {
+      "name": "Event.SpawnFailed",
+      "x-rust-name": "EventSpawnFailed",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Process spawn failure with required nullable native i32 code and original message string.",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSpawnFailedParams/properties/id"
+          }
+        },
+        {
+          "name": "code",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSpawnFailedParams/properties/code"
+          }
+        },
+        {
+          "name": "message",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSpawnFailedParams/properties/message"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventSpawnFailedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational process result"
+    },
+    {
+      "name": "Event.Exited",
+      "x-rust-name": "EventExited",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Process exit metadata with required nullable code/signal; preserve both original Option<i32> fields without new exclusivity checks.",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventExitedParams/properties/id"
+          }
+        },
+        {
+          "name": "code",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventExitedParams/properties/code"
+          }
+        },
+        {
+          "name": "signal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventExitedParams/properties/signal"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventExitedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational process result"
     }
   ],
-  "x-contract-chunk": "C17a",
+  "x-contract-chunk": "C17b1",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -448,7 +699,7 @@
     "decoding": "Original Params take/finish order; raw envelope and owned descriptors remain handwritten."
   },
   "x-pending": [
-    "C17 remaining Command.* and Event.* families, excluding Start/Exported/Manifest",
+    "C17 remaining operational families listed in x-pending-notifications",
     "C18 scope Setup payload (entry phase identity only)"
   ],
   "x-phases": [
@@ -524,21 +775,14 @@
     }
   ],
   "x-pending-notifications": {
-    "C17b-process-terminals": [
+    "C17b2-attachments-terminals": [
       "Command.Attach",
       "Command.Detach",
       "Command.Resize",
-      "Command.Spawn",
-      "Command.Signal",
-      "Command.CancelProcess",
-      "Command.KillAll",
       "Command.TerminalCall",
       "Command.TerminalCancel",
-      "Event.Spawned",
       "Event.Terminal",
-      "Event.TerminalResult",
-      "Event.SpawnFailed",
-      "Event.Exited"
+      "Event.TerminalResult"
     ],
     "C17c-approvals-devshell": [
       "Command.Cancel",

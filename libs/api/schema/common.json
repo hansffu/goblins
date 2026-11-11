@@ -10635,6 +10635,8 @@
       ],
       "x-rust-name": "WireStdio",
       "x-rust-derives": [
+        "Clone",
+        "Debug",
         "Serialize",
         "Deserialize"
       ]
@@ -11187,6 +11189,250 @@
         "catalogue",
         "owner",
         "transfer"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorI32": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 2147483647,
+      "x-json-integer": true
+    },
+    "SupervisorOptionalI32": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorI32"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "SupervisorOptionalArguments": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "SupervisorOptionalDirectory": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "SupervisorEnvironment": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "SupervisorSpawnKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "Exec",
+            "Attach"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Terminal": {
+              "type": "object",
+              "properties": {
+                "exit_report": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/SupervisorSequence"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "x-rust-type": "Option<u64>"
+                }
+              },
+              "required": [],
+              "additionalProperties": true,
+              "x-rust-field-order": [
+                "exit_report"
+              ]
+            }
+          },
+          "required": [
+            "Terminal"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "x-rust-name": "SpawnKind",
+      "x-rust-derives": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "x-rust-variants": [
+        {
+          "name": "Exec",
+          "kind": "unit",
+          "description": "`goblins exec`."
+        },
+        {
+          "name": "Attach",
+          "kind": "unit",
+          "description": "An attach client or its `onDetach`."
+        },
+        {
+          "name": "Terminal",
+          "kind": "struct",
+          "schema-ref": "#/definitions/SupervisorSpawnKind/oneOf/1/properties/Terminal",
+          "description": "A terminal the supervisor emulates (`terminals.create`), checked as an exec. With `exit_report` the supervisor answers that request ID with the exit and the last lines of the screen, before it reports the exit itself: a wait made from the start, which no exit can overtake."
+        }
+      ]
+    },
+    "SupervisorCommandSpawnParams": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "kind": {
+          "$ref": "#/definitions/SupervisorSpawnKind"
+        },
+        "argv": {
+          "$ref": "#/definitions/SupervisorOptionalArguments"
+        },
+        "cwd": {
+          "$ref": "#/definitions/SupervisorOptionalDirectory"
+        },
+        "env": {
+          "$ref": "#/definitions/SupervisorEnvironment"
+        },
+        "stdio": {
+          "$ref": "#/definitions/SupervisorStdio"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "argv",
+        "cwd",
+        "env",
+        "stdio"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandSignalParams": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "signal": {
+          "$ref": "#/definitions/SupervisorI32"
+        }
+      },
+      "required": [
+        "id",
+        "signal"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandCancelProcessParams": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "everything": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "everything"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventSpawnedParams": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "pid": {
+          "$ref": "#/definitions/SupervisorI32"
+        }
+      },
+      "required": [
+        "id",
+        "pid"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventSpawnFailedParams": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "code": {
+          "$ref": "#/definitions/SupervisorOptionalI32"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventExitedParams": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "code": {
+          "$ref": "#/definitions/SupervisorOptionalI32"
+        },
+        "signal": {
+          "$ref": "#/definitions/SupervisorOptionalI32"
+        }
+      },
+      "required": [
+        "id",
+        "code",
+        "signal"
       ],
       "additionalProperties": false
     }
@@ -13855,6 +14101,44 @@
         "root",
         "owner"
       ]
+    },
+    "SupervisorCommandSpawnParams": {
+      "name": "SupervisorCommandSpawnParams",
+      "order": [
+        "id",
+        "kind",
+        "argv",
+        "cwd",
+        "env",
+        "stdio"
+      ],
+      "required-nullable": [
+        "argv",
+        "cwd"
+      ]
+    },
+    "SupervisorEventSpawnFailedParams": {
+      "name": "SupervisorEventSpawnFailedParams",
+      "order": [
+        "id",
+        "code",
+        "message"
+      ],
+      "required-nullable": [
+        "code"
+      ]
+    },
+    "SupervisorEventExitedParams": {
+      "name": "SupervisorEventExitedParams",
+      "order": [
+        "id",
+        "code",
+        "signal"
+      ],
+      "required-nullable": [
+        "code",
+        "signal"
+      ]
     }
   },
   "x-communications-payloads": [
@@ -14330,7 +14614,9 @@
     "Recreate and Worktree": "Generated wire-only Recreate and Worktree project explicitly to/from the original runtime domain records. Recreate ignores additive fields and defaults absent worktree; Worktree stays closed. No domain validation, paths, resource policy or history writer is moved.",
     "Handoff dev_shell": "The WireHandoff dev_shell field is an opaque serialized JSON String, not traversable JSON: serde_json::to_string/from_str of the existing runtime DevShell retains arbitrary lock-file JSON without exposing its $fd-looking keys to channel descriptor scanning. Inner domain decoding, including exact UnexpectedEof/error behavior, remains with the existing runtime decoder; its implementation is not a new transport.",
     "Manifest catalogue": "The Event.Manifest catalogue is an opaque JSON String using serde_json::to_string/from_str of the original typed config::Catalogue. Arbitrary manifest/configuration names may resemble descriptor markers; string opacity keeps channel scanning from interpreting them as capabilities. Catalogue parsing remains before owner descriptor extraction and maps errors through the original InvalidData helper. This transport slot does not replace manifest/domain validation.",
-    "Root handoff decoding": "Command.Start and Event.Exported retain raw Value / Result<Value,String> extraction until root unknown-field rejection, then use the generated WireHandoff decoder at the original overlap/count/ownership point. Current producers use generated complete typed parameter records and standard Result<WireHandoff,String>."
+    "Root handoff decoding": "Command.Start and Event.Exported retain raw Value / Result<Value,String> extraction until root unknown-field rejection, then use the generated WireHandoff decoder at the original overlap/count/ownership point. Current producers use generated complete typed parameter records and standard Result<WireHandoff,String>.",
+    "SpawnKind": "Generated external-tag enum retains the original SpawnKind name, Copy/Clone/Debug/Eq, default Serde unit/struct representation, open Terminal payload and absent/null exit_report behavior. The runtime reexports this metadata type; policy matches are unchanged. Canonical named producer schemas are separate from original Serde unit-map/sequence reader compatibility.",
+    "Process records": "Process metadata retains full original u64/i32 structural ranges, required nullable argv/cwd/code/signal slots, environment string tuples and generated WireStdio. Descriptor duplication/consumption remains at the original stdio field point; process/signal policy and execution stay handwritten and are not narrowed by these schemas."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",
@@ -14339,5 +14625,8 @@
     "SupervisorDirectory",
     "SupervisorLease",
     "SupervisorHandoff"
+  ],
+  "x-rust-external-enums": [
+    "SupervisorSpawnKind"
   ]
 }

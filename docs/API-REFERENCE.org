@@ -12851,6 +12851,265 @@ Positional parameters:
 }
 #+end_src
 
+** Notification =Command.Spawn=
+
+Spawn metadata with generated kind and stdio. Decode id/kind/argv/cwd/env before stdio capabilities; consume stdio before rejecting unknown root fields. No adoption token is introduced.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational process command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "kind": {
+      "$ref": "#/definitions/SupervisorSpawnKind"
+    },
+    "argv": {
+      "$ref": "#/definitions/SupervisorOptionalArguments"
+    },
+    "cwd": {
+      "$ref": "#/definitions/SupervisorOptionalDirectory"
+    },
+    "env": {
+      "$ref": "#/definitions/SupervisorEnvironment"
+    },
+    "stdio": {
+      "$ref": "#/definitions/SupervisorStdio"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "argv",
+    "cwd",
+    "env",
+    "stdio"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.Signal=
+
+Forward a structural i32 signal to a process id; existing operation policy and process lookup remain unchanged.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational process command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "signal": {
+      "$ref": "#/definitions/SupervisorI32"
+    }
+  },
+  "required": [
+    "id",
+    "signal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.CancelProcess=
+
+With everything=false, cancel the exec process group below its keeper. With everything=true, cancel every process below that exec keeper, including the original group and processes that left it.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational process command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "everything": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "everything"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.KillAll=
+
+End all processes started by Spawn; no fields and no change to existing cancellation barriers.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational process command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Spawned=
+
+Process id and native i32 pid metadata; no new process-policy validation.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational process result.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "pid": {
+      "$ref": "#/definitions/SupervisorI32"
+    }
+  },
+  "required": [
+    "id",
+    "pid"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.SpawnFailed=
+
+Process spawn failure with required nullable native i32 code and original message string.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational process result.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "code": {
+      "$ref": "#/definitions/SupervisorOptionalI32"
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "code",
+    "message"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Exited=
+
+Process exit metadata with required nullable code/signal; preserve both original Option<i32> fields without new exclusivity checks.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational process result.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "code": {
+      "$ref": "#/definitions/SupervisorOptionalI32"
+    },
+    "signal": {
+      "$ref": "#/definitions/SupervisorOptionalI32"
+    }
+  },
+  "required": [
+    "id",
+    "code",
+    "signal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * supervisor actor method phases
 
 These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.
@@ -12936,21 +13195,14 @@ These existing messages remain assigned to later migration slices; their payload
 
 #+begin_src json
 {
-  "C17b-process-terminals": [
+  "C17b2-attachments-terminals": [
     "Command.Attach",
     "Command.Detach",
     "Command.Resize",
-    "Command.Spawn",
-    "Command.Signal",
-    "Command.CancelProcess",
-    "Command.KillAll",
     "Command.TerminalCall",
     "Command.TerminalCancel",
-    "Event.Spawned",
     "Event.Terminal",
-    "Event.TerminalResult",
-    "Event.SpawnFailed",
-    "Event.Exited"
+    "Event.TerminalResult"
   ],
   "C17c-approvals-devshell": [
     "Command.Cancel",
@@ -13328,6 +13580,44 @@ Original Serde container names, field order, required nullable sequence slots an
       "root",
       "owner"
     ]
+  },
+  "SupervisorCommandSpawnParams": {
+    "name": "SupervisorCommandSpawnParams",
+    "order": [
+      "id",
+      "kind",
+      "argv",
+      "cwd",
+      "env",
+      "stdio"
+    ],
+    "required-nullable": [
+      "argv",
+      "cwd"
+    ]
+  },
+  "SupervisorEventSpawnFailedParams": {
+    "name": "SupervisorEventSpawnFailedParams",
+    "order": [
+      "id",
+      "code",
+      "message"
+    ],
+    "required-nullable": [
+      "code"
+    ]
+  },
+  "SupervisorEventExitedParams": {
+    "name": "SupervisorEventExitedParams",
+    "order": [
+      "id",
+      "code",
+      "signal"
+    ],
+    "required-nullable": [
+      "code",
+      "signal"
+    ]
   }
 }
 #+end_src
@@ -13343,6 +13633,8 @@ Original Serde container names, field order, required nullable sequence slots an
 - =Handoff dev_shell= :: The WireHandoff dev_shell field is an opaque serialized JSON String, not traversable JSON: serde_json::to_string/from_str of the existing runtime DevShell retains arbitrary lock-file JSON without exposing its $fd-looking keys to channel descriptor scanning. Inner domain decoding, including exact UnexpectedEof/error behavior, remains with the existing runtime decoder; its implementation is not a new transport.
 - =Manifest catalogue= :: The Event.Manifest catalogue is an opaque JSON String using serde_json::to_string/from_str of the original typed config::Catalogue. Arbitrary manifest/configuration names may resemble descriptor markers; string opacity keeps channel scanning from interpreting them as capabilities. Catalogue parsing remains before owner descriptor extraction and maps errors through the original InvalidData helper. This transport slot does not replace manifest/domain validation.
 - =Root handoff decoding= :: Command.Start and Event.Exported retain raw Value / Result<Value,String> extraction until root unknown-field rejection, then use the generated WireHandoff decoder at the original overlap/count/ownership point. Current producers use generated complete typed parameter records and standard Result<WireHandoff,String>.
+- =SpawnKind= :: Generated external-tag enum retains the original SpawnKind name, Copy/Clone/Debug/Eq, default Serde unit/struct representation, open Terminal payload and absent/null exit_report behavior. The runtime reexports this metadata type; policy matches are unchanged. Canonical named producer schemas are separate from original Serde unit-map/sequence reader compatibility.
+- =Process records= :: Process metadata retains full original u64/i32 structural ranges, required nullable argv/cwd/code/signal slots, environment string tuples and generated WireStdio. Descriptor duplication/consumption remains at the original stdio field point; process/signal policy and execution stay handwritten and are not narrowed by these schemas.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -25792,6 +26084,8 @@ Original Serde container names, field order, required nullable sequence slots an
   ],
   "x-rust-name": "WireStdio",
   "x-rust-derives": [
+    "Clone",
+    "Debug",
     "Serialize",
     "Deserialize"
   ]
@@ -26409,6 +26703,310 @@ Original Serde container names, field order, required nullable sequence slots an
     "catalogue",
     "owner",
     "transfer"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorI32=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": -2147483648,
+  "maximum": 2147483647,
+  "x-json-integer": true
+}
+#+end_src
+
+** =SupervisorOptionalI32=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/SupervisorI32"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorOptionalArguments=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorOptionalDirectory=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorEnvironment=
+
+#+begin_src json
+{
+  "type": "array",
+  "items": {
+    "type": "array",
+    "items": [
+      {
+        "type": "string"
+      },
+      {
+        "type": "string"
+      }
+    ],
+    "minItems": 2,
+    "maxItems": 2
+  }
+}
+#+end_src
+
+** =SupervisorSpawnKind=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "string",
+      "enum": [
+        "Exec",
+        "Attach"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Terminal": {
+          "type": "object",
+          "properties": {
+            "exit_report": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SupervisorSequence"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<u64>"
+            }
+          },
+          "required": [],
+          "additionalProperties": true,
+          "x-rust-field-order": [
+            "exit_report"
+          ]
+        }
+      },
+      "required": [
+        "Terminal"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "x-rust-name": "SpawnKind",
+  "x-rust-derives": [
+    "Clone",
+    "Copy",
+    "Debug",
+    "PartialEq",
+    "Eq",
+    "Serialize",
+    "Deserialize"
+  ],
+  "x-rust-variants": [
+    {
+      "name": "Exec",
+      "kind": "unit",
+      "description": "`goblins exec`."
+    },
+    {
+      "name": "Attach",
+      "kind": "unit",
+      "description": "An attach client or its `onDetach`."
+    },
+    {
+      "name": "Terminal",
+      "kind": "struct",
+      "schema-ref": "#/definitions/SupervisorSpawnKind/oneOf/1/properties/Terminal",
+      "description": "A terminal the supervisor emulates (`terminals.create`), checked as an exec. With `exit_report` the supervisor answers that request ID with the exit and the last lines of the screen, before it reports the exit itself: a wait made from the start, which no exit can overtake."
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorCommandSpawnParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "kind": {
+      "$ref": "#/definitions/SupervisorSpawnKind"
+    },
+    "argv": {
+      "$ref": "#/definitions/SupervisorOptionalArguments"
+    },
+    "cwd": {
+      "$ref": "#/definitions/SupervisorOptionalDirectory"
+    },
+    "env": {
+      "$ref": "#/definitions/SupervisorEnvironment"
+    },
+    "stdio": {
+      "$ref": "#/definitions/SupervisorStdio"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "argv",
+    "cwd",
+    "env",
+    "stdio"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorCommandSignalParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "signal": {
+      "$ref": "#/definitions/SupervisorI32"
+    }
+  },
+  "required": [
+    "id",
+    "signal"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorCommandCancelProcessParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "everything": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "everything"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventSpawnedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "pid": {
+      "$ref": "#/definitions/SupervisorI32"
+    }
+  },
+  "required": [
+    "id",
+    "pid"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventSpawnFailedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "code": {
+      "$ref": "#/definitions/SupervisorOptionalI32"
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "code",
+    "message"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventExitedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "code": {
+      "$ref": "#/definitions/SupervisorOptionalI32"
+    },
+    "signal": {
+      "$ref": "#/definitions/SupervisorOptionalI32"
+    }
+  },
+  "required": [
+    "id",
+    "code",
+    "signal"
   ],
   "additionalProperties": false
 }

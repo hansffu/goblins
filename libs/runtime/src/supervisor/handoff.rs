@@ -2,8 +2,8 @@ use super::*;
 use contract::{WireDirectory, WireHandoff, WireLease, WireSource, WireStdio};
 use serde::Deserialize;
 
-pub(super) fn encode_stdio(stdio: &Stdio, b: &mut Builder) -> io::Result<Value> {
-    serde_json::to_value(match stdio {
+pub(super) fn encode_stdio_wire(stdio: &Stdio, b: &mut Builder) -> io::Result<WireStdio> {
+    Ok(match stdio {
         Stdio::Fds(fds) => WireStdio::Fds {
             fds: [b.fd(&fds[0])?, b.fd(&fds[1])?, b.fd(&fds[2])?],
         },
@@ -15,10 +15,13 @@ pub(super) fn encode_stdio(stdio: &Stdio, b: &mut Builder) -> io::Result<Value> 
             cols: *cols,
         },
     })
-    .map_err(other)
 }
-pub(super) fn decode_stdio(value: Value, d: &mut Descriptors) -> io::Result<Stdio> {
-    Ok(match serde_json::from_value::<WireStdio>(value)? {
+#[cfg(test)]
+pub(super) fn encode_stdio(stdio: &Stdio, b: &mut Builder) -> io::Result<Value> {
+    serde_json::to_value(encode_stdio_wire(stdio, b)?).map_err(other)
+}
+pub(super) fn decode_stdio_wire(value: WireStdio, d: &mut Descriptors) -> io::Result<Stdio> {
+    Ok(match value {
         WireStdio::Fds { fds } => Stdio::Fds([
             d.take(fds[0])?.into(),
             d.take(fds[1])?.into(),
@@ -28,6 +31,11 @@ pub(super) fn decode_stdio(value: Value, d: &mut Descriptors) -> io::Result<Stdi
         WireStdio::NewPty { rows, cols } => Stdio::NewPty { rows, cols },
     })
 }
+#[cfg(test)]
+pub(super) fn decode_stdio(value: Value, d: &mut Descriptors) -> io::Result<Stdio> {
+    decode_stdio_wire(serde_json::from_value(value)?, d)
+}
+
 fn recreate_to_wire(value: &crate::Recreate) -> contract::Recreate {
     contract::Recreate {
         packages: value.packages.clone(),

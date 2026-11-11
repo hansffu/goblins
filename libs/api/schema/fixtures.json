@@ -28561,5 +28561,1539 @@
       },
       "valid": false
     }
+  ],
+  "c17b1_spawn_kind_cases": [
+    {
+      "value": "Exec",
+      "valid": true
+    },
+    {
+      "value": "Attach",
+      "valid": true
+    },
+    {
+      "value": {
+        "Terminal": {}
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Terminal": {
+          "exit_report": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Terminal": {
+          "exit_report": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Terminal": {
+          "exit_report": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Terminal": {
+          "extra": true
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Terminal": {
+          "exit_report": 1,
+          "extra": []
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Terminal": {
+          "exit_report": 1.0
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Terminal": {
+          "exit_report": -1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Terminal": {
+          "exit_report": 18446744073709551616
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Exec": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Terminal": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Terminal": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Terminal": {},
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": "Terminal",
+      "valid": false
+    },
+    {
+      "value": "exec",
+      "valid": false
+    },
+    {
+      "value": null,
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    }
+  ],
+  "c17b1_spawn_cases": [
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 0,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 1.0,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551616,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": "Exec",
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": "Attach",
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "extra": true
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Exec": null
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": [],
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": [
+          "a"
+        ],
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": [
+          1
+        ],
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": "",
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": 1,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "A"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "A",
+            "B",
+            "C"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": {
+          "A": "B"
+        },
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            1,
+            "B"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "Fds",
+          "fds": [
+            {
+              "$fd": 0
+            },
+            {
+              "$fd": 1
+            },
+            {
+              "$fd": 2
+            }
+          ]
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "Fds",
+          "fds": [
+            {
+              "$fd": 0
+            },
+            {
+              "$fd": 1
+            },
+            {
+              "$fd": 2.0
+            }
+          ]
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "Fds",
+          "fds": [
+            {
+              "$fd": 0
+            },
+            {
+              "$fd": 1
+            }
+          ]
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "Tty",
+          "slave": {
+            "$fd": 0
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        },
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ],
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "stdio": {
+          "kind": "NewPty",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "kind": {
+          "Terminal": {
+            "exit_report": null
+          }
+        },
+        "argv": null,
+        "cwd": null,
+        "env": [
+          [
+            "NAME",
+            "\u96ea\n"
+          ]
+        ]
+      },
+      "valid": false
+    }
+  ],
+  "c17b1_signal_cases": [
+    {
+      "value": {
+        "id": 0,
+        "signal": -2147483648
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "signal": -2147483648
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 0,
+        "signal": 2147483647
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 0,
+        "signal": -2147483649
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0,
+        "signal": 2147483648
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0,
+        "signal": 1.0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0,
+        "signal": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": -1,
+        "signal": -2147483648
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0,
+        "signal": -2147483648,
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0
+      },
+      "valid": false
+    }
+  ],
+  "c17b1_cancel_process_cases": [
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "everything": true
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "everything": false
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "everything": 0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "everything": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 1.0,
+        "everything": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "everything": true,
+        "extra": true
+      },
+      "valid": false
+    }
+  ],
+  "c17b1_kill_all_cases": [
+    {
+      "value": {},
+      "valid": true
+    },
+    {
+      "value": {
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    },
+    {
+      "value": null,
+      "valid": false
+    }
+  ],
+  "c17b1_spawned_cases": [
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "pid": -2147483648
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "pid": 2147483647
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "pid": 2147483648
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "pid": 1.0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "pid": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "pid": -2147483648,
+        "extra": true
+      },
+      "valid": false
+    }
+  ],
+  "c17b1_spawn_failed_cases": [
+    {
+      "value": {
+        "id": 0,
+        "code": null,
+        "message": "failed\n\u96ea"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 0,
+        "code": -2147483648,
+        "message": "failed\n\u96ea"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 0,
+        "code": 2147483647,
+        "message": "failed\n\u96ea"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 0,
+        "code": 2147483648,
+        "message": "failed\n\u96ea"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0,
+        "code": 1.0,
+        "message": "failed\n\u96ea"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0,
+        "message": "failed\n\u96ea"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0,
+        "code": null,
+        "message": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 0,
+        "code": null,
+        "message": "failed\n\u96ea",
+        "extra": true
+      },
+      "valid": false
+    }
+  ],
+  "c17b1_exited_cases": [
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "code": null,
+        "signal": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "code": -2147483648,
+        "signal": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "code": null,
+        "signal": 2147483647
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "code": -2147483649,
+        "signal": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "code": null,
+        "signal": 1.0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "signal": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "code": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "id": 18446744073709551615,
+        "code": null,
+        "signal": null,
+        "extra": true
+      },
+      "valid": false
+    }
+  ],
+  "c17b1_process_roots": [
+    {
+      "method": "Command.Spawn",
+      "schema": "SupervisorCommandSpawnParams",
+      "cases": "c17b1_spawn_cases",
+      "direction": "daemon-to-supervisor"
+    },
+    {
+      "method": "Command.Signal",
+      "schema": "SupervisorCommandSignalParams",
+      "cases": "c17b1_signal_cases",
+      "direction": "daemon-to-supervisor"
+    },
+    {
+      "method": "Command.CancelProcess",
+      "schema": "SupervisorCommandCancelProcessParams",
+      "cases": "c17b1_cancel_process_cases",
+      "direction": "daemon-to-supervisor"
+    },
+    {
+      "method": "Command.KillAll",
+      "schema": "SupervisorEmptyParams",
+      "cases": "c17b1_kill_all_cases",
+      "direction": "daemon-to-supervisor"
+    },
+    {
+      "method": "Event.Spawned",
+      "schema": "SupervisorEventSpawnedParams",
+      "cases": "c17b1_spawned_cases",
+      "direction": "supervisor-to-daemon"
+    },
+    {
+      "method": "Event.SpawnFailed",
+      "schema": "SupervisorEventSpawnFailedParams",
+      "cases": "c17b1_spawn_failed_cases",
+      "direction": "supervisor-to-daemon"
+    },
+    {
+      "method": "Event.Exited",
+      "schema": "SupervisorEventExitedParams",
+      "cases": "c17b1_exited_cases",
+      "direction": "supervisor-to-daemon"
+    }
+  ],
+  "c17b1_notification_cases": [
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Spawn",
+        "params": {
+          "id": 18446744073709551615,
+          "kind": {
+            "Terminal": {
+              "exit_report": null
+            }
+          },
+          "argv": null,
+          "cwd": null,
+          "env": [
+            [
+              "NAME",
+              "\u96ea\n"
+            ]
+          ],
+          "stdio": {
+            "kind": "NewPty",
+            "rows": 0,
+            "cols": 65535
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Spawn",
+        "params": {
+          "id": 18446744073709551615,
+          "kind": {
+            "Terminal": {
+              "exit_report": null
+            }
+          },
+          "argv": null,
+          "cwd": null,
+          "env": [
+            [
+              "NAME",
+              "\u96ea\n"
+            ]
+          ],
+          "stdio": {
+            "kind": "NewPty",
+            "rows": 0,
+            "cols": 65535
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Spawn"
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Spawn",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Signal",
+        "params": {
+          "id": 0,
+          "signal": -2147483648
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Signal",
+        "params": {
+          "id": 0,
+          "signal": -2147483648
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Signal"
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Signal",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelProcess",
+        "params": {
+          "id": 18446744073709551615,
+          "everything": true
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelProcess",
+        "params": {
+          "id": 18446744073709551615,
+          "everything": true
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelProcess"
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelProcess",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.KillAll",
+        "params": {}
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.KillAll",
+        "params": {},
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.KillAll"
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.KillAll",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Spawned",
+        "params": {
+          "id": 18446744073709551615,
+          "pid": -2147483648
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Spawned",
+        "params": {
+          "id": 18446744073709551615,
+          "pid": -2147483648
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Spawned"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Spawned",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.SpawnFailed",
+        "params": {
+          "id": 0,
+          "code": null,
+          "message": "failed\n\u96ea"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.SpawnFailed",
+        "params": {
+          "id": 0,
+          "code": null,
+          "message": "failed\n\u96ea"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.SpawnFailed"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.SpawnFailed",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Exited",
+        "params": {
+          "id": 18446744073709551615,
+          "code": null,
+          "signal": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Exited",
+        "params": {
+          "id": 18446744073709551615,
+          "code": null,
+          "signal": null
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Exited"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Exited",
+        "params": []
+      },
+      "valid": false
+    }
   ]
 }

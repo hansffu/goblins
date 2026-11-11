@@ -283,6 +283,34 @@ fn main() {
         "::std::result::Result<crate::contract::WireHandoff, String>",
         [].into_iter(),
     );
+    for name in common["x-rust-external-enums"].as_array().unwrap() {
+        let name = name.as_str().unwrap();
+        settings.with_replacement(
+            name,
+            format!(
+                "crate::contract::{}",
+                common["definitions"][name]["x-rust-name"].as_str().unwrap()
+            ),
+            [].into_iter(),
+        );
+    }
+    settings.with_replacement("SupervisorI32", "i32", [].into_iter());
+    settings.with_replacement("SupervisorOptionalI32", "Option<i32>", [].into_iter());
+    settings.with_replacement(
+        "SupervisorOptionalArguments",
+        "Option<Vec<String>>",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "SupervisorOptionalDirectory",
+        "Option<String>",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "SupervisorEnvironment",
+        "Vec<(String, String)>",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -453,6 +481,60 @@ fn main() {
                 output.push_str("#[serde(default)]");
             }
             output.push_str(&format!("#[serde(rename={wire:?})] pub {field}: {ty},"));
+        }
+        output.push_str("}\n");
+        output.push_str(&format!("pub type {name} = {rust};\n"));
+    }
+    // Default external-tag Serde enums retain their original public variants
+    // and payload permissiveness; canonical branch metadata supplies fields.
+    for name in common["x-rust-external-enums"].as_array().unwrap() {
+        let name = name.as_str().unwrap();
+        let schema = &common["definitions"][name];
+        let rust = schema["x-rust-name"].as_str().unwrap();
+        let derives = schema["x-rust-derives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| match d.as_str().unwrap() {
+                "Serialize" => "::serde::Serialize",
+                "Deserialize" => "::serde::Deserialize",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        output.push_str(&format!("#[derive({derives})] pub enum {rust} {{"));
+        for variant in schema["x-rust-variants"].as_array().unwrap() {
+            let name = variant["name"].as_str().unwrap();
+            if let Some(description) = variant["description"].as_str() {
+                output.push_str(&format!("#[doc = {description:?}]"));
+            }
+            match variant["kind"].as_str().unwrap() {
+                "unit" => output.push_str(&format!("{name},")),
+                "struct" => {
+                    let payload = common
+                        .pointer(
+                            variant["schema-ref"]
+                                .as_str()
+                                .unwrap()
+                                .strip_prefix('#')
+                                .unwrap(),
+                        )
+                        .unwrap();
+                    output.push_str(&format!("{name} {{"));
+                    for field in payload["x-rust-field-order"].as_array().unwrap() {
+                        let field = field.as_str().unwrap();
+                        let ty = payload["properties"][field]["x-rust-type"]
+                            .as_str()
+                            .unwrap();
+                        if payload["properties"][field]["x-rust-default"] == true {
+                            output.push_str("#[serde(default)]");
+                        }
+                        output.push_str(&format!("{field}: {ty},"));
+                    }
+                    output.push_str("},");
+                }
+                _ => panic!("unsupported external wire variant"),
+            }
         }
         output.push_str("}\n");
         output.push_str(&format!("pub type {name} = {rust};\n"));

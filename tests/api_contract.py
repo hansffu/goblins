@@ -1026,7 +1026,7 @@ def check_supervisor_source_stdio_metadata():
     enum("SupervisorStdio","WireStdio",[
         ("Fds",fields(("fds","[crate::contract::Descriptor; 3]",{"type":"array","items":descriptor,"minItems":3,"maxItems":3}))),
         ("Tty",fields(("slave","crate::contract::Descriptor",descriptor))),
-        ("NewPty",fields(("rows","u16",uint(16)),("cols","u16",uint(16))))])
+        ("NewPty",fields(("rows","u16",uint(16)),("cols","u16",uint(16))))],["Clone","Debug"]+serde)
     enum("SupervisorSource","WireSource",[
         ("Host",fields(("configuration","::std::path::PathBuf",path),("name","String",string),("scope","Option<String>",{"type":["string","null"]}),("dev_shell","Option<String>",{"type":["string","null"]}),("workspace","Option<::std::path::PathBuf>",optional(path)),("cwd","Option<::std::path::PathBuf>",optional(path)),("state","::std::path::PathBuf",path),("history","Option<::std::path::PathBuf>",optional(path)),("recreate","Option<crate::contract::Recreate>",optional(ref("SupervisorRecreate"))),("sequence","u64",ref("SupervisorSequence")))),
         ("Member",fields(("scope","Option<crate::contract::Descriptor>",optional(descriptor)),("owner_scope","Option<String>",{"type":["string","null"]}),("manifest","::std::path::PathBuf",path),("configuration","String",string),("auto","::std::collections::BTreeMap<String, ::std::path::PathBuf>",{"type":"object","additionalProperties":path}),("state","::std::path::PathBuf",path),("history","Option<::std::path::PathBuf>",optional(path)))+[
@@ -1119,6 +1119,59 @@ def check_supervisor_handoff_roots():
         raise ValueError("private manifest generated serde contract differs")
 
 
+def check_supervisor_process_metadata():
+    """Pin the original process metadata shapes and external SpawnKind enum."""
+    schema=common();defs=schema["definitions"]
+    def ref(name):return {"$ref":"#/definitions/"+name}
+    def obj(props):return {"type":"object","properties":props,"required":list(props),"additionalProperties":False}
+    def opt(value):return {"anyOf":[value,{"type":"null"}]}
+    terminal={"type":"object","properties":{"exit_report":{**opt(ref("SupervisorSequence")),"x-rust-type":"Option<u64>"}},"required":[],"additionalProperties":True,"x-rust-field-order":["exit_report"]}
+    expected={
+        "SupervisorI32":{"type":"integer","minimum":-2**31,"maximum":2**31-1,"x-json-integer":True},
+        "SupervisorOptionalI32":opt(ref("SupervisorI32")),
+        "SupervisorOptionalArguments":opt({"type":"array","items":{"type":"string"}}),
+        "SupervisorOptionalDirectory":opt({"type":"string"}),
+        "SupervisorEnvironment":{"type":"array","items":{"type":"array","items":[{"type":"string"},{"type":"string"}],"minItems":2,"maxItems":2}},
+        "SupervisorSpawnKind":{"oneOf":[{"type":"string","enum":["Exec","Attach"]},obj({"Terminal":terminal})],"x-rust-name":"SpawnKind","x-rust-derives":["Clone","Copy","Debug","PartialEq","Eq","Serialize","Deserialize"],"x-rust-variants":[{"name":"Exec","kind":"unit"},{"name":"Attach","kind":"unit"},{"name":"Terminal","kind":"struct","schema-ref":"#/definitions/SupervisorSpawnKind/oneOf/1/properties/Terminal"}]},
+        "SupervisorCommandSpawnParams":obj({"id":ref("SupervisorSequence"),"kind":ref("SupervisorSpawnKind"),"argv":ref("SupervisorOptionalArguments"),"cwd":ref("SupervisorOptionalDirectory"),"env":ref("SupervisorEnvironment"),"stdio":ref("SupervisorStdio")}),
+        "SupervisorCommandSignalParams":obj({"id":ref("SupervisorSequence"),"signal":ref("SupervisorI32")}),
+        "SupervisorCommandCancelProcessParams":obj({"id":ref("SupervisorSequence"),"everything":{"type":"boolean"}}),
+        "SupervisorEventSpawnedParams":obj({"id":ref("SupervisorSequence"),"pid":ref("SupervisorI32")}),
+        "SupervisorEventSpawnFailedParams":obj({"id":ref("SupervisorSequence"),"code":ref("SupervisorOptionalI32"),"message":{"type":"string"}}),
+        "SupervisorEventExitedParams":obj({"id":ref("SupervisorSequence"),"code":ref("SupervisorOptionalI32"),"signal":ref("SupervisorOptionalI32")}),
+    }
+    variant_docs = [
+        "`goblins exec`.",
+        "An attach client or its `onDetach`.",
+        "A terminal the supervisor emulates (`terminals.create`), checked as an exec. With `exit_report` the supervisor answers that request ID with the exit and the last lines of the screen, before it reports the exit itself: a wait made from the start, which no exit can overtake.",
+    ]
+    for variant, description in zip(expected["SupervisorSpawnKind"]["x-rust-variants"], variant_docs):
+        variant["description"] = description
+    if schema.get("x-rust-external-enums")!=["SupervisorSpawnKind"]:
+        raise ValueError("private external enum registry differs")
+    for name,value in expected.items():
+        if {k:v for k,v in defs[name].items() if k!="description"}!=value:
+            raise ValueError("private process schema/Rust metadata differs: "+name)
+    for name,nullable in [("SupervisorCommandSpawnParams",["argv","cwd"]),("SupervisorEventSpawnFailedParams",["code"]),("SupervisorEventExitedParams",["code","signal"])]:
+        if schema["x-rust-serde-records"].get(name)!={"name":name,"order":list(expected[name]["properties"]),"required-nullable":nullable}:
+            raise ValueError("private process generated serde slots differ")
+
+
+def check_supervisor_pending_inventory():
+    """Retire covered methods from their original remaining family, without loss."""
+    families={
+        "C17b2-attachments-terminals":["Command.Attach","Command.Detach","Command.Resize","Command.TerminalCall","Command.TerminalCancel","Event.Terminal","Event.TerminalResult"],
+        "C17c-approvals-devshell":["Command.Cancel","Command.Preview","Command.Decide","Command.Refresh","Command.Run","Command.Diff","Event.Preview","Event.Progress","Event.Refresh","Event.Call","Event.DevShell","Event.Granted"],
+        "C17d-lifecycle-host-jobs":["Command.ScopeFailed","Command.ScopeMembership","Command.Export","Command.PrepareHostJob","Command.RunHostJob","Command.CancelHostJob","Command.Stop","Event.ScopeFailed","Event.ScopeNeeded","Event.Started","Event.Mode","Event.HostJobPrepared","Event.HostJobFailed","Event.HostJobFinished","Event.Stopped","Event.Failed","Event.InitLost","Event.PayloadExited"],
+        "C17e-relay-logging":["Command.RecordEvent","Command.SandboxSend","Command.SandboxClose","Event.SandboxOpened","Event.SandboxCall","Event.SandboxClosed"],
+    }
+    doc=document("supervisor");declared={row["name"] for row in doc["x-notifications"]}
+    expected={group:[name for name in names if name not in declared] for group,names in families.items()}
+    expected={group:names for group,names in expected.items() if names}
+    if doc.get("x-pending-notifications")!=expected:
+        raise ValueError("private pending notification inventory differs from uncovered families")
+
+
 def check_private_contracts():
     """Check the explicitly migrated private slice, separately from public RPCs."""
     catalog={
@@ -1134,6 +1187,13 @@ def check_private_contracts():
         "Command.Start":("daemon-to-supervisor","SupervisorCommandStartParams",["handoff"]),
         "Event.Exported":("supervisor-to-daemon","SupervisorEventExportedParams",["member","result"]),
         "Event.Manifest":("supervisor-to-daemon","SupervisorEventManifestParams",["sequence","path","root","catalogue","owner","transfer"]),
+        "Command.Spawn":("daemon-to-supervisor","SupervisorCommandSpawnParams",["id","kind","argv","cwd","env","stdio"]),
+        "Command.Signal":("daemon-to-supervisor","SupervisorCommandSignalParams",["id","signal"]),
+        "Command.CancelProcess":("daemon-to-supervisor","SupervisorCommandCancelProcessParams",["id","everything"]),
+        "Command.KillAll":("daemon-to-supervisor","SupervisorEmptyParams",[]),
+        "Event.Spawned":("supervisor-to-daemon","SupervisorEventSpawnedParams",["id","pid"]),
+        "Event.SpawnFailed":("supervisor-to-daemon","SupervisorEventSpawnFailedParams",["id","code","message"]),
+        "Event.Exited":("supervisor-to-daemon","SupervisorEventExitedParams",["id","code","signal"]),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1145,7 +1205,7 @@ def check_private_contracts():
         if len(names)!=len(set(names)):raise ValueError("duplicate private Rust notification marker")
         for row in rows:
             name=row["name"];direction,record,order=catalog[name]
-            rust={"Command.Start":"CommandStart","Event.Exported":"EventExported","Event.Manifest":"EventManifest"}.get(name,name)
+            rust={"Command.Start":"CommandStart","Event.Exported":"EventExported","Event.Manifest":"EventManifest","Command.Spawn":"CommandSpawn","Command.Signal":"CommandSignal","Command.CancelProcess":"CommandCancelProcess","Command.KillAll":"CommandKillAll","Event.Spawned":"EventSpawned","Event.SpawnFailed":"EventSpawnFailed","Event.Exited":"EventExited"}.get(name,name)
             if row.get("x-rust-name")!=rust or row.get("direction")!=direction:
                 raise ValueError("private notification identity/direction differs")
             if any(not isinstance(row.get(key),str) or not row[key] for key in ("sender","receiver","connection-state","description")):
@@ -1210,6 +1270,8 @@ def check():
     check_supervisor_source_stdio_metadata()
     check_supervisor_handoff_metadata()
     check_supervisor_handoff_roots()
+    check_supervisor_process_metadata()
+    check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()
     for name, record in common().get("x-rust-serde-records",{}).items():

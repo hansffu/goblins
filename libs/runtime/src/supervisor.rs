@@ -444,7 +444,6 @@ macro_rules! put {
     ($b:ident, plain, $name:expr, $v:expr) => { $b.value($name, $v) };
     ($b:ident, opaque, $name:expr, $v:expr) => { $b.opaque($name, $v) };
     ($b:ident, fd, $name:expr, $v:expr) => {{ let fd = $b.fd($v)?; $b.value($name, &fd) }};
-    ($b:ident, stdio, $name:expr, $v:expr) => {{ let value = encode_stdio($v, $b)?; $b.value($name, &value) }};
     ($b:ident, membership, $name:expr, $v:expr) => {{ let value: Result<Descriptor,String> = match $v { Ok(fd) => Ok($b.fd(fd)?), Err(error) => Err(error.clone()) }; $b.value($name, &value) }};
     ($b:ident, preview, $name:expr, $v:expr) => { $b.value($name, &encode_preview($v)) };
     ($b:ident, call, $name:expr, $v:expr) => { $b.opaque($name, &json!({"jsonrpc":$v.jsonrpc,"id":$v.id,"method":$v.method,"params":$v.params})) };
@@ -458,9 +457,6 @@ macro_rules! get {
     };
     ($p:ident, $d:ident, fd, $name:expr, $ty:ty) => {
         Fd::from($d.take($p.take($name)?)?)
-    };
-    ($p:ident, $d:ident, stdio, $name:expr, $ty:ty) => {
-        decode_stdio($p.take($name)?, $d)?
     };
     ($p:ident, $d:ident, membership, $name:expr, $ty:ty) => {
         match $p.take::<Result<Descriptor, String>>($name)? {
@@ -487,6 +483,13 @@ macro_rules! command_codec {
                     serde_json::to_value(&handoff).map_err(other)?;
                     b.notification::<contract::supervisor_notifications::CommandStart>(contract::SupervisorCommandStartParams { handoff })?;
                 }
+                Command::Spawn { id,kind,argv,cwd,env,stdio } => {
+                    let stdio=encode_stdio_wire(stdio,b)?;
+                    b.notification::<contract::supervisor_notifications::CommandSpawn>(contract::SupervisorCommandSpawnParams { id:*id,kind:*kind,argv:argv.clone(),cwd:cwd.clone(),env:env.clone(),stdio })?;
+                }
+                Command::Signal { id,signal } => b.notification::<contract::supervisor_notifications::CommandSignal>(contract::SupervisorCommandSignalParams { id:*id,signal:*signal })?,
+                Command::CancelProcess { id,everything } => b.notification::<contract::supervisor_notifications::CommandCancelProcess>(contract::SupervisorCommandCancelProcessParams { id:*id,everything:*everything })?,
+                Command::KillAll => b.notification::<contract::supervisor_notifications::CommandKillAll>(contract::SupervisorEmptyParams {})?,
                 $(Command::$v { $($f),* } => { b.method=concat!("Command.", stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
             }
             Ok(())
@@ -495,6 +498,23 @@ macro_rules! command_codec {
             let command=match method {
                 "Command.Cancel" => Command::Cancel(p.take("id")?),
                 "Command.Stop" => Command::Stop,
+                name if name==contract::supervisor_notifications::CommandSpawn::NAME => {
+                    let wire=contract::SupervisorCommandSpawnParams {
+                        id:p.take("id")?,kind:p.take("kind")?,argv:p.take("argv")?,cwd:p.take("cwd")?,env:p.take("env")?,
+                        stdio:serde_json::from_value(p.take::<Value>("stdio")?)?,
+                    };
+                    let stdio=decode_stdio_wire(wire.stdio,d)?;
+                    Command::Spawn { id:wire.id,kind:wire.kind,argv:wire.argv,cwd:wire.cwd,env:wire.env,stdio }
+                },
+                name if name==contract::supervisor_notifications::CommandSignal::NAME => {
+                    let wire=contract::SupervisorCommandSignalParams { id:p.take("id")?,signal:p.take("signal")? };
+                    Command::Signal { id:wire.id,signal:wire.signal }
+                },
+                name if name==contract::supervisor_notifications::CommandCancelProcess::NAME => {
+                    let wire=contract::SupervisorCommandCancelProcessParams { id:p.take("id")?,everything:p.take("everything")? };
+                    Command::CancelProcess { id:wire.id,everything:wire.everything }
+                },
+                name if name==contract::supervisor_notifications::CommandKillAll::NAME => Command::KillAll,
                 $(concat!("Command.",stringify!($v)) => Command::$v { $($f:get!(p,d,$kind,stringify!($f),$ty)),* }),*,
                 _ => return Err(invalid("unknown supervisor command")),
             };
@@ -516,10 +536,6 @@ command_codec! {
     Refresh { approval:u64=>plain, changes:crate::devshell::Changes=>plain },
     Run { serial:u64=>plain, app:String=>plain },
     Diff { serial:u64=>plain, changes:crate::devshell::Changes=>plain },
-    Spawn { id:u64=>plain, kind:crate::SpawnKind=>plain, argv:Option<Vec<String>> =>plain, cwd:Option<String> =>plain, env:Vec<(String,String)> =>plain, stdio:Stdio=>stdio },
-    Signal { id:u64=>plain, signal:i32=>plain },
-    CancelProcess { id:u64=>plain, everything:bool=>plain },
-    KillAll {},
     TerminalCall { request:u64=>plain, terminal:u64=>plain, call:crate::terminal::Call=>plain },
     TerminalCancel { request:u64=>plain },
     Export { member:String=>plain },
@@ -556,6 +572,9 @@ macro_rules! event_codec {
                     };
                     b.notification::<contract::supervisor_notifications::EventExported>(contract::SupervisorEventExportedParams { member:member.clone(),result })?;
                 }
+                Event::Spawned { id,pid } => b.notification::<contract::supervisor_notifications::EventSpawned>(contract::SupervisorEventSpawnedParams { id:*id,pid:*pid })?,
+                Event::SpawnFailed { id,code,message } => b.notification::<contract::supervisor_notifications::EventSpawnFailed>(contract::SupervisorEventSpawnFailedParams { id:*id,code:*code,message:message.clone() })?,
+                Event::Exited { id,code,signal } => b.notification::<contract::supervisor_notifications::EventExited>(contract::SupervisorEventExitedParams { id:*id,code:*code,signal:*signal })?,
                 $(Event::$v { $($f),* } => { b.method=concat!("Event.",stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
                 Event::InitLost => b.method="Event.InitLost",
                 Event::PayloadExited => b.method="Event.PayloadExited",
@@ -567,6 +586,18 @@ macro_rules! event_codec {
                 "Event.Failed"=>Event::Failed(p.take("error")?),
                 "Event.InitLost"=>Event::InitLost,
                 "Event.PayloadExited"=>Event::PayloadExited,
+                name if name==contract::supervisor_notifications::EventSpawned::NAME => {
+                    let wire=contract::SupervisorEventSpawnedParams { id:p.take("id")?,pid:p.take("pid")? };
+                    Event::Spawned { id:wire.id,pid:wire.pid }
+                },
+                name if name==contract::supervisor_notifications::EventSpawnFailed::NAME => {
+                    let wire=contract::SupervisorEventSpawnFailedParams { id:p.take("id")?,code:p.take("code")?,message:p.take("message")? };
+                    Event::SpawnFailed { id:wire.id,code:wire.code,message:wire.message }
+                },
+                name if name==contract::supervisor_notifications::EventExited::NAME => {
+                    let wire=contract::SupervisorEventExitedParams { id:p.take("id")?,code:p.take("code")?,signal:p.take("signal")? };
+                    Event::Exited { id:wire.id,code:wire.code,signal:wire.signal }
+                },
                 $(concat!("Event.",stringify!($v))=>Event::$v { $($f:get!(p,_d,$kind,stringify!($f),$ty)),* }),*,
                 _=>return Err(invalid("unknown supervisor event")),
             };
@@ -585,11 +616,8 @@ event_codec! {
     Call { serial:u64=>plain, result:Result<Value,String> =>opaque },
     DevShell { summary:crate::policy::DevShellSummary=>opaque },
     Granted { reply:goblins_protocol::Reply=>plain, detail:Option<String> =>plain, output:Option<PathBuf> =>plain },
-    Spawned { id:u64=>plain, pid:i32=>plain },
     Terminal { terminal:TerminalId=>plain, status:TerminalStatus=>plain, error:Option<String> =>plain },
     TerminalResult { request:u64=>plain, result:Result<Value,String> =>opaque },
-    SpawnFailed { id:u64=>plain, code:Option<i32> =>plain, message:String=>plain },
-    Exited { id:u64=>plain, code:Option<i32> =>plain, signal:Option<i32> =>plain },
     SandboxOpened { connection:u64=>plain },
     SandboxCall { connection:u64=>plain, call:goblins_jsonrpc::Call=>call },
     SandboxClosed { connection:u64=>plain },
