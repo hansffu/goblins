@@ -1388,6 +1388,47 @@ def check_supervisor_membership_metadata():
             raise ValueError("private scope membership schema differs: "+name)
 
 
+def check_supervisor_started_policy_metadata():
+    """Bind the first Started subrecord slice without completing its root."""
+    schema=common();defs=schema["definitions"]
+    def ref(name):return {"$ref":"#/definitions/SupervisorStarted"+name}
+    def opt(value):return {"anyOf":[value,{"type":"null"}]}
+    def record(name,fields,required,derives,closed=False):
+        return {"type":"object","properties":{key:{**shape,"x-rust-field-name":key,"x-rust-type":native,**metadata} for key,(shape,native,metadata) in fields.items()},"required":required,"additionalProperties":not closed,"x-rust-name":name,"x-rust-module":"started_metadata","x-rust-field-order":list(fields),"x-rust-derives":derives}
+    string={"type":"string"};strings={"type":"array","items":string};path={"$ref":"#/definitions/SupervisorPath"}
+    traits=["Clone","Debug","Serialize","Deserialize"]
+    expected={
+        "Editor":record("Editor",{"kind":(string,"String",{}),"command":(string,"String",{})},["kind","command"],["Clone","Debug","PartialEq","Eq","Serialize","Deserialize"],True),
+        "OnAttach":record("OnAttach",{
+            "command":(strings,"Vec<String>",{}),
+            "timeout":({"$ref":"#/definitions/SupervisorSequence"},"u64",{}),
+            "wait_for":({**strings,"default":[]},"Vec<String>",{"x-rust-default":True}),
+        },["command","timeout"],traits,True),
+        "Handlers":record("Handlers",{"on_attach":(ref("OnAttach"),"OnAttach",{}),"on_detach":(opt(strings),"Option<Vec<String>>",{})},["on_attach"],traits),
+        "ScopePolicy":record("ScopePolicy",{"name":(string,"String",{}),"docker":({"type":"boolean"},"bool",{}),"pid":({"type":"boolean"},"bool",{})},["name","docker","pid"],traits),
+        "DevShellPolicy":record("DevShellPolicy",{"reference":(string,"String",{}),"path":(path,"::std::path::PathBuf",{})},["reference","path"],traits),
+        "Policy":record("Policy",{
+            "configuration":(string,"String",{}),
+            "description":(string,"String",{}),
+            "run_targets":(strings,"Vec<String>",{}),
+            "integration":(opt(string),"Option<String>",{}),
+            "bypass_permissions":({"type":"boolean"},"bool",{}),
+            "editor":(opt(ref("Editor")),"Option<Editor>",{}),
+            "nix":({"type":"boolean"},"bool",{}),
+            "host_commands":({"type":"boolean"},"bool",{}),
+            "scope":(opt(ref("ScopePolicy")),"Option<ScopePolicy>",{}),
+            "dev_shell":(opt(ref("DevShellPolicy")),"Option<DevShellPolicy>",{}),
+            "initial_packages":({"type":"array","items":path},"Vec<::std::path::PathBuf>",{}),
+            "handlers":(opt(ref("Handlers")),"Option<Handlers>",{}),
+        },["configuration","description","run_targets","bypass_permissions","nix","host_commands","initial_packages"],traits),
+    }
+    for name,value in expected.items():
+        if {key:value for key,value in defs["SupervisorStarted"+name].items() if key!="description"}!=value:
+            raise ValueError("private Started policy schema/Rust metadata differs: "+name)
+    if document("supervisor").get("x-pending-payload-contracts")!={"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"}}}:
+        raise ValueError("private Started pending payload projection differs")
+
+
 def check_supervisor_pending_inventory():
     """Retire covered methods from their original remaining family, without loss."""
     families={
@@ -1486,7 +1527,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary","SupervisorHostOutcome","SupervisorEventHostJobFinishedParams"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary","SupervisorHostOutcome","SupervisorEventHostJobFinishedParams","SupervisorStartedEditor","SupervisorStartedOnAttach","SupervisorStartedHandlers","SupervisorStartedScopePolicy","SupervisorStartedDevShellPolicy","SupervisorStartedPolicy"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1544,6 +1585,7 @@ def check():
     check_supervisor_host_job_metadata()
     check_supervisor_lifecycle_metadata()
     check_supervisor_membership_metadata()
+    check_supervisor_started_policy_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

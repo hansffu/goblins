@@ -1760,7 +1760,7 @@
       "connection-state": "operational scope membership response"
     }
   ],
-  "x-contract-chunk": "C17d3a",
+  "x-contract-chunk": "C17d3b1",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -1857,5 +1857,12 @@
       "Event.SandboxCall",
       "Event.SandboxClosed"
     ]
+  },
+  "x-pending-payload-contracts": {
+    "Event.Started": {
+      "policy": {
+        "$ref": "common.json#/definitions/SupervisorStartedPolicy"
+      }
+    }
   }
 }

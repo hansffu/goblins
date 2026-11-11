@@ -5972,3 +5972,729 @@ fn c17d3a_membership_rejection_closes_duplicates_at_original_boundaries() {
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
     }
 }
+mod c17d3b_original {
+    use super::*;
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Policy {
+        pub configuration: String,
+        pub description: String,
+        pub run_targets: Vec<String>,
+        pub integration: Option<String>,
+        pub bypass_permissions: bool,
+        pub editor: Option<Editor>,
+        pub nix: bool,
+        pub host_commands: bool,
+        pub scope: Option<ScopePolicy>,
+        pub dev_shell: Option<DevShellPolicy>,
+        pub initial_packages: Vec<PathBuf>,
+        pub handlers: Option<Handlers>,
+    }
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct ScopePolicy {
+        pub name: String,
+        pub docker: bool,
+        pub pid: bool,
+    }
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct DevShellPolicy {
+        pub reference: String,
+        pub path: PathBuf,
+    }
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Editor {
+        pub kind: String,
+        pub command: String,
+    }
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct OnAttach {
+        pub command: Vec<String>,
+        pub timeout: u64,
+        #[serde(default)]
+        pub wait_for: Vec<String>,
+    }
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Handlers {
+        pub on_attach: OnAttach,
+        pub on_detach: Option<Vec<String>>,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum Feature {
+        LivePackages,
+        DevShells,
+        FlakeApps,
+        NixDaemon,
+        HostJobs,
+        Exec,
+        AttachClients,
+        Scopes,
+        SharedPid,
+        Docker,
+    }
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Support(pub std::collections::BTreeSet<Feature>);
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct Identity {
+        pub pid: u32,
+        pub helper_userns: u64,
+        pub mount_owner: u64,
+        pub source_mountns: u64,
+        pub mountns: u64,
+    }
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Skipped {
+        pub name: String,
+        pub reason: String,
+    }
+    #[derive(Serialize, Deserialize)]
+    pub struct Recreated {
+        pub packages: Vec<(String, PathBuf)>,
+        pub auto_approve: Vec<(String, PathBuf)>,
+        pub skipped: Vec<Skipped>,
+        pub fresh: Option<String>,
+    }
+    #[derive(Default, Serialize, Deserialize)]
+    pub struct Auto {
+        pub rooted: Vec<(String, PathBuf)>,
+        pub skipped: Vec<Skipped>,
+    }
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Report {
+        pub folder: Option<PathBuf>,
+        #[serde(default)]
+        pub checkout: Option<PathBuf>,
+        pub worktree: Option<String>,
+        pub detail: Option<String>,
+    }
+}
+fn c17d3b_serde<A: Serialize + DeserializeOwned, O: Serialize + DeserializeOwned>(
+    values: &[Value],
+    raw: &[&str],
+) {
+    for value in values {
+        let old = serde_json::from_value::<O>(value.clone())
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_value::<A>(value.clone())
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, old, "Value {value}");
+    }
+    for input in raw {
+        let old = serde_json::from_str::<O>(input)
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_str::<A>(input)
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, old, "raw {input}");
+        let value: Value = serde_json::from_str(input).unwrap();
+        let old = serde_json::from_value::<O>(value.clone())
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_value::<A>(value)
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, old, "raw normalized to Value {input}");
+    }
+}
+fn c17d3b_policy_value(rich: bool) -> Value {
+    if rich {
+        json!({"configuration":"../config\0雪","description":"odd","run_targets":["../bad",""],"integration":"future","bypass_permissions":true,"editor":{"kind":"future","command":""},"nix":true,"host_commands":true,"scope":{"name":"../scope\0","docker":true,"pid":true},"dev_shell":{"reference":"not a path#?","path":"relative\0"},"initial_packages":["relative/../pkg"],"handlers":{"on_attach":{"command":[],"timeout":u64::MAX,"wait_for":["INVALID SPACE","$fd"]},"on_detach":[]}})
+    } else {
+        json!({"configuration":"","description":"","run_targets":[],"integration":null,"bypass_permissions":false,"editor":null,"nix":false,"host_commands":false,"scope":null,"dev_shell":null,"initial_packages":[],"handlers":null})
+    }
+}
+fn c17d3b_started(rich: bool) -> Message {
+    let mut policy = crate::policy::Policy::fixture("", &[]);
+    policy.description.clear();
+    if rich {
+        policy.configuration = "../config\0雪".into();
+        policy.description = "odd".into();
+        policy.run_targets = vec!["../bad".into(), "".into()];
+        policy.integration = Some("future".into());
+        policy.bypass_permissions = true;
+        policy.editor = Some(crate::config::Editor {
+            kind: "future".into(),
+            command: "".into(),
+        });
+        policy.nix = true;
+        policy.host_commands = true;
+        policy.scope = Some(crate::policy::ScopePolicy {
+            name: "../scope\0".into(),
+            docker: true,
+            pid: true,
+        });
+        policy.dev_shell = Some(crate::policy::DevShellPolicy {
+            reference: "not a path#?".into(),
+            path: "relative\0".into(),
+        });
+        policy.initial_packages = vec!["relative/../pkg".into()];
+        policy.handlers = Some(crate::config::Handlers {
+            on_attach: crate::config::OnAttach {
+                command: vec![],
+                timeout: u64::MAX,
+                wait_for: vec!["INVALID SPACE".into(), "$fd".into()],
+            },
+            on_detach: Some(vec![]),
+        });
+    }
+    Message::Event(Event::Started {
+        docker_enabled: rich,
+        policy: Box::new(policy),
+        support: crate::policy::Support(if rich {
+            [
+                crate::policy::Feature::Docker,
+                crate::policy::Feature::Exec,
+                crate::policy::Feature::LivePackages,
+            ]
+            .into()
+        } else {
+            Default::default()
+        }),
+        dev_shell: rich.then(|| crate::policy::DevShellSummary {
+            identity: "".into(),
+            generation: u32::MAX,
+            lock: json!({"$fd":999}),
+        }),
+        identity: crate::Identity {
+            pid: if rich { u32::MAX } else { 0 },
+            helper_userns: if rich { u64::MAX } else { 0 },
+            mount_owner: 0,
+            source_mountns: 0,
+            mountns: 0,
+        },
+        recreated: rich.then(|| {
+            Box::new(crate::Recreated {
+                packages: vec![("bad pkg".into(), "relative\0".into())],
+                auto_approve: vec![("".into(), "relative-auto".into())],
+                skipped: vec![crate::history::Skipped {
+                    name: "a\nb".into(),
+                    reason: "r\ns".into(),
+                }],
+                fresh: Some("new".into()),
+            })
+        }),
+        auto: Box::new(if rich {
+            crate::Auto {
+                rooted: vec![("odd".into(), "relative-auto".into())],
+                skipped: vec![],
+            }
+        } else {
+            Default::default()
+        }),
+        worktrees: Box::new(if rich {
+            crate::worktrees::Report {
+                folder: Some("relative/folder".into()),
+                checkout: Some("../checkout".into()),
+                worktree: Some("../bad-worktree".into()),
+                detail: Some("not validated".into()),
+            }
+        } else {
+            Default::default()
+        }),
+    })
+}
+fn c17d3b_params(rich: bool) -> Value {
+    json!({"docker_enabled":rich,"policy":c17d3b_policy_value(rich),"support":if rich {json!(["live-packages","exec","docker"])}else{json!([])},"dev_shell":if rich {"{\"identity\":\"\",\"generation\":4294967295,\"lock\":{\"$fd\":999}}"}else{"null"},"identity":{"pid":if rich {u32::MAX}else{0},"helper_userns":if rich {u64::MAX}else{0},"mount_owner":0,"source_mountns":0,"mountns":0},"recreated":if rich {json!({"packages":[["bad pkg","relative\0"]],"auto_approve":[["","relative-auto"]],"skipped":[{"name":"a\nb","reason":"r\ns"}],"fresh":"new"})}else{json!(null)},"auto":if rich {json!({"rooted":[["odd","relative-auto"]],"skipped":[]})}else{json!({"rooted":[],"skipped":[]})},"worktrees":if rich {json!({"folder":"relative/folder","checkout":"../checkout","worktree":"../bad-worktree","detail":"not validated"})}else{json!({"folder":null,"checkout":null,"worktree":null,"detail":null})}})
+}
+#[test]
+fn c17d3b_policy_and_configuration_metadata_keep_original_serde_boundaries() {
+    let minimal = c17d3b_policy_value(false);
+    let rich = c17d3b_policy_value(true);
+    let mut values = vec![minimal.clone(), rich.clone(), json!({}), json!(null)];
+    let fields = [
+        "configuration",
+        "description",
+        "run_targets",
+        "integration",
+        "bypass_permissions",
+        "editor",
+        "nix",
+        "host_commands",
+        "scope",
+        "dev_shell",
+        "initial_packages",
+        "handlers",
+    ];
+    values.push(Value::Array(
+        fields.iter().map(|k| minimal[*k].clone()).collect(),
+    ));
+    for key in fields {
+        let mut v = minimal.clone();
+        v.as_object_mut().unwrap().remove(key);
+        values.push(v);
+        let mut v = minimal.clone();
+        v[key] = json!(0);
+        values.push(v);
+    }
+    let mut extra = rich.clone();
+    extra["future"] = json!(0);
+    values.push(extra);
+    c17d3b_serde::<crate::policy::Policy, c17d3b_original::Policy>(
+        &values,
+        &[r#"{"configuration":"a","configuration":"b"}"#],
+    );
+    c17d3b_serde::<crate::policy::ScopePolicy, c17d3b_original::ScopePolicy>(
+        &[
+            json!({"name":"","docker":true,"pid":true,"future":0}),
+            json!(["", false, true]),
+            json!({}),
+            json!({"name":"x","docker":null,"pid":false}),
+        ],
+        &[r#"{"name":"a","name":"b","docker":false,"pid":false}"#],
+    );
+    c17d3b_serde::<crate::policy::DevShellPolicy, c17d3b_original::DevShellPolicy>(
+        &[
+            json!({"reference":"not a path","path":"relative\0","extra":0}),
+            json!(["x", "relative"]),
+            json!({"reference":"x","path":null}),
+            json!({}),
+        ],
+        &[],
+    );
+    c17d3b_serde::<crate::config::Editor, c17d3b_original::Editor>(
+        &[
+            json!({"kind":"future","command":""}),
+            json!(["future", ""]),
+            json!({"kind":"emacs","command":"x","extra":0}),
+            json!({}),
+        ],
+        &[r#"{"kind":"a","kind":"b","command":"c"}"#],
+    );
+    c17d3b_serde::<crate::config::OnAttach, c17d3b_original::OnAttach>(
+        &[
+            json!({"command":[],"timeout":u64::MAX}),
+            json!({"command":[],"timeout":0,"wait_for":["INVALID SPACE"]}),
+            json!([[], 0]),
+            json!([[], 0, []]),
+            json!({"command":[],"timeout":1,"wait_for":null}),
+            json!({"command":[],"timeout":1.0}),
+            json!({"command":[],"timeout":0,"extra":0}),
+            json!({}),
+        ],
+        &[r#"{"command":[],"timeout":0,"timeout":1}"#],
+    );
+    c17d3b_serde::<crate::config::Handlers, c17d3b_original::Handlers>(
+        &[
+            json!({"on_attach":{"command":[],"timeout":0},"extra":0}),
+            json!([{ "command":[],"timeout":0},null]),
+            json!({"on_attach":null}),
+            json!({}),
+        ],
+        &[],
+    );
+    // Domain validation stays available and separate from structural decoding.
+    let Message::Event(Event::Started { policy, .. }) = c17d3b_started(true) else {
+        unreachable!()
+    };
+    let handlers = policy.handlers.as_ref().unwrap();
+    assert!(
+        crate::config::Handlers::check(&handlers.on_attach, handlers.on_detach.as_ref()).is_err()
+    );
+}
+#[test]
+fn c17d3b_support_and_identity_keep_original_order_traits_and_native_ranges() {
+    fn cloned<T: Clone + std::fmt::Debug>() {}
+    fn copied<T: Copy + Ord>() {}
+    cloned::<crate::policy::Policy>();
+    cloned::<crate::config::Handlers>();
+    cloned::<crate::Identity>();
+    copied::<crate::policy::Feature>();
+    c17d3b_serde::<crate::policy::Feature, c17d3b_original::Feature>(
+        &[
+            json!("docker"),
+            json!({"exec":null}),
+            json!("future"),
+            json!("LivePackages"),
+            json!([]),
+        ],
+        &[],
+    );
+    c17d3b_serde::<crate::policy::Support, c17d3b_original::Support>(
+        &[
+            json!([]),
+            json!(["docker", "exec", "live-packages", "docker"]),
+            json!([{"docker":null},"exec"]),
+            json!(["future"]),
+            json!({}),
+            json!(null),
+        ],
+        &[],
+    );
+    let support: crate::policy::Support =
+        serde_json::from_value(json!(["docker", "exec", "live-packages", "docker"])).unwrap();
+    assert_eq!(
+        serde_json::to_value(&support).unwrap(),
+        json!(["live-packages", "exec", "docker"])
+    );
+    assert!(support.has(crate::policy::Feature::Exec));
+    assert_eq!(
+        serde_json::to_value(crate::policy::Support::linux()).unwrap(),
+        json!([
+            "live-packages",
+            "dev-shells",
+            "flake-apps",
+            "nix-daemon",
+            "host-jobs",
+            "exec",
+            "attach-clients",
+            "scopes",
+            "shared-pid",
+            "docker"
+        ])
+    );
+    let id = json!({"pid":u32::MAX,"helper_userns":u64::MAX,"mount_owner":0,"source_mountns":0,"mountns":0});
+    let mut values = vec![id.clone(), json!([u32::MAX, u64::MAX, 0, 0, 0]), json!({})];
+    for key in [
+        "pid",
+        "helper_userns",
+        "mount_owner",
+        "source_mountns",
+        "mountns",
+    ] {
+        let mut v = id.clone();
+        v.as_object_mut().unwrap().remove(key);
+        values.push(v);
+        let mut v = id.clone();
+        v[key] = json!(-1);
+        values.push(v);
+        let mut v = id.clone();
+        v[key] = json!(1.0);
+        values.push(v);
+    }
+    let mut v = id.clone();
+    v["pid"] = json!(u64::from(u32::MAX) + 1);
+    values.push(v);
+    let mut v = id;
+    v["future"] = json!(0);
+    values.push(v);
+    c17d3b_serde::<crate::Identity, c17d3b_original::Identity>(
+        &values,
+        &[r#"{"pid":0,"pid":1,"helper_userns":0,"mount_owner":0,"source_mountns":0,"mountns":0}"#],
+    );
+}
+#[test]
+fn c17d3b_recreated_auto_skipped_and_report_preserve_defaults_and_tuple_forms() {
+    let rich = c17d3b_params(true);
+    let mut recreated = vec![
+        rich["recreated"].clone(),
+        json!({"packages":[],"auto_approve":[],"skipped":[]}),
+        json!([[], [], [], null]),
+        json!({}),
+        json!({"packages":[["only"]],"auto_approve":[],"skipped":[]}),
+        json!({"packages":[["name","path",0]],"auto_approve":[],"skipped":[]}),
+        json!({"packages":[],"auto_approve":[],"skipped":[{"name":"n","reason":"r","extra":0}]}),
+    ];
+    for key in ["packages", "auto_approve", "skipped", "fresh"] {
+        let mut missing = rich["recreated"].clone();
+        missing.as_object_mut().unwrap().remove(key);
+        recreated.push(missing);
+        let mut wrong = rich["recreated"].clone();
+        wrong[key] = json!(0);
+        recreated.push(wrong);
+    }
+    recreated.push(json!({"packages":[],"auto_approve":[["name",null]],"skipped":[]}));
+    let mut extra = rich["recreated"].clone();
+    extra["future"] = json!(0);
+    recreated.push(extra);
+    c17d3b_serde::<crate::Recreated, c17d3b_original::Recreated>(
+        &recreated,
+        &[r#"{"packages":[],"packages":[],"auto_approve":[],"skipped":[]}"#],
+    );
+    c17d3b_serde::<crate::Auto, c17d3b_original::Auto>(
+        &[
+            rich["auto"].clone(),
+            json!({"rooted":[],"skipped":[],"future":0}),
+            json!([[], []]),
+            json!({}),
+            json!({"rooted":[["name",null]],"skipped":[]}),
+            json!({"rooted":[]}),
+            json!({"skipped":[]}),
+            json!({"rooted":[],"skipped":null}),
+        ],
+        &[],
+    );
+    assert_eq!(
+        serde_json::to_value(crate::Auto::default()).unwrap(),
+        json!({"rooted":[],"skipped":[]})
+    );
+    c17d3b_serde::<crate::history::Skipped, c17d3b_original::Skipped>(
+        &[
+            json!({"name":"a\nb","reason":"r\ns"}),
+            json!(["a", "b"]),
+            json!({"name":"a","reason":"b","extra":0}),
+            json!({}),
+        ],
+        &[r#"{"name":"a","name":"b","reason":"r"}"#],
+    );
+    assert_eq!(
+        serde_json::to_value(crate::history::Skipped::new("a\nb", "r\ns")).unwrap(),
+        json!({"name":"a b","reason":"r s"})
+    );
+    c17d3b_serde::<crate::worktrees::Report, c17d3b_original::Report>(
+        &[
+            json!({}),
+            rich["worktrees"].clone(),
+            json!([null, null, null, null]),
+            json!([null]),
+            json!({"folder":null,"worktree":null,"detail":null,"future":0}),
+            json!({"folder":[]}),
+            json!({"checkout":0}),
+        ],
+        &[r#"{"folder":null,"folder":"x"}"#],
+    );
+    assert_eq!(
+        serde_json::to_value(crate::worktrees::Report::default()).unwrap(),
+        json!({"folder":null,"checkout":null,"worktree":null,"detail":null})
+    );
+}
+#[test]
+fn c17d3b_started_exact_minimal_rich_channel_frames_and_required_nullable_roots() {
+    let _no_forks = unix::no_forks();
+    let fields = [
+        "docker_enabled",
+        "policy",
+        "support",
+        "dev_shell",
+        "identity",
+        "recreated",
+        "auto",
+        "worktrees",
+    ];
+    for rich in [false, true] {
+        let mut prepared = Encoder::default().prepare(c17d3b_started(rich)).unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert!(frame.fds.is_empty());
+        assert_eq!(
+            frame.value,
+            json!({"jsonrpc":"2.0","method":"Event.Started","params":c17d3b_params(rich)})
+        );
+        for field in fields {
+            let mut value = frame.value.clone();
+            value["params"].as_object_mut().unwrap().remove(field);
+            value["params"]["extra"] = json!(0);
+            c16a_error(
+                Frame { value, fds: vec![] },
+                &format!("missing control field {field}"),
+            );
+        }
+        let mut value = frame.value.clone();
+        value["params"]["extra"] = json!(0);
+        c16a_error(Frame { value, fds: vec![] }, "unexpected control field");
+        let mut value = frame.value.clone();
+        value["params"] = json!([]);
+        c16a_error(Frame { value, fds: vec![] }, "expected control object");
+        let expected = frame.value.clone();
+        let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut sender = channel::Channel::new(left).unwrap();
+        let mut receiver = channel::Channel::new(right).unwrap();
+        sender.queue(&frame.value, &mut frame.fds).unwrap();
+        sender.flush().unwrap();
+        assert!(!sender.wants_write());
+        let received = Decoder::default()
+            .receive_channel(&mut receiver)
+            .unwrap()
+            .unwrap();
+        assert!(received.adopted.is_none());
+        assert_eq!(c16a_frame(received.message).value, expected);
+    }
+    let mut frame = c16a_frame(c17d3b_started(true));
+    frame.value["params"]["support"] = json!(["docker", "exec", "live-packages", "docker"]);
+    let received = Decoder::default().receive(frame).unwrap().unwrap();
+    assert_eq!(
+        c16a_frame(received.message).value["params"]["support"],
+        json!(["live-packages", "exec", "docker"])
+    );
+    let mut frame = c16a_frame(c17d3b_started(false));
+    frame.value["params"]["worktrees"] = json!({});
+    let received = Decoder::default().receive(frame).unwrap().unwrap();
+    assert_eq!(
+        c16a_frame(received.message).value["params"],
+        c17d3b_params(false)
+    );
+    // Opaque lock markers above cross Channel as data. An unknown plain-JSON
+    // policy field is accepted by typed Value decoding but still scanned by framing.
+    let mut frame = c16a_frame(c17d3b_started(false));
+    frame.value["params"]["policy"]["future"] = json!({"$fd":0});
+    assert!(
+        Decoder::default()
+            .receive(Frame {
+                value: frame.value.clone(),
+                fds: vec![]
+            })
+            .unwrap()
+            .unwrap()
+            .adopted
+            .is_none()
+    );
+    let (left, _right) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut channel = channel::Channel::new(left).unwrap();
+    assert_eq!(
+        channel
+            .queue(&frame.value, &mut frame.fds)
+            .unwrap_err()
+            .to_string(),
+        "invalid descriptor reference"
+    );
+}
+#[test]
+fn c17d3b_started_nested_and_opaque_errors_keep_original_extraction_order() {
+    fn err<T: DeserializeOwned>(value: Value) -> String {
+        serde_json::from_value::<T>(value)
+            .err()
+            .unwrap()
+            .to_string()
+    }
+    let fields = [
+        "docker_enabled",
+        "policy",
+        "support",
+        "dev_shell",
+        "identity",
+        "recreated",
+        "auto",
+        "worktrees",
+    ];
+    for (field, bad, expected) in [
+        ("docker_enabled", json!(null), err::<bool>(json!(null))),
+        (
+            "policy",
+            json!({}),
+            err::<Box<c17d3b_original::Policy>>(json!({})),
+        ),
+        (
+            "support",
+            json!(["future"]),
+            err::<c17d3b_original::Support>(json!(["future"])),
+        ),
+        ("dev_shell", json!({}), err::<String>(json!({}))),
+        (
+            "identity",
+            json!({}),
+            err::<c17d3b_original::Identity>(json!({})),
+        ),
+        (
+            "recreated",
+            json!({}),
+            err::<Option<Box<c17d3b_original::Recreated>>>(json!({})),
+        ),
+        (
+            "auto",
+            json!({}),
+            err::<Box<c17d3b_original::Auto>>(json!({})),
+        ),
+        (
+            "worktrees",
+            json!(null),
+            err::<Box<c17d3b_original::Report>>(json!(null)),
+        ),
+    ] {
+        let mut params = c17d3b_params(false);
+        let index = fields.iter().position(|name| *name == field).unwrap();
+        for later in &fields[index + 1..] {
+            params.as_object_mut().unwrap().remove(*later);
+        }
+        params[field] = bad;
+        params["extra"] = json!(true);
+        c16a_error(
+            Frame {
+                value: json!({"jsonrpc":"2.0","method":"Event.Started","params":params}),
+                fds: vec![],
+            },
+            &expected,
+        );
+    }
+    for text in [
+        "{",
+        "{}",
+        "[]",
+        "false",
+        r#"{"identity":"x","generation":4294967296,"lock":null}"#,
+        r#"{"identity":"x","generation":0}"#,
+        "null",
+        r#"{"identity":"x","generation":0,"lock":{"$fd":0}}"#,
+    ] {
+        let old = serde_json::from_str::<Option<c17c_original::DevShellSummary>>(text);
+        let mut params = c17d3b_params(false);
+        params["dev_shell"] = json!(text);
+        match old {
+            Err(error) => {
+                params.as_object_mut().unwrap().remove("identity");
+                params["extra"] = json!(true);
+                c16a_error(
+                    Frame {
+                        value: json!({"jsonrpc":"2.0","method":"Event.Started","params":params}),
+                        fds: vec![],
+                    },
+                    &error.to_string(),
+                );
+            }
+            Ok(summary) => {
+                let expected = serde_json::to_string(&summary).unwrap();
+                let received = Decoder::default()
+                    .receive(Frame {
+                        value: json!({"jsonrpc":"2.0","method":"Event.Started","params":params}),
+                        fds: vec![],
+                    })
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    c16a_frame(received.message).value["params"]["dev_shell"],
+                    json!(expected)
+                );
+            }
+        }
+    }
+    // Root null is not the opaque JSON null String.
+    let mut params = c17d3b_params(false);
+    params["dev_shell"] = json!(null);
+    c16a_error(
+        Frame {
+            value: json!({"jsonrpc":"2.0","method":"Event.Started","params":params}),
+            fds: vec![],
+        },
+        &err::<String>(json!(null)),
+    );
+}
+#[test]
+fn c17d3b_started_non_utf8_paths_remain_fallible_at_original_fields() {
+    use std::os::unix::ffi::OsStringExt;
+    let bad = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+    let expected = serde_json::to_value(&bad).unwrap_err().to_string();
+    let kind = io::Error::from(serde_json::to_value(&bad).unwrap_err()).kind();
+    for location in 0..7 {
+        let mut message = c17d3b_started(true);
+        let Message::Event(Event::Started {
+            policy,
+            recreated,
+            auto,
+            worktrees,
+            ..
+        }) = &mut message
+        else {
+            unreachable!()
+        };
+        match location {
+            0 => policy.initial_packages[0] = bad.clone(),
+            1 => policy.dev_shell.as_mut().unwrap().path = bad.clone(),
+            2 => recreated.as_mut().unwrap().packages[0].1 = bad.clone(),
+            3 => recreated.as_mut().unwrap().auto_approve[0].1 = bad.clone(),
+            4 => auto.rooted[0].1 = bad.clone(),
+            5 => worktrees.folder = Some(bad.clone()),
+            6 => worktrees.checkout = Some(bad.clone()),
+            _ => unreachable!(),
+        }
+        let error = match Encoder::default().prepare(message) {
+            Err(error) => error,
+            Ok(_) => panic!("serialized nonUTF8 Started path at {location}"),
+        };
+        assert_eq!(error.kind(), kind, "path at {location}");
+        assert_eq!(error.to_string(), expected, "path at {location}");
+    }
+}

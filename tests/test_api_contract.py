@@ -16,6 +16,112 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17d3b1_started_policy_records_and_partial_projection_instances(self):
+        fixtures = contract.read("fixtures.json")
+        common = contract.common()
+        for binding in fixtures["c17d3b1_started_policy_bindings"]:
+            definition = common["definitions"][binding["schema"]]
+            self.assertIn(binding["schema"], common["x-rust-explicit-records"])
+            self.assertEqual(definition["x-rust-name"], binding["name"])
+            self.assertEqual(definition["x-rust-module"], "started_metadata")
+            self.assertEqual(definition["x-rust-derives"], binding["derives"])
+            self.assertEqual(definition["x-rust-field-order"], binding["fields"])
+            self.assertEqual(definition["required"], binding["required"])
+            self.assertEqual(definition["additionalProperties"], not binding["closed"])
+            for key, native in zip(binding["fields"], binding["types"]):
+                field = definition["properties"][key]
+                self.assertEqual(field["x-rust-field-name"], key)
+                self.assertEqual(field["x-rust-type"], native)
+                self.assertNotIn("x-rust-skip-serializing-if", field)
+                if binding["name"] == "OnAttach" and key == "wait_for":
+                    self.assertIs(field["x-rust-default"], True)
+                    self.assertEqual(field["default"], [])
+                else: self.assertNotIn("x-rust-default", field)
+        for name, cases in fixtures["c17d3b1_started_policy_cases"].items():
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
+            for case in cases:
+                with self.subTest(schema=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        # Policy.description is a real String field, not schema prose.
+        self.assertEqual(common["definitions"]["SupervisorStartedPolicy"]["properties"]["description"]["type"], "string")
+        doc = contract.document("supervisor")
+        self.assertEqual(doc["x-pending-payload-contracts"], {"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"}}})
+        self.assertNotIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
+        pending = [name for group in doc["x-pending-notifications"].values() for name in group]
+        self.assertEqual(len(pending), 7)
+        self.assertEqual(doc["x-pending-notifications"]["C17d-lifecycle-host-jobs"], ["Event.Started"])
+
+    def test_c17d3b1_started_policy_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def changed(label, change):
+            schema = copy.deepcopy(original)
+            change(schema)
+            cases.append((label, schema))
+        def definition(s, name): return s["definitions"]["SupervisorStarted" + name]
+        def field(s, name, key): return definition(s,name)["properties"][key]
+        for binding in contract.read("fixtures.json")["c17d3b1_started_policy_bindings"]:
+            name = binding["name"]; first = binding["fields"][0]
+            changed(name + " registry", lambda s,name=name: s["x-rust-explicit-records"].remove("SupervisorStarted"+name))
+            changed(name + " original name", lambda s,name=name: definition(s,name).update({"x-rust-name":"Wrong"}))
+            changed(name + " module", lambda s,name=name: definition(s,name).update({"x-rust-module":"wrong"}))
+            changed(name + " traits", lambda s,name=name: definition(s,name)["x-rust-derives"].remove("Clone"))
+            changed(name + " order", lambda s,name=name: definition(s,name)["x-rust-field-order"].reverse())
+            changed(name + " open closed", lambda s,name=name: definition(s,name).update(additionalProperties=not definition(s,name)["additionalProperties"]))
+            changed(name + " native field", lambda s,name=name,first=first: field(s,name,first).update({"x-rust-field-name":"other"}))
+            changed(name + " native type", lambda s,name=name,first=first: field(s,name,first).update({"x-rust-type":"u64"}))
+            changed(name + " required first", lambda s,name=name,first=first: definition(s,name)["required"].remove(first))
+            changed(name + " no unintended default", lambda s,name=name,first=first: field(s,name,first).update({"x-rust-default":True}))
+            changed(name + " no skip", lambda s,name=name,first=first: field(s,name,first).update({"x-rust-skip-serializing-if":"Option::is_none"}))
+        changed("Editor retains Eq", lambda s: definition(s,"Editor")["x-rust-derives"].remove("Eq"))
+        changed("OnAttach wait_for default removed", lambda s: field(s,"OnAttach","wait_for").pop("x-rust-default"))
+        changed("OnAttach wait_for constructor default", lambda s: field(s,"OnAttach","wait_for").update(default=["future"]))
+        changed("OnAttach wait_for optional", lambda s: definition(s,"OnAttach")["required"].append("wait_for"))
+        changed("OnAttach command String array", lambda s: field(s,"OnAttach","command")["items"].update(type="integer"))
+        changed("OnAttach wait_for String array", lambda s: field(s,"OnAttach","wait_for")["items"].update(type="integer"))
+        changed("OnAttach full u64 reference", lambda s: field(s,"OnAttach","timeout").update({"$ref":"#/definitions/SupervisorGeneration"}))
+        changed("OnAttach timeout native u64", lambda s: field(s,"OnAttach","timeout").update({"x-rust-type":"u32"}))
+        changed("Handlers nested link", lambda s: field(s,"Handlers","on_attach").update({"$ref":"#/definitions/SupervisorStartedEditor"}))
+        changed("Handlers on_detach nullable", lambda s: field(s,"Handlers","on_detach")["anyOf"].pop())
+        changed("Handlers on_detach missing", lambda s: definition(s,"Handlers")["required"].append("on_detach"))
+        changed("DevShellPolicy path reference", lambda s: field(s,"DevShellPolicy","path").update({"$ref":"#/definitions/SupervisorSequence"}))
+        changed("DevShellPolicy native PathBuf", lambda s: field(s,"DevShellPolicy","path").update({"x-rust-type":"String"}))
+        for key in ["docker","pid"]:
+            changed("ScopePolicy bool " + key, lambda s,key=key: field(s,"ScopePolicy",key).update(type="integer"))
+        for key,wrong in [("editor","SupervisorStartedScopePolicy"),("scope","SupervisorStartedEditor"),("dev_shell","SupervisorStartedHandlers"),("handlers","SupervisorStartedOnAttach")]:
+            changed("Policy nested reference " + key, lambda s,key=key,wrong=wrong: field(s,"Policy",key)["anyOf"][0].update({"$ref":"#/definitions/"+wrong}))
+        for key in ["integration","editor","scope","dev_shell","handlers"]:
+            changed("Policy optional missing " + key, lambda s,key=key: definition(s,"Policy")["required"].append(key))
+            changed("Policy optional nullable " + key, lambda s,key=key: field(s,"Policy",key)["anyOf"].pop())
+        changed("Policy description String field", lambda s: field(s,"Policy","description").update(type="integer"))
+        changed("Policy description required field", lambda s: definition(s,"Policy")["required"].remove("description"))
+        changed("Policy description native field", lambda s: field(s,"Policy","description").update({"x-rust-field-name":"other"}))
+        changed("Policy run targets String array", lambda s: field(s,"Policy","run_targets")["items"].update(type="integer"))
+        changed("Policy package path array", lambda s: field(s,"Policy","initial_packages")["items"].update({"$ref":"#/definitions/SupervisorSequence"}))
+        changed("Policy native path array", lambda s: field(s,"Policy","initial_packages").update({"x-rust-type":"Vec<String>"}))
+        for key in ["bypass_permissions","nix","host_commands"]:
+            changed("Policy native bool " + key, lambda s,key=key: field(s,"Policy",key).update(type="integer"))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract,"common",return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
+    def test_c17d3b1_started_policy_pending_projection_scope_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.document
+        for mutation in ["missing", "wrong reference", "additional field", "additional pending method"]:
+            changed = copy.deepcopy(original("supervisor"))
+            if mutation == "missing": del changed["x-pending-payload-contracts"]
+            elif mutation == "wrong reference": changed["x-pending-payload-contracts"]["Event.Started"]["policy"] = {"$ref":"common.json#/definitions/SupervisorStartedEditor"}
+            elif mutation == "additional field": changed["x-pending-payload-contracts"]["Event.Started"]["support"] = {"$ref":"common.json#/definitions/SupervisorArguments"}
+            else: changed["x-pending-payload-contracts"]["Event.SandboxCall"] = {"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"}}
+            with self.subTest(mutation=mutation), patch.object(contract,"document",side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c17d3a_membership_canonical_instances_direction_and_inventory(self):
         fixtures = contract.read("fixtures.json")
         validator = contract.schema_validator({"$ref":"common.json#/definitions/SupervisorScopeMembershipOutcome"})

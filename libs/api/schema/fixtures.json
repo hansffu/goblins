@@ -34852,5 +34852,866 @@
       },
       "valid": false
     }
-  ]
+  ],
+  "c17d3b1_started_policy_bindings": [
+    {
+      "schema": "SupervisorStartedEditor",
+      "name": "Editor",
+      "fields": [
+        "kind",
+        "command"
+      ],
+      "types": [
+        "String",
+        "String"
+      ],
+      "required": [
+        "kind",
+        "command"
+      ],
+      "closed": true,
+      "derives": [
+        "Clone",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    {
+      "schema": "SupervisorStartedOnAttach",
+      "name": "OnAttach",
+      "fields": [
+        "command",
+        "timeout",
+        "wait_for"
+      ],
+      "types": [
+        "Vec<String>",
+        "u64",
+        "Vec<String>"
+      ],
+      "required": [
+        "command",
+        "timeout"
+      ],
+      "closed": true,
+      "derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    {
+      "schema": "SupervisorStartedHandlers",
+      "name": "Handlers",
+      "fields": [
+        "on_attach",
+        "on_detach"
+      ],
+      "types": [
+        "OnAttach",
+        "Option<Vec<String>>"
+      ],
+      "required": [
+        "on_attach"
+      ],
+      "closed": false,
+      "derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    {
+      "schema": "SupervisorStartedScopePolicy",
+      "name": "ScopePolicy",
+      "fields": [
+        "name",
+        "docker",
+        "pid"
+      ],
+      "types": [
+        "String",
+        "bool",
+        "bool"
+      ],
+      "required": [
+        "name",
+        "docker",
+        "pid"
+      ],
+      "closed": false,
+      "derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    {
+      "schema": "SupervisorStartedDevShellPolicy",
+      "name": "DevShellPolicy",
+      "fields": [
+        "reference",
+        "path"
+      ],
+      "types": [
+        "String",
+        "::std::path::PathBuf"
+      ],
+      "required": [
+        "reference",
+        "path"
+      ],
+      "closed": false,
+      "derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    {
+      "schema": "SupervisorStartedPolicy",
+      "name": "Policy",
+      "fields": [
+        "configuration",
+        "description",
+        "run_targets",
+        "integration",
+        "bypass_permissions",
+        "editor",
+        "nix",
+        "host_commands",
+        "scope",
+        "dev_shell",
+        "initial_packages",
+        "handlers"
+      ],
+      "types": [
+        "String",
+        "String",
+        "Vec<String>",
+        "Option<String>",
+        "bool",
+        "Option<Editor>",
+        "bool",
+        "bool",
+        "Option<ScopePolicy>",
+        "Option<DevShellPolicy>",
+        "Vec<::std::path::PathBuf>",
+        "Option<Handlers>"
+      ],
+      "required": [
+        "configuration",
+        "description",
+        "run_targets",
+        "bypass_permissions",
+        "nix",
+        "host_commands",
+        "initial_packages"
+      ],
+      "closed": false,
+      "derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    }
+  ],
+  "c17d3b1_started_policy_cases": {
+    "SupervisorStartedEditor": [
+      {
+        "value": {
+          "kind": "future",
+          "command": ""
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "kind": "emacs",
+          "command": "x",
+          "extra": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "kind": "x",
+          "command": null
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          "emacs",
+          "x"
+        ],
+        "valid": false
+      },
+      {
+        "value": {
+          "command": "c"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "kind": "x"
+        },
+        "valid": false
+      }
+    ],
+    "SupervisorStartedOnAttach": [
+      {
+        "value": {
+          "command": [],
+          "timeout": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "command": [
+            "invalid"
+          ],
+          "timeout": 18446744073709551615,
+          "wait_for": [
+            "INVALID SPACE"
+          ]
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "command": [],
+          "timeout": 18446744073709551616
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "command": [],
+          "timeout": -1
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "command": [],
+          "timeout": 1.0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "command": [],
+          "timeout": 0,
+          "wait_for": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "command": [],
+          "timeout": 0,
+          "extra": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "command": [
+            0
+          ],
+          "timeout": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "timeout": 0,
+          "wait_for": []
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "command": [],
+          "wait_for": []
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "command": [],
+          "timeout": 0
+        },
+        "valid": true
+      }
+    ],
+    "SupervisorStartedHandlers": [
+      {
+        "value": {
+          "on_attach": {
+            "command": [],
+            "timeout": 0
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "on_attach": {
+            "command": [],
+            "timeout": 0
+          },
+          "on_detach": null,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "on_attach": {
+            "command": [],
+            "timeout": 18446744073709551615,
+            "wait_for": [
+              "INVALID SPACE",
+              "$fd"
+            ]
+          },
+          "on_detach": []
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "on_attach": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "on_attach": {
+            "command": [],
+            "timeout": 0
+          },
+          "on_detach": [
+            0
+          ]
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "on_detach": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "on_attach": {
+            "command": [],
+            "timeout": 0
+          }
+        },
+        "valid": true
+      }
+    ],
+    "SupervisorStartedScopePolicy": [
+      {
+        "value": {
+          "name": "../scope\u0000",
+          "docker": true,
+          "pid": true
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "name": "",
+          "docker": false,
+          "pid": false,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "name": "x",
+          "docker": true
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "name": "x",
+          "docker": null,
+          "pid": false
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "docker": false,
+          "pid": false
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "name": "",
+          "pid": false
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "name": "",
+          "docker": false
+        },
+        "valid": false
+      }
+    ],
+    "SupervisorStartedDevShellPolicy": [
+      {
+        "value": {
+          "reference": "not a path#?",
+          "path": "relative\u0000"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "reference": "",
+          "path": "relative",
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "reference": "x",
+          "path": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "reference": "x",
+          "path": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "path": "relative"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "reference": ""
+        },
+        "valid": false
+      }
+    ],
+    "SupervisorStartedPolicy": [
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "configuration": "../config\u0000雪",
+          "description": "odd",
+          "run_targets": [
+            "../bad",
+            ""
+          ],
+          "integration": "future",
+          "bypass_permissions": true,
+          "editor": {
+            "kind": "future",
+            "command": ""
+          },
+          "nix": true,
+          "host_commands": true,
+          "scope": {
+            "name": "../scope\u0000",
+            "docker": true,
+            "pid": true
+          },
+          "dev_shell": {
+            "reference": "not a path#?",
+            "path": "relative\u0000"
+          },
+          "initial_packages": [
+            "relative/../pkg"
+          ],
+          "handlers": {
+            "on_attach": {
+              "command": [],
+              "timeout": 18446744073709551615,
+              "wait_for": [
+                "INVALID SPACE",
+                "$fd"
+              ]
+            },
+            "on_detach": []
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "configuration": "../config\u0000雪",
+          "description": "odd",
+          "run_targets": [
+            "../bad",
+            ""
+          ],
+          "integration": "future",
+          "bypass_permissions": true,
+          "editor": {
+            "kind": "future",
+            "command": ""
+          },
+          "nix": true,
+          "host_commands": true,
+          "scope": {
+            "name": "../scope\u0000",
+            "docker": true,
+            "pid": true
+          },
+          "dev_shell": {
+            "reference": "not a path#?",
+            "path": "relative\u0000"
+          },
+          "initial_packages": [
+            "relative/../pkg"
+          ],
+          "handlers": {
+            "on_attach": {
+              "command": [],
+              "timeout": 18446744073709551615,
+              "wait_for": [
+                "INVALID SPACE",
+                "$fd"
+              ]
+            },
+            "on_detach": []
+          },
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": 0,
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [
+            0
+          ],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": {},
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": {}
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "handlers": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": []
+        },
+        "valid": true
+      }
+    ]
+  }
 }

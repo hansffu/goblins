@@ -12869,6 +12869,336 @@
         "result"
       ],
       "additionalProperties": false
+    },
+    "SupervisorStartedEditor": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "x-rust-field-name": "kind",
+          "x-rust-type": "String"
+        },
+        "command": {
+          "type": "string",
+          "x-rust-field-name": "command",
+          "x-rust-type": "String"
+        }
+      },
+      "required": [
+        "kind",
+        "command"
+      ],
+      "additionalProperties": false,
+      "x-rust-name": "Editor",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "kind",
+        "command"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartedOnAttach": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-rust-field-name": "command",
+          "x-rust-type": "Vec<String>"
+        },
+        "timeout": {
+          "$ref": "#/definitions/SupervisorSequence",
+          "x-rust-field-name": "timeout",
+          "x-rust-type": "u64"
+        },
+        "wait_for": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "x-rust-field-name": "wait_for",
+          "x-rust-type": "Vec<String>",
+          "x-rust-default": true
+        }
+      },
+      "required": [
+        "command",
+        "timeout"
+      ],
+      "additionalProperties": false,
+      "x-rust-name": "OnAttach",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "command",
+        "timeout",
+        "wait_for"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartedHandlers": {
+      "type": "object",
+      "properties": {
+        "on_attach": {
+          "$ref": "#/definitions/SupervisorStartedOnAttach",
+          "x-rust-field-name": "on_attach",
+          "x-rust-type": "OnAttach"
+        },
+        "on_detach": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "on_detach",
+          "x-rust-type": "Option<Vec<String>>"
+        }
+      },
+      "required": [
+        "on_attach"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "Handlers",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "on_attach",
+        "on_detach"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartedScopePolicy": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-rust-field-name": "name",
+          "x-rust-type": "String"
+        },
+        "docker": {
+          "type": "boolean",
+          "x-rust-field-name": "docker",
+          "x-rust-type": "bool"
+        },
+        "pid": {
+          "type": "boolean",
+          "x-rust-field-name": "pid",
+          "x-rust-type": "bool"
+        }
+      },
+      "required": [
+        "name",
+        "docker",
+        "pid"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "ScopePolicy",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "name",
+        "docker",
+        "pid"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartedDevShellPolicy": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string",
+          "x-rust-field-name": "reference",
+          "x-rust-type": "String"
+        },
+        "path": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-field-name": "path",
+          "x-rust-type": "::std::path::PathBuf"
+        }
+      },
+      "required": [
+        "reference",
+        "path"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "DevShellPolicy",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "reference",
+        "path"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartedPolicy": {
+      "type": "object",
+      "properties": {
+        "configuration": {
+          "type": "string",
+          "x-rust-field-name": "configuration",
+          "x-rust-type": "String"
+        },
+        "description": {
+          "type": "string",
+          "x-rust-field-name": "description",
+          "x-rust-type": "String"
+        },
+        "run_targets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-rust-field-name": "run_targets",
+          "x-rust-type": "Vec<String>"
+        },
+        "integration": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "integration",
+          "x-rust-type": "Option<String>"
+        },
+        "bypass_permissions": {
+          "type": "boolean",
+          "x-rust-field-name": "bypass_permissions",
+          "x-rust-type": "bool"
+        },
+        "editor": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorStartedEditor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "editor",
+          "x-rust-type": "Option<Editor>"
+        },
+        "nix": {
+          "type": "boolean",
+          "x-rust-field-name": "nix",
+          "x-rust-type": "bool"
+        },
+        "host_commands": {
+          "type": "boolean",
+          "x-rust-field-name": "host_commands",
+          "x-rust-type": "bool"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorStartedScopePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "scope",
+          "x-rust-type": "Option<ScopePolicy>"
+        },
+        "dev_shell": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorStartedDevShellPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "dev_shell",
+          "x-rust-type": "Option<DevShellPolicy>"
+        },
+        "initial_packages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SupervisorPath"
+          },
+          "x-rust-field-name": "initial_packages",
+          "x-rust-type": "Vec<::std::path::PathBuf>"
+        },
+        "handlers": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorStartedHandlers"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "handlers",
+          "x-rust-type": "Option<Handlers>"
+        }
+      },
+      "required": [
+        "configuration",
+        "description",
+        "run_targets",
+        "bypass_permissions",
+        "nix",
+        "host_commands",
+        "initial_packages"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "Policy",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "configuration",
+        "description",
+        "run_targets",
+        "integration",
+        "bypass_permissions",
+        "editor",
+        "nix",
+        "host_commands",
+        "scope",
+        "dev_shell",
+        "initial_packages",
+        "handlers"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
     }
   },
   "x-api-version": 1,
@@ -16103,7 +16433,8 @@
     "Host job metadata": "Generated HostOutcome retains original Debug/Serialize/Deserialize/Default, no added Clone, open fields, null optional exit_code/signal/spawn_error, three required bools and original status.json prose. Native policy and status-file behavior remain unchanged. Root Finished aggregate is explicit without Clone.",
     "Host job results": "Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added.",
     "Lifecycle scalar roots": "Generated parameter records and identities retain present empty object params for Command.ScopeFailed/Stop and Event.InitLost/PayloadExited, original member/name/error strings and bool mode, plus required nullable i32 stopped exit_code. Root fieldwise decoding and original unknown-method/extra/missing diagnostics stay unchanged. Stop remains distinct from lifecycle control notifications Stopping/Released; no lifecycle, scope or export policy is added.",
-    "Scope membership": "Generated Command.ScopeMembership root and standard Result<Descriptor,String> metadata preserve the original plain Result shape. The producer duplicates the owned Fd at the original result point; the reader parses the Result, consumes its referenced capability, then finishes root params. Actual ownership, cleanup, framing, no-adoption and scope authority remain native. Legacy descriptor sequences accepted at the typed Value boundary do not claim Channel framing accepts forms without its $fd marker."
+    "Scope membership": "Generated Command.ScopeMembership root and standard Result<Descriptor,String> metadata preserve the original plain Result shape. The producer duplicates the owned Fd at the original result point; the reader parses the Result, consumes its referenced capability, then finishes root params. Actual ownership, cleanup, framing, no-adoption and scope authority remain native. Legacy descriptor sequences accepted at the typed Value boundary do not claim Channel framing accepts forms without its $fd marker.",
+    "Started policy/config": "Generated started_metadata Policy/ScopePolicy/DevShellPolicy/Editor/OnAttach/Handlers preserve original Serde names, field order/types/traits and open/closed/default behavior. Live Started.policy field uses native-to-wire and wire-to-native conversions at the original serialization/extraction point. Runtime domain types, methods, docs and authority remain native. Event.Started root and its other fields stay pending in later C17d3b slices; this is not whole-root closure."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",
@@ -16120,7 +16451,13 @@
     "SupervisorDevShellChanges",
     "SupervisorDevShellSummary",
     "SupervisorHostOutcome",
-    "SupervisorEventHostJobFinishedParams"
+    "SupervisorEventHostJobFinishedParams",
+    "SupervisorStartedEditor",
+    "SupervisorStartedOnAttach",
+    "SupervisorStartedHandlers",
+    "SupervisorStartedScopePolicy",
+    "SupervisorStartedDevShellPolicy",
+    "SupervisorStartedPolicy"
   ],
   "x-rust-external-enums": [
     "SupervisorSpawnKind",
