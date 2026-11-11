@@ -71,12 +71,7 @@ pub struct DevShellPolicy {
 
 /// The current dev shell generation, as `devshell.lock` and `status` show it.
 /// Starts with `Started` and is replaced by each refresh.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DevShellSummary {
-    pub identity: String,
-    pub generation: u32,
-    pub lock: serde_json::Value,
-}
+pub use goblins_protocol::contract::devshell_metadata::DevShellSummary;
 
 /// What a sandbox implementation can do. It describes the implementation,
 /// not the configuration.

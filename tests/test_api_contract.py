@@ -16,6 +16,120 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17c2_devshell_instances_opaque_strings_and_notifications(self):
+        fixtures = contract.read("fixtures.json")
+        for name, cases in fixtures["c17c2_devshell_schema_cases"].items():
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
+            for case in cases:
+                with self.subTest(schema=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        # Validate explicit inner JSON values separately. Outer String validation
+        # deliberately accepts malformed JSON and does not invoke these schemas.
+        for name, cases in fixtures["c17c2_inner_json_cases"].items():
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name + "/x-json-content-schema"})
+            for case in cases:
+                with self.subTest(inner_schema=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        for case in fixtures["c17c2_notification_cases"]:
+            with self.subTest(notification=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", case["direction"], case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", case["direction"], case["frame"])
+            opposite = "supervisor-to-daemon" if case["direction"] == "daemon-to-supervisor" else "daemon-to-supervisor"
+            self.assertFalse(contract.validate_notification("supervisor", opposite, case["frame"]))
+        doc = contract.document("supervisor")
+        pending = [name for group in doc["x-pending-notifications"].values() for name in group]
+        completed = {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
+        self.assertEqual(len(completed), 6)
+        self.assertEqual(len(pending), 24)
+        self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
+        self.assertFalse(completed & set(pending))
+        self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
+
+    def test_c17c2_devshell_public_descriptions_reject_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        for name in ["SupervisorDevShellChanges", "SupervisorDevShellSummary"]:
+            self.assertTrue(original["definitions"][name]["description"])
+            for mutation in ["removed", "changed"]:
+                schema = copy.deepcopy(original)
+                if mutation == "removed":
+                    del schema["definitions"][name]["description"]
+                else:
+                    schema["definitions"][name]["description"] = "Changed public devshell contract explanation."
+                with self.subTest(schema=name, description=mutation), patch.object(contract,"common",return_value=schema):
+                    with self.assertRaises(ValueError):
+                        contract.check()
+
+    def test_c17c2_devshell_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def changed(label, change):
+            schema = copy.deepcopy(original)
+            change(schema)
+            cases.append((label, schema))
+        def definition(s, name): return s["definitions"]["Supervisor" + name]
+        def field(s, name, key): return definition(s,name)["properties"][key]
+        def inner(s, name): return definition(s,name)["x-json-content-schema"]
+        for name in ["DevShellChanges", "DevShellSummary"]:
+            changed(name + " registry", lambda s,name=name: s["x-rust-explicit-records"].remove("Supervisor"+name))
+            changed(name + " original name", lambda s,name=name: definition(s,name).update({"x-rust-name":"Wrong"}))
+            changed(name + " module", lambda s,name=name: definition(s,name).update({"x-rust-module":"wrong"}))
+            changed(name + " traits", lambda s,name=name: definition(s,name)["x-rust-derives"].remove("Clone"))
+            changed(name + " order", lambda s,name=name: definition(s,name)["x-rust-field-order"].reverse())
+            changed(name + " open fields", lambda s,name=name: definition(s,name).update(additionalProperties=False))
+        changed("Changes constructor Default", lambda s: definition(s,"DevShellChanges")["x-rust-derives"].remove("Default"))
+        changed("Changes equality", lambda s: definition(s,"DevShellChanges")["x-rust-derives"].remove("PartialEq"))
+        changed("Summary has no constructor Default", lambda s: definition(s,"DevShellSummary")["x-rust-derives"].insert(0,"Default"))
+        changed("Changes lock required", lambda s: definition(s,"DevShellChanges")["required"].remove("lock"))
+        changed("Changes update optional", lambda s: definition(s,"DevShellChanges")["required"].append("update"))
+        changed("Changes update nullable", lambda s: field(s,"DevShellChanges","update")["anyOf"].pop())
+        changed("Changes update array", lambda s: field(s,"DevShellChanges","update")["anyOf"][0].update(type="object"))
+        changed("Changes update String elements", lambda s: field(s,"DevShellChanges","update")["anyOf"][0]["items"].update(type="integer"))
+        changed("Changes lock bool", lambda s: field(s,"DevShellChanges","lock").update(type="integer"))
+        for name,keys in [("DevShellChanges",["update","lock"]),("DevShellSummary",["identity","generation","lock"])]:
+            for key in keys:
+                changed(name + "." + key + " native type", lambda s,name=name,key=key: field(s,name,key).update({"x-rust-type":"u64"}))
+                changed(name + "." + key + " native name", lambda s,name=name,key=key: field(s,name,key).update({"x-rust-field-name":"other"}))
+                changed(name + "." + key + " no serde default", lambda s,name=name,key=key: field(s,name,key).update({"x-rust-default":True}))
+                changed(name + "." + key + " emits nulls", lambda s,name=name,key=key: field(s,name,key).update({"x-rust-skip-serializing-if":"Option::is_none"}))
+        for key in ["identity","generation","lock"]:
+            changed("Summary required " + key, lambda s,key=key: definition(s,"DevShellSummary")["required"].remove(key))
+        changed("Summary identity String", lambda s: field(s,"DevShellSummary","identity").update(type="integer"))
+        changed("Summary generation ref", lambda s: field(s,"DevShellSummary","generation").update({"$ref":"#/definitions/SupervisorSequence"}))
+        changed("Summary lock arbitrary Value", lambda s: field(s,"DevShellSummary","lock").update(type="object"))
+        changed("Generation minimum", lambda s: definition(s,"Generation").update(minimum=1))
+        changed("Generation maximum", lambda s: definition(s,"Generation").update(maximum=2**64-1))
+        changed("Generation integer representation", lambda s: definition(s,"Generation").pop("x-json-integer"))
+        for name in ["RefreshResult","CallResult","DevShellSummaryText"]:
+            changed(name + " opaque outer String", lambda s,name=name: definition(s,name).update(type="object"))
+            changed(name + " inner schema removed", lambda s,name=name: definition(s,name).pop("x-json-content-schema"))
+        for name in ["RefreshResult","CallResult"]:
+            changed(name + " Err String", lambda s,name=name: inner(s,name)["oneOf"][1]["properties"]["Err"].update(type="integer"))
+            changed(name + " external Result closed", lambda s,name=name: inner(s,name)["oneOf"][0].update(additionalProperties=True))
+            changed(name + " Result required", lambda s,name=name: inner(s,name)["oneOf"][1]["required"].clear())
+        changed("Refresh tuple minimum", lambda s: inner(s,"RefreshResult")["oneOf"][0]["properties"]["Ok"].update(minItems=1))
+        changed("Refresh tuple maximum", lambda s: inner(s,"RefreshResult")["oneOf"][0]["properties"]["Ok"].update(maxItems=3))
+        changed("Refresh tuple arbitrary Value", lambda s: inner(s,"RefreshResult")["oneOf"][0]["properties"]["Ok"]["items"][0].update(type="object"))
+        changed("Refresh tuple String second", lambda s: inner(s,"RefreshResult")["oneOf"][0]["properties"]["Ok"]["items"][1].update(type="integer"))
+        changed("Call arbitrary Value", lambda s: inner(s,"CallResult")["oneOf"][0]["properties"]["Ok"].update(type="object"))
+        changed("Summary text content reference", lambda s: inner(s,"DevShellSummaryText").update({"$ref":"#/definitions/SupervisorApprovalReply"}))
+        for root,key,wrong in [("CommandRefreshParams","approval","Generation"),("CommandRefreshParams","changes","DevShellSummary"),("CommandRunParams","serial","Generation"),("CommandDiffParams","serial","Generation"),("CommandDiffParams","changes","DevShellSummary"),("EventRefreshParams","approval","Generation"),("EventRefreshParams","result","CallResult"),("EventCallParams","serial","Generation"),("EventCallParams","result","RefreshResult"),("EventDevShellParams","summary","DevShellSummary")]:
+            changed(root + "." + key + " reference", lambda s,root=root,key=key,wrong=wrong: field(s,root,key).update({"$ref":"#/definitions/Supervisor"+wrong}))
+        changed("Run app String", lambda s: field(s,"CommandRunParams","app").update(type="integer"))
+        for root in ["CommandRefreshParams","CommandRunParams","CommandDiffParams","EventRefreshParams","EventCallParams","EventDevShellParams"]:
+            changed(root + " required slot", lambda s,root=root: definition(s,root)["required"].pop())
+            changed(root + " root closed", lambda s,root=root: definition(s,root).update(additionalProperties=True))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract,"common",return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c17c1_approval_instances_notifications_and_remaining_inventory(self):
         fixtures = contract.read("fixtures.json")
         for name, cases in fixtures["c17c1_approval_schema_cases"].items():
@@ -36,8 +150,9 @@ class ContractTests(unittest.TestCase):
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
         completed = {case["frame"]["method"] for case in fixtures["c17c1_notification_cases"]}
         self.assertEqual(len(completed), 6)
-        self.assertEqual(len(pending), 30)
-        self.assertEqual(set(doc["x-pending-notifications"]), {"C17c-approvals-devshell", "C17d-lifecycle-host-jobs", "C17e-relay-logging"})
+        completed |= {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
+        self.assertEqual(len(pending), 24)
+        self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -144,10 +259,11 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(inner.is_valid(value))
         doc = contract.document("supervisor")
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
-        self.assertEqual(len(pending), 30)
+        self.assertEqual(len(pending), 24)
         completed = {case["frame"]["method"] for case in fixtures["c17b2_notification_cases"]}
         self.assertEqual(len(completed), 7)
         completed |= {case["frame"]["method"] for case in fixtures["c17c1_notification_cases"]}
+        completed |= {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -284,24 +400,25 @@ class ContractTests(unittest.TestCase):
         doc = original("supervisor")
         pending = doc["x-pending-notifications"]
         names = [name for group in pending.values() for name in group]
-        self.assertEqual(len(names), 30)
-        self.assertEqual(len(set(names)), 30)
+        self.assertEqual(len(names), 24)
+        self.assertEqual(len(set(names)), 24)
         completed = {r["method"] for r in contract.read("fixtures.json")["c17b1_process_roots"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17b2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c1_notification_cases"]}
+        completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c2_notification_cases"]}
         declared = {r["name"] for r in doc["x-notifications"]}
         self.assertTrue(completed <= declared)
         self.assertFalse(set(names) & declared)
-        self.assertEqual(set(pending), {"C17c-approvals-devshell","C17d-lifecycle-host-jobs","C17e-relay-logging"})
+        self.assertEqual(set(pending), {"C17d-lifecycle-host-jobs","C17e-relay-logging"})
         for mutation in ["completed method pending", "missing pending method", "duplicate pending method", "unknown pending method", "wrong pending family"]:
             changed = copy.deepcopy(doc)
             registry = changed["x-pending-notifications"]
-            group = registry["C17c-approvals-devshell"]
+            group = registry["C17d-lifecycle-host-jobs"]
             if mutation == "completed method pending": group.append("Command.Spawn")
             elif mutation == "missing pending method": group.pop()
             elif mutation == "duplicate pending method": group.append(group[0])
             elif mutation == "unknown pending method": group.append("Command.Unknown")
-            else: registry["C17d-lifecycle-host-jobs"].append(group.pop())
+            else: registry["C17e-relay-logging"].append(group.pop())
             with self.subTest(mutation=mutation), patch.object(contract, "document", side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
                 with self.assertRaises(ValueError):
                     contract.check()

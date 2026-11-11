@@ -1131,9 +1131,194 @@
       "sender": "supervisor",
       "receiver": "daemon",
       "connection-state": "operational approval event"
+    },
+    {
+      "name": "Command.Refresh",
+      "x-rust-name": "CommandRefresh",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Request dev-shell refresh by approval with original Changes metadata; semantic input/lock handling stays at existing operation sites.",
+      "params": [
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRefreshParams/properties/approval"
+          }
+        },
+        {
+          "name": "changes",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRefreshParams/properties/changes"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandRefreshParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational devshell/flake work command"
+    },
+    {
+      "name": "Command.Run",
+      "x-rust-name": "CommandRun",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Request flake work by serial and app string without new app-name validation at the wire boundary.",
+      "params": [
+        {
+          "name": "serial",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRunParams/properties/serial"
+          }
+        },
+        {
+          "name": "app",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRunParams/properties/app"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandRunParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational devshell/flake work command"
+    },
+    {
+      "name": "Command.Diff",
+      "x-rust-name": "CommandDiff",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Request dev-shell diff by serial with original Changes metadata and unchanged policy.",
+      "params": [
+        {
+          "name": "serial",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandDiffParams/properties/serial"
+          }
+        },
+        {
+          "name": "changes",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandDiffParams/properties/changes"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandDiffParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational devshell/flake work command"
+    },
+    {
+      "name": "Event.Refresh",
+      "x-rust-name": "EventRefresh",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Refresh result remains opaque String JSON for Result<(Value,String),String>. Decode approval before inner parsing and finish root afterward.",
+      "params": [
+        {
+          "name": "approval",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventRefreshParams/properties/approval"
+          }
+        },
+        {
+          "name": "result",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventRefreshParams/properties/result"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventRefreshParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational devshell/flake work event"
+    },
+    {
+      "name": "Event.Call",
+      "x-rust-name": "EventCall",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Serial result remains opaque String JSON for Result<Value,String>; arbitrary JSON and descriptor-looking keys remain data.",
+      "params": [
+        {
+          "name": "serial",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventCallParams/properties/serial"
+          }
+        },
+        {
+          "name": "result",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventCallParams/properties/result"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventCallParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational devshell/flake work event"
+    },
+    {
+      "name": "Event.DevShell",
+      "x-rust-name": "EventDevShell",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Current summary remains opaque String JSON with original identity/u32 generation/arbitrary lock. Parse at the original summary extraction point before root finish.",
+      "params": [
+        {
+          "name": "summary",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventDevShellParams/properties/summary"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventDevShellParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational devshell/flake work event"
     }
   ],
-  "x-contract-chunk": "C17c1",
+  "x-contract-chunk": "C17c2",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -1219,14 +1404,6 @@
     }
   ],
   "x-pending-notifications": {
-    "C17c-approvals-devshell": [
-      "Command.Refresh",
-      "Command.Run",
-      "Command.Diff",
-      "Event.Refresh",
-      "Event.Call",
-      "Event.DevShell"
-    ],
     "C17d-lifecycle-host-jobs": [
       "Command.ScopeFailed",
       "Command.ScopeMembership",

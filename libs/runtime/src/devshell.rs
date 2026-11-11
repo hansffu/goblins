@@ -51,11 +51,7 @@ pub fn identity(flake: &Path, attr: &str, lock: &Value) -> String {
 }
 
 /// Inputs to update (`Some(empty)` means all) or new inputs to lock.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Changes {
-    pub update: Option<Vec<String>>,
-    pub lock: bool,
-}
+pub use goblins_protocol::contract::devshell_metadata::Changes;
 
 /// Split `PATH[#ATTR]` into an absolute flake directory and an attribute.
 pub fn parse_reference(reference: &str) -> crate::Result<(PathBuf, Option<&str>)> {

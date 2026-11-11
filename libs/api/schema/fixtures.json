@@ -31857,5 +31857,957 @@
       },
       "valid": true
     }
+  ],
+  "c17c2_devshell_schema_cases": {
+    "SupervisorDevShellChanges": [
+      {
+        "value": {
+          "lock": false
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "update": null,
+          "lock": true
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "update": [],
+          "lock": false,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "update": [
+            "../invalid",
+            ""
+          ],
+          "lock": true
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "lock": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "lock": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "update": [
+            0
+          ],
+          "lock": false
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "update": false,
+          "lock": true
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          null,
+          true
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorDevShellSummary": [
+      {
+        "value": {
+          "identity": "",
+          "generation": 4294967295,
+          "lock": {
+            "$fd": 0,
+            "nested": {
+              "$fd": 999
+            }
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "identity": "relative#?",
+          "generation": 0,
+          "lock": null,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "identity": "x",
+          "generation": 0,
+          "lock": [
+            1,
+            false
+          ]
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "identity": "",
+          "generation": -1,
+          "lock": {
+            "$fd": 0,
+            "nested": {
+              "$fd": 999
+            }
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "identity": "",
+          "generation": 4294967296,
+          "lock": {
+            "$fd": 0,
+            "nested": {
+              "$fd": 999
+            }
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "identity": "",
+          "generation": 1.0,
+          "lock": {
+            "$fd": 0,
+            "nested": {
+              "$fd": 999
+            }
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "identity": null,
+          "generation": 4294967295,
+          "lock": {
+            "$fd": 0,
+            "nested": {
+              "$fd": 999
+            }
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "identity": "x",
+          "generation": 0
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          "x",
+          0,
+          null
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorGeneration": [
+      {
+        "value": 0,
+        "valid": true
+      },
+      {
+        "value": 4294967295,
+        "valid": true
+      },
+      {
+        "value": -1,
+        "valid": false
+      },
+      {
+        "value": 4294967296,
+        "valid": false
+      },
+      {
+        "value": 1.0,
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": true,
+        "valid": false
+      }
+    ],
+    "SupervisorRefreshResult": [
+      {
+        "value": "not JSON",
+        "valid": true
+      },
+      {
+        "value": "{",
+        "valid": true
+      },
+      {
+        "value": "null",
+        "valid": true
+      },
+      {
+        "value": "{\"Ok\":{\"$fd\":0}}",
+        "valid": true
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": 0,
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": [],
+        "valid": false
+      }
+    ],
+    "SupervisorCallResult": [
+      {
+        "value": "not JSON",
+        "valid": true
+      },
+      {
+        "value": "{",
+        "valid": true
+      },
+      {
+        "value": "null",
+        "valid": true
+      },
+      {
+        "value": "{\"Ok\":{\"$fd\":0}}",
+        "valid": true
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": 0,
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": [],
+        "valid": false
+      }
+    ],
+    "SupervisorDevShellSummaryText": [
+      {
+        "value": "not JSON",
+        "valid": true
+      },
+      {
+        "value": "{",
+        "valid": true
+      },
+      {
+        "value": "null",
+        "valid": true
+      },
+      {
+        "value": "{\"Ok\":{\"$fd\":0}}",
+        "valid": true
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": 0,
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": [],
+        "valid": false
+      }
+    ]
+  },
+  "c17c2_inner_json_cases": {
+    "SupervisorRefreshResult": [
+      {
+        "value": {
+          "Ok": [
+            null,
+            ""
+          ]
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": [
+            {
+              "$fd": 0
+            },
+            "relative#?"
+          ]
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Err": "failed\n雪"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": []
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": [
+            null
+          ]
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": [
+            null,
+            "x",
+            0
+          ]
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": [
+            null,
+            0
+          ]
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Err": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": [
+            null,
+            "x"
+          ],
+          "Err": "e"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Other": 0
+        },
+        "valid": false
+      }
+    ],
+    "SupervisorCallResult": [
+      {
+        "value": {
+          "Ok": null
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": false
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": -1
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": 1.5
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": "雪\n"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": [
+            true
+          ]
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": {
+            "$fd": 0
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Err": "failed"
+        },
+        "valid": true
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "Err": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": 0,
+          "Err": "e"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Other": 0
+        },
+        "valid": false
+      }
+    ],
+    "SupervisorDevShellSummaryText": [
+      {
+        "value": {
+          "identity": "",
+          "generation": 4294967295,
+          "lock": {
+            "$fd": 0,
+            "nested": {
+              "$fd": 999
+            }
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "identity": "x",
+          "generation": 0,
+          "lock": null,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "identity": "",
+          "generation": 4294967296,
+          "lock": {
+            "$fd": 0,
+            "nested": {
+              "$fd": 999
+            }
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "identity": "x",
+          "generation": 0
+        },
+        "valid": false
+      }
+    ]
+  },
+  "c17c2_notification_cases": [
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Refresh",
+        "params": {
+          "approval": 18446744073709551615,
+          "changes": {
+            "update": [],
+            "lock": true
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Refresh",
+        "params": {
+          "changes": {
+            "update": [],
+            "lock": true
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Refresh",
+        "params": {
+          "approval": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Refresh",
+        "params": {
+          "approval": 18446744073709551615,
+          "changes": {
+            "update": [],
+            "lock": true
+          },
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Refresh",
+        "params": {
+          "approval": 18446744073709551615,
+          "changes": {
+            "update": [],
+            "lock": true
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Refresh",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Run",
+        "params": {
+          "serial": 0,
+          "app": "../bad app"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Run",
+        "params": {
+          "app": "../bad app"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Run",
+        "params": {
+          "serial": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Run",
+        "params": {
+          "serial": 0,
+          "app": "../bad app",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Run",
+        "params": {
+          "serial": 0,
+          "app": "../bad app"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Run",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Diff",
+        "params": {
+          "serial": 18446744073709551615,
+          "changes": {
+            "update": null,
+            "lock": false
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Diff",
+        "params": {
+          "changes": {
+            "update": null,
+            "lock": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Diff",
+        "params": {
+          "serial": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Diff",
+        "params": {
+          "serial": 18446744073709551615,
+          "changes": {
+            "update": null,
+            "lock": false
+          },
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Diff",
+        "params": {
+          "serial": 18446744073709551615,
+          "changes": {
+            "update": null,
+            "lock": false
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Diff",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Refresh",
+        "params": {
+          "approval": 0,
+          "result": "not JSON"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Refresh",
+        "params": {
+          "result": "not JSON"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Refresh",
+        "params": {
+          "approval": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Refresh",
+        "params": {
+          "approval": 0,
+          "result": "not JSON",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Refresh",
+        "params": {
+          "approval": 0,
+          "result": "not JSON"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Refresh",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Call",
+        "params": {
+          "serial": 18446744073709551615,
+          "result": "{\"Ok\":{\"$fd\":0}}"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Call",
+        "params": {
+          "result": "{\"Ok\":{\"$fd\":0}}"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Call",
+        "params": {
+          "serial": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Call",
+        "params": {
+          "serial": 18446744073709551615,
+          "result": "{\"Ok\":{\"$fd\":0}}",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Call",
+        "params": {
+          "serial": 18446744073709551615,
+          "result": "{\"Ok\":{\"$fd\":0}}"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Call",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.DevShell",
+        "params": {
+          "summary": "not JSON"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.DevShell",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.DevShell",
+        "params": {
+          "summary": "not JSON",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.DevShell",
+        "params": {
+          "summary": "not JSON"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.DevShell",
+        "params": []
+      },
+      "valid": false
+    }
   ]
 }

@@ -1273,6 +1273,46 @@ def check_supervisor_approval_metadata():
         raise ValueError("private approval decision serde slots differ")
 
 
+def check_supervisor_devshell_metadata():
+    """Bind generated devshell records and separate opaque inner contracts."""
+    schema=common();defs=schema["definitions"]
+    def ref(name):return {"$ref":"#/definitions/Supervisor"+name}
+    def obj(props,required=None,closed=True):
+        return {"type":"object","properties":props,"required":list(props) if required is None else required,"additionalProperties":not closed}
+    def explicit(rust,fields,derives,required,description):
+        value=obj({name:{**shape,"x-rust-field-name":name,"x-rust-type":native} for name,(shape,native) in fields.items()},required,False)
+        value.update({"x-rust-name":rust,"x-rust-module":"devshell_metadata","x-rust-field-order":list(fields),"x-rust-derives":derives,"description":description})
+        return value
+    serde=["Serialize","Deserialize"]
+    expected={
+        "DevShellChanges":explicit("Changes",{
+            "update":({"anyOf":[{"type":"array","items":{"type":"string"}},{"type":"null"}]},"Option<Vec<String>>"),
+            "lock":({"type":"boolean"},"bool"),
+        },["Clone","Debug","Default","PartialEq","Eq"]+serde,["lock"],"Inputs to update (`Some(empty)` means all) or new inputs to lock."),
+        "DevShellSummary":explicit("DevShellSummary",{
+            "identity":({"type":"string"},"String"),
+            "generation":(ref("Generation"),"u32"),
+            "lock":({},"::serde_json::Value"),
+        },["Clone","Debug"]+serde,["identity","generation","lock"],"The current dev shell generation, as `devshell.lock` and `status` show it. Starts with `Started` and is replaced by each refresh."),
+        "Generation":{"type":"integer","minimum":0,"maximum":2**32-1,"x-json-integer":True},
+        "RefreshResult":{"type":"string","x-json-content-schema":{"oneOf":[obj({"Ok":{"type":"array","items":[{},{"type":"string"}],"minItems":2,"maxItems":2}}),obj({"Err":{"type":"string"}})]}},
+        "CallResult":{"type":"string","x-json-content-schema":{"oneOf":[obj({"Ok":{}}),obj({"Err":{"type":"string"}})]}},
+        "DevShellSummaryText":{"type":"string","x-json-content-schema":ref("DevShellSummary")},
+        "CommandRefreshParams":obj({"approval":ref("Sequence"),"changes":ref("DevShellChanges")}),
+        "CommandRunParams":obj({"serial":ref("Sequence"),"app":{"type":"string"}}),
+        "CommandDiffParams":obj({"serial":ref("Sequence"),"changes":ref("DevShellChanges")}),
+        "EventRefreshParams":obj({"approval":ref("Sequence"),"result":ref("RefreshResult")}),
+        "EventCallParams":obj({"serial":ref("Sequence"),"result":ref("CallResult")}),
+        "EventDevShellParams":obj({"summary":ref("DevShellSummaryText")}),
+    }
+    for name,value in expected.items():
+        actual=defs["Supervisor"+name]
+        # These two descriptions produce the original public Rust documentation.
+        if "description" not in value:actual={key:value for key,value in actual.items() if key!="description"}
+        if actual!=value:
+            raise ValueError("private devshell schema/Rust metadata differs: "+name)
+
+
 def check_supervisor_pending_inventory():
     """Retire covered methods from their original remaining family, without loss."""
     families={
@@ -1323,6 +1363,12 @@ def check_private_contracts():
         'Event.Preview':('supervisor-to-daemon','SupervisorEventPreviewParams',['approval', 'result']),
         'Event.Progress':('supervisor-to-daemon','SupervisorEventProgressParams',['request', 'state']),
         'Event.Granted':('supervisor-to-daemon','SupervisorEventGrantedParams',['reply', 'detail', 'output']),
+        'Command.Refresh':('daemon-to-supervisor','SupervisorCommandRefreshParams',['approval', 'changes']),
+        'Command.Run':('daemon-to-supervisor','SupervisorCommandRunParams',['serial', 'app']),
+        'Command.Diff':('daemon-to-supervisor','SupervisorCommandDiffParams',['serial', 'changes']),
+        'Event.Refresh':('supervisor-to-daemon','SupervisorEventRefreshParams',['approval', 'result']),
+        'Event.Call':('supervisor-to-daemon','SupervisorEventCallParams',['serial', 'result']),
+        'Event.DevShell':('supervisor-to-daemon','SupervisorEventDevShellParams',['summary']),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1348,7 +1394,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1402,6 +1448,7 @@ def check():
     check_supervisor_process_metadata()
     check_supervisor_terminal_metadata()
     check_supervisor_approval_metadata()
+    check_supervisor_devshell_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

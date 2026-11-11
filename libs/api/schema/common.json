@@ -12255,6 +12255,265 @@
         "Serialize",
         "Deserialize"
       ]
+    },
+    "SupervisorDevShellChanges": {
+      "type": "object",
+      "properties": {
+        "update": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "update",
+          "x-rust-type": "Option<Vec<String>>"
+        },
+        "lock": {
+          "type": "boolean",
+          "x-rust-field-name": "lock",
+          "x-rust-type": "bool"
+        }
+      },
+      "required": [
+        "lock"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "Changes",
+      "x-rust-module": "devshell_metadata",
+      "x-rust-field-order": [
+        "update",
+        "lock"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Default",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "description": "Inputs to update (`Some(empty)` means all) or new inputs to lock."
+    },
+    "SupervisorGeneration": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "SupervisorDevShellSummary": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "type": "string",
+          "x-rust-field-name": "identity",
+          "x-rust-type": "String"
+        },
+        "generation": {
+          "$ref": "#/definitions/SupervisorGeneration",
+          "x-rust-field-name": "generation",
+          "x-rust-type": "u32"
+        },
+        "lock": {
+          "x-rust-field-name": "lock",
+          "x-rust-type": "::serde_json::Value"
+        }
+      },
+      "required": [
+        "identity",
+        "generation",
+        "lock"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "DevShellSummary",
+      "x-rust-module": "devshell_metadata",
+      "x-rust-field-order": [
+        "identity",
+        "generation",
+        "lock"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ],
+      "description": "The current dev shell generation, as `devshell.lock` and `status` show it. Starts with `Started` and is replaced by each refresh."
+    },
+    "SupervisorRefreshResult": {
+      "type": "string",
+      "description": "Opaque serde_json encoding of standard Result<(Value,String),String>. Inner JSON remains data, including descriptor-looking keys.",
+      "x-json-content-schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "Ok": {
+                "type": "array",
+                "items": [
+                  {},
+                  {
+                    "type": "string"
+                  }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "Ok"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "Err": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Err"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "SupervisorCallResult": {
+      "type": "string",
+      "description": "Opaque serde_json encoding of standard Result<Value,String>, retaining arbitrary JSON data.",
+      "x-json-content-schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "Ok": {}
+            },
+            "required": [
+              "Ok"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "Err": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Err"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "SupervisorDevShellSummaryText": {
+      "type": "string",
+      "description": "Opaque serde_json encoding of DevShellSummary, parsed only at the original summary field boundary.",
+      "x-json-content-schema": {
+        "$ref": "#/definitions/SupervisorDevShellSummary"
+      }
+    },
+    "SupervisorCommandRefreshParams": {
+      "type": "object",
+      "properties": {
+        "approval": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "changes": {
+          "$ref": "#/definitions/SupervisorDevShellChanges"
+        }
+      },
+      "required": [
+        "approval",
+        "changes"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandRunParams": {
+      "type": "object",
+      "properties": {
+        "serial": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "app": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serial",
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandDiffParams": {
+      "type": "object",
+      "properties": {
+        "serial": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "changes": {
+          "$ref": "#/definitions/SupervisorDevShellChanges"
+        }
+      },
+      "required": [
+        "serial",
+        "changes"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventRefreshParams": {
+      "type": "object",
+      "properties": {
+        "approval": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "result": {
+          "$ref": "#/definitions/SupervisorRefreshResult"
+        }
+      },
+      "required": [
+        "approval",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventCallParams": {
+      "type": "object",
+      "properties": {
+        "serial": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "result": {
+          "$ref": "#/definitions/SupervisorCallResult"
+        }
+      },
+      "required": [
+        "serial",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventDevShellParams": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "$ref": "#/definitions/SupervisorDevShellSummaryText"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "additionalProperties": false
     }
   },
   "x-api-version": 1,
@@ -15462,7 +15721,9 @@
     "Terminal metadata": "Generated TerminalId/TerminalStatus and terminal_metadata::{Source,Condition,Call} preserve original Rust names, traits, defaults, open struct payloads, optional emission and legacy Serde forms. Nested module avoids the existing JSON-RPC Call name. Wire numeric ranges stay native; terminal semantic limits/regex checks remain at their existing call sites.",
     "Terminal result": "The root record result remains a String containing standard Result<Value,String>. Its x-json-content-schema documents inner canonical values; actual inner parsing and errors stay at the original opaque field extraction point. Arbitrary JSON and descriptor-looking inner data stay opaque.",
     "Approval metadata": "Generated approval_metadata::{Request,Reply} preserve original closed structs, names, traits, Request package_kind default, Reply null id and omitted None message; public protocol paths reexport them. Native optional paths and strings remain wire metadata, with no approval policy validation.",
-    "Preview result": "Generated WirePreview and standard Result<WirePreview,String> describe private output_path/in_store/download/build_required. Native catalog::Preview retains its public skipped output_path and domain semantics. Private producer retains its original json! path serialization panic on non-UTF8 output_path before typed conversion; missing optional named fields and legacy record/Result forms remain accepted at the original Value boundary."
+    "Preview result": "Generated WirePreview and standard Result<WirePreview,String> describe private output_path/in_store/download/build_required. Native catalog::Preview retains its public skipped output_path and domain semantics. Private producer retains its original json! path serialization panic on non-UTF8 output_path before typed conversion; missing optional named fields and legacy record/Result forms remain accepted at the original Value boundary.",
+    "Dev shell metadata": "Generated devshell_metadata::{Changes,DevShellSummary} retain original names/traits/docs, open records, native u32 generation and arbitrary lock JSON. Changes Default is a Rust constructor only; lock stays required on the wire and absent update decodes None without changing explicit null output. Policy, Nix evaluation and lock handling stay native.",
+    "Dev shell opaque fields": "Event.Refresh result remains a String containing standard Result<(Value,String),String>; Event.Call result contains standard Result<Value,String>; Event.DevShell summary contains original DevShellSummary JSON. x-json-content-schema documents inner canonical shapes separately. Scalar IDs parse before inner strings, inner errors before root finish; descriptor-looking inner data remains opaque."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",
@@ -15475,7 +15736,9 @@
     "SupervisorApprovalRequest",
     "SupervisorApprovalReply",
     "SupervisorPreview",
-    "SupervisorEventGrantedParams"
+    "SupervisorEventGrantedParams",
+    "SupervisorDevShellChanges",
+    "SupervisorDevShellSummary"
   ],
   "x-rust-external-enums": [
     "SupervisorSpawnKind",
