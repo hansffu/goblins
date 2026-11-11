@@ -416,15 +416,16 @@ impl Decoder {
         let mut p = Params::new(envelope.take("params")?)?;
         envelope.finish()?;
         let received = match method.as_str() {
-            "SupervisorStart" => {
+            name if name == contract::supervisor_notifications::SupervisorStart::NAME => {
                 let supervisor_api = p.take("supervisor_api")?;
                 if supervisor_api != API {
                     return Err(invalid("incompatible supervisor API"));
                 }
-                let source = decode_source(p.take("source")?, &mut d)?;
-                let mut start = SupervisorStart {
+                let source_wire: Value = p.take("source")?;
+                let source = decode_source(source_wire.clone(), &mut d)?;
+                let mut wire = contract::SupervisorStartParams {
                     supervisor_api,
-                    source,
+                    source: source_wire,
                     directory: p.take("directory")?,
                     dimensions: p.take("dimensions")?,
                     detached: p.take("detached")?,
@@ -434,13 +435,26 @@ impl Decoder {
                         .remove("legacy_listener")
                         .map(serde_json::from_value::<Option<Descriptor>>)
                         .transpose()?
-                        .flatten()
-                        .map(|fd| d.take(fd).map(Fd::from))
-                        .transpose()?,
+                        .flatten(),
                     handoff: None,
                 };
-                let handoff = p.take::<Option<Value>>("handoff")?;
+                let legacy_listener = wire
+                    .legacy_listener
+                    .map(|fd| d.take(fd).map(Fd::from))
+                    .transpose()?;
+                wire.handoff = p.take::<Option<Value>>("handoff")?;
                 p.finish()?;
+                let mut start = SupervisorStart {
+                    supervisor_api: wire.supervisor_api,
+                    source,
+                    directory: wire.directory,
+                    dimensions: wire.dimensions,
+                    detached: wire.detached,
+                    payload_nofile: wire.payload_nofile,
+                    legacy_listener,
+                    handoff: None,
+                };
+                let handoff = wire.handoff;
                 match handoff {
                     Some(h) => self.handoff(Target::Startup(start), h, &mut d, bytes)?,
                     None => {
@@ -540,17 +554,25 @@ impl Decoder {
                     adopted: Some(transfer),
                 })
             }
-            "Maintenance" => {
+            name if name == contract::supervisor_notifications::Maintenance::NAME => {
                 let supervisor_api = p.take("supervisor_api")?;
                 let operation = p.take("operation")?;
-                let stdout = d.take(p.take("stdout")?)?.into();
-                let stderr = d.take(p.take("stderr")?)?.into();
-                p.finish()?;
-                let request = Maintenance {
+                let stdout = p.take("stdout")?;
+                let stdout_fd = d.take(stdout)?.into();
+                let stderr = p.take("stderr")?;
+                let stderr_fd = d.take(stderr)?.into();
+                let wire = contract::SupervisorMaintenanceParams {
                     supervisor_api,
                     operation,
                     stdout,
                     stderr,
+                };
+                p.finish()?;
+                let request = Maintenance {
+                    supervisor_api: wire.supervisor_api,
+                    operation: wire.operation,
+                    stdout: stdout_fd,
+                    stderr: stderr_fd,
                 };
                 valid_maintenance(&request)?;
                 Some(Received {

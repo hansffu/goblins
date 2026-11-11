@@ -1899,3 +1899,410 @@ fn c16a1_preflight_float_api_matches_original_u32_diagnostic() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(error.to_string(), expected);
 }
+
+// Independent original Descriptor declaration pins Serde's named and sequence forms.
+mod c16a2_original {
+    use super::*;
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Descriptor {
+        #[serde(rename = "$fd")]
+        pub index: usize,
+    }
+}
+
+#[test]
+fn c16a2_descriptor_preserves_original_serde_forms_traits_and_exact_diagnostics() {
+    fn copy_debug<T: Copy + Clone + std::fmt::Debug>() {}
+    copy_debug::<Descriptor>();
+    let cases = [
+        "{\"$fd\":0}",
+        "{\"$fd\":239}",
+        "{\"$fd\":18446744073709551615}",
+        "[0]",
+        "[239]",
+        "[18446744073709551615]",
+        "[]",
+        "[0,1]",
+        "[null]",
+        "null",
+        "true",
+        "0",
+        "\"0\"",
+        "{}",
+        "{\"index\":0}",
+        "{\"$fd\":null}",
+        "{\"$fd\":true}",
+        "{\"$fd\":\"0\"}",
+        "{\"$fd\":[]}",
+        "{\"$fd\":{}}",
+        "{\"$fd\":-1}",
+        "{\"$fd\":1.0}",
+        "{\"$fd\":1.5}",
+        "{\"$fd\":18446744073709551616}",
+        "{\"$fd\":0,\"extra\":1}",
+        "{\"extra\":1,\"$fd\":0}",
+        "{\"$fd\":0,\"$fd\":1}",
+    ];
+    for input in cases {
+        let expected = serde_json::from_str::<c16a2_original::Descriptor>(input)
+            .map(|v| {
+                (
+                    v.index,
+                    format!("{v:?}"),
+                    serde_json::to_string(&v).unwrap(),
+                )
+            })
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_str::<Descriptor>(input)
+            .map(|v| {
+                (
+                    v.index,
+                    format!("{v:?}"),
+                    serde_json::to_string(&v).unwrap(),
+                )
+            })
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, expected, "raw JSON {input}");
+        let value: Value = serde_json::from_str(input).unwrap();
+        let expected = serde_json::from_value::<c16a2_original::Descriptor>(value.clone())
+            .map(|v| v.index)
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_value::<Descriptor>(value)
+            .map(|v| v.index)
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, expected, "Value input {input}");
+    }
+    for index in [0, 239, 240, usize::MAX] {
+        let d = Descriptor::new(index);
+        assert_eq!(d.index, index);
+        assert_eq!(serde_json::to_value(d).unwrap(), json!({"$fd":index}));
+    }
+}
+
+#[test]
+fn c16a2_bootstrap_scalar_types_ranges_and_error_precedence() {
+    fn error<T: DeserializeOwned>(value: Value) -> String {
+        serde_json::from_value::<T>(value)
+            .err()
+            .unwrap()
+            .to_string()
+    }
+    let cases = vec![
+        ("supervisor_api", json!(1.0), error::<u32>(json!(1.0))),
+        (
+            "supervisor_api",
+            json!(4294967296_u64),
+            error::<u32>(json!(4294967296_u64)),
+        ),
+        ("directory", json!(null), error::<PathBuf>(json!(null))),
+        (
+            "directory",
+            json!("relative"),
+            "invalid supervisor startup parameters".into(),
+        ),
+        ("dimensions", json!(null), error::<(u16, u16)>(json!(null))),
+        ("dimensions", json!([1]), error::<(u16, u16)>(json!([1]))),
+        (
+            "dimensions",
+            json!([1, 2, 3]),
+            error::<(u16, u16)>(json!([1, 2, 3])),
+        ),
+        (
+            "dimensions",
+            json!([1.0, 2]),
+            error::<(u16, u16)>(json!([1.0, 2])),
+        ),
+        (
+            "dimensions",
+            json!([65536, 2]),
+            error::<(u16, u16)>(json!([65536, 2])),
+        ),
+        (
+            "dimensions",
+            json!([0, 2]),
+            "invalid supervisor startup parameters".into(),
+        ),
+        (
+            "dimensions",
+            json!([1, 1001]),
+            "invalid supervisor startup parameters".into(),
+        ),
+        ("detached", json!(null), error::<bool>(json!(null))),
+        ("detached", json!(0), error::<bool>(json!(0))),
+        (
+            "payload_nofile",
+            json!(1.0),
+            error::<Option<u64>>(json!(1.0)),
+        ),
+        (
+            "payload_nofile",
+            json!(0),
+            "invalid payload descriptor limit".into(),
+        ),
+        (
+            "payload_nofile",
+            json!(u64::MAX),
+            "invalid payload descriptor limit".into(),
+        ),
+    ];
+    for (field, value, expected) in cases {
+        let mut frame = c16a_frame(startup(host(), None));
+        frame.value["params"][field] = value;
+        c16a_error(frame, &expected);
+    }
+    // Dimension decoding precedes detached decoding; unknown fields precede
+    // semantic dimensions/payload validation, exactly as in the original reader.
+    let mut frame = c16a_frame(startup(host(), None));
+    frame.value["params"]["dimensions"] = json!([1]);
+    frame.value["params"]["detached"] = json!(null);
+    c16a_error(frame, &error::<(u16, u16)>(json!([1])));
+    let mut frame = c16a_frame(startup(host(), None));
+    frame.value["params"]["dimensions"] = json!([0, 0]);
+    frame.value["params"]["payload_nofile"] = json!(0);
+    frame.value["params"]["extra"] = json!(true);
+    c16a_error(frame, "unexpected control field");
+    for dimensions in [(1, 1), (1000, 1000)] {
+        for payload in [None, Some(1), Some(u64::MAX - 1)] {
+            let Message::SupervisorStart(mut start) = startup(host(), None) else {
+                unreachable!()
+            };
+            start.dimensions = dimensions;
+            start.detached = false;
+            start.payload_nofile = payload;
+            let mut prepared = Encoder::default()
+                .prepare(Message::SupervisorStart(start))
+                .unwrap();
+            let received = decode(&mut prepared, &mut Decoder::default());
+            assert!(received.adopted.is_none());
+            assert!(
+                matches!(received.message, Message::SupervisorStart(s) if s.dimensions==dimensions && s.payload_nofile==payload && !s.detached)
+            );
+        }
+    }
+}
+
+#[test]
+fn c16a2_listener_optional_and_descriptor_forms_preserve_original_acceptance() {
+    for value in [
+        None,
+        Some(json!(null)),
+        Some(json!({"$fd":0})),
+        Some(json!([0])),
+    ] {
+        let present = value.as_ref().is_some_and(|v| !v.is_null());
+        let mut frame = c16a_frame(startup(host(), None));
+        match value {
+            None => {
+                frame.value["params"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("legacy_listener");
+            }
+            Some(value) => frame.value["params"]["legacy_listener"] = value,
+        }
+        if present {
+            frame.fds.push(fs::File::open("/dev/null").unwrap().into());
+        }
+        let received = Decoder::default().receive(frame).unwrap().unwrap();
+        assert!(received.adopted.is_none());
+        let Message::SupervisorStart(start) = received.message else {
+            unreachable!()
+        };
+        assert_eq!(start.legacy_listener.is_some(), present);
+        let prepared = Encoder::default()
+            .prepare(Message::SupervisorStart(start))
+            .unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames[0].fds.len(), usize::from(present));
+        assert_eq!(
+            prepared.frames[0].value["params"]["legacy_listener"],
+            if present {
+                json!({"$fd":0})
+            } else {
+                json!(null)
+            }
+        );
+    }
+    for value in [
+        json!({}),
+        json!({"$fd":1.0}),
+        json!({"$fd":-1}),
+        json!({"$fd":null}),
+        json!({"$fd":0,"extra":1}),
+        json!([]),
+    ] {
+        let expected = serde_json::from_value::<Option<c16a2_original::Descriptor>>(value.clone())
+            .unwrap_err()
+            .to_string();
+        let mut frame = c16a_frame(startup(host(), None));
+        frame.value["params"]["legacy_listener"] = value;
+        c16a_error(frame, &expected);
+    }
+    for index in [0, 1, usize::MAX] {
+        let mut frame = c16a_frame(startup(host(), None));
+        frame.value["params"]["legacy_listener"] = json!({"$fd":index});
+        c16a_error(frame, "invalid or duplicate descriptor reference");
+    }
+    let mut frame = c16a_frame(startup(host(), None));
+    frame.fds.push(fs::File::open("/dev/null").unwrap().into());
+    c16a_error(frame, "unreferenced control descriptor");
+}
+
+#[test]
+fn c16a2_maintenance_preserves_optional_operations_and_exact_stream_capabilities() {
+    let _no_forks = unix::no_forks();
+    for positional in [false, true] {
+        let (out_read, out_write) = unix::pipe().unwrap();
+        let (err_read, err_write) = unix::pipe().unwrap();
+        let mut out_read = fs::File::from(out_read);
+        let mut err_read = fs::File::from(err_read);
+        let mut prepared = Encoder::default()
+            .prepare(Message::Maintenance(Maintenance {
+                supervisor_api: API,
+                operation: MaintenanceOperation::ClearScope {
+                    runtime: None,
+                    name: None,
+                    dry_run: false,
+                },
+                stdout: out_write.into(),
+                stderr: err_write.into(),
+            }))
+            .unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        frame.value["params"]["operation"]
+            .as_object_mut()
+            .unwrap()
+            .remove("runtime");
+        frame.value["params"]["operation"]
+            .as_object_mut()
+            .unwrap()
+            .remove("name");
+        if positional {
+            frame.value["params"]["stdout"] = json!([1]);
+            frame.value["params"]["stderr"] = json!([0]);
+        }
+        let received = Decoder::default().receive(frame).unwrap().unwrap();
+        assert!(received.adopted.is_none());
+        let Message::Maintenance(request) = received.message else {
+            unreachable!()
+        };
+        assert!(matches!(
+            request.operation,
+            MaintenanceOperation::ClearScope {
+                runtime: None,
+                name: None,
+                dry_run: false
+            }
+        ));
+        let mut stdout = fs::File::from(OwnedFd::from(request.stdout));
+        let mut stderr = fs::File::from(OwnedFd::from(request.stderr));
+        stdout.write_all(b"stdout").unwrap();
+        stderr.write_all(b"stderr").unwrap();
+        let mut out = [0; 6];
+        let mut err = [0; 6];
+        out_read.read_exact(&mut out).unwrap();
+        err_read.read_exact(&mut err).unwrap();
+        assert_eq!(&out, if positional { b"stderr" } else { b"stdout" });
+        assert_eq!(&err, if positional { b"stdout" } else { b"stderr" });
+    }
+    let mut frame = c16a_frame(maintenance_request());
+    frame.value["params"]["operation"] = json!({"kind":"Gc","state":"relative","dry_run":true});
+    let received = Decoder::default().receive(frame).unwrap().unwrap();
+    let mut repeated = Encoder::default().prepare(received.message).unwrap();
+    assert_eq!(
+        repeated.frames[0].value["params"]["operation"],
+        json!({"kind":"Gc","runtime":null,"state":"relative","dry_run":true})
+    );
+    assert!(
+        decode(&mut repeated, &mut Decoder::default())
+            .adopted
+            .is_none()
+    );
+}
+
+#[test]
+fn c16a2_bootstrap_rejection_closes_listener_after_original_error_order() {
+    let _no_forks = unix::no_forks();
+    for (extra, expected) in [
+        (false, "invalid supervisor startup parameters"),
+        (true, "unexpected control field"),
+    ] {
+        let (reader, writer) = unix::pipe().unwrap();
+        let mut reader = fs::File::from(reader);
+        let Message::SupervisorStart(mut start) = startup(host(), None) else {
+            unreachable!()
+        };
+        start.legacy_listener = Some(writer.into());
+        let mut prepared = Encoder::default()
+            .prepare(Message::SupervisorStart(start))
+            .unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        frame.value["params"]["dimensions"] = json!([0, 0]);
+        frame.value["params"]["payload_nofile"] = json!(0);
+        if extra {
+            frame.value["params"]["extra"] = json!(true);
+        }
+        c16a_error(frame, expected);
+        assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+        drop(prepared);
+        assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    }
+    let mut frame = c16a_frame(maintenance_request());
+    frame.value["params"]["operation"] = json!({"kind":"Gc","dry_run":true});
+    frame.value["params"]["stdout"] = json!({"$fd":usize::MAX});
+    let expected = serde_json::from_value::<c16a_original::MaintenanceOperation>(
+        json!({"kind":"Gc","dry_run":true}),
+    )
+    .unwrap_err()
+    .to_string();
+    c16a_error(frame, &expected);
+}
+
+#[test]
+fn c16a2_maintenance_descriptor_diagnostics_and_api_validation_order() {
+    for field in ["stdout", "stderr"] {
+        for value in [
+            json!({}),
+            json!({"$fd":1.0}),
+            json!({"$fd":-1}),
+            json!({"$fd":null}),
+            json!({"$fd":0,"extra":true}),
+            json!([]),
+        ] {
+            let expected = serde_json::from_value::<c16a2_original::Descriptor>(value.clone())
+                .unwrap_err()
+                .to_string();
+            let mut frame = c16a_frame(maintenance_request());
+            frame.value["params"][field] = value;
+            c16a_error(frame, &expected);
+        }
+    }
+    for api in [
+        json!(-1),
+        json!(1.0),
+        json!(4294967296_u64),
+        json!(null),
+        json!(true),
+    ] {
+        let expected = serde_json::from_value::<u32>(api.clone())
+            .unwrap_err()
+            .to_string();
+        let mut frame = c16a_frame(maintenance_request());
+        frame.value["params"]["supervisor_api"] = api;
+        c16a_error(frame, &expected);
+    }
+    let mut frame = c16a_frame(maintenance_request());
+    frame.value["params"]["supervisor_api"] = json!(2);
+    frame.value["params"]["extra"] = json!(true);
+    c16a_error(frame, "unexpected control field");
+    let mut frame = c16a_frame(maintenance_request());
+    frame.value["params"]["supervisor_api"] = json!(2);
+    c16a_error(frame, "incompatible supervisor API");
+    for message in [maintenance_request(), startup(host(), None)] {
+        let mut frame = c16a_frame(message);
+        frame.value["params"] = json!([]);
+        c16a_error(frame, "expected control object");
+    }
+}

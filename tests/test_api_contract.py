@@ -16,6 +16,67 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c16a2_descriptor_and_outer_projection_schema_instances(self):
+        fixtures = contract.read("fixtures.json")
+        for key, name in [("c16a2_descriptor_cases", "SupervisorDescriptor"),
+                          ("c16a2_start_projection_cases", "SupervisorStartParams"),
+                          ("c16a2_maintenance_projection_cases", "SupervisorMaintenanceParams")]:
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
+            self.assertTrue(fixtures[key])
+            for case in fixtures[key]:
+                with self.subTest(record=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        # C16a2 deliberately validates the outer projection; these nested slots
+        # and runtime API/dimension/payload semantics remain separate work.
+        defs = contract.common()["definitions"]
+        self.assertEqual(defs["SupervisorSourceSlot"]["x-generator-pending"], "C16b")
+        self.assertEqual(defs["SupervisorHandoffSlot"]["x-generator-pending"], "C16b")
+
+    def test_c16a2_explicit_descriptor_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def mutated(label, change):
+            schema = copy.deepcopy(original)
+            change(schema)
+            cases.append((label, schema))
+        def record(schema):
+            return schema["definitions"]["SupervisorDescriptor"]
+        mutated("missing explicit registry", lambda s: s.update({"x-rust-explicit-records":[]}))
+        mutated("duplicate explicit registry", lambda s: s["x-rust-explicit-records"].append("SupervisorDescriptor"))
+        mutated("original container name", lambda s: record(s).update({"x-rust-name":"OtherDescriptor"}))
+        mutated("public Rust field name", lambda s: record(s)["properties"]["$fd"].update({"x-rust-field-name":"fd"}))
+        mutated("usize Rust field type", lambda s: record(s)["properties"]["$fd"].update({"x-rust-type":"u64"}))
+        mutated("Copy trait", lambda s: record(s)["x-rust-derives"].remove("Copy"))
+        mutated("unknown derive", lambda s: record(s)["x-rust-derives"].append("Default"))
+        mutated("missing field order", lambda s: record(s).update({"x-rust-field-order":[]}))
+        mutated("duplicate field order", lambda s: record(s)["x-rust-field-order"].append("$fd"))
+        mutated("index schema reference", lambda s: record(s)["properties"]["$fd"].update({"$ref":"#/definitions/SupervisorSequence"}))
+        mutated("required descriptor index", lambda s: record(s).update(required=[]))
+        mutated("closed descriptor object", lambda s: record(s).update(additionalProperties=True))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract, "common", return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
+    def test_c16a2_added_private_catalog_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.document
+        for name in ["SupervisorStart", "Maintenance"]:
+            for mutation in ["direction", "order", "required", "schema", "closed strategy"]:
+                doc = copy.deepcopy(original("supervisor"))
+                row = next(r for r in doc["x-notifications"] if r["name"] == name)
+                if mutation == "direction": row["direction"] = "supervisor-to-daemon"
+                elif mutation == "order": row["params"].reverse()
+                elif mutation == "required": row["params"][0]["required"] = False
+                elif mutation == "schema": row["params"][0]["schema"] = {"type":"string"}
+                else: row["x-positional-schema"] = {"type":"array"}
+                with self.subTest(record=name, mutation=mutation), patch.object(contract, "document", side_effect=lambda endpoint: doc if endpoint == "supervisor" else original(endpoint)):
+                    with self.assertRaises(ValueError):
+                        contract.check()
+
     def test_c16a1_private_notification_instances(self):
         for case in contract.read("fixtures.json")["c16a1_supervisor_notifications"]:
             with self.subTest(case=case):

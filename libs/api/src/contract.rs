@@ -7,6 +7,16 @@ use std::{io, os::unix::net::UnixStream};
 /// The existing positional inbox head; Typify replacements require a named path.
 pub type InboxHead = (String, u64);
 
+impl Descriptor {
+    /// A frame-local descriptor index; transport validates bounds and uniqueness.
+    pub fn new(index: usize) -> Self {
+        Self { index }
+    }
+}
+
+/// Original bootstrap tuple; Typify replacements require a named type path.
+pub type SupervisorDimensions = (u16, u16);
+
 /// Named empty mailbox params retain the original exposed Empty diagnostics.
 pub mod mailbox_status {
     #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]

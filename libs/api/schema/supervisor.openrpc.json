@@ -160,9 +160,129 @@
       "x-positional-schema": {
         "not": {}
       }
+    },
+    {
+      "name": "SupervisorStart",
+      "x-rust-name": "SupervisorStart",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Bootstrap outer metadata; validates API before Source decoding. Listener descriptor allocation precedes handoff batching. The current producer emits every field including nullable slots; the legacy receiver also accepts absent legacy_listener. Nested source/handoff validation remains with existing codecs pending C16b.",
+      "params": [
+        {
+          "name": "supervisor_api",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorStartParams/properties/supervisor_api"
+          }
+        },
+        {
+          "name": "source",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorStartParams/properties/source"
+          }
+        },
+        {
+          "name": "directory",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorStartParams/properties/directory"
+          }
+        },
+        {
+          "name": "dimensions",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorStartParams/properties/dimensions"
+          }
+        },
+        {
+          "name": "detached",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorStartParams/properties/detached"
+          }
+        },
+        {
+          "name": "payload_nofile",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorStartParams/properties/payload_nofile"
+          }
+        },
+        {
+          "name": "legacy_listener",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorStartParams/properties/legacy_listener"
+          }
+        },
+        {
+          "name": "handoff",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorStartParams/properties/handoff"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorStartParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "first frame; startup"
+    },
+    {
+      "name": "Maintenance",
+      "x-rust-name": "Maintenance",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "One-shot maintenance operation with stdout/stderr descriptor capabilities. Operation decoding precedes descriptor extraction, stdout is adopted before stderr decoding, unknown fields precede API/output-writability validation. No multipart maintenance request.",
+      "params": [
+        {
+          "name": "supervisor_api",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorMaintenanceParams/properties/supervisor_api"
+          }
+        },
+        {
+          "name": "operation",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorMaintenanceParams/properties/operation"
+          }
+        },
+        {
+          "name": "stdout",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorMaintenanceParams/properties/stdout"
+          }
+        },
+        {
+          "name": "stderr",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorMaintenanceParams/properties/stderr"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorMaintenanceParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "first frame; maintenance one-shot"
     }
   ],
-  "x-contract-chunk": "C16a1",
+  "x-contract-chunk": "C16a2",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -172,8 +292,7 @@
     "decoding": "Original Params take/finish order; raw envelope and owned descriptors remain handwritten."
   },
   "x-pending": [
-    "C16a2 SupervisorStart and Maintenance FD-index params",
-    "C16b source/handoff/multipart transfer metadata",
+    "C16b source/handoff/multipart nested schema and generated metadata",
     "C17 Command.* and Event.*"
   ]
 }

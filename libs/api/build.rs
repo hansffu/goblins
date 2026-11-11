@@ -234,6 +234,39 @@ fn main() {
             [].into_iter(),
         );
     }
+    for name in common["x-rust-explicit-records"].as_array().unwrap() {
+        let name = name.as_str().unwrap();
+        settings.with_replacement(
+            name,
+            format!(
+                "crate::contract::{}",
+                common["definitions"][name]["x-rust-name"].as_str().unwrap()
+            ),
+            [].into_iter(),
+        );
+    }
+    settings.with_replacement("SupervisorDescriptorIndex", "usize", [].into_iter());
+    settings.with_replacement(
+        "SupervisorOptionalDescriptor",
+        "Option<crate::contract::Descriptor>",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "SupervisorDimensions",
+        "crate::contract::SupervisorDimensions",
+        [].into_iter(),
+    );
+    settings.with_replacement("SupervisorPayloadLimit", "Option<u64>", [].into_iter());
+    settings.with_replacement(
+        "SupervisorSourceSlot",
+        "::serde_json::Value",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "SupervisorHandoffSlot",
+        "Option<::serde_json::Value>",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -370,6 +403,36 @@ fn main() {
         );
     }
     let mut output = quote::quote!(#generated).to_string();
+    // A canonical explicit record preserves externally visible Rust field names
+    // when the wire property (such as $fd) is not that Rust identifier.
+    for name in common["x-rust-explicit-records"].as_array().unwrap() {
+        let name = name.as_str().unwrap();
+        let schema = &common["definitions"][name];
+        let rust = schema["x-rust-name"].as_str().unwrap();
+        let derives = schema["x-rust-derives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| match v.as_str().unwrap() {
+                "Serialize" => "::serde::Serialize",
+                "Deserialize" => "::serde::Deserialize",
+                other => other,
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        output.push_str(&format!(
+            "#[derive({derives})] #[serde(deny_unknown_fields)] pub struct {rust} {{"
+        ));
+        for field in schema["x-rust-field-order"].as_array().unwrap() {
+            let wire = field.as_str().unwrap();
+            let property = &schema["properties"][wire];
+            let field = property["x-rust-field-name"].as_str().unwrap();
+            let ty = property["x-rust-type"].as_str().unwrap();
+            output.push_str(&format!("#[serde(rename={wire:?})] pub {field}: {ty},"));
+        }
+        output.push_str("}\n");
+        output.push_str(&format!("pub type {name} = {rust};\n"));
+    }
     // Generate the original internally tagged enum directly from its canonical
     // branches. This preserves Serde variant names, optional-null emission and
     // diagnostics while Typify references the generated type as a replacement.

@@ -12577,6 +12577,114 @@ Positional parameters:
 }
 #+end_src
 
+** Notification =SupervisorStart=
+
+Bootstrap outer metadata; validates API before Source decoding. Listener descriptor allocation precedes handoff batching. The current producer emits every field including nullable slots; the legacy receiver also accepts absent legacy_listener. Nested source/handoff validation remains with existing codecs pending C16b.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: first frame; startup.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "supervisor_api": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "source": {
+      "$ref": "#/definitions/SupervisorSourceSlot"
+    },
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    "dimensions": {
+      "$ref": "#/definitions/SupervisorDimensions"
+    },
+    "detached": {
+      "type": "boolean"
+    },
+    "payload_nofile": {
+      "$ref": "#/definitions/SupervisorPayloadLimit"
+    },
+    "legacy_listener": {
+      "$ref": "#/definitions/SupervisorOptionalDescriptor"
+    },
+    "handoff": {
+      "$ref": "#/definitions/SupervisorHandoffSlot"
+    }
+  },
+  "required": [
+    "supervisor_api",
+    "source",
+    "directory",
+    "dimensions",
+    "detached",
+    "payload_nofile",
+    "legacy_listener",
+    "handoff"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Maintenance=
+
+One-shot maintenance operation with stdout/stderr descriptor capabilities. Operation decoding precedes descriptor extraction, stdout is adopted before stderr decoding, unknown fields precede API/output-writability validation. No multipart maintenance request.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: first frame; maintenance one-shot.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "supervisor_api": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "operation": {
+      "$ref": "#/definitions/SupervisorMaintenanceOperation"
+    },
+    "stdout": {
+      "$ref": "#/definitions/SupervisorDescriptor"
+    },
+    "stderr": {
+      "$ref": "#/definitions/SupervisorDescriptor"
+    }
+  },
+  "required": [
+    "supervisor_api",
+    "operation",
+    "stdout",
+    "stderr"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * Generated Serde reader details
 
 Original Serde container names, field order, required nullable sequence slots and legacy named aliases are generated from:
@@ -12857,6 +12965,24 @@ Original Serde container names, field order, required nullable sequence slots an
       "rows",
       "cols"
     ]
+  },
+  "SupervisorStartParams": {
+    "name": "SupervisorStartParams",
+    "order": [
+      "supervisor_api",
+      "source",
+      "directory",
+      "dimensions",
+      "detached",
+      "payload_nofile",
+      "legacy_listener",
+      "handoff"
+    ],
+    "required-nullable": [
+      "payload_nofile",
+      "legacy_listener",
+      "handoff"
+    ]
   }
 }
 #+end_src
@@ -12864,10 +12990,10 @@ Original Serde container names, field order, required nullable sequence slots an
 * Supervisor generation boundaries
 
 - =Params= :: Field-by-field extraction remains handwritten to preserve missing control field errors, finish-before-validation ordering, API checks and descriptor ownership. Generated DTOs are assembled only at the original extraction points.
-- =SupervisorStart and Maintenance= :: FD-index records remain C16a2 work; live OwnedFd/Fd ownership, duplication, validation and cleanup remain handwritten.
-- =Source and Handoff= :: Source, directory, resource/manifest lease and multipart metadata remain C16b work; no Value substitution claims generation of these surfaces.
+- =Source and Handoff= :: C16a2 generates the outer bootstrap fields and FD indexes only. SourceSlot/HandoffSlot are explicitly partial outer object projections replaced with Value/Option<Value>; existing typed source/handoff codecs retain nested validation. Complete schema and generated nested source/directory/lease/handoff/multipart metadata remain C16b work. No claim of complete bootstrap schema validation is made by these slots.
 - =Result<(), String>= :: SupervisorMaintenanceOutcome maps to the standard Serde Result<(),String>, preserving exact enum errors and Ok:null / Err:string encoding.
 - =MaintenanceOperation= :: Schema-driven tagged enum generation retains named variants/field order/optional-null emission and original Serde diagnostics; Typify replacements reference this generated enum.
+- =Descriptor= :: Schema-driven explicit record generation retains the original Descriptor Rust name, public index usize field, $fd rename, Copy/Clone/Debug and exact Serde diagnostics, including standalone positional [index]. channel::references still requires exact object markers; standalone compatibility does not bypass transport scanning.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -24907,6 +25033,207 @@ Original Serde container names, field order, required nullable sequence slots an
   "type": "object",
   "properties": {},
   "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorDescriptorIndex=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 0,
+  "maximum": 18446744073709551615,
+  "x-json-integer": true,
+  "description": "Native usize descriptor index. JSON maximum describes 64-bit targets; native usize decoding keeps its platform bound. Frame MAX_FDS and reference uniqueness remain separate transport checks."
+}
+#+end_src
+
+** =SupervisorDescriptor=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "$fd": {
+      "$ref": "#/definitions/SupervisorDescriptorIndex",
+      "x-rust-type": "usize",
+      "x-rust-field-name": "index"
+    }
+  },
+  "required": [
+    "$fd"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "Descriptor",
+  "x-rust-field-order": [
+    "$fd"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Clone",
+    "Copy",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =SupervisorOptionalDescriptor=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/SupervisorDescriptor"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorDimensions=
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "x-json-integer": true
+    },
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "x-json-integer": true
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 2,
+  "description": "Structural (rows,cols) u16 tuple. Existing 1..1000 semantic validation follows unchanged."
+}
+#+end_src
+
+** =SupervisorPayloadLimit=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    {
+      "type": "null"
+    }
+  ],
+  "description": "Original Option<u64>; existing startup semantic validation rejects zero and u64::MAX after field extraction."
+}
+#+end_src
+
+** =SupervisorSourceSlot=
+
+#+begin_src json
+{
+  "type": "object",
+  "x-generator-pending": "C16b",
+  "description": "Outer bootstrap projection only. The existing closed tagged WireSource decoder defines and validates nested fields; full schema/generated metadata is assigned to C16b. This slot does not claim nested acceptance equivalence."
+}
+#+end_src
+
+** =SupervisorHandoffSlot=
+
+#+begin_src json
+{
+  "type": [
+    "object",
+    "null"
+  ],
+  "x-generator-pending": "C16b",
+  "description": "Outer bootstrap projection only. Existing WireHandoff decoder and multipart ownership state validate non-null data; full nested schema/generated metadata is assigned to C16b."
+}
+#+end_src
+
+** =SupervisorStartParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "supervisor_api": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "source": {
+      "$ref": "#/definitions/SupervisorSourceSlot"
+    },
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    "dimensions": {
+      "$ref": "#/definitions/SupervisorDimensions"
+    },
+    "detached": {
+      "type": "boolean"
+    },
+    "payload_nofile": {
+      "$ref": "#/definitions/SupervisorPayloadLimit"
+    },
+    "legacy_listener": {
+      "$ref": "#/definitions/SupervisorOptionalDescriptor"
+    },
+    "handoff": {
+      "$ref": "#/definitions/SupervisorHandoffSlot"
+    }
+  },
+  "required": [
+    "supervisor_api",
+    "source",
+    "directory",
+    "dimensions",
+    "detached",
+    "payload_nofile",
+    "legacy_listener",
+    "handoff"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorMaintenanceParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "supervisor_api": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "operation": {
+      "$ref": "#/definitions/SupervisorMaintenanceOperation"
+    },
+    "stdout": {
+      "$ref": "#/definitions/SupervisorDescriptor"
+    },
+    "stderr": {
+      "$ref": "#/definitions/SupervisorDescriptor"
+    }
+  },
+  "required": [
+    "supervisor_api",
+    "operation",
+    "stdout",
+    "stderr"
+  ],
   "additionalProperties": false
 }
 #+end_src

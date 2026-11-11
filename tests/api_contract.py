@@ -998,6 +998,8 @@ def check_private_contracts():
         "Stopping":("supervisor-to-daemon","SupervisorEmptyParams",[]),
         "Released":("supervisor-to-daemon","SupervisorEmptyParams",[]),
         "Adopted":("bidirectional","SupervisorAdoptedParams",["transfer"]),
+        "SupervisorStart":("daemon-to-supervisor","SupervisorStartParams",["supervisor_api","source","directory","dimensions","detached","payload_nofile","legacy_listener","handoff"]),
+        "Maintenance":("daemon-to-supervisor","SupervisorMaintenanceParams",["supervisor_api","operation","stdout","stderr"]),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1022,6 +1024,19 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor"]:
+        raise ValueError("private explicit record registry differs")
+    descriptor=common()["definitions"]["SupervisorDescriptor"]
+    expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
+    if (descriptor.get("x-rust-name")!="Descriptor" or
+        descriptor.get("x-rust-field-order")!=["$fd"] or
+        descriptor.get("x-rust-derives")!=["Debug","Clone","Copy","Serialize","Deserialize"] or
+        descriptor.get("type")!="object" or descriptor.get("additionalProperties") is not False or
+        descriptor.get("required")!=["$fd"] or descriptor.get("properties")!={"$fd":expected_property}):
+        raise ValueError("private descriptor schema/Rust contract differs")
+    index=common()["definitions"]["SupervisorDescriptorIndex"]
+    if {key:value for key,value in index.items() if key!="description"}!={"type":"integer","minimum":0,"maximum":2**64-1,"x-json-integer":True}:
+        raise ValueError("private descriptor index representation differs")
     if common().get("x-rust-tagged-enums")!=["SupervisorMaintenanceOperation"]:
         raise ValueError("private tagged enum registry differs")
     enum=common()["definitions"]["SupervisorMaintenanceOperation"]

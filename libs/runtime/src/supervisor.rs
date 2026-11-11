@@ -163,28 +163,33 @@ impl Encoder {
         match &message {
             Message::SupervisorStart(start) => {
                 valid_start(start)?;
-                b.method = "SupervisorStart";
-                b.value("supervisor_api", &start.supervisor_api)?;
                 let source = encode_source(&start.source, &mut b)?;
-                b.value("source", &source)?;
-                b.value("directory", &start.directory)?;
-                b.value("dimensions", &start.dimensions)?;
-                b.value("detached", &start.detached)?;
-                b.value("payload_nofile", &start.payload_nofile)?;
-                // Precede handoff batching so its first-frame allowance also
+                // Preserve path serialization failure before descriptor duplication.
+                serde_json::to_value(&start.directory)?;
+                // Precede handoff batching so its first-frame allowance still
                 // accounts for this descriptor and the member scope handle.
-                let listener = start
+                let legacy_listener = start
                     .legacy_listener
                     .as_ref()
                     .map(|fd| b.fd(fd))
                     .transpose()?;
-                b.value("legacy_listener", &listener)?;
                 let handoff = start
                     .handoff
                     .as_deref()
                     .map(|h| encode_handoff(h, &mut b))
                     .transpose()?;
-                b.value("handoff", &handoff)?;
+                b.notification::<contract::supervisor_notifications::SupervisorStart>(
+                    contract::SupervisorStartParams {
+                        supervisor_api: start.supervisor_api,
+                        source,
+                        directory: start.directory.clone(),
+                        dimensions: start.dimensions,
+                        detached: start.detached,
+                        payload_nofile: start.payload_nofile,
+                        legacy_listener,
+                        handoff,
+                    },
+                )?;
             }
             Message::Preflight {
                 supervisor_api,
@@ -211,13 +216,18 @@ impl Encoder {
             }
             Message::Maintenance(request) => {
                 valid_maintenance(request)?;
-                b.method = "Maintenance";
-                b.value("supervisor_api", &request.supervisor_api)?;
-                b.value("operation", &request.operation)?;
+                // Preserve operation serialization failure before stream duplication.
+                serde_json::to_value(&request.operation)?;
                 let stdout = b.fd(&request.stdout)?;
                 let stderr = b.fd(&request.stderr)?;
-                b.value("stdout", &stdout)?;
-                b.value("stderr", &stderr)?;
+                b.notification::<contract::supervisor_notifications::Maintenance>(
+                    contract::SupervisorMaintenanceParams {
+                        supervisor_api: request.supervisor_api,
+                        operation: request.operation.clone(),
+                        stdout,
+                        stderr,
+                    },
+                )?;
             }
             Message::MaintenanceFinished { result } => {
                 b.notification::<contract::supervisor_notifications::MaintenanceFinished>(

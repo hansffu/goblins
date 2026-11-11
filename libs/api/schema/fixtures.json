@@ -23432,5 +23432,1120 @@
       "value": [],
       "valid": false
     }
+  ],
+  "c16a2_descriptor_cases": [
+    {
+      "value": {
+        "$fd": 0
+      },
+      "valid": true
+    },
+    {
+      "value": {},
+      "valid": false
+    },
+    {
+      "value": null,
+      "valid": false
+    },
+    {
+      "value": [
+        0
+      ],
+      "valid": false
+    },
+    {
+      "value": {
+        "$fd": 239
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "$fd": 240
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "$fd": 18446744073709551615
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "$fd": 18446744073709551616
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "$fd": -1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "$fd": 1.0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "$fd": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "$fd": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "$fd": "0"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "$fd": 0,
+        "extra": true
+      },
+      "valid": false
+    }
+  ],
+  "c16a2_start_projection_cases": [
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 0,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 4294967295,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 4294967296,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1.0,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": true,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          0,
+          65535
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          1,
+          65536
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          1.0,
+          2
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          1
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          1,
+          2,
+          3
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": null,
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": 0,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": 18446744073709551615,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": 18446744073709551616,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": 1.0,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": false,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": {
+          "$fd": 0
+        },
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": {
+          "$fd": 18446744073709551615
+        },
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": {
+          "$fd": 1.0
+        },
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": [
+          0
+        ],
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": {
+          "$fd": 0,
+          "extra": true
+        },
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": null,
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": [],
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": {}
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "relative",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": null,
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": 0,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null,
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    },
+    {
+      "value": {
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "payload_nofile": null,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "legacy_listener": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "source": {
+          "kind": "Host"
+        },
+        "directory": "/state",
+        "dimensions": [
+          37,
+          123
+        ],
+        "detached": true,
+        "payload_nofile": null,
+        "legacy_listener": null
+      },
+      "valid": false
+    }
+  ],
+  "c16a2_maintenance_projection_cases": [
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 4294967295,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 4294967296,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1.0,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "ClearScope",
+          "dry_run": false
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "ClearScope",
+          "runtime": null,
+          "name": null,
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "runtime": null,
+          "state": "",
+          "dry_run": false
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": null,
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "ClearScope",
+          "dry_run": null
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Unknown",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 18446744073709551615
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 1.0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": null,
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": [
+          0
+        ],
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": -1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1,
+          "extra": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        },
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    },
+    {
+      "value": {
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "stdout": {
+          "$fd": 0
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stderr": {
+          "$fd": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "supervisor_api": 1,
+        "operation": {
+          "kind": "Gc",
+          "state": "relative",
+          "dry_run": true
+        },
+        "stdout": {
+          "$fd": 0
+        }
+      },
+      "valid": false
+    }
   ]
 }

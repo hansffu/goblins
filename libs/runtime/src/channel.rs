@@ -1,7 +1,7 @@
 //! Private, nonblocking JSON-RPC stream transport with frame-owned descriptors.
 //! Only this endpoint accepts Descriptor-Count; sandbox framing stays unchanged.
 use goblins_jsonrpc::Decoder;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -26,17 +26,7 @@ const MAX_QUEUED_FDS: usize = MAX_FDS * 2;
 const HEADER: &str = "Descriptor-Count";
 
 /// A reference to one descriptor attached to this frame, never a raw fd number.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Descriptor {
-    #[serde(rename = "$fd")]
-    pub index: usize,
-}
-impl Descriptor {
-    pub fn new(index: usize) -> Self {
-        Self { index }
-    }
-}
+pub use goblins_protocol::contract::Descriptor;
 #[derive(Debug)]
 pub struct Frame {
     pub value: Value,
