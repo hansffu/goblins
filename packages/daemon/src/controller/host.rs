@@ -101,9 +101,15 @@ impl Spec {
         // One line each, so no value can hide another behind it.
         lines.extend(environment.iter().map(|e| format!("Environment: {e}")));
         lines.push(format!("Time limit: {time_limit}"));
-        json!({"kind":"host-command","description":lines.join("\n"),
-            "name":name,"command":command,"directory":directory,"environment":environment,
-            "time_limit":time_limit})
+        json!(contract::HostCommandApprovalPreview {
+            kind: contract::HostCommandApprovalPreviewKind::HostCommand,
+            description: lines.join("\n"),
+            name,
+            command,
+            directory,
+            environment,
+            time_limit,
+        })
     }
 }
 
@@ -638,6 +644,59 @@ mod tests {
             timeout: None,
             detach: false,
             name: None,
+        }
+    }
+
+    fn original_preview(spec: &Spec) -> Value {
+        let command = quote(&spec.argv);
+        let directory = quote_word(&spec.cwd_path);
+        let environment: Vec<_> = spec
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}={}", quote_word(v)))
+            .collect();
+        let time_limit = match spec.timeout {
+            Some(t) => format!("{t} s"),
+            None => "none".into(),
+        };
+        let name = spec.label();
+        let mut lines = vec![
+            "Runs on the host as you, outside the sandbox, with your files, services \
+             and credentials. Scripts, build files and tests it reads are whatever the \
+             goblin writes, also after this request."
+                .to_string(),
+            format!("Name: {name}"),
+            format!("Command: {command}"),
+            format!("Directory: {directory}"),
+        ];
+        // One line each, so no value can hide another behind it.
+        lines.extend(environment.iter().map(|e| format!("Environment: {e}")));
+        lines.push(format!("Time limit: {time_limit}"));
+        json!({"kind":"host-command","description":lines.join("\n"),
+            "name":name,"command":command,"directory":directory,"environment":environment,
+            "time_limit":time_limit})
+    }
+
+    #[test]
+    fn approval_preview_producer_matches_complete_original_wire() {
+        let mut named = spec(
+            &["echo", "a b", "line\nnext"],
+            "/work/dir",
+            &[("A", "a b"), ("B", "x\ny")],
+        );
+        named.name = Some("unit tests".into());
+        named.timeout = Some(30);
+        for command in [
+            spec(&["/usr/bin/true"], "/work", &[]),
+            named,
+            spec(&["/bin/a\nb"], "/work/x\ny", &[]),
+        ] {
+            let expected = original_preview(&command);
+            let produced = command.preview();
+            assert_eq!(produced, expected);
+            assert!(produced["name"].is_string());
+            assert!(produced["time_limit"].is_string());
+            assert_eq!(produced.as_object().unwrap().len(), 7);
         }
     }
 

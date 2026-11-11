@@ -357,11 +357,65 @@ pub struct PermissionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log: Option<String>,
 }
+impl From<&PermissionRecord> for contract::PermissionRecord {
+    fn from(r: &PermissionRecord) -> Self {
+        Self {
+            kind: r.kind.clone(),
+            id: r.id.clone(),
+            session: r.session.clone(),
+            agent_name: r.agent_name.clone(),
+            approval: r.approval.clone(),
+            package: r.package.clone(),
+            reason: r.reason.clone(),
+            state: r.state.clone(),
+            approved: r.approved,
+            preview: r.preview.clone(),
+            message: r.message.clone(),
+            name: r.name.clone(),
+            started_at: r.started_at,
+            log: r.log.clone(),
+        }
+    }
+}
+impl From<contract::PermissionRecordReply> for PermissionRecord {
+    fn from(r: contract::PermissionRecordReply) -> Self {
+        Self {
+            kind: r.kind,
+            id: r.id,
+            session: r.session,
+            agent_name: r.agent_name,
+            approval: r.approval,
+            package: r.package,
+            reason: r.reason,
+            state: r.state,
+            approved: r.approved,
+            preview: r.preview,
+            message: r.message,
+            name: r.name,
+            started_at: r.started_at,
+            log: r.log,
+        }
+    }
+}
+fn permission_records<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<PermissionRecord>, D::Error> {
+    use contract::Response;
+    Vec::<Value>::deserialize(d)?
+        .into_iter()
+        .map(|value| {
+            contract::PermissionRecordReply::decode(value)
+                .map(Into::into)
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub instance: String,
     #[serde(deserialize_with = "session_records")]
     pub sessions: Vec<SessionRecord>,
+    #[serde(deserialize_with = "permission_records")]
     pub permissions: Vec<PermissionRecord>,
     #[serde(default)]
     pub raids: Vec<RaidRecord>,
@@ -796,18 +850,7 @@ impl From<contract::HostLaunchParams> for Start {
         }
     }
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RequestId {
-    request: String,
-}
 type Decision = contract::PermissionDecisionParams;
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Filter {
-    session: Option<String>,
-    state: Option<String>,
-}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Subscription {
@@ -2764,24 +2807,25 @@ impl Controller {
                 }
                 Ok(json!(contract::ServerStopResult { accepted: true }))
             }
-            "permissions.list" => {
-                let p: Filter = params(value)?;
+            contract::host::PermissionsList::NAME => {
+                let p = contract_params::<contract::host::PermissionsList>(value)?;
                 Ok(json!(
                     self.permissions
                         .iter()
                         .filter(|r| p.session.as_ref().is_none_or(|s| *s == r.session)
                             && p.state.as_ref().is_none_or(|s| *s == r.state))
+                        .map(contract::PermissionRecord::from)
                         .collect::<Vec<_>>()
                 ))
             }
-            "permissions.get" => {
-                let p: RequestId = params(value)?;
-                Ok(json!(
+            contract::host::PermissionsGet::NAME => {
+                let p = contract_params::<contract::host::PermissionsGet>(value)?;
+                Ok(json!(contract::PermissionRecord::from(
                     self.permissions
                         .iter()
                         .find(|r| r.id == p.request)
                         .ok_or_else(missing)?
-                ))
+                )))
             }
             contract::host::PermissionsDecide::NAME => self.decide(
                 contract_params::<contract::host::PermissionsDecide>(value)?,
@@ -3254,7 +3298,7 @@ impl Controller {
             reason: p.reason,
             state: if auto_approve { "realizing" } else { "pending" }.into(),
             approved: if auto_approve { Some(true) } else { None },
-            preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.")}))),
+            preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!(contract::DockerApprovalPreview { description: format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.") }))),
             message: None,
             log: host_name.as_ref().map(|_| {
                 a.directory
@@ -3627,9 +3671,12 @@ impl Controller {
                                             })
                                         })
                                         .cloned();
-                                    json!(preview)
+                                    json!(contract::PackageApprovalPreview {
+                                        in_store: preview.in_store, download: preview.download,
+                                        build_required: preview.build_required,
+                                    })
                                 }
-                                Err(e) => json!({"error":bounded(&e)}),
+                                Err(e) => json!(contract::ApprovalPreviewError { error: bounded(&e) }),
                             });
                             self.dirty = true;
                         }
@@ -4130,7 +4177,7 @@ mod tests {
         }
     }
 
-    fn daemon() -> Controller {
+    pub(super) fn daemon() -> Controller {
         let path = unix::temp_directory().unwrap();
         Controller::new(&path, None).unwrap()
     }
@@ -4269,6 +4316,264 @@ mod tests {
         json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
                "agent_name":agent_name,"rows":24,"cols":100})
     }
+    #[test]
+    fn permission_package_preview_producer_matches_original_wire_and_keeps_output_private() {
+        let _no_forks = unix::no_forks();
+        let private =
+            PathBuf::from("/nix/store/00000000000000000000000000000000-private-selected-output");
+        let cases = [
+            Ok(goblins_runtime::catalog::Preview {
+                output_path: Some(private.clone()),
+                in_store: true,
+                download: None,
+                build_required: false,
+            }),
+            Ok(goblins_runtime::catalog::Preview {
+                output_path: Some(private.clone()),
+                in_store: false,
+                download: Some("12 KiB".into()),
+                build_required: true,
+            }),
+            Err("preview failed".into()),
+            Err("é".repeat(600)),
+        ];
+        for result in cases {
+            let mut daemon = daemon();
+            let path = daemon.state.clone();
+            let id = session_with_results_id(&mut daemon, "preview-session", vec![]);
+            let (runtime, events, _received) = goblins_runtime::Fake::new();
+            let active = daemon.sessions.get_mut(&id).unwrap();
+            active.runtime = Some(Box::new(runtime));
+            active
+                .policy
+                .as_mut()
+                .unwrap()
+                .initial_packages
+                .push(private.clone());
+            let record = daemon.permissions.back_mut().unwrap();
+            record.state = "pending".into();
+            record.approved = None;
+            let (mut requester, _peer) = connection(Role::Sandbox(id.clone()));
+            requester.id = 99;
+            requester.initialized = true;
+            requester.waiting = Some(("r".into(), json!(7)));
+            daemon.connections.push(requester);
+            // This is the original catalog::Preview serializer and original
+            // bounded error shape, independent of the generated public DTO.
+            let expected = match &result {
+                Ok(preview) => serde_json::to_value(preview).unwrap(),
+                Err(message) => json!({"error":message.chars().take(512).collect::<String>()}),
+            };
+            let success = result.is_ok();
+            events
+                .send(Event::Preview {
+                    approval: 1,
+                    result,
+                })
+                .unwrap();
+            daemon.tick().unwrap();
+            let record = daemon.permissions.back().unwrap();
+            assert_eq!(record.preview.as_ref(), Some(&expected));
+            assert_eq!(
+                json!(contract::PermissionRecord::from(record))["preview"],
+                expected
+            );
+            assert!(
+                record
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .get("output_path")
+                    .is_none()
+            );
+            assert!(
+                !serde_json::to_string(&record.preview)
+                    .unwrap()
+                    .contains("private-selected-output")
+            );
+            if success {
+                assert_eq!(
+                    daemon.sessions[&id]
+                        .pending
+                        .as_ref()
+                        .unwrap()
+                        .initial_output,
+                    Some(private.clone())
+                );
+                assert!(record.preview.as_ref().unwrap().get("download").is_some());
+            }
+            drop(daemon);
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+    #[test]
+    fn permission_docker_preview_producer_matches_original_wire() {
+        let _no_forks = unix::no_forks();
+        let mut daemon = daemon();
+        let path = daemon.state.clone();
+        let _events = live(&mut daemon, "docker-session");
+        for scope in ["net", "scope-2"] {
+            let mut policy = Policy::fixture("shell", &[]);
+            policy.scope = Some(goblins_runtime::policy::ScopePolicy {
+                name: scope.into(),
+                docker: true,
+                pid: false,
+            });
+            daemon
+                .sessions
+                .get_mut("docker-session")
+                .unwrap()
+                .set_policy(policy);
+            let (mut connection, _peer) = connection(Role::Sandbox("docker-session".into()));
+            let params = PermissionParams {
+                kind: "docker".into(),
+                package: format!("Docker scope: {scope}"),
+                reason: "tests".into(),
+                update: None,
+                lock: false,
+                host: None,
+            };
+            assert!(
+                daemon
+                    .submit(
+                        &mut connection,
+                        &json!(7),
+                        "docker-session",
+                        params,
+                        None,
+                        None
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+            let expected = json!({"description":format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.")});
+            let record = daemon.permissions.back().unwrap();
+            assert_eq!(record.preview.as_ref(), Some(&expected));
+            assert_eq!(
+                json!(contract::PermissionRecord::from(record))["preview"],
+                expected
+            );
+        }
+        drop(daemon);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn permission_read_contracts_preserve_filters_records_and_missing_lookup() {
+        let _no_forks = unix::no_forks();
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        let expected = fixtures["permission_records"].clone();
+        let mut daemon = daemon();
+        let path = daemon.state.clone();
+        daemon.permissions = expected
+            .as_array()
+            .unwrap()
+            .iter()
+            .cloned()
+            .map(|value| serde_json::from_value(value).unwrap())
+            .collect();
+        let (mut host, _peer) = connection(Role::Host);
+        for params in [json!({}), json!([null, null])] {
+            assert_eq!(
+                daemon
+                    .host(&mut host, contract::host::PermissionsList::NAME, params)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            daemon
+                .host(
+                    &mut host,
+                    contract::host::PermissionsList::NAME,
+                    json!({"session":"session-a","state":"pending"})
+                )
+                .unwrap(),
+            json!([expected[0], expected[3], expected[5]])
+        );
+        assert_eq!(
+            daemon
+                .host(
+                    &mut host,
+                    contract::host::PermissionsList::NAME,
+                    json!([null, "running"])
+                )
+                .unwrap(),
+            json!([expected[4]])
+        );
+        for params in [
+            json!({"session":"snikk"}),
+            json!({"state":"future"}),
+            json!({"session":"session-b","state":"pending"}),
+        ] {
+            assert_eq!(
+                daemon
+                    .host(&mut host, contract::host::PermissionsList::NAME, params)
+                    .unwrap(),
+                json!([])
+            );
+        }
+        assert_eq!(
+            daemon
+                .host(
+                    &mut host,
+                    contract::host::PermissionsGet::NAME,
+                    json!(["fixture-r5"])
+                )
+                .unwrap(),
+            expected[4]
+        );
+        assert_eq!(
+            daemon
+                .host(
+                    &mut host,
+                    contract::host::PermissionsGet::NAME,
+                    json!({"request":"not an identifier"})
+                )
+                .unwrap_err()
+                .0,
+            -32004
+        );
+        for case in fixtures["permission_read_parameter_cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|case| case["valid"] == false)
+        {
+            assert_eq!(
+                daemon
+                    .host(
+                        &mut host,
+                        case["method"].as_str().unwrap(),
+                        case["params"].clone()
+                    )
+                    .unwrap_err()
+                    .0,
+                -32602,
+                "{case}"
+            );
+        }
+        assert_eq!(json!(daemon.permissions), expected);
+        drop(daemon);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn snapshot_permission_bridge_matches_original_record_decoding() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        for case in fixtures["permission_record_cases"].as_array().unwrap() {
+            let old = serde_json::from_value::<PermissionRecord>(case["result"].clone());
+            let snapshot = serde_json::from_value::<Snapshot>(
+                json!({"instance":"test","sessions":[],"permissions":[case["result"]]}),
+            );
+            assert_eq!(old.is_ok(), snapshot.is_ok(), "{case}");
+            if let (Ok(old), Ok(snapshot)) = (old, snapshot) {
+                assert_eq!(json!(snapshot.permissions), json!([old]));
+            }
+        }
+    }
+
     #[test]
     fn plain_permission_result_producer_keeps_null_message_and_forwarded_status() {
         let mut daemon = daemon();
@@ -8284,7 +8589,7 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
-    fn live(d: &mut Controller, id: &str) -> std::sync::mpsc::SyncSender<Event> {
+    pub(super) fn live(d: &mut Controller, id: &str) -> std::sync::mpsc::SyncSender<Event> {
         session_with_results_id(d, id, vec![]);
         let (runtime, results, _) = goblins_runtime::Fake::new();
         let a = d.sessions.get_mut(id).unwrap();

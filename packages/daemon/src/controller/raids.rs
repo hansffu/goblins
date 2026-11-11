@@ -6,6 +6,7 @@ use super::Fault;
 use super::Start;
 use super::params;
 use crate::raid;
+use goblins_protocol::contract;
 use crate::raid::Event;
 use crate::raid::Raids;
 use crate::raid::Reason;
@@ -263,14 +264,29 @@ impl Controller {
         let mut members: Vec<_> = raid.members.iter().collect();
         members.sort_by_key(|(_, m)| m.joined);
         let former = raid.paused.as_ref().map(|p| p.former_owner.as_str());
-        json!({"raid":raid.id,"name":raid.name,"generation":raid.generation,
-            "former_owner":former.map(|id| json!({"id":id,"agent_name":self.path_of(id)})),
-            "members":members.into_iter().filter_map(|(id, m)| {
-                let record = &self.sessions.get(id)?.record;
-                Some(json!({"id":id,"agent_name":record.agent_name,
-                    "name":record.name,"role":m.role,"state":record.state,
-                    "created":m.created_by.is_some()}))
-            }).collect::<Vec<_>>()})
+        json!(contract::RaidApprovalPreview {
+            raid: raid.id.clone(),
+            name: raid.name.clone(),
+            generation: raid.generation,
+            former_owner: former.map(|id| contract::CreatedBy {
+                id: id.into(),
+                agent_name: self.path_of(id)
+            }),
+            members: members
+                .into_iter()
+                .filter_map(|(id, m)| {
+                    let record = &self.sessions.get(id)?.record;
+                    Some(contract::RaidApprovalMember {
+                        id: id.clone(),
+                        agent_name: record.agent_name.clone(),
+                        name: record.name.clone(),
+                        role: m.role.clone(),
+                        state: record.state.clone(),
+                        created: m.created_by.is_some(),
+                    })
+                })
+                .collect(),
+        })
     }
     fn finish_raid_prompt(&mut self, raid: &str, state: &str, message: String) {
         for r in self.permissions.iter_mut().filter(|r| {
@@ -641,4 +657,86 @@ fn outcome(events: &[Event]) -> (bool, bool) {
         any(|c| matches!(c, raid::Change::Dissolved { .. })),
         any(|c| matches!(c, raid::Change::Paused { .. })),
     )
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::super::tests::{daemon, live};
+    use super::*;
+    fn original_preview(controller: &Controller, raid: &raid::Raid) -> Value {
+        let mut members: Vec<_> = raid.members.iter().collect();
+        members.sort_by_key(|(_, m)| m.joined);
+        let former = raid.paused.as_ref().map(|p| p.former_owner.as_str());
+        json!({"raid":raid.id,"name":raid.name,"generation":raid.generation,
+            "former_owner":former.map(|id| json!({"id":id,"agent_name":controller.path_of(id)})),
+            "members":members.into_iter().filter_map(|(id, m)| {
+                let record = &controller.sessions.get(id)?.record;
+                Some(json!({"id":id,"agent_name":record.agent_name,
+                    "name":record.name,"role":m.role,"state":record.state,
+                    "created":m.created_by.is_some()}))
+            }).collect::<Vec<_>>()})
+    }
+
+    #[test]
+    fn raid_approval_preview_producer_matches_original_wire_and_nullable_fields() {
+        let _no_forks = goblins_unix::no_forks();
+        let mut controller = daemon();
+        let path = controller.state.clone();
+        let _a = live(&mut controller, "a");
+        let _z = live(&mut controller, "z");
+        controller.sessions.get_mut("a").unwrap().record.agent_name = "alpha".into();
+        let mut raid = raid::Raid {
+            id: "raid-fixed".into(),
+            name: "crew".into(),
+            owner: None,
+            generation: 2,
+            paused: None,
+            members: std::collections::BTreeMap::from([
+                (
+                    "a".into(),
+                    raid::Member {
+                        role: None,
+                        joined: 3,
+                        created_by: None,
+                    },
+                ),
+                (
+                    "gone".into(),
+                    raid::Member {
+                        role: None,
+                        joined: 2,
+                        created_by: None,
+                    },
+                ),
+                (
+                    "z".into(),
+                    raid::Member {
+                        role: Some("reviewer".into()),
+                        joined: 1,
+                        created_by: Some("a".into()),
+                    },
+                ),
+            ]),
+        };
+        let members = json!([
+            {"id":"z","agent_name":"z","name":"shell","role":"reviewer","state":"running","created":true},
+            {"id":"a","agent_name":"alpha","name":"shell","role":null,"state":"running","created":false}
+        ]);
+        for former in [None, Some("a"), Some("missing")] {
+            raid.paused = former.map(|id| raid::Paused {
+                former_owner: id.into(),
+                reason: Reason::Left,
+            });
+            let produced = controller.raid_prompt_preview(&raid);
+            assert_eq!(produced, original_preview(&controller, &raid));
+            let former =
+                former.map(|id| json!({"id":id,"agent_name":if id=="a" {"alpha"} else {id}}));
+            assert_eq!(
+                produced,
+                json!({"raid":"raid-fixed","name":"crew","generation":2,"former_owner":former,"members":members})
+            );
+        }
+        drop(controller);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

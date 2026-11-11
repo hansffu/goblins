@@ -15,6 +15,32 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_permission_read_contracts_and_legacy_record_forms(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["permission_read_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params("host",case["method"],case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params("host",case["method"],case["params"])
+        for case in fixtures["permission_record_cases"]:
+            for current,compatible in [(case["current"],False),(case["legacy"],True)]:
+                for name,result in [("permissions.get",case["result"]),("permissions.list",[case["result"]])]:
+                    reply=dict(jsonrpc="2.0",id=1,result=result)
+                    if current:self.assertTrue(contract.validate_reply("host",name,reply,compatibility=compatible))
+                    else:
+                        with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply("host",name,reply,compatibility=compatible)
+        records=fixtures["permission_records"]
+        self.assertTrue(contract.validate_reply("host","permissions.list",dict(jsonrpc="2.0",id=1,result=records)))
+        for record in records:
+            for key in ("approved","preview","message"):
+                broken=copy.deepcopy(record);del broken[key]
+                with self.assertRaises(ValidationError):contract.validate_reply("host","permissions.get",dict(jsonrpc="2.0",id=1,result=broken))
+            if record["kind"] not in ("devshell",):
+                broken={**record,"preview":[]}
+                with self.assertRaises(ValidationError):contract.validate_reply("host","permissions.get",dict(jsonrpc="2.0",id=1,result=broken))
+        # The private refresh payload remains explicitly opaque until C17.
+        forwarded={**records[3],"preview":17}
+        self.assertTrue(contract.validate_reply("host","permissions.get",dict(jsonrpc="2.0",id=1,result=forwarded)))
+
     def test_permission_request_complete_contract_and_distinct_client_profiles(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["permission_request_parameter_cases"]:

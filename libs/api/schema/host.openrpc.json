@@ -1253,6 +1253,110 @@
       },
       "x-client-wire-result-schema": {},
       "x-client-result-normalization": "permission-decision-fields"
+    },
+    {
+      "name": "permissions.list",
+      "x-rust-name": "PermissionsList",
+      "description": "List retained permission requests in insertion order. Exact optional session-ID/state string filters are conjunctive; they do not resolve names or reject unknown strings. Named filters can be absent/null, while the original positional [session,state] requires both slots, which may be null. No filter returns all retained records. Host-only after initialization. Reads retain finalized records independently of session lifetime and do not mutate approvals or preview state. Required nullable record keys and omitted host-only optionals preserve their current wire presence. Legacy readers retain package as the missing-kind default, open record fields, arbitrary future kind/state strings, opaque preview JSON, and original positional record order; Snapshot consumers use the generated compatible reader through an explicit domain bridge until C15.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/PermissionListParams/properties/session"
+          }
+        },
+        {
+          "name": "state",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/PermissionListParams/properties/state"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/PermissionList"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/PermissionListParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/PermissionListParams"
+      },
+      "x-positional-required": [
+        "session",
+        "state"
+      ],
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/PermissionListReply"
+      },
+      "x-client-wire-result-schema": {
+        "$ref": "common.json#/x-client-result-schemas/PermissionListReply"
+      },
+      "x-client-result-normalization": "permission-list-records"
+    },
+    {
+      "name": "permissions.get",
+      "x-rust-name": "PermissionsGet",
+      "description": "Read the first retained request with exactly matching request string. The selector is structurally a String, not an early identifier check; an absent or evicted record returns -32004. Original [request] positional form is retained. Host-only after initialization. Reads retain finalized records independently of session lifetime and do not mutate approvals or preview state. Required nullable record keys and omitted host-only optionals preserve their current wire presence. Legacy readers retain package as the missing-kind default, open record fields, arbitrary future kind/state strings, opaque preview JSON, and original positional record order; Snapshot consumers use the generated compatible reader through an explicit domain bridge until C15.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/PermissionGetParams/properties/request"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/PermissionRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32004,
+          "message": "Request absent"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/PermissionGetParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/PermissionGetParams"
+      },
+      "x-positional-required": [],
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/PermissionRecordReply"
+      },
+      "x-client-wire-result-schema": {
+        "$ref": "common.json#/x-client-result-schemas/PermissionRecordReply"
+      },
+      "x-client-result-normalization": "permission-record-fields"
     }
   ],
   "x-notifications": [

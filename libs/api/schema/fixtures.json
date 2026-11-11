@@ -12507,5 +12507,1132 @@
       "status": "",
       "message": null
     }
+  ],
+  "permission_records": [
+    {
+      "kind": "package",
+      "id": "fixture-r1",
+      "session": "session-a",
+      "agent_name": "snikk",
+      "approval": "fixture-a1",
+      "package": "hello",
+      "reason": "tests",
+      "state": "pending",
+      "approved": null,
+      "preview": {
+        "in_store": false,
+        "download": null,
+        "build_required": true
+      },
+      "message": null
+    },
+    {
+      "kind": "package",
+      "id": "fixture-r2",
+      "session": "session-b",
+      "agent_name": "snikk",
+      "approval": "fixture-a1",
+      "package": "hello",
+      "reason": "tests",
+      "state": "failed",
+      "approved": false,
+      "preview": {
+        "error": "preview failed"
+      },
+      "message": null
+    },
+    {
+      "kind": "docker",
+      "id": "fixture-r3",
+      "session": "session-a",
+      "agent_name": "snikk",
+      "approval": "fixture-a1",
+      "package": "hello",
+      "reason": "tests",
+      "state": "ready",
+      "approved": true,
+      "preview": {
+        "description": "scope authority"
+      },
+      "message": null
+    },
+    {
+      "kind": "devshell",
+      "id": "fixture-r4",
+      "session": "session-a",
+      "agent_name": "snikk",
+      "approval": "fixture-a1",
+      "package": "hello",
+      "reason": "tests",
+      "state": "pending",
+      "approved": null,
+      "preview": {
+        "kind": "devshell",
+        "reference": "/p#default",
+        "from": 1,
+        "to": 2,
+        "attention": [
+          {
+            "kind": "input-source",
+            "input": "nixpkgs",
+            "old": "github:a/a",
+            "new": "github:b/b"
+          },
+          {
+            "kind": "new-input",
+            "input": "extra",
+            "source": "path:./sub"
+          },
+          {
+            "kind": "nix-config"
+          },
+          {
+            "kind": "local-builds",
+            "count": 2
+          },
+          {
+            "kind": "shell-hook"
+          }
+        ],
+        "files": [
+          {
+            "path": "flake.nix",
+            "added": 2,
+            "removed": 1
+          },
+          {
+            "path": "image.png",
+            "added": null,
+            "removed": null
+          }
+        ],
+        "inputs": [
+          {
+            "name": "extra",
+            "change": "added",
+            "old": null,
+            "new": {
+              "source": "path:./sub",
+              "id": "abc1234",
+              "date": null
+            }
+          }
+        ],
+        "packages": [
+          {
+            "name": "hello",
+            "change": "changed",
+            "old": [
+              "2.12"
+            ],
+            "new": [
+              "2.13"
+            ]
+          }
+        ],
+        "env": [
+          {
+            "name": "BIG",
+            "change": "changed",
+            "old": null,
+            "new": null,
+            "long": true
+          },
+          {
+            "name": "MARKER",
+            "change": "removed",
+            "old": "old",
+            "new": null,
+            "long": false
+          }
+        ],
+        "fetch": 3,
+        "build": 2,
+        "download": "1.5 MiB",
+        "incoming": [
+          {
+            "action": "build",
+            "name": "tool",
+            "versions": [
+              "1.2"
+            ]
+          },
+          {
+            "action": "fetch",
+            "name": "glibc",
+            "versions": []
+          }
+        ],
+        "diff": "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n@@ -1 +1 @@\n-a\n+b\n"
+      },
+      "message": null
+    },
+    {
+      "kind": "host-command",
+      "id": "fixture-r5",
+      "session": "session-a",
+      "agent_name": "snikk",
+      "approval": "fixture-a1",
+      "package": "hello",
+      "reason": "tests",
+      "state": "running",
+      "approved": true,
+      "preview": {
+        "kind": "host-command",
+        "description": "host warning",
+        "name": "Tests",
+        "command": "true",
+        "directory": "/work",
+        "environment": [
+          "A=b"
+        ],
+        "time_limit": "none"
+      },
+      "message": null,
+      "name": "Tests",
+      "started_at": 100,
+      "log": "/host/job/output.log"
+    },
+    {
+      "kind": "raid-owner",
+      "id": "fixture-r6",
+      "session": "session-a",
+      "agent_name": "snikk",
+      "approval": "fixture-a1",
+      "package": "hello",
+      "reason": "tests",
+      "state": "pending",
+      "approved": null,
+      "preview": {
+        "raid": "raid-1",
+        "name": "crew",
+        "generation": 2,
+        "former_owner": {
+          "id": "former",
+          "agent_name": "gone"
+        },
+        "members": [
+          {
+            "id": "member",
+            "agent_name": "snikk",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "created": false
+          }
+        ]
+      },
+      "message": null
+    }
+  ],
+  "permission_read_parameter_cases": [
+    {
+      "method": "permissions.list",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "permissions.list",
+      "params": {
+        "session": null,
+        "state": null
+      },
+      "valid": true
+    },
+    {
+      "method": "permissions.list",
+      "params": {
+        "session": "unknown",
+        "state": "future"
+      },
+      "valid": true
+    },
+    {
+      "method": "permissions.list",
+      "params": [
+        null,
+        null
+      ],
+      "valid": true
+    },
+    {
+      "method": "permissions.list",
+      "params": [
+        "a",
+        "pending"
+      ],
+      "valid": true
+    },
+    {
+      "method": "permissions.list",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "permissions.list",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "permissions.list",
+      "params": [
+        null
+      ],
+      "valid": false
+    },
+    {
+      "method": "permissions.list",
+      "params": [
+        null,
+        null,
+        null
+      ],
+      "valid": false
+    },
+    {
+      "method": "permissions.list",
+      "params": {
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "permissions.list",
+      "params": {
+        "state": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "permissions.list",
+      "params": {
+        "session": false
+      },
+      "valid": false
+    },
+    {
+      "method": "permissions.get",
+      "params": {
+        "request": "not an identifier"
+      },
+      "valid": true
+    },
+    {
+      "method": "permissions.get",
+      "params": [
+        "x"
+      ],
+      "valid": true
+    },
+    {
+      "method": "permissions.get",
+      "params": {
+        "request": ""
+      },
+      "valid": true
+    },
+    {
+      "method": "permissions.get",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "permissions.get",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "permissions.get",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "permissions.get",
+      "params": [
+        "x",
+        "extra"
+      ],
+      "valid": false
+    },
+    {
+      "method": "permissions.get",
+      "params": {
+        "request": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "permissions.get",
+      "params": {
+        "request": "x",
+        "extra": true
+      },
+      "valid": false
+    }
+  ],
+  "permission_record_cases": [
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": {
+          "in_store": false,
+          "download": null,
+          "build_required": true
+        },
+        "message": null
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r2",
+        "session": "session-b",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "failed",
+        "approved": false,
+        "preview": {
+          "error": "preview failed"
+        },
+        "message": null
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "docker",
+        "id": "fixture-r3",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "ready",
+        "approved": true,
+        "preview": {
+          "description": "scope authority"
+        },
+        "message": null
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "devshell",
+        "id": "fixture-r4",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": {
+          "kind": "devshell",
+          "reference": "/p#default",
+          "from": 1,
+          "to": 2,
+          "attention": [
+            {
+              "kind": "input-source",
+              "input": "nixpkgs",
+              "old": "github:a/a",
+              "new": "github:b/b"
+            },
+            {
+              "kind": "new-input",
+              "input": "extra",
+              "source": "path:./sub"
+            },
+            {
+              "kind": "nix-config"
+            },
+            {
+              "kind": "local-builds",
+              "count": 2
+            },
+            {
+              "kind": "shell-hook"
+            }
+          ],
+          "files": [
+            {
+              "path": "flake.nix",
+              "added": 2,
+              "removed": 1
+            },
+            {
+              "path": "image.png",
+              "added": null,
+              "removed": null
+            }
+          ],
+          "inputs": [
+            {
+              "name": "extra",
+              "change": "added",
+              "old": null,
+              "new": {
+                "source": "path:./sub",
+                "id": "abc1234",
+                "date": null
+              }
+            }
+          ],
+          "packages": [
+            {
+              "name": "hello",
+              "change": "changed",
+              "old": [
+                "2.12"
+              ],
+              "new": [
+                "2.13"
+              ]
+            }
+          ],
+          "env": [
+            {
+              "name": "BIG",
+              "change": "changed",
+              "old": null,
+              "new": null,
+              "long": true
+            },
+            {
+              "name": "MARKER",
+              "change": "removed",
+              "old": "old",
+              "new": null,
+              "long": false
+            }
+          ],
+          "fetch": 3,
+          "build": 2,
+          "download": "1.5 MiB",
+          "incoming": [
+            {
+              "action": "build",
+              "name": "tool",
+              "versions": [
+                "1.2"
+              ]
+            },
+            {
+              "action": "fetch",
+              "name": "glibc",
+              "versions": []
+            }
+          ],
+          "diff": "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n@@ -1 +1 @@\n-a\n+b\n"
+        },
+        "message": null
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "host-command",
+        "id": "fixture-r5",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "running",
+        "approved": true,
+        "preview": {
+          "kind": "host-command",
+          "description": "host warning",
+          "name": "Tests",
+          "command": "true",
+          "directory": "/work",
+          "environment": [
+            "A=b"
+          ],
+          "time_limit": "none"
+        },
+        "message": null,
+        "name": "Tests",
+        "started_at": 100,
+        "log": "/host/job/output.log"
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "raid-owner",
+        "id": "fixture-r6",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": {
+          "raid": "raid-1",
+          "name": "crew",
+          "generation": 2,
+          "former_owner": {
+            "id": "former",
+            "agent_name": "gone"
+          },
+          "members": [
+            {
+              "id": "member",
+              "agent_name": "snikk",
+              "name": "shell",
+              "role": null,
+              "state": "running",
+              "created": false
+            }
+          ]
+        },
+        "message": null
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "future-private-state",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "devshell",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": [
+          "forwarded",
+          1
+        ],
+        "message": null
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "future-kind",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": {
+          "future": true
+        },
+        "message": null
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": {
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending"
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null,
+        "name": null,
+        "started_at": null,
+        "log": null
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": [
+        "package",
+        "fixture-r1",
+        "session-a",
+        "snikk",
+        "fixture-a1",
+        "hello",
+        "tests",
+        "pending",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": [
+        "package",
+        "fixture-r1",
+        "session-a",
+        "snikk",
+        "fixture-a1",
+        "hello",
+        "tests",
+        "pending",
+        null,
+        null,
+        null
+      ],
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": [
+        "package",
+        "fixture-r1",
+        "session-a",
+        "snikk",
+        "fixture-a1",
+        "hello",
+        "tests",
+        "pending",
+        null,
+        null
+      ],
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": [
+        "package",
+        "fixture-r1",
+        "session-a",
+        "snikk",
+        "fixture-a1",
+        "hello",
+        "tests",
+        "pending",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": 1,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": 1
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": null,
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null,
+        "name": 1
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null,
+        "started_at": -1
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null,
+        "started_at": 1.0
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": null,
+        "message": null,
+        "log": false
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "kind": "package",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": [
+          "not",
+          "an",
+          "object"
+        ],
+        "message": null
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "docker",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": [
+          "not",
+          "an",
+          "object"
+        ],
+        "message": null
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "host-command",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": [
+          "not",
+          "an",
+          "object"
+        ],
+        "message": null
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": {
+        "kind": "raid-owner",
+        "id": "fixture-r1",
+        "session": "session-a",
+        "agent_name": "snikk",
+        "approval": "fixture-a1",
+        "package": "hello",
+        "reason": "tests",
+        "state": "pending",
+        "approved": null,
+        "preview": [
+          "not",
+          "an",
+          "object"
+        ],
+        "message": null
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": null,
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": [],
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": true,
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": "record",
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": 1,
+      "current": false,
+      "legacy": false
+    }
   ]
 }

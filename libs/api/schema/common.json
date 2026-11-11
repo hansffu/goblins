@@ -5836,6 +5836,507 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 1024
+    },
+    "PermissionListParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "PermissionGetParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "PackageApprovalPreview": {
+      "type": "object",
+      "properties": {
+        "in_store": {
+          "type": "boolean"
+        },
+        "download": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build_required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "in_store",
+        "download",
+        "build_required"
+      ],
+      "additionalProperties": true
+    },
+    "ApprovalPreviewError": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": true
+    },
+    "DockerApprovalPreview": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "additionalProperties": true
+    },
+    "HostCommandApprovalPreview": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "host-command"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "time_limit": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "description",
+        "name",
+        "command",
+        "directory",
+        "time_limit",
+        "environment"
+      ],
+      "additionalProperties": true
+    },
+    "RaidApprovalMember": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "agent_name",
+        "name",
+        "state",
+        "role",
+        "created"
+      ],
+      "additionalProperties": true
+    },
+    "RaidApprovalPreview": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "former_owner": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CreatedBy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RaidApprovalMember"
+          }
+        }
+      },
+      "required": [
+        "raid",
+        "name",
+        "generation",
+        "former_owner",
+        "members"
+      ],
+      "additionalProperties": true
+    },
+    "PermissionPreviewValue": {
+      "type": [
+        "object",
+        "array",
+        "string",
+        "boolean",
+        "number"
+      ],
+      "description": "Non-null JSON payload. Public package/Docker/host/raid preview producers use the generated approval DTOs. The private refresh Event carries arbitrary preview JSON unchanged until C17; its known current shape is DevShellPreview."
+    },
+    "PermissionRecordKind": {
+      "type": "string",
+      "enum": [
+        "package",
+        "docker",
+        "devshell",
+        "host-command",
+        "raid-owner"
+      ]
+    },
+    "PermissionRecord": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/PermissionRecordKind"
+        },
+        "id": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "approval": {
+          "type": "string"
+        },
+        "package": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "approved": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionPreviewValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "log": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "session",
+        "agent_name",
+        "approval",
+        "package",
+        "reason",
+        "state",
+        "approved",
+        "preview",
+        "message"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "package"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "preview": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/PackageApprovalPreview"
+                  },
+                  {
+                    "$ref": "#/definitions/ApprovalPreviewError"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "docker"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "preview": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/DockerApprovalPreview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "host-command"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "preview": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/HostCommandApprovalPreview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid-owner"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "preview": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/RaidApprovalPreview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "description": "Public retained permission. State is a String because private grant replies are forwarded. Required nullable approved/preview/message keys are always emitted; name/started_at/log are omitted when absent. Host log paths are on the host. Private devshell preview JSON is forwarded unchanged until C17; see PermissionPreviewValue and DevShellPreview for the current known structure."
+    },
+    "PermissionRecordReply": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "default": "package"
+        },
+        "id": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "approval": {
+          "type": "string"
+        },
+        "package": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "approved": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preview": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionPreviewValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "log": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "agent_name",
+        "approval",
+        "package",
+        "reason",
+        "state",
+        "approved",
+        "preview",
+        "message"
+      ],
+      "additionalProperties": true
+    },
+    "PermissionList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PermissionRecord"
+      }
+    },
+    "PermissionListReply": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PermissionRecordReply"
+      }
     }
   },
   "x-api-version": 1,
@@ -6765,6 +7266,35 @@
       ],
       "minItems": 3,
       "maxItems": 6
+    },
+    "PermissionListParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "PermissionGetParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
     }
   },
   "x-request-constraints": {
@@ -7304,6 +7834,189 @@
           "maxItems": 3
         }
       ]
+    },
+    "PermissionRecordReply": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "default": "package"
+            },
+            "id": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "agent_name": {
+              "type": "string"
+            },
+            "approval": {
+              "type": "string"
+            },
+            "package": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "approved": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preview": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/PermissionPreviewValue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "started_at": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 18446744073709551615,
+                  "x-json-integer": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "log": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "session",
+            "agent_name",
+            "approval",
+            "package",
+            "reason",
+            "state"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "array",
+          "items": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/PermissionPreviewValue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 18446744073709551615,
+                  "x-json-integer": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          ],
+          "minItems": 11,
+          "maxItems": 14
+        }
+      ]
+    },
+    "PermissionListReply": {
+      "type": "array",
+      "items": {
+        "$ref": "#/x-client-result-schemas/PermissionRecordReply"
+      }
     }
   }
 }

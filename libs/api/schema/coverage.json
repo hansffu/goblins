@@ -1,11 +1,5 @@
 {
   "pending": {
-    "C09": {
-      "host": [
-        "permissions.list",
-        "permissions.get"
-      ]
-    },
     "C10": {
       "host": [
         "host.list",

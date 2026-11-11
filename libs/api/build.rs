@@ -123,6 +123,16 @@ fn main() {
         "HostCommandParams",
         typify::TypeSpacePatch::default().with_derive("PartialEq"),
     );
+    settings.with_replacement(
+        "PermissionRecordKind",
+        "std::string::String",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "PermissionPreviewValue",
+        "serde_json::Value",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -134,6 +144,15 @@ fn main() {
     for keyword in ["if", "then", "else"] {
         assert!(editor_result.remove(keyword).is_some());
     }
+    // Public record kind/preview dependencies follow the existing producer
+    // branches. Keep the canonical schema; Typify cannot compile conditionals.
+    assert!(
+        generation_schema["definitions"]["PermissionRecord"]
+            .as_object_mut()
+            .unwrap()
+            .remove("allOf")
+            .is_some()
+    );
     types
         .add_root_schema(serde_json::from_value(generation_schema).unwrap())
         .unwrap();
@@ -164,6 +183,8 @@ fn main() {
         "EditorOpenReply".to_string(),
         "PermissionDecisionReply".to_string(),
         "PermissionRequestReply".to_string(),
+        "PermissionRecordReply".to_string(),
+        "PermissionListReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(

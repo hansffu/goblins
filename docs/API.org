@@ -283,12 +283,16 @@ Lists retained permission requests: pending ones and recent decisions and outcom
 - Input :: ={"session"?, "state"?}= (both optional filters; =session= is a session ID)
 - Output :: =[Permission]=
 
+Filters use exact strings and are combined with AND; unknown session/state strings return an empty list. Names are not resolved. The positional form is =[session, state]= and requires both slots; null means no filter. Named fields may be omitted or null. Null params, wrong types and unknown fields are refused. Results retain insertion order, include finalized records and may be empty.
+
 *** =permissions.get=
 
 Returns one permission request.
 
 - Input :: ={"request"}=
 - Output :: =Permission=
+
+The positional form is =[request]=. Strings are compared as supplied, without an early identifier check; an absent or evicted request returns =-32004=. Both read methods are host-only and require initialization. Reads do not change the approval or its preview.
 
 *** =permissions.decide=
 
@@ -681,13 +685,17 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 | =kind=      | =package=, =docker=, =devshell=, =host-command= or =raid-owner=                                              |
 | =package=   | Subject: package name, Docker scope label, refresh or command summary                                        |
 | =reason=    | The agent's reason                                                                                           |
-| =state=     | =pending=, =realizing=, =mounting=, =publishing=, =running=, =ready=, =finished= (host command ran), =approved= (raid owner chosen), =denied=, =withdrawn=, =failed= or =cancelled= |
+| =state=     | Known states are =pending=, =realizing=, =mounting=, =publishing=, =running=, =ready=, =finished= (host command ran), =approved= (raid owner chosen), =denied=, =withdrawn=, =failed= or =cancelled= |
 | =approved=  | Decision, or null before one                                                                                 |
 | =preview=   | Kind-specific, or null: =package= ={"in_store", "download", "build_required"}= or ={"error"}=; =docker= ={"description"}=; =devshell= =DevShellPreview=; =host-command= ={"kind": "host-command", "description", "name", "command", "directory", "environment", "time_limit"}= (=description= has a =Name: NAME= line after its warning; =name= is the host command's label) |
 | =message=   | Outcome message or null                                                                                      |
 | =name=      | Host commands only, else absent: the label (the agent's =name=, or the program's base name)                  |
 | =started_at= | Host commands only: Unix seconds when the approved job was sent to the runtime; absent before approval and for other kinds |
 | =log=       | Host commands only: the host path of the job's =output.log=, which exists once the helper has started it |
+
+The current record always emits =kind=, =id=, =session=, =agent_name=, =approval=, =package=, =reason=, =state= and nullable =approved=, =preview= and =message=. Absent =name=, =started_at= and =log= are omitted, not serialized as null; present timestamps are u64 Unix seconds and log paths are host paths. Unknown fields are additive. State is forwarded from private grant replies and remains a string, including future values. A =raid-owner= preview is ={"raid", "name", "generation", "former_owner": {"id", "agent_name"}_OR_NULL, "members": [{"id", "agent_name", "name", "state", "role": STRING_OR_NULL, "created": BOOL}]}=; members retain join order and omit vanished sessions. Dev shell refresh preview JSON is forwarded unchanged from the private event until its C17 migration; its normal current shape is =DevShellPreview=.
+
+Legacy record readers retain =kind:package= when absent, accept missing/null nullable fields and original positional records =[kind,id,session,agent_name,approval,package,reason,state,approved,preview,message,name?,started_at?,log?]= with at least 11 slots. Arbitrary preview JSON and unknown kind/state strings remain readable. Snapshot consumers retain their domain records through the generated compatible reader until the snapshot migration.
 
 ** Raid
 
