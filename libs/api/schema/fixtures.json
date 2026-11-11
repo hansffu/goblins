@@ -34623,5 +34623,234 @@
       },
       "valid": false
     }
+  ],
+  "c17d3a_membership_outcome_cases": [
+    {
+      "value": {
+        "Ok": {
+          "$fd": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Err": ""
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Err": "{\"$fd\":999}\u0000雪"
+      },
+      "valid": true
+    },
+    {
+      "value": {},
+      "valid": false
+    },
+    {
+      "value": {
+        "Ok": {
+          "$fd": 0
+        },
+        "Err": "e"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Other": 0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Err": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Ok": [
+          0
+        ]
+      },
+      "valid": false
+    },
+    {
+      "value": "opaque",
+      "valid": false
+    }
+  ],
+  "c17d3a_notification_cases": [
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Ok": {
+              "$fd": 0
+            }
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Err": ""
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Err": "{\"$fd\":999}\u0000雪"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Ok": {
+              "$fd": 0
+            },
+            "Err": "e"
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Other": 0
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Err": null
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Ok": [
+              0
+            ]
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": "opaque"
+        }
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Err": "e"
+          },
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership"
+      },
+      "valid": false
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeMembership",
+        "params": {
+          "result": {
+            "Err": "e"
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    }
   ]
 }

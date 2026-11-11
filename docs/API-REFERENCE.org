@@ -14318,6 +14318,37 @@ Positional parameters:
 }
 #+end_src
 
+** Notification =Command.ScopeMembership=
+
+Deliver resolved private scope membership as standard Result<descriptor,String>. Parse the result and consume its referenced capability before unknown-root rejection; original descriptor ownership, cleanup and scope authority remain unchanged. No adoption token or continuation is introduced.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational scope membership response.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "result": {
+      "$ref": "#/definitions/SupervisorScopeMembershipOutcome"
+    }
+  },
+  "required": [
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * supervisor actor method phases
 
 These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.
@@ -14404,7 +14435,6 @@ These existing messages remain assigned to later migration slices; their payload
 #+begin_src json
 {
   "C17d-lifecycle-host-jobs": [
-    "Command.ScopeMembership",
     "Event.Started"
   ],
   "C17e-relay-logging": [
@@ -14856,6 +14886,7 @@ Original Serde container names, field order, required nullable sequence slots an
 - =Host job metadata= :: Generated HostOutcome retains original Debug/Serialize/Deserialize/Default, no added Clone, open fields, null optional exit_code/signal/spawn_error, three required bools and original status.json prose. Native policy and status-file behavior remain unchanged. Root Finished aggregate is explicit without Clone.
 - =Host job results= :: Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added.
 - =Lifecycle scalar roots= :: Generated parameter records and identities retain present empty object params for Command.ScopeFailed/Stop and Event.InitLost/PayloadExited, original member/name/error strings and bool mode, plus required nullable i32 stopped exit_code. Root fieldwise decoding and original unknown-method/extra/missing diagnostics stay unchanged. Stop remains distinct from lifecycle control notifications Stopping/Released; no lifecycle, scope or export policy is added.
+- =Scope membership= :: Generated Command.ScopeMembership root and standard Result<Descriptor,String> metadata preserve the original plain Result shape. The producer duplicates the owned Fd at the original result point; the reader parses the Result, consumes its referenced capability, then finishes root params. Actual ownership, cleanup, framing, no-adoption and scope authority remain native. Legacy descriptor sequences accepted at the typed Value boundary do not claim Channel framing accepts forms without its $fd marker.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -29897,6 +29928,56 @@ Original Serde container names, field order, required nullable sequence slots an
   },
   "required": [
     "error"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorScopeMembershipOutcome=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Ok": {
+          "$ref": "#/definitions/SupervisorDescriptor"
+        }
+      },
+      "required": [
+        "Ok"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Err": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Err"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorCommandScopeMembershipParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "result": {
+      "$ref": "#/definitions/SupervisorScopeMembershipOutcome"
+    }
+  },
+  "required": [
+    "result"
   ],
   "additionalProperties": false
 }

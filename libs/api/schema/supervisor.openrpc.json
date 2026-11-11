@@ -1733,9 +1733,34 @@
       "sender": "supervisor",
       "receiver": "daemon",
       "connection-state": "operational lifecycle event"
+    },
+    {
+      "name": "Command.ScopeMembership",
+      "x-rust-name": "CommandScopeMembership",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Deliver resolved private scope membership as standard Result<descriptor,String>. Parse the result and consume its referenced capability before unknown-root rejection; original descriptor ownership, cleanup and scope authority remain unchanged. No adoption token or continuation is introduced.",
+      "params": [
+        {
+          "name": "result",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandScopeMembershipParams/properties/result"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandScopeMembershipParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational scope membership response"
     }
   ],
-  "x-contract-chunk": "C17d2",
+  "x-contract-chunk": "C17d3a",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -1822,7 +1847,6 @@
   ],
   "x-pending-notifications": {
     "C17d-lifecycle-host-jobs": [
-      "Command.ScopeMembership",
       "Event.Started"
     ],
     "C17e-relay-logging": [

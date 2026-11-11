@@ -1375,6 +1375,19 @@ def check_supervisor_lifecycle_metadata():
         raise ValueError("private stopped event serde slots differ")
 
 
+def check_supervisor_membership_metadata():
+    """Pin descriptor metadata Result separately from native owned membership."""
+    defs=common()["definitions"]
+    def obj(props):return {"type":"object","properties":props,"required":list(props),"additionalProperties":False}
+    expected={
+        "SupervisorScopeMembershipOutcome":{"oneOf":[obj({"Ok":{"$ref":"#/definitions/SupervisorDescriptor"}}),obj({"Err":{"type":"string"}})]},
+        "SupervisorCommandScopeMembershipParams":obj({"result":{"$ref":"#/definitions/SupervisorScopeMembershipOutcome"}}),
+    }
+    for name,value in expected.items():
+        if {key:value for key,value in defs[name].items() if key!="description"}!=value:
+            raise ValueError("private scope membership schema differs: "+name)
+
+
 def check_supervisor_pending_inventory():
     """Retire covered methods from their original remaining family, without loss."""
     families={
@@ -1447,6 +1460,7 @@ def check_private_contracts():
         'Event.Failed':('supervisor-to-daemon','SupervisorEventFailedParams',['error']),
         'Event.InitLost':('supervisor-to-daemon','SupervisorEmptyParams',[]),
         'Event.PayloadExited':('supervisor-to-daemon','SupervisorEmptyParams',[]),
+        'Command.ScopeMembership':('daemon-to-supervisor','SupervisorCommandScopeMembershipParams',['result']),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1529,6 +1543,7 @@ def check():
     check_supervisor_devshell_metadata()
     check_supervisor_host_job_metadata()
     check_supervisor_lifecycle_metadata()
+    check_supervisor_membership_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

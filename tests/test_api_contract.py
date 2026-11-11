@@ -16,6 +16,72 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17d3a_membership_canonical_instances_direction_and_inventory(self):
+        fixtures = contract.read("fixtures.json")
+        validator = contract.schema_validator({"$ref":"common.json#/definitions/SupervisorScopeMembershipOutcome"})
+        for case in fixtures["c17d3a_membership_outcome_cases"]:
+            with self.subTest(outcome=case):
+                self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        # Canonical schema checks metadata only, not capability transfer. Legacy
+        # typed Value forms and actual FD ownership remain in frozen Rust tests.
+        for case in fixtures["c17d3a_notification_cases"]:
+            with self.subTest(notification=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", "daemon-to-supervisor", case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", "daemon-to-supervisor", case["frame"])
+            self.assertFalse(contract.validate_notification("supervisor", "supervisor-to-daemon", case["frame"]))
+        doc = contract.document("supervisor")
+        row = next(row for row in doc["x-notifications"] if row["name"] == "Command.ScopeMembership")
+        self.assertEqual(row["x-rust-name"], "CommandScopeMembership")
+        self.assertEqual(row["x-params-schema"], {"$ref":"common.json#/definitions/SupervisorCommandScopeMembershipParams"})
+        self.assertEqual([field["name"] for field in row["params"]], ["result"])
+        self.assertEqual(doc["x-pending-notifications"]["C17d-lifecycle-host-jobs"], ["Event.Started"])
+        pending = [name for group in doc["x-pending-notifications"].values() for name in group]
+        self.assertEqual(len(pending), 7)
+        self.assertNotIn("Command.ScopeMembership", pending)
+
+    def test_c17d3a_membership_result_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def changed(label, change):
+            schema = copy.deepcopy(original)
+            change(schema)
+            cases.append((label, schema))
+        def outcome(s): return s["definitions"]["SupervisorScopeMembershipOutcome"]
+        def root(s): return s["definitions"]["SupervisorCommandScopeMembershipParams"]
+        changed("Ok descriptor reference", lambda s: outcome(s)["oneOf"][0]["properties"]["Ok"].update({"$ref":"#/definitions/SupervisorSequence"}))
+        changed("Err String", lambda s: outcome(s)["oneOf"][1]["properties"]["Err"].update(type="integer"))
+        for index,branch in enumerate(["Ok","Err"]):
+            changed(branch + " external envelope closed", lambda s,index=index: outcome(s)["oneOf"][index].update(additionalProperties=True))
+            changed(branch + " branch required", lambda s,index=index: outcome(s)["oneOf"][index]["required"].clear())
+        changed("root plain Result reference", lambda s: root(s)["properties"]["result"].update({"$ref":"#/definitions/SupervisorTerminalResult"}))
+        changed("root result required", lambda s: root(s)["required"].clear())
+        changed("root closed", lambda s: root(s).update(additionalProperties=True))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract,"common",return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
+    def test_c17d3a_membership_marker_binding_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.document
+        for mutation in ["identity", "marker", "direction", "payload", "order"]:
+            changed = copy.deepcopy(original("supervisor"))
+            row = next(row for row in changed["x-notifications"] if row["name"] == "Command.ScopeMembership")
+            if mutation == "identity": row["name"] = "Command.scopeMembership"
+            elif mutation == "marker": row["x-rust-name"] = "WrongMembership"
+            elif mutation == "direction": row["direction"] = "supervisor-to-daemon"
+            elif mutation == "payload": row["x-params-schema"] = {"$ref":"common.json#/definitions/SupervisorDescriptor"}
+            else: row["params"] = []
+            with self.subTest(mutation=mutation), patch.object(contract,"document",side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c17d2_lifecycle_instances_bindings_and_remaining_inventory(self):
         fixtures = contract.read("fixtures.json")
         for case in fixtures["c17d2_notification_cases"]:
@@ -37,8 +103,9 @@ class ContractTests(unittest.TestCase):
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
         completed = {binding["method"] for binding in fixtures["c17d2_lifecycle_bindings"]}
         self.assertEqual(len(completed), 10)
-        self.assertEqual(len(pending), 8)
-        self.assertEqual(doc["x-pending-notifications"]["C17d-lifecycle-host-jobs"], ["Command.ScopeMembership", "Event.Started"])
+        completed.add("Command.ScopeMembership")
+        self.assertEqual(len(pending), 7)
+        self.assertEqual(doc["x-pending-notifications"]["C17d-lifecycle-host-jobs"], ["Event.Started"])
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -108,7 +175,8 @@ class ContractTests(unittest.TestCase):
         completed = {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         self.assertEqual(len(completed), 6)
         completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
-        self.assertEqual(len(pending), 8)
+        completed.add("Command.ScopeMembership")
+        self.assertEqual(len(pending), 7)
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -218,7 +286,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(len(completed), 6)
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
-        self.assertEqual(len(pending), 8)
+        completed.add("Command.ScopeMembership")
+        self.assertEqual(len(pending), 7)
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -328,7 +397,8 @@ class ContractTests(unittest.TestCase):
         completed |= {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
-        self.assertEqual(len(pending), 8)
+        completed.add("Command.ScopeMembership")
+        self.assertEqual(len(pending), 7)
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -436,13 +506,14 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(inner.is_valid(value))
         doc = contract.document("supervisor")
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
-        self.assertEqual(len(pending), 8)
+        self.assertEqual(len(pending), 7)
         completed = {case["frame"]["method"] for case in fixtures["c17b2_notification_cases"]}
         self.assertEqual(len(completed), 7)
         completed |= {case["frame"]["method"] for case in fixtures["c17c1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
+        completed.add("Command.ScopeMembership")
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -579,14 +650,15 @@ class ContractTests(unittest.TestCase):
         doc = original("supervisor")
         pending = doc["x-pending-notifications"]
         names = [name for group in pending.values() for name in group]
-        self.assertEqual(len(names), 8)
-        self.assertEqual(len(set(names)), 8)
+        self.assertEqual(len(names), 7)
+        self.assertEqual(len(set(names)), 7)
         completed = {r["method"] for r in contract.read("fixtures.json")["c17b1_process_roots"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17b2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17d1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17d2_notification_cases"]}
+        completed.add("Command.ScopeMembership")
         declared = {r["name"] for r in doc["x-notifications"]}
         self.assertTrue(completed <= declared)
         self.assertFalse(set(names) & declared)

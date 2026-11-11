@@ -443,7 +443,6 @@ impl Descriptors {
 macro_rules! put {
     ($b:ident, plain, $name:expr, $v:expr) => { $b.value($name, $v) };
     ($b:ident, opaque, $name:expr, $v:expr) => { $b.opaque($name, $v) };
-    ($b:ident, membership, $name:expr, $v:expr) => {{ let value: Result<Descriptor,String> = match $v { Ok(fd) => Ok($b.fd(fd)?), Err(error) => Err(error.clone()) }; $b.value($name, &value) }};
     ($b:ident, call, $name:expr, $v:expr) => { $b.opaque($name, &json!({"jsonrpc":$v.jsonrpc,"id":$v.id,"method":$v.method,"params":$v.params})) };
 }
 macro_rules! get {
@@ -452,12 +451,6 @@ macro_rules! get {
     };
     ($p:ident, $d:ident, opaque, $name:expr, $ty:ty) => {
         $p.opaque::<$ty>($name)?
-    };
-    ($p:ident, $d:ident, membership, $name:expr, $ty:ty) => {
-        match $p.take::<Result<Descriptor, String>>($name)? {
-            Ok(fd) => Ok($d.take(fd)?.into()),
-            Err(e) => Err(e),
-        }
     };
     ($p:ident, $d:ident, call, $name:expr, $ty:ty) => {
         $p.opaque::<$ty>($name)?
@@ -502,6 +495,10 @@ macro_rules! command_codec {
                 Command::RunHostJob { request,argv,env,timeout } => b.notification::<contract::supervisor_notifications::CommandRunHostJob>(contract::SupervisorCommandRunHostJobParams { request:request.clone(),argv:argv.clone(),env:env.clone(),timeout:*timeout })?,
                 Command::CancelHostJob { request } => b.notification::<contract::supervisor_notifications::CommandCancelHostJob>(contract::SupervisorCommandCancelHostJobParams { request:request.clone() })?,
                 Command::Export { member } => b.notification::<contract::supervisor_notifications::CommandExport>(contract::SupervisorCommandExportParams { member:member.clone() })?,
+                Command::ScopeMembership { result } => {
+                    let result=match result { Ok(fd)=>Ok(b.fd(fd)?),Err(error)=>Err(error.clone()) };
+                    b.notification::<contract::supervisor_notifications::CommandScopeMembership>(contract::SupervisorCommandScopeMembershipParams { result })?;
+                },
                 $(Command::$v { $($f),* } => { b.method=concat!("Command.", stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
             }
             Ok(())
@@ -591,6 +588,11 @@ macro_rules! command_codec {
                     let wire=contract::SupervisorCommandExportParams { member:p.take("member")? };
                     Command::Export { member:wire.member }
                 },
+                name if name==contract::supervisor_notifications::CommandScopeMembership::NAME => {
+                    let wire=contract::SupervisorCommandScopeMembershipParams { result:p.take("result")? };
+                    let result=match wire.result { Ok(descriptor)=>Ok(d.take(descriptor)?.into()),Err(error)=>Err(error) };
+                    Command::ScopeMembership { result }
+                },
                 $(concat!("Command.",stringify!($v)) => Command::$v { $($f:get!(p,d,$kind,stringify!($f),$ty)),* }),*,
                 _ => return Err(invalid("unknown supervisor command")),
             };
@@ -602,7 +604,6 @@ command_codec! {
     RecordEvent { event:String=>plain, fields:Value=>opaque },
     SandboxSend { connection:u64=>plain, message:Value=>opaque },
     SandboxClose { connection:u64=>plain },
-    ScopeMembership { result:Result<Fd,String> =>membership },
 }
 macro_rules! event_codec {
     ($($v:ident { $($f:ident : $ty:ty => $kind:ident),* $(,)? }),* $(,)?) => {

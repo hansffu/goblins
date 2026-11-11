@@ -5737,3 +5737,238 @@ fn c17d2_lifecycle_method_identity_and_empty_payloads_are_exact() {
         "unexpected control field",
     );
 }
+#[test]
+fn c17d3a_membership_result_original_forms_and_typed_error_precedence() {
+    c17b2_compare_serde::<Result<Descriptor, String>, Result<c16a2_original::Descriptor, String>>(
+        &[
+            r#"{"Ok":{"$fd":0}}"#,
+            r#"{"Ok":[0]}"#,
+            r#"{"Err":"{\"$fd\":0}\n雪"}"#,
+            r#"{}"#,
+            r#"null"#,
+            r#""Ok""#,
+            r#""Err""#,
+            r#"["Ok",{"$fd":0}]"#,
+            r#"{"Other":0}"#,
+            r#"{"Err":null}"#,
+            r#"{"Ok":{"$fd":0},"Err":"e"}"#,
+            r#"{"Ok":{}}"#,
+            r#"{"Ok":{"$fd":-1}}"#,
+            r#"{"Ok":{"$fd":1.0}}"#,
+            r#"{"Ok":{"$fd":18446744073709551616}}"#,
+            r#"{"Ok":{"$fd":null}}"#,
+            r#"{"Ok":{"$fd":0,"extra":true}}"#,
+            r#"{"Ok":{"$fd":0,"$fd":1}}"#,
+        ],
+    );
+    for value in [
+        json!({"Ok":{"$fd":0}}),
+        json!({"Ok":[0]}),
+        json!({"Err":""}),
+        json!({"Err":"{\"$fd\":0}\0雪"}),
+    ] {
+        let old =
+            serde_json::from_value::<Result<c16a2_original::Descriptor, String>>(value.clone())
+                .unwrap();
+        let expected = serde_json::to_value(&old).unwrap();
+        let fds = if old.is_ok() {
+            vec![fs::File::open("/dev/null").unwrap().into()]
+        } else {
+            vec![]
+        };
+        let frame = Frame {
+            value: json!({"jsonrpc":"2.0","method":"Command.ScopeMembership","params":{"result":value}}),
+            fds,
+        };
+        let received = Decoder::default().receive(frame).unwrap().unwrap();
+        assert!(received.adopted.is_none());
+        let encoded = c16a_frame(received.message);
+        assert_eq!(
+            encoded.value,
+            json!({"jsonrpc":"2.0","method":"Command.ScopeMembership","params":{"result":expected}})
+        );
+        assert_eq!(encoded.fds.len(), usize::from(old.is_ok()));
+    }
+    for value in [
+        json!({}),
+        json!(null),
+        json!({"Other":0}),
+        json!({"Err":false}),
+        json!({"Ok":{"$fd":0},"Err":"e"}),
+        json!({"Ok":{}}),
+        json!({"Ok":{"$fd":-1}}),
+        json!({"Ok":{"$fd":1.0}}),
+        json!({"Ok":{"$fd":u64::MAX}}),
+        json!({"Ok":{"$fd":0,"extra":0}}),
+    ] {
+        let expected = match serde_json::from_value::<Result<c16a2_original::Descriptor, String>>(
+            value.clone(),
+        ) {
+            Err(error) => error.to_string(),
+            Ok(_) => "invalid or duplicate descriptor reference".into(),
+        };
+        c16a_error(
+            Frame {
+                value: json!({"jsonrpc":"2.0","method":"Command.ScopeMembership","params":{"result":value,"extra":true}}),
+                fds: vec![],
+            },
+            &expected,
+        );
+    }
+    for (params, expected) in [
+        (json!({"extra":0}), "missing control field result"),
+        (json!([]), "expected control object"),
+        (
+            json!({"result":{"Err":"e"},"extra":0}),
+            "unexpected control field",
+        ),
+    ] {
+        c16a_error(
+            Frame {
+                value: json!({"jsonrpc":"2.0","method":"Command.ScopeMembership","params":params}),
+                fds: vec![],
+            },
+            expected,
+        );
+    }
+}
+#[test]
+fn c17d3a_membership_channel_sender_and_receiver_own_independent_capabilities() {
+    let _no_forks = unix::no_forks();
+    for sender_first in [false, true] {
+        let (reader, writer) = unix::pipe().unwrap();
+        let mut reader = fs::File::from(reader);
+        let original_fd = writer.as_raw_fd();
+        let mut prepared = Encoder::default()
+            .prepare(Message::Command(Command::ScopeMembership {
+                result: Ok(writer.into()),
+            }))
+            .unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert_eq!(
+            frame.value,
+            json!({"jsonrpc":"2.0","method":"Command.ScopeMembership","params":{"result":{"Ok":{"$fd":0}}}})
+        );
+        assert_eq!(frame.fds.len(), 1);
+        assert_ne!(frame.fds[0].as_raw_fd(), original_fd);
+        let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut sender = channel::Channel::new(left).unwrap();
+        let mut receiver = channel::Channel::new(right).unwrap();
+        sender.queue(&frame.value, &mut frame.fds).unwrap();
+        assert!(frame.fds.is_empty());
+        sender.flush().unwrap();
+        assert!(!sender.wants_write());
+        let received = Decoder::default()
+            .receive_channel(&mut receiver)
+            .unwrap()
+            .unwrap();
+        assert!(received.adopted.is_none());
+        let Message::Command(Command::ScopeMembership { result: Ok(fd) }) = received.message else {
+            panic!("wrong membership result")
+        };
+        let mut received_file = fs::File::from(OwnedFd::from(fd));
+        received_file.write_all(b"member").unwrap();
+        let mut data = [0; 6];
+        reader.read_exact(&mut data).unwrap();
+        assert_eq!(&data, b"member");
+        if sender_first {
+            drop(prepared);
+            assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+            drop(received_file);
+        } else {
+            drop(received_file);
+            assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+            drop(prepared);
+        }
+        assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    }
+    for error in ["", "../odd\0雪", "{\"$fd\":999}"] {
+        let mut prepared = Encoder::default()
+            .prepare(Message::Command(Command::ScopeMembership {
+                result: Err(error.into()),
+            }))
+            .unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert!(frame.fds.is_empty());
+        assert_eq!(
+            frame.value,
+            json!({"jsonrpc":"2.0","method":"Command.ScopeMembership","params":{"result":{"Err":error}}})
+        );
+        let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut sender = channel::Channel::new(left).unwrap();
+        let mut receiver = channel::Channel::new(right).unwrap();
+        sender.queue(&frame.value, &mut frame.fds).unwrap();
+        sender.flush().unwrap();
+        let received = Decoder::default()
+            .receive_channel(&mut receiver)
+            .unwrap()
+            .unwrap();
+        assert!(received.adopted.is_none());
+        assert!(
+            matches!(received.message,Message::Command(Command::ScopeMembership {result:Err(actual)}) if actual==error)
+        );
+    }
+}
+#[test]
+fn c17d3a_membership_rejection_closes_duplicates_at_original_boundaries() {
+    let _no_forks = unix::no_forks();
+    for fault in 0..6 {
+        let (reader, writer) = unix::pipe().unwrap();
+        let mut reader = fs::File::from(reader);
+        let mut prepared = Encoder::default()
+            .prepare(Message::Command(Command::ScopeMembership {
+                result: Ok(writer.into()),
+            }))
+            .unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        frame.value["params"]["extra"] = json!(true);
+        if fault == 5 {
+            frame.value["params"]["result"] = json!({"Ok":{"$fd":99}});
+            let (left, _right) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut channel = channel::Channel::new(left).unwrap();
+            let error = channel.queue(&frame.value, &mut frame.fds).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), "invalid descriptor reference");
+            assert_eq!(frame.fds.len(), 1);
+            drop(frame);
+        } else {
+            let expected = match fault {
+                0 => "unexpected control field".to_string(),
+                1 => {
+                    frame.value["params"]["result"] = json!({"Ok":{"$fd":99}});
+                    "invalid or duplicate descriptor reference".into()
+                }
+                2 => {
+                    let value = json!({"Ok":{"$fd":0,"extra":0}});
+                    frame.value["params"]["result"] = value.clone();
+                    serde_json::from_value::<Result<c16a2_original::Descriptor, String>>(value)
+                        .unwrap_err()
+                        .to_string()
+                }
+                3 => {
+                    frame.value["params"] = json!({"result":{"Err":"e"}});
+                    "unreferenced control descriptor".into()
+                }
+                4 => {
+                    let value = json!({"Err":null});
+                    frame.value["params"]["result"] = value.clone();
+                    serde_json::from_value::<Result<c16a2_original::Descriptor, String>>(value)
+                        .unwrap_err()
+                        .to_string()
+                }
+                _ => unreachable!(),
+            };
+            c16a_error(frame, &expected);
+        }
+        // The rejected transferred duplicate is gone; Prepared still owns the original.
+        assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+        drop(prepared);
+        assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    }
+}

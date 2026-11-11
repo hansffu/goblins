@@ -342,6 +342,11 @@ fn main() {
         "Result<crate::contract::HostOutcome,String>",
         [].into_iter(),
     );
+    settings.with_replacement(
+        "SupervisorScopeMembershipOutcome",
+        "Result<crate::contract::Descriptor,String>",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
