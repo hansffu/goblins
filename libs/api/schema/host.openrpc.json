@@ -1357,6 +1357,153 @@
         "$ref": "common.json#/x-client-result-schemas/PermissionRecordReply"
       },
       "x-client-result-normalization": "permission-record-fields"
+    },
+    {
+      "name": "host.list",
+      "x-rust-name": "HostList",
+      "description": "List retained host-command records in insertion order, including finalized jobs. Host sees all sessions; the host CLI list/cancel commands print the original successful JSON. Both routes require initialization and retain existing shutdown/liveness, capacity and cancellation ordering. Request bodies retain the endpoint 16384-byte limit. Active/no-outcome views always include eight fields, including nullable message/name/started_at; cached terminal views additionally include nullable exit_code/signal/code together. The record state, name and timestamp override cached outcome display fields, while log remains the sandbox path. Client readers preserve legacy independent field fallbacks or ignored bodies.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJobList"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "No visible host command"
+        },
+        {
+          "code": -32009,
+          "message": "Stale job, lifecycle conflict or finalized cancellation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "host.status",
+      "x-rust-name": "HostStatus",
+      "description": "Read the exact host-command request string; no identifier or session-name normalization is performed. Host sees all sessions; the host CLI list/cancel commands print the original successful JSON. Both routes require initialization and retain existing shutdown/liveness, capacity and cancellation ordering. Request bodies retain the endpoint 16384-byte limit. Active/no-outcome views always include eight fields, including nullable message/name/started_at; cached terminal views additionally include nullable exit_code/signal/code together. The record state, name and timestamp override cached outcome display fields, while log remains the sandbox path. Client readers preserve legacy independent field fallbacks or ignored bodies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostJobParams/properties/request"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJob"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "No visible host command"
+        },
+        {
+          "code": -32009,
+          "message": "Stale job, lifecycle conflict or finalized cancellation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostJobParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/PermissionRequestReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "permission-request-fields"
+    },
+    {
+      "name": "host.cancel",
+      "x-rust-name": "HostCancel",
+      "description": "Withdraw a matching pending request or signal cancellation of an existing running job. Acceptance does not imply completion; stale/finalized jobs without a running handle retain -32009. Host sees all sessions; the host CLI list/cancel commands print the original successful JSON. Both routes require initialization and retain existing shutdown/liveness, capacity and cancellation ordering. Request bodies retain the endpoint 16384-byte limit. Active/no-outcome views always include eight fields, including nullable message/name/started_at; cached terminal views additionally include nullable exit_code/signal/code together. The record state, name and timestamp override cached outcome display fields, while log remains the sandbox path. Client readers preserve legacy independent field fallbacks or ignored bodies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostJobParams/properties/request"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJobCancelResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "No visible host command"
+        },
+        {
+          "code": -32009,
+          "message": "Stale job, lifecycle conflict or finalized cancellation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostJobParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
     }
   ],
   "x-notifications": [

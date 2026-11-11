@@ -1,17 +1,5 @@
 {
   "pending": {
-    "C10": {
-      "host": [
-        "host.list",
-        "host.status",
-        "host.cancel"
-      ],
-      "sandbox": [
-        "host.list",
-        "host.status",
-        "host.cancel"
-      ]
-    },
     "C11": {
       "host": [
         "raids.invite",
@@ -67,12 +55,6 @@
     }
   },
   "notifications": [
-    {
-      "endpoint": "sandbox",
-      "name": "host.submitted",
-      "direction": "server-to-client",
-      "chunk": "C10"
-    },
     {
       "endpoint": "host",
       "name": "state.changed",

@@ -9,6 +9,16 @@ use std::{io, os::unix::net::UnixStream};
 #[serde(deny_unknown_fields)]
 pub struct EmptyParams {}
 
+/// A compatible client which ignores a successful result body.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct IgnoredResult {}
+impl Response for IgnoredResult {
+    const SCHEMA: &'static str = "IgnoredResult";
+    fn decode(_: Value) -> io::Result<Self> {
+        Ok(Self {})
+    }
+}
+
 /// Outbound field presence retained from the existing CLI callers.
 pub struct ParamPresence {
     pub switch: Option<&'static str>,
@@ -180,7 +190,7 @@ pub fn decode_notification<N: Notification>(call: rpc::Call) -> serde_json::Resu
 }
 
 mod generated {
-    use super::{EmptyParams, PermissionRequestResult};
+    use super::{EmptyParams, HostJob, IgnoredResult, PermissionRequestResult};
     include!(concat!(env!("OUT_DIR"), "/contract.rs"));
 }
 pub use generated::*;
@@ -215,6 +225,8 @@ pub trait Response: DeserializeOwned {
     }
 }
 
+mod host_job;
+pub use host_job::{HostJob, host_submitted};
 mod permission;
 mod preview;
 pub use preview::preview_reply;

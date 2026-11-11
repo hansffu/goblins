@@ -8,12 +8,11 @@ use super::Controller;
 use super::Fault;
 use super::conflict;
 use super::missing;
-use super::params;
 use goblins_jsonrpc as rpc;
 use goblins_protocol::{contract, rpc::HostCommand};
+use contract::Method;
 use goblins_runtime::Command;
 use goblins_runtime::HostOutcome;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -183,11 +182,6 @@ pub(super) struct Preparing {
     pub(super) params: goblins_protocol::rpc::PermissionParams,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct JobId {
-    request: String,
-}
 
 impl Controller {
     /// Check a `host-command` request from `session` before its runtime
@@ -460,7 +454,7 @@ impl Controller {
             .iter()
             .find(|r| r.id == job.request)
             .map_or((None, None), |r| (r.name.clone(), r.started_at));
-        let result = json!(contract::PermissionHostOutcome {
+        let public_outcome = contract::PermissionHostOutcome {
             request: job.request.clone(),
             status: state,
             message: message.clone(),
@@ -470,9 +464,10 @@ impl Controller {
             signal: outcome.as_ref().ok().and_then(|o| o.signal),
             code,
             log: format!("/run/goblins/host-jobs/{}/output.log", job.request),
-        });
+        };
+        let result = json!(&public_outcome);
         self.host_outcomes
-            .insert(job.request.clone(), result.clone());
+            .insert(job.request.clone(), public_outcome);
         if let Some(r) = self.permission_mut(&job.request) {
             r.state = state.to_string();
             r.message = Some(message.clone());
@@ -560,38 +555,59 @@ impl Controller {
         method: &str,
         value: Value,
     ) -> Result<Value, Fault> {
-        let view = |c: &Controller, r: &super::PermissionRecord| -> Value {
-            let mut v = c.host_outcomes.get(&r.id).cloned().unwrap_or_else(|| {
-                json!({"request":r.id,"status":r.state,"message":r.message,
-                    "log":format!("/run/goblins/host-jobs/{}/output.log", r.id)})
-            });
-            v["status"] = json!(r.state);
-            v["name"] = json!(r.name);
-            v["started_at"] = json!(r.started_at);
-            v["subject"] = json!(r.package);
-            v["reason"] = json!(r.reason);
-            v
+        let view = |c: &Controller, r: &super::PermissionRecord| -> contract::HostJob {
+            match c.host_outcomes.get(&r.id) {
+                Some(outcome) => contract::HostJob::Completed(contract::HostJobCompleted {
+                    request: outcome.request.clone(),
+                    status: r.state.clone(),
+                    name: r.name.clone(),
+                    started_at: r.started_at,
+                    subject: r.package.clone(),
+                    reason: r.reason.clone(),
+                    message: outcome.message.clone(),
+                    log: outcome.log.clone(),
+                    exit_code: outcome.exit_code,
+                    signal: outcome.signal,
+                    code: outcome.code,
+                }),
+                None => contract::HostJob::Active(contract::HostJobActive {
+                    request: r.id.clone(),
+                    status: r.state.clone(),
+                    name: r.name.clone(),
+                    started_at: r.started_at,
+                    subject: r.package.clone(),
+                    reason: r.reason.clone(),
+                    message: r.message.clone(),
+                    log: format!("/run/goblins/host-jobs/{}/output.log", r.id),
+                }),
+            }
         };
         let mine = |r: &super::PermissionRecord| {
             r.kind == "host-command" && session.is_none_or(|s| r.session == s)
         };
         match method {
-            "host.list" => {
-                let _: super::Empty = params(value)?;
-                Ok(json!({"jobs":self.permissions.iter().filter(|r| mine(r))
-                    .map(|r| view(self, r)).collect::<Vec<_>>()}))
+            contract::host::HostList::NAME => {
+                let _ = super::contract_params::<contract::host::HostList>(value)?;
+                Ok(json!(contract::HostJobList {
+                    jobs: self
+                        .permissions
+                        .iter()
+                        .filter(|r| mine(r))
+                        .map(|r| view(self, r))
+                        .collect()
+                }))
             }
-            "host.status" => {
-                let p: JobId = params(value)?;
+            contract::host::HostStatus::NAME => {
+                let p = super::contract_params::<contract::host::HostStatus>(value)?;
                 let r = self
                     .permissions
                     .iter()
                     .find(|r| r.id == p.request && mine(r))
                     .ok_or((-32004, format!("no host command {}", p.request)))?;
-                Ok(view(self, r))
+                Ok(json!(view(self, r)))
             }
-            "host.cancel" => {
-                let p: JobId = params(value)?;
+            contract::host::HostCancel::NAME => {
+                let p = super::contract_params::<contract::host::HostCancel>(value)?;
                 let r = self
                     .permissions
                     .iter()
@@ -617,12 +633,18 @@ impl Controller {
                     self.reply_permission(&p.request, "withdrawn", Some(message.clone()));
                     self.operation_finished(&p.request, pending.notify, Some(message));
                     self.dirty = true;
-                    return Ok(json!({"accepted":true,"request":p.request}));
+                    return Ok(json!(contract::HostJobCancelResult {
+                        accepted: true,
+                        request: p.request
+                    }));
                 }
                 if !self.stop_host_job(&p.request, &format!("cancelled by {actor}")) {
                     return Err((-32009, format!("host command {} is {state}", p.request)));
                 }
-                Ok(json!({"accepted":true,"request":p.request}))
+                Ok(json!(contract::HostJobCancelResult {
+                    accepted: true,
+                    request: p.request
+                }))
             }
             _ => Err((-32601, "unknown host command method".into())),
         }
@@ -675,6 +697,319 @@ mod tests {
         json!({"kind":"host-command","description":lines.join("\n"),
             "name":name,"command":command,"directory":directory,"environment":environment,
             "time_limit":time_limit})
+    }
+
+    fn job_record(id: &str, session: &str, state: &str) -> super::super::PermissionRecord {
+        super::super::PermissionRecord {
+            kind: "host-command".into(),
+            id: id.into(),
+            session: session.into(),
+            agent_name: session.into(),
+            approval: "approval".into(),
+            package: "subject".into(),
+            reason: "reason".into(),
+            state: state.into(),
+            approved: None,
+            preview: None,
+            message: None,
+            name: None,
+            started_at: None,
+            log: None,
+        }
+    }
+    fn cached_outcome(id: &str) -> contract::PermissionHostOutcome {
+        contract::PermissionHostOutcome {
+            request: id.into(),
+            status: contract::PermissionHostOutcomeState::Finished,
+            message: "exit code 0".into(),
+            name: Some("cached name".into()),
+            started_at: Some(1),
+            exit_code: Some(0),
+            signal: None,
+            code: Some(0),
+            log: format!("/run/goblins/host-jobs/{id}/output.log"),
+        }
+    }
+    /// The exact previous cache/default/overlay behavior, with the cache DTO
+    /// serialized only to recover the Value the old cache held (c98d971).
+    fn original_job_view(
+        controller: &Controller,
+        record: &super::super::PermissionRecord,
+    ) -> Value {
+        let mut value=controller.host_outcomes.get(&record.id).map(|outcome|json!(outcome)).unwrap_or_else(||json!({"request":record.id,"status":record.state,"message":record.message,"log":format!("/run/goblins/host-jobs/{}/output.log",record.id)}));
+        value["status"] = json!(record.state);
+        value["name"] = json!(record.name);
+        value["started_at"] = json!(record.started_at);
+        value["subject"] = json!(record.package);
+        value["reason"] = json!(record.reason);
+        value
+    }
+    #[test]
+    fn host_job_views_match_complete_old_wire_and_enforce_owner_visibility() {
+        let _no_forks = goblins_unix::no_forks();
+        let mut controller = super::super::tests::daemon();
+        let path = controller.state.clone();
+        let mut active = job_record("active", "a", "pending");
+        active.message = Some("waiting".into());
+        let mut completed = job_record("completed", "a", "future-state");
+        completed.name = Some("record name".into());
+        completed.started_at = Some(99);
+        let mut other = job_record("other", "b", "running");
+        other.message = None;
+        let mut wrong_kind = job_record("package", "a", "pending");
+        wrong_kind.kind = "package".into();
+        controller.permissions = std::collections::VecDeque::from([
+            active.clone(),
+            completed.clone(),
+            other.clone(),
+            wrong_kind,
+        ]);
+        controller
+            .host_outcomes
+            .insert("completed".into(), cached_outcome("completed"));
+        let expected: Vec<_> = [&active, &completed, &other]
+            .into_iter()
+            .map(|record| original_job_view(&controller, record))
+            .collect();
+        let before = json!(controller.permissions);
+        assert_eq!(
+            controller
+                .host_control(None, contract::host::HostList::NAME, json!({}))
+                .unwrap(),
+            json!({"jobs":expected})
+        );
+        assert_eq!(
+            controller
+                .host_control(Some("a"), contract::sandbox::HostList::NAME, json!([]))
+                .unwrap(),
+            json!({"jobs":[expected[0],expected[1]]})
+        );
+        assert_eq!(
+            controller
+                .host_control(Some("b"), contract::sandbox::HostList::NAME, json!({}))
+                .unwrap(),
+            json!({"jobs":[expected[2]]})
+        );
+        for record in [&active, &completed, &other] {
+            let result = controller
+                .host_control(None, contract::host::HostStatus::NAME, json!([record.id]))
+                .unwrap();
+            assert_eq!(result, original_job_view(&controller, record));
+            let typed: contract::HostJob = serde_json::from_value(result.clone()).unwrap();
+            assert_eq!(json!(typed), result);
+        }
+        // Record overrides must replace non-null cached values with null too.
+        controller.permissions[1].name = None;
+        controller.permissions[1].started_at = None;
+        let result = controller
+            .host_control(
+                Some("a"),
+                contract::sandbox::HostStatus::NAME,
+                json!({"request":"completed"}),
+            )
+            .unwrap();
+        assert_eq!(
+            result,
+            original_job_view(&controller, &controller.permissions[1])
+        );
+        assert!(result["name"].is_null() && result["started_at"].is_null());
+        for (owner, request) in [
+            (Some("b"), "active"),
+            (Some("a"), "other"),
+            (None, "package"),
+            (None, "not an identifier"),
+        ] {
+            assert_eq!(
+                controller
+                    .host_control(
+                        owner,
+                        contract::host::HostStatus::NAME,
+                        json!({"request":request})
+                    )
+                    .unwrap_err()
+                    .0,
+                -32004
+            );
+            assert_eq!(
+                controller
+                    .host_control(
+                        owner,
+                        contract::host::HostCancel::NAME,
+                        json!({"request":request})
+                    )
+                    .unwrap_err()
+                    .0,
+                -32004
+            );
+        }
+        controller.permissions[1].name = completed.name;
+        controller.permissions[1].started_at = completed.started_at;
+        assert_eq!(json!(controller.permissions), before);
+        drop(controller);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn host_job_cancel_retains_pending_withdrawal_and_running_completion_barrier() {
+        use super::super::{Connection, Pending, Role};
+        use std::os::unix::net::UnixStream;
+        let _no_forks = goblins_unix::no_forks();
+        for actor in [None, Some("a")] {
+            let mut controller = super::super::tests::daemon();
+            let path = controller.state.clone();
+            let _live = super::super::tests::live(&mut controller, "a");
+            let (runtime, events, received) = goblins_runtime::Fake::new();
+            let active = controller.sessions.get_mut("a").unwrap();
+            active.runtime = Some(Box::new(runtime));
+            active.pending = Some(Pending {
+                initial_output: None,
+                dev_identity: None,
+                id: "job".into(),
+                serial: 7,
+                connection: 9,
+                notify: false,
+                host: Some(spec(&["true"], "/work", &[])),
+                detached: false,
+            });
+            controller.permissions =
+                std::collections::VecDeque::from([job_record("job", "a", "pending")]);
+            let (socket, _peer) = UnixStream::pair().unwrap();
+            let mut requester = Connection::new(9, Role::Sandbox("a".into()), socket).unwrap();
+            requester.waiting = Some(("job".into(), json!(7)));
+            controller.connections.push(requester);
+            assert_eq!(
+                controller
+                    .host_control(
+                        Some("b"),
+                        contract::sandbox::HostCancel::NAME,
+                        json!({"request":"job"})
+                    )
+                    .unwrap_err()
+                    .0,
+                -32004
+            );
+            assert!(controller.sessions["a"].pending.is_some());
+            assert!(received.lock().unwrap().is_empty());
+            let result = controller
+                .host_control(actor, contract::host::HostCancel::NAME, json!(["job"]))
+                .unwrap();
+            assert_eq!(result, json!({"accepted":true,"request":"job"}));
+            assert!(controller.sessions["a"].pending.is_none());
+            assert_eq!(controller.permissions[0].state, "withdrawn");
+            assert!(received.lock().unwrap().iter().any(
+                |command| matches!(command,Command::CancelHostJob{request} if request=="job")
+            ));
+            let bytes = controller.connections[0].output.front().unwrap();
+            let body = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            assert_eq!(
+                rpc::parse(&bytes[body..]).unwrap(),
+                rpc::result(
+                    json!(7),
+                    json!({"request":"job","status":"withdrawn","message":format!("withdrawn by {}",if actor.is_some(){"the goblin"}else{"the host"})})
+                )
+            );
+            // A running cancellation is accepted, with cleanup/outcome deferred.
+            controller.permissions[0].state = "running".into();
+            controller.host_jobs.push(Job {
+                request: "job".into(),
+                session: "a".into(),
+                connection: None,
+                notify: false,
+                stopped: None,
+            });
+            assert_eq!(
+                controller
+                    .host_control(
+                        actor,
+                        contract::host::HostCancel::NAME,
+                        json!({"request":"job"})
+                    )
+                    .unwrap(),
+                result
+            );
+            assert_eq!(controller.permissions[0].state, "running");
+            assert_eq!(controller.host_jobs.len(), 1);
+            assert!(controller.host_outcomes.is_empty());
+            assert_eq!(
+                controller.host_jobs[0].stopped.as_deref(),
+                Some(if actor.is_some() {
+                    "cancelled by the goblin"
+                } else {
+                    "cancelled by the host"
+                })
+            );
+            controller.host_jobs.clear();
+            controller.permissions[0].state = "finished".into();
+            assert_eq!(
+                controller
+                    .host_control(
+                        actor,
+                        contract::host::HostCancel::NAME,
+                        json!({"request":"job"})
+                    )
+                    .unwrap_err()
+                    .0,
+                -32009
+            );
+            drop(events);
+            drop(controller);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
+    #[test]
+    fn host_submission_notification_precedes_attached_result_and_is_absent_for_detached() {
+        use super::super::{Connection, Role};
+        use std::os::unix::net::UnixStream;
+        let _no_forks = goblins_unix::no_forks();
+        for detached in [false, true] {
+            let mut controller = super::super::tests::daemon();
+            let path = controller.state.clone();
+            let _events = super::super::tests::live(&mut controller, "a");
+            let (socket, _peer) = UnixStream::pair().unwrap();
+            let mut connection = Connection::new(9, Role::Sandbox("a".into()), socket).unwrap();
+            let params = goblins_protocol::rpc::PermissionParams {
+                kind: "host-command".into(),
+                package: String::new(),
+                reason: "tests".into(),
+                host: None,
+                update: None,
+                lock: false,
+            };
+            let mut host = spec(&["true"], "/work", &[]);
+            host.detach = detached;
+            let result = controller
+                .submit(&mut connection, &json!(7), "a", params, None, Some(host))
+                .unwrap();
+            let request = controller.permissions.back().unwrap().id.clone();
+            if detached {
+                assert_eq!(result, Some(json!({"request":request,"status":"pending"})));
+                assert!(connection.output.is_empty());
+                assert!(connection.waiting.is_none());
+            } else {
+                assert!(result.is_none());
+                assert_eq!(connection.waiting, Some((request.clone(), json!(7))));
+                controller.connections.push(connection);
+                controller.reply_permission(&request, "denied", None);
+                let output = &controller.connections[0].output;
+                assert_eq!(output.len(), 2);
+                let decode = |bytes: &Vec<u8>| {
+                    let body = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+                    rpc::parse(&bytes[body..]).unwrap()
+                };
+                assert_eq!(
+                    decode(&output[0]),
+                    json!({"jsonrpc":"2.0","method":"host.submitted","params":{"request":request}})
+                );
+                assert_eq!(
+                    decode(&output[1]),
+                    rpc::result(
+                        json!(7),
+                        json!({"request":request,"status":"denied","message":null})
+                    )
+                );
+            }
+            drop(controller);
+            std::fs::remove_dir_all(path).unwrap();
+        }
     }
 
     #[test]
@@ -818,7 +1153,7 @@ mod tests {
                 },
                 outcome,
             );
-            assert_eq!(daemon.host_outcomes[&request], expected);
+            assert_eq!(json!(daemon.host_outcomes[&request]), expected);
             let connection = daemon.connections.pop().unwrap();
             assert!(connection.close);
             let bytes = connection.output.front().unwrap();

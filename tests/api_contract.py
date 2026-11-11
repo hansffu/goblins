@@ -16,6 +16,7 @@ SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
+    "ignore-successful-body": "Ignore the successful body, including non-objects; retain the original validated JSON for printing.",
     "permission-record-fields": "Map original positional record order, default missing kind to package, retain required string fields, nullable options and arbitrary preview JSON, ignoring additive record fields.",
     "permission-list-records": "Apply the compatible permission-record reader element-wise to the result list.",
     "permission-request-fields": "Independently read string request/status/message and signed i64 code; other values and non-objects become absent, preserving the host CLI fallbacks and original detached JSON output.",
@@ -35,6 +36,7 @@ NORMALIZATIONS = {
 
 
 def normalize_reply(profile, result):
+    if profile == "ignore-successful-body":return {}
     if profile == "permission-list-records":
         return [normalize_reply("permission-record-fields",v) for v in result]
     if profile == "permission-record-fields":
@@ -186,6 +188,11 @@ def validate_notification(endpoint, direction, notification, compatibility=False
     if not isinstance(notification,dict):return False
     entry = next((n for n in document(endpoint).get("x-notifications", []) if n["name"] == notification.get("method") and n["direction"] == direction), None)
     if entry is None: return False
+    if compatibility and entry.get("x-client-normalization") == "host-submitted-legacy":
+        params=notification.get("params",{})
+        request=params.get("request") if isinstance(params,dict) else None
+        schema_validator(entry["x-client-params-schema"]).validate(dict(request=request if isinstance(request,str) else ""))
+        return True
     if compatibility and entry.get("x-client-normalization") == "attach-waiting-legacy":
         params=notification.get("params",{})
         missing=params.get("missing") if isinstance(params,dict) else None
@@ -264,7 +271,8 @@ def reference():
         for entry in document(endpoint).get("x-notifications", []):
             lines.extend([f"** Notification ={entry['name']}=", "", entry["description"], "", f"Direction: ={entry['direction']}=. Sender: {entry['sender']}. Receiver: {entry['receiver']}. State: {entry['connection-state']}.", "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry.get("x-wire-params-schema", entry["x-params-schema"])), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", ""])
             if "x-client-normalization" in entry:
-                lines.extend(["Legacy client classification follows =attach-client-compatibility=; the normalized DTO is:","","#+begin_src json",json.dumps(resolve(entry["x-client-params-schema"]),indent=2),"#+end_src",""])
+                behavior="host-submitted-legacy-reader" if entry["x-client-normalization"]=="host-submitted-legacy" else "attach-client-compatibility"
+                lines.extend([f"Legacy client classification follows ={behavior}=; the normalized DTO is:","","#+begin_src json",json.dumps(resolve(entry["x-client-params-schema"]),indent=2),"#+end_src",""])
         for entry in document(endpoint).get("x-completions",[]):
             lines.extend([f"** Completion exchange ={entry['name']}=","",entry["description"],"",f"Socket: ={entry['socket']}=. Direction: ={entry['direction']}=. Fixed response ID: ={entry['id']}=.","","#+begin_src json",json.dumps(resolve(entry["result"]["schema"]),indent=2),"#+end_src","","Errors: "+", ".join(str(e["code"]) for e in entry["errors"])+".",""])
     lines.extend(["* Envelopes (handwritten transport, schema checked)", "", "#+begin_src json", json.dumps(common()["x-envelope-schemas"], indent=2), "#+end_src", "", "* Shared records", ""])
@@ -469,7 +477,8 @@ def check_coverage(registry=None, sources=None):
     for source, function, name in checks:
         if name not in method_names(rust_function(sources[source], function)):
             raise ValueError(f"notification exchange changed: {name}")
-    for source, name in [("sandbox_host_client", "host.submitted"), ("host_client", "state.changed"), ("exec_client", "exec.signal")]:
+    if "contract::host_submitted(" not in sources["sandbox_host_client"]:raise ValueError("missing notification peer: host.submitted")
+    for source, name in [("host_client", "state.changed"), ("exec_client", "exec.signal")]:
         if name not in method_names(sources[source]): raise ValueError(f"missing notification peer: {name}")
     if "attach.hello" not in method_names(rust_function(sources["attach_server"],"accept")) or "contract::attach_waiting(" not in sources["attach_client"]:
         raise ValueError("attachment notification peer changed")
@@ -591,7 +600,7 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"$ref":"common.json#/x-client-result-schemas/PermissionListReply"} if entry["name"]=="permissions.list" else {"$ref":"common.json#/x-client-result-schemas/PermissionRecordReply"} if entry["name"]=="permissions.get" else {"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-client-param-normalization" in entry:

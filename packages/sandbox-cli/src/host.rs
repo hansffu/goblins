@@ -179,10 +179,12 @@ fn run(
                 return Ok(NOT_RUN);
             }
         };
-        if frame["method"] == "host.submitted" {
-            let request = frame["params"]["request"].as_str().unwrap_or_default();
-            eprintln!("goblin: host command {request} is waiting for approval");
-            job = Some(request.to_string());
+        if let Some(submitted) = contract::host_submitted(&frame) {
+            eprintln!(
+                "goblin: host command {} is waiting for approval",
+                submitted.request
+            );
+            job = Some(submitted.request);
             continue;
         }
         rpc::validate_response(&frame, &json!(1)).map_err(|e| e.to_string())?;
@@ -208,12 +210,14 @@ fn run(
     }
 }
 
-fn status(job: &str) -> Result<Value, String> {
-    crate::call("host.status", json!({"request":job}))
+fn status(job: &str) -> Result<(contract::PermissionRequestReply, Value), String> {
+    crate::call_typed_with_wire::<contract::sandbox::HostStatus>(contract::HostJobParams {
+        request: job.into(),
+    })
 }
 
-fn terminal(result: &Value) -> bool {
-    !matches!(result["status"].as_str(), Some("pending" | "running"))
+fn terminal(result: &contract::PermissionRequestReply) -> bool {
+    !matches!(result.status.as_deref(), Some("pending" | "running"))
 }
 
 pub fn command(command: HostCommand) -> Result<i32, String> {
@@ -228,22 +232,34 @@ pub fn command(command: HostCommand) -> Result<i32, String> {
             command,
         } => run(reason, name, detach, cwd, env, timeout, command),
         HostCommand::Status { job } => {
-            println!("{}", status(&job)?);
+            println!("{}", status(&job)?.1);
             Ok(0)
         }
         HostCommand::List => {
-            println!("{}", crate::call("host.list", json!({}))?);
+            println!(
+                "{}",
+                crate::call_typed_with_wire::<contract::sandbox::HostList>(
+                    contract::EmptyParams {}
+                )?
+                .1
+            );
             Ok(0)
         }
         HostCommand::Cancel { job } => {
-            println!("{}", crate::call("host.cancel", json!({"request":job}))?);
+            println!(
+                "{}",
+                crate::call_typed_with_wire::<contract::sandbox::HostCancel>(
+                    contract::HostJobParams { request: job }
+                )?
+                .1
+            );
             Ok(0)
         }
         HostCommand::Logs { job, follow } => {
             let mut tail = Tail::default();
             loop {
                 tail.copy(&job);
-                if !follow || terminal(&status(&job)?) {
+                if !follow || terminal(&status(&job)?.0) {
                     tail.copy(&job);
                     return Ok(0);
                 }
@@ -253,17 +269,15 @@ pub fn command(command: HostCommand) -> Result<i32, String> {
         HostCommand::Wait { job, timeout } => {
             let deadline = Instant::now() + Duration::from_secs(timeout);
             loop {
-                let result = status(&job)?;
+                let (result, _) = status(&job)?;
                 if terminal(&result) {
-                    // C10 still owns the host.status binding; reuse the existing field
-                    // projection until that method migrates.
-                    let reply =
-                        contract::decode_reply::<contract::sandbox::PermissionsRequest>(result)
-                            .map_err(|e| e.to_string())?;
-                    return Ok(report(&reply));
+                    return Ok(report(&result));
                 }
                 if Instant::now() >= deadline {
-                    eprintln!("goblin: host command {job} is still {}", result["status"]);
+                    eprintln!(
+                        "goblin: host command {job} is still {}",
+                        json!(result.status)
+                    );
                     return Ok(STILL_RUNNING);
                 }
                 std::thread::sleep(Duration::from_secs(1));
@@ -275,6 +289,34 @@ pub fn command(command: HostCommand) -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn job_status_binding_retains_old_terminal_and_exit_classification() {
+        for wire in [
+            json!({"status":"pending"}),
+            json!({"status":"running"}),
+            json!({"status":"finished","code":0}),
+            json!({"status":"cancelled","code":143}),
+            json!({"status":"failed","code":127}),
+            json!({"status":"finished","code":0.0}),
+            json!({"status":"finished","code":4294967296i64}),
+            json!({"status":7,"code":0}),
+            Value::Null,
+            json!([]),
+        ] {
+            let old_terminal = !matches!(wire["status"].as_str(), Some("pending" | "running"));
+            let old_code = match wire["status"].as_str() {
+                Some("finished" | "cancelled" | "failed") => {
+                    wire["code"].as_i64().map(|n| n as i32).unwrap_or(NOT_RUN)
+                }
+                _ => NOT_RUN,
+            };
+            let reply =
+                contract::decode_reply::<contract::sandbox::HostStatus>(wire.clone()).unwrap();
+            assert_eq!(terminal(&reply), old_terminal, "{wire}");
+            assert_eq!(exit_code(&reply), old_code, "{wire}");
+        }
+    }
+
     #[test]
     fn outcomes_become_exit_codes() {
         for (result, code) in [

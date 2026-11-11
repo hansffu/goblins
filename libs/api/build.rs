@@ -133,6 +133,12 @@ fn main() {
         "serde_json::Value",
         [].into_iter(),
     );
+    settings.with_replacement("HostJob", "crate::contract::HostJob", [].into_iter());
+    settings.with_replacement(
+        "IgnoredResult",
+        "crate::contract::IgnoredResult",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -185,6 +191,7 @@ fn main() {
         "PermissionRequestReply".to_string(),
         "PermissionRecordReply".to_string(),
         "PermissionListReply".to_string(),
+        "IgnoredResult".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(

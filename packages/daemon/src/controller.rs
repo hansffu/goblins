@@ -972,7 +972,7 @@ pub struct Controller {
     edits: Vec<editor::Edit>,
     host_jobs: Vec<host::Job>,
     /// Finished host commands' results, by request.
-    host_outcomes: BTreeMap<String, Value>,
+    host_outcomes: BTreeMap<String, contract::PermissionHostOutcome>,
     permissions: VecDeque<PermissionRecord>,
     launches: BTreeMap<String, (Start, Value)>,
     shutdown: Option<(u64, Instant)>,
@@ -2560,7 +2560,9 @@ impl Controller {
                 self.stop(&id, Some(reason))
             }
             m if m.starts_with("raids.") => self.sandbox_raids(scope, m, value),
-            "host.status" | "host.list" | "host.cancel" => {
+            contract::sandbox::HostStatus::NAME
+            | contract::sandbox::HostList::NAME
+            | contract::sandbox::HostCancel::NAME => {
                 let scope = scope.to_string();
                 self.host_control(Some(&scope), method, value)
             }
@@ -2851,7 +2853,9 @@ impl Controller {
                 Ok(json!({"accepted":true}))
             }
             m if m.starts_with("raids.") => self.host_raids(m, value),
-            "host.cancel" | "host.status" | "host.list" => self.host_control(None, method, value),
+            contract::host::HostCancel::NAME
+            | contract::host::HostStatus::NAME
+            | contract::host::HostList::NAME => self.host_control(None, method, value),
             _ => Err((-32601, "method unavailable on host endpoint".into())),
         }
     }
@@ -3333,8 +3337,14 @@ impl Controller {
         }
         if host {
             // The ID comes first: it names the job's output.
-            c.queue(json!({"jsonrpc":"2.0","method":"host.submitted",
-                "params":{"request":request}}));
+            c.queue(
+                contract::notification::<contract::sandbox_notifications::HostSubmitted>(
+                    contract::HostSubmittedParams {
+                        request: request.clone(),
+                    },
+                )
+                .expect("host submission notification contains only a string"),
+            );
         }
         c.waiting = Some((request, id.clone()));
         Ok(None)
@@ -5876,8 +5886,8 @@ mod tests {
             "cancelled"
         );
         assert!(d.host_jobs.is_empty());
-        assert_eq!(d.host_outcomes[&request]["status"], "cancelled");
-        assert!(d.host_outcomes[&request]["code"].is_null());
+        assert_eq!(json!(d.host_outcomes[&request])["status"], "cancelled");
+        assert!(json!(d.host_outcomes[&request])["code"].is_null());
         d.host_event(
             "a",
             Event::HostJobFinished {
@@ -5888,8 +5898,8 @@ mod tests {
                 }),
             },
         );
-        assert_eq!(d.host_outcomes[&request]["status"], "cancelled");
-        assert!(d.host_outcomes[&request]["code"].is_null());
+        assert_eq!(json!(d.host_outcomes[&request])["status"], "cancelled");
+        assert!(json!(d.host_outcomes[&request])["code"].is_null());
         drop(d);
         fs::remove_dir_all(state).unwrap();
     }

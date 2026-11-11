@@ -38,11 +38,6 @@ pub use goblins_protocol::contract::MemberLaunchParams as MemberStart;
 struct Empty {}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Job {
-    request: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Raid {
     raid: String,
 }
@@ -129,9 +124,9 @@ pub fn check(
             | "raids.leave"
             | "raids.members"
             | "raids.set_role"
-            | "host.status"
-            | "host.list"
-            | "host.cancel"
+            | contract::sandbox::HostStatus::NAME
+            | contract::sandbox::HostList::NAME
+            | contract::sandbox::HostCancel::NAME
             | contract::sandbox::TerminalsCreate::NAME
             | contract::sandbox::TerminalsList::NAME
             | contract::sandbox::TerminalsRead::NAME
@@ -292,8 +287,14 @@ pub fn check(
             }
             None
         }
-        "host.status" | "host.cancel" => {
-            let Job { request: _request } = parse(&call.params)?;
+        contract::sandbox::HostStatus::NAME => {
+            let _ = contract::decode_params::<contract::sandbox::HostStatus>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
+            None
+        }
+        contract::sandbox::HostCancel::NAME => {
+            let _ = contract::decode_params::<contract::sandbox::HostCancel>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
             None
         }
         // A terminal is an exec. The daemon checks the parameters; the call

@@ -388,6 +388,10 @@ Withdraws a pending host command or stops a running one.
 - Input :: ={"request"}=
 - Output :: ={"accepted": true, "request"}=
 
+The positional list request is =[]=; status/cancel use =[request]=. Named parameters are closed, null params are invalid, and request strings retain exact lookup without an early identifier check. Host reads see all retained host-command records; sandbox reads/cancellation see only the caller's. The existing request-body limits are 16 KiB on the host endpoint and 4 KiB on the sandbox endpoint. Non-host permissions and another session's jobs return the same =-32004= absence as unknown requests. Listing retains insertion order and finalized records. A pending cancellation requires the owner's matching pending slot, withdraws it and cancels preparation; a running cancellation uses its existing job handle. A stale or finalized cancellation is =-32009=. Accepted cancellation retains the same reply for both branches and does not mean cleanup has completed.
+
+Clients print the original successful JSON for list/status/cancel. Status-based wait/log handling independently reads string status/request/message and signed-i64 code, retaining unknown/missing status and i32-cast exit fallbacks; list/cancel clients ignore result content. These compatible readers do not constrain the canonical current producer result shapes.
+
 ** Messaging
 
 The host has its own inbox; agents address it as =host=. Mutations take a caller-chosen =key= (1–64 of =[A-Za-z0-9_-]=): an identical retry returns the original result.
@@ -704,6 +708,10 @@ Legacy record readers retain =kind:package= when absent, accept missing/null nul
 ** HostJob
 
 ={"request", "status", "name", "started_at", "subject", "reason", "message", "log"}=, plus =exit_code=, =signal= and =code= once it has run. =status= is the Permission state: =pending=, =running=, then =finished=, =cancelled=, =failed=, =denied= or =withdrawn=. =code= is the exit code, =128 + signal=, or 125–127 when the command could not be started. =log= is the job's output path inside the sandbox (the Permission's =log= is the host's path). =name= is the label, and =started_at= is the Unix second the approved job started, null before approval; the subject starts with =NAME: = when the agent chose a name.
+
+An active view without a cached outcome emits exactly the required =request=, =status=, =name=, =started_at=, =subject=, =reason=, =message= and =log= fields; nullable fields remain present as null. A cached terminal outcome also emits all three nullable signed-i32 =exit_code=, =signal= and =code= fields together, with string =message=. Record state/name/timestamp override cached values; log remains the sandbox path. The in-memory cache uses the generated permission host-outcome DTO without changing the private supervisor status-file format.
+
+The attached =host.submitted= producer notification uses JSON-RPC 2.0, no id and named closed ={"request"}= params; detached requests do not send it. The compatible host CLI retains method-only classification, including nonstandard envelopes, and falls back to an empty request string when that field is missing or malformed.
 
 ** Message
 

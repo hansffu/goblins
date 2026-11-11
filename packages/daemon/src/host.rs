@@ -272,6 +272,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_job_bindings_preserve_original_wire_for_printing_and_status_fallbacks() {
+        use std::io::Write;
+        let _no_forks = goblins_unix::no_forks();
+        std::thread::scope(|scope| {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
+            stream.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            let mut client = Client {
+                instance: "test".into(),
+                features: vec![],
+                stream,
+                next: 0,
+            };
+            let outputs = [
+                Value::Null,
+                json!({"accepted":"legacy","extra":[1]}),
+                json!({"request":7,"status":"finished","code":4294967296i64,"message":"done"}),
+                json!([]),
+            ];
+            let replies = outputs.clone();
+            let server = scope.spawn(move || {
+                for (index, method) in ["host.list", "host.cancel", "host.status", "host.status"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let call = rpc::read(&mut peer).unwrap();
+                    assert_eq!(call["method"], method);
+                    assert_eq!(
+                        call["params"],
+                        if index == 0 {
+                            json!({})
+                        } else {
+                            json!({"request":"job"})
+                        }
+                    );
+                    peer.write_all(
+                        &rpc::encode(&rpc::result(call["id"].clone(), replies[index].clone()))
+                            .unwrap(),
+                    )
+                    .unwrap();
+                }
+            });
+            let (_, wire) = client
+                .call_typed_with_wire::<contract::host::HostList>(contract::EmptyParams {})
+                .unwrap();
+            assert_eq!(wire, outputs[0]);
+            let (_, wire) = client
+                .call_typed_with_wire::<contract::host::HostCancel>(contract::HostJobParams {
+                    request: "job".into(),
+                })
+                .unwrap();
+            assert_eq!(wire, outputs[1]);
+            let (reply, wire) = client
+                .call_typed_with_wire::<contract::host::HostStatus>(contract::HostJobParams {
+                    request: "job".into(),
+                })
+                .unwrap();
+            assert_eq!(wire, outputs[2]);
+            assert_eq!(reply.code, Some(4294967296));
+            assert_eq!(reply.request, None);
+            assert_eq!(reply.status.as_deref(), Some("finished"));
+            let (reply, wire) = client
+                .call_typed_with_wire::<contract::host::HostStatus>(contract::HostJobParams {
+                    request: "job".into(),
+                })
+                .unwrap();
+            assert_eq!(wire, outputs[3]);
+            assert!(reply.code.is_none() && reply.status.is_none());
+            server.join().unwrap();
+        });
+    }
+
+    #[test]
     fn permission_decisions_bind_generated_calls_and_preserve_plain_wire_results() {
         use std::io::Write;
         let _no_forks = goblins_unix::no_forks();

@@ -272,9 +272,18 @@ fn execute(cli: Cli) -> Result<i32> {
             println!(
                 "{}",
                 match command {
-                    cli::HostCommand::List => client.call("host.list", serde_json::json!({}))?,
+                    cli::HostCommand::List =>
+                        client
+                            .call_typed_with_wire::<goblins_protocol::contract::host::HostList>(
+                                goblins_protocol::contract::EmptyParams {}
+                            )?
+                            .1,
                     cli::HostCommand::Cancel { job } =>
-                        client.call("host.cancel", serde_json::json!({"request":job}))?,
+                        client
+                            .call_typed_with_wire::<goblins_protocol::contract::host::HostCancel>(
+                                goblins_protocol::contract::HostJobParams { request: job }
+                            )?
+                            .1,
                 }
             );
         }

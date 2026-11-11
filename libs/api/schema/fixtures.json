@@ -13634,5 +13634,712 @@
       "current": false,
       "legacy": false
     }
+  ],
+  "host_job_active": {
+    "request": "fixture-job-1",
+    "status": "pending",
+    "name": null,
+    "started_at": null,
+    "subject": "host command",
+    "reason": "tests",
+    "message": null,
+    "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+  },
+  "host_job_completed": {
+    "request": "fixture-job-1",
+    "status": "finished",
+    "name": "Tests",
+    "started_at": 100,
+    "subject": "host command",
+    "reason": "tests",
+    "message": "exit code 0",
+    "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+    "exit_code": 0,
+    "signal": null,
+    "code": 0
+  },
+  "host_job_result_cases": [
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": true
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": true
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "withdrawn",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "withdrawn",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": true
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "future",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": null
+      },
+      "current": true
+    },
+    {
+      "result": {
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "code": null
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 0
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "finished",
+        "name": "Tests",
+        "started_at": 100,
+        "subject": "host command",
+        "reason": "tests",
+        "message": "exit code 0",
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
+        "exit_code": 0,
+        "signal": null,
+        "code": 2147483648
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": -1,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": "pending",
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/other"
+      },
+      "current": false
+    },
+    {
+      "result": {
+        "request": "fixture-job-1",
+        "status": 3,
+        "name": null,
+        "started_at": null,
+        "subject": "host command",
+        "reason": "tests",
+        "message": null,
+        "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
+      },
+      "current": false
+    },
+    {
+      "result": null,
+      "current": false
+    },
+    {
+      "result": [],
+      "current": false
+    },
+    {
+      "result": {},
+      "current": false
+    },
+    {
+      "result": true,
+      "current": false
+    }
+  ],
+  "host_job_parameter_cases": [
+    {
+      "method": "host.list",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "host.list",
+      "params": [],
+      "valid": true
+    },
+    {
+      "method": "host.list",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "host.list",
+      "params": {
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "host.list",
+      "params": [
+        "extra"
+      ],
+      "valid": false
+    },
+    {
+      "method": "host.status",
+      "params": {
+        "request": "fixture-job-1"
+      },
+      "valid": true
+    },
+    {
+      "method": "host.status",
+      "params": [
+        "fixture-job-1"
+      ],
+      "valid": true
+    },
+    {
+      "method": "host.status",
+      "params": {
+        "request": "not an identifier"
+      },
+      "valid": true
+    },
+    {
+      "method": "host.status",
+      "params": {
+        "request": ""
+      },
+      "valid": true
+    },
+    {
+      "method": "host.status",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "host.status",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "host.status",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "host.status",
+      "params": [
+        "a",
+        "b"
+      ],
+      "valid": false
+    },
+    {
+      "method": "host.status",
+      "params": {
+        "request": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "host.status",
+      "params": {
+        "request": "a",
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "method": "host.cancel",
+      "params": {
+        "request": "fixture-job-1"
+      },
+      "valid": true
+    },
+    {
+      "method": "host.cancel",
+      "params": [
+        "fixture-job-1"
+      ],
+      "valid": true
+    },
+    {
+      "method": "host.cancel",
+      "params": {
+        "request": "not an identifier"
+      },
+      "valid": true
+    },
+    {
+      "method": "host.cancel",
+      "params": {
+        "request": ""
+      },
+      "valid": true
+    },
+    {
+      "method": "host.cancel",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "host.cancel",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "host.cancel",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "host.cancel",
+      "params": [
+        "a",
+        "b"
+      ],
+      "valid": false
+    },
+    {
+      "method": "host.cancel",
+      "params": {
+        "request": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "host.cancel",
+      "params": {
+        "request": "a",
+        "extra": true
+      },
+      "valid": false
+    }
+  ],
+  "host_submitted_cases": [
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "host.submitted",
+        "params": {
+          "request": "fixture-job-1"
+        }
+      },
+      "current": true,
+      "request": "fixture-job-1"
+    },
+    {
+      "frame": {
+        "method": "host.submitted",
+        "params": {
+          "request": "legacy"
+        }
+      },
+      "current": false,
+      "request": "legacy"
+    },
+    {
+      "frame": {
+        "jsonrpc": "1.0",
+        "id": 1,
+        "method": "host.submitted",
+        "params": {
+          "request": "legacy",
+          "future": true
+        }
+      },
+      "current": false,
+      "request": "legacy"
+    },
+    {
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "host.submitted",
+        "params": {
+          "request": 7
+        }
+      },
+      "current": false,
+      "request": ""
+    },
+    {
+      "frame": {
+        "method": "host.submitted"
+      },
+      "current": false,
+      "request": ""
+    },
+    {
+      "frame": {
+        "method": "host.submitted",
+        "params": [
+          "a"
+        ]
+      },
+      "current": false,
+      "request": ""
+    },
+    {
+      "frame": {
+        "method": "other",
+        "params": {
+          "request": "x"
+        }
+      },
+      "current": false,
+      "request": null
+    },
+    {
+      "frame": null,
+      "current": false,
+      "request": null
+    },
+    {
+      "frame": [],
+      "current": false,
+      "request": null
+    }
   ]
 }

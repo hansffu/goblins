@@ -15,6 +15,30 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_host_job_contracts_and_submission_legacy_reader(self):
+        fixtures=contract.read("fixtures.json")
+        for endpoint in ("host","sandbox"):
+            for case in fixtures["host_job_parameter_cases"]:
+                if case["valid"]:self.assertTrue(contract.validate_params(endpoint,case["method"],case["params"]))
+                else:
+                    with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params(endpoint,case["method"],case["params"])
+            for case in fixtures["host_job_result_cases"]:
+                reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+                self.assertTrue(contract.validate_reply(endpoint,"host.status",reply,compatibility=True))
+                for name,result in [("host.status",case["result"]),("host.list",dict(jobs=[case["result"]]))]:
+                    current=dict(jsonrpc="2.0",id=1,result=result)
+                    if case["current"]:self.assertTrue(contract.validate_reply(endpoint,name,current))
+                    else:
+                        with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply(endpoint,name,current)
+                for name in ("host.list","host.cancel"):
+                    self.assertTrue(contract.validate_reply(endpoint,name,reply,compatibility=True))
+            self.assertTrue(contract.validate_reply(endpoint,"host.cancel",dict(jsonrpc="2.0",id=1,result=dict(accepted=True,request="fixture-job-1"))))
+        for case in fixtures["host_submitted_cases"]:
+            self.assertEqual(contract.validate_notification("sandbox","server-to-client",case["frame"],compatibility=True),case["request"] is not None)
+            try:valid=contract.validate_notification("sandbox","server-to-client",case["frame"])
+            except ValidationError:valid=False
+            self.assertEqual(valid,case["current"],str(case))
+
     def test_permission_read_contracts_and_legacy_record_forms(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["permission_read_parameter_cases"]:
@@ -408,15 +432,14 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sandbox coverage"):
             contract.check_coverage(wrong)
         wrong = copy.deepcopy(contract.read("coverage.json"))
-        for row in wrong["notifications"]:
-            if row["name"] == "host.submitted": row["endpoint"] = "host"
+        wrong["notifications"].append(dict(endpoint="host",name="host.submitted",direction="server-to-client",chunk="C10"))
         with self.assertRaisesRegex(ValueError, "notification endpoint"):
             contract.check_coverage(wrong)
 
     def test_coverage_discovers_or_patterns_and_matches_allowlists(self):
         sources = contract.implementation_sources()
         changed = dict(sources)
-        before = '"host.cancel" | "host.status" | "host.list"'
+        before = 'contract::host::HostCancel::NAME'
         changed["controller"] = sources["controller"].replace(before, before + ' | "host.new"', 1)
         self.assertNotEqual(changed["controller"], sources["controller"])
         with self.assertRaisesRegex(ValueError, "host coverage"):
@@ -431,7 +454,7 @@ class ContractTests(unittest.TestCase):
     def test_singleton_matches_guard_requires_an_endpoint_assignment(self):
         sources = contract.implementation_sources()
         changed = dict(sources)
-        before = '"host.cancel" | "host.status" | "host.list"'
+        before = 'contract::host::HostCancel::NAME'
         changed["controller"] = sources["controller"].replace(
             before, 'm if matches!(m, "server.new") => Ok(json!({})),\n            ' + before, 1)
         self.assertNotEqual(changed["controller"], sources["controller"])

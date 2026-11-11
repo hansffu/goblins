@@ -6337,6 +6337,259 @@
       "items": {
         "$ref": "#/definitions/PermissionRecordReply"
       }
+    },
+    "HostJobParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "HostJobActive": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subject": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "log": {
+          "$ref": "#/definitions/PermissionHostLog"
+        }
+      },
+      "required": [
+        "request",
+        "status",
+        "name",
+        "started_at",
+        "subject",
+        "reason",
+        "message",
+        "log"
+      ],
+      "additionalProperties": true
+    },
+    "HostJobCompleted": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subject": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "log": {
+          "$ref": "#/definitions/PermissionHostLog"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionHostCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionHostCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionHostCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "request",
+        "status",
+        "name",
+        "started_at",
+        "subject",
+        "reason",
+        "message",
+        "log",
+        "exit_code",
+        "signal",
+        "code"
+      ],
+      "additionalProperties": true
+    },
+    "HostJob": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/HostJobActive"
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "exit_code"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "signal"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "code"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "$ref": "#/definitions/HostJobCompleted"
+        }
+      ]
+    },
+    "HostJobList": {
+      "type": "object",
+      "properties": {
+        "jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostJob"
+          }
+        }
+      },
+      "required": [
+        "jobs"
+      ],
+      "additionalProperties": true
+    },
+    "HostJobCancelResult": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "request"
+      ],
+      "additionalProperties": true
+    },
+    "IgnoredResult": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+    },
+    "HostSubmittedParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "HostSubmittedReply": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,

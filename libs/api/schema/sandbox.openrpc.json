@@ -1218,9 +1218,186 @@
           "description": "The package/Docker/devshell CLI uses its original closed grant decoder, accepting named missing message or exactly [request,status,message], then requiring identifier request and ready/denied/error status. It emits message:null when absent. Unknown result fields, failed/withdrawn statuses and malformed types retain outcome-unknown exit 2."
         }
       ]
+    },
+    {
+      "name": "host.list",
+      "x-rust-name": "HostList",
+      "description": "List retained host-command records in insertion order, including finalized jobs. Sandbox visibility is limited to the calling session; another session job and a non-host permission are indistinguishable from an absent job (-32004). The CLI prints original JSON for list/status/cancel; wait/logs use independent status/outcome fields. Both routes require initialization and retain existing shutdown/liveness, capacity and cancellation ordering. Request bodies retain the endpoint 4096-byte limit. Active/no-outcome views always include eight fields, including nullable message/name/started_at; cached terminal views additionally include nullable exit_code/signal/code together. The record state, name and timestamp override cached outcome display fields, while log remains the sandbox path. Client readers preserve legacy independent field fallbacks or ignored bodies.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJobList"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "No visible host command"
+        },
+        {
+          "code": -32009,
+          "message": "Stale job, lifecycle conflict or finalized cancellation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "host.status",
+      "x-rust-name": "HostStatus",
+      "description": "Read the exact host-command request string; no identifier or session-name normalization is performed. Sandbox visibility is limited to the calling session; another session job and a non-host permission are indistinguishable from an absent job (-32004). The CLI prints original JSON for list/status/cancel; wait/logs use independent status/outcome fields. Both routes require initialization and retain existing shutdown/liveness, capacity and cancellation ordering. Request bodies retain the endpoint 4096-byte limit. Active/no-outcome views always include eight fields, including nullable message/name/started_at; cached terminal views additionally include nullable exit_code/signal/code together. The record state, name and timestamp override cached outcome display fields, while log remains the sandbox path. Client readers preserve legacy independent field fallbacks or ignored bodies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostJobParams/properties/request"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJob"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "No visible host command"
+        },
+        {
+          "code": -32009,
+          "message": "Stale job, lifecycle conflict or finalized cancellation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostJobParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/PermissionRequestReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "permission-request-fields"
+    },
+    {
+      "name": "host.cancel",
+      "x-rust-name": "HostCancel",
+      "description": "Withdraw a matching pending request or signal cancellation of an existing running job. Acceptance does not imply completion; stale/finalized jobs without a running handle retain -32009. Sandbox visibility is limited to the calling session; another session job and a non-host permission are indistinguishable from an absent job (-32004). The CLI prints original JSON for list/status/cancel; wait/logs use independent status/outcome fields. Both routes require initialization and retain existing shutdown/liveness, capacity and cancellation ordering. Request bodies retain the endpoint 4096-byte limit. Active/no-outcome views always include eight fields, including nullable message/name/started_at; cached terminal views additionally include nullable exit_code/signal/code together. The record state, name and timestamp override cached outcome display fields, while log remains the sandbox path. Client readers preserve legacy independent field fallbacks or ignored bodies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostJobParams/properties/request"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJobCancelResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32004,
+          "message": "No visible host command"
+        },
+        {
+          "code": -32009,
+          "message": "Stale job, lifecycle conflict or finalized cancellation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostJobParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
     }
   ],
-  "x-notifications": [],
+  "x-notifications": [
+    {
+      "name": "host.submitted",
+      "x-rust-name": "HostSubmitted",
+      "description": "For attached permissions.request host-command work, the daemon sends this notification after the request is registered and before its terminal result. It identifies the sandbox output file. Detached submissions return pending acceptance and do not emit this notification. The host CLI legacy reader classifies by method only, even for nonstandard envelopes, and independently reads a string params.request or an empty string fallback. Preserve that behavior separately from the canonical closed producer params.",
+      "direction": "server-to-client",
+      "sender": "daemon",
+      "receiver": "sandbox host-command CLI",
+      "connection-state": "attached initialized permissions.request connection, before terminal result",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/HostSubmittedParams/properties/request"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HostSubmittedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "x-client-normalization": "host-submitted-legacy",
+      "x-client-params-schema": {
+        "$ref": "common.json#/definitions/HostSubmittedReply"
+      }
+    }
+  ],
   "x-common-errors": [
     -32700,
     -32600,
