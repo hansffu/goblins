@@ -12,6 +12,7 @@
 
 (require 'cl-lib)
 (require 'jsonrpc)
+(require 'goblins-api-generated)
 (require 'magit-section)
 (require 'subr-x)
 
@@ -957,19 +958,21 @@ reports in the echo area, so it suits init files and hooks."
   (goblins--server-command "stop"))
 
 (defun goblins--changed (_connection method params)
-  (if (and (eq method 'state.changed)
-           (equal (plist-get params :subscription) goblins--subscription)
-           (integerp (plist-get params :sequence))
-           goblins--sequence
-           (= (plist-get params :sequence) (1+ goblins--sequence))
-           (equal (plist-get (plist-get params :snapshot) :instance)
-                  goblins--instance))
-      (progn
-        (setq goblins--sequence (plist-get params :sequence)
-              goblins--snapshot (plist-get params :snapshot))
-        (goblins--note-requests)
-        (goblins--render))
-    (goblins--fail "State stream changed or lost events")))
+  (let ((params (goblins-api-state-change params)))
+    (if (and (eq method goblins-api-state-changed)
+             (equal (goblins-api-state-change-subscription params) goblins--subscription)
+             (integerp (goblins-api-state-change-sequence params))
+             goblins--sequence
+             (= (goblins-api-state-change-sequence params) (1+ goblins--sequence))
+             (equal (goblins-api-state-snapshot-instance
+                     (goblins-api-state-snapshot (goblins-api-state-change-snapshot params)))
+                    goblins--instance))
+	(progn
+          (setq goblins--sequence (goblins-api-state-change-sequence params)
+		goblins--snapshot (goblins-api-state-change-snapshot params))
+          (goblins--note-requests)
+          (goblins--render))
+      (goblins--fail "State stream changed or lost events"))))
 
 (defun goblins--request (method params success)
   "Send METHOD with PARAMS; call SUCCESS in the status buffer."
@@ -1070,22 +1073,24 @@ reports in the echo area, so it suits init files and hooks."
                (setq goblins--instance (plist-get result :instance)
                      goblins--features (append (plist-get result :features) nil))
                (goblins--request
-                'state.subscribe (make-hash-table)
+                goblins-api-state-subscribe (make-hash-table)
                 (lambda (state)
-                  (if (not (and (stringp (plist-get state :subscription))
-                                (integerp (plist-get state :sequence))
-                                (equal (plist-get (plist-get state :snapshot) :instance)
-                                       goblins--instance)))
-                      (goblins--fail "Invalid initial snapshot")
-                    (setq goblins--subscription (plist-get state :subscription)
-                          goblins--sequence (plist-get state :sequence)
-                          goblins--snapshot (plist-get state :snapshot)
-                          goblins--notice "Connected"
-                          goblins--reconnect-attempt 0)
-                    (goblins--note-requests)
-                    (goblins--render))))))))
+                  (let ((state (goblins-api-state-subscription state)))
+                    (if (not (and (stringp (goblins-api-state-subscription-subscription state))
+                                  (integerp (goblins-api-state-subscription-sequence state))
+                                  (equal (goblins-api-state-snapshot-instance
+                                          (goblins-api-state-snapshot (goblins-api-state-subscription-snapshot state)))
+					 goblins--instance)))
+			(goblins--fail "Invalid initial snapshot")
+                      (setq goblins--subscription (goblins-api-state-subscription-subscription state)
+                            goblins--sequence (goblins-api-state-subscription-sequence state)
+                            goblins--snapshot (goblins-api-state-subscription-snapshot state)
+                            goblins--notice "Connected"
+                            goblins--reconnect-attempt 0)
+                      (goblins--note-requests)
+                      (goblins--render)))))))))
       (error (goblins--fail (format "Cannot connect: %s"
-                                   (error-message-string err)))))))
+                                    (error-message-string err)))))))
 
 (defun goblins--host-call (source method params)
   "Call the host METHOD with PARAMS on SOURCE's connection and return the result.

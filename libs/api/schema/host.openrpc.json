@@ -2599,6 +2599,94 @@
         "$ref": "common.json#/x-request-constraints/HistoryPruneParams"
       },
       "x-direct-serde-params": true
+    },
+    {
+      "name": "state.subscribe",
+      "x-rust-name": "StateSubscribe",
+      "description": "Host-only subscription. Decode original closed Empty params directly before checking an existing subscription; publish all earlier dirty mutations before assigning a fresh ID and taking the initial full snapshot. Sequence is global u64, including zero before publication. Client consumes its connection, sets nonblocking before validating subscription/sequence/snapshot, and retains original missing-field messages, compatible nested records and initial cross-instance acceptance. Ordinary host calls preserve the subscription; explicit unsubscribe and server.stop cancel it.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/StateSubscribeResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid subscription params"
+        },
+        {
+          "code": -32009,
+          "message": "Conflicting subscription or stopping server"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxStatusParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-direct-serde-params": true,
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/StateSubscribeReply"
+      },
+      "x-client-result-normalization": "state-subscribe-fields",
+      "x-client-wire-result-schema": {}
+    },
+    {
+      "name": "state.unsubscribe",
+      "x-rust-name": "StateUnsubscribe",
+      "description": "Host-only explicit cancellation. Direct original Subscription Serde named/positional decoding precedes exact active-ID check; wrong/stale/repeated IDs return -32009. A successful call clears the subscription and returns accepted:true. Rust dropping a subscription closes its stream without sending this method.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "subscription",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/StateUnsubscribeParams/properties/subscription"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/StateUnsubscribeResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid subscription params"
+        },
+        {
+          "code": -32009,
+          "message": "Conflicting subscription or stopping server"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/StateUnsubscribeParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-direct-serde-params": true,
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-result-normalization": "ignore-successful-body",
+      "x-client-wire-result-schema": {}
     }
   ],
   "x-notifications": [
@@ -2626,6 +2714,45 @@
       "x-positional-schema": {
         "$ref": "common.json#/x-positional-schemas/ExecSignalParams"
       }
+    },
+    {
+      "name": "state.changed",
+      "x-rust-name": "StateChanged",
+      "description": "Full replacement snapshot emitted only after a dirty publication, after raid reconciliation and bounded eviction. All subscribers observe the same global next sequence. Keep unevictable active permissions/runtime authority; finalized permissions then oldest evictable runtime-less sessions are discarded until the serialized snapshot fits900KiB or no safe eviction remains. Existing encoded-frame/2MiB connection queue overflow disconnects a slow subscriber. Rust tick reads/consumes at most16384bytes per iteration, buffers partial frames, checks method/subscription/next sequence and instance, and commits each valid replacement before any later frame error. EOF is checked before buffered data. Extra outer fields/IDs remain accepted by the compatible Rust reader. Emacs keeps partial snapshots and its signed arbitrary integer sequence policy; no strict full payload decoder is added there.",
+      "direction": "server-to-client",
+      "sender": "daemon",
+      "receiver": "host subscriber",
+      "connection-state": "active subscription",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "subscription",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/StateChangedParams/properties/subscription"
+          }
+        },
+        {
+          "name": "sequence",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/StateChangedParams/properties/sequence"
+          }
+        },
+        {
+          "name": "snapshot",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/StateChangedParams/properties/snapshot"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/StateChangedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      }
     }
   ],
   "x-common-errors": [
@@ -2636,5 +2763,5 @@
     -32001,
     -32010
   ],
-  "x-coverage": "Incremental: other surfaces are assigned in coverage.json."
+  "x-coverage": "Complete public callable, directional notification and attachment-exchange identity inventory; explicit refused methods remain separate in coverage.json. Private channel migration remains separately planned."
 }

@@ -205,8 +205,8 @@ impl From<&SessionRecord> for contract::HostSession {
     }
 }
 
-// Temporary snapshot adapter until C15: all client fields decode through the generated
-// record first, then the existing TUI/domain view keeps its established defaults.
+// Domain/UI conversion from the generated compatible record; snapshot field
+// readers validate it before conversion, preserving legacy decode precedence.
 impl TryFrom<contract::HostSessionReply> for SessionRecord {
     type Error = &'static str;
     fn try_from(r: contract::HostSessionReply) -> std::result::Result<Self, Self::Error> {
@@ -289,22 +289,6 @@ impl TryFrom<contract::HostSessionReply> for SessionRecord {
         })
     }
 }
-fn session_records<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> std::result::Result<Vec<SessionRecord>, D::Error> {
-    use goblins_protocol::contract::Response;
-    let values = Vec::<Value>::deserialize(d)?;
-    values
-        .into_iter()
-        .map(|v| {
-            if v.get("scope").is_some() && v.get("docker_scope").is_some() {
-                return Err(serde::de::Error::custom("duplicate scope and docker_scope"));
-            }
-            let record = contract::HostSessionReply::decode(v).map_err(serde::de::Error::custom)?;
-            record.try_into().map_err(serde::de::Error::custom)
-        })
-        .collect()
-}
 impl SessionRecord {
     /// True when the visible activity changed; the change is timestamped.
     fn set_agent_state(&mut self, state: goblins_protocol::AgentState) -> bool {
@@ -386,44 +370,58 @@ impl From<contract::PermissionRecordReply> for PermissionRecord {
         }
     }
 }
-fn permission_records<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> std::result::Result<Vec<PermissionRecord>, D::Error> {
-    use contract::Response;
-    Vec::<Value>::deserialize(d)?
-        .into_iter()
-        .map(|value| {
-            contract::PermissionRecordReply::decode(value)
-                .map(Into::into)
-                .map_err(serde::de::Error::custom)
-        })
-        .collect()
-}
-fn raid_records<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Vec<RaidRecord>, D::Error> {
-    use contract::Response;
-    Vec::<Value>::deserialize(deserializer)?
-        .into_iter()
-        .map(|value| {
-            contract::RaidRecordReply::decode(value)
-                .map(Into::into)
-                .map_err(serde::de::Error::custom)
-        })
-        .collect()
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Local UI/domain view. The process boundary decodes through the generated
+/// compatible Snapshot record and publishes the strict generated StateSnapshot.
+#[derive(Clone, Debug, Serialize)]
 pub struct Snapshot {
     pub instance: String,
-    #[serde(deserialize_with = "session_records")]
     pub sessions: Vec<SessionRecord>,
-    #[serde(deserialize_with = "permission_records")]
     pub permissions: Vec<PermissionRecord>,
-    #[serde(default,deserialize_with="raid_records")]
     pub raids: Vec<RaidRecord>,
-    /// The communications log's health: messaging stops while it fails.
-    #[serde(default)]
     pub messaging: crate::mailbox::Health,
+}
+impl<'de> Deserialize<'de> for Snapshot {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let value = contract::StateSnapshotReply::deserialize(d)?;
+        let sessions: Vec<SessionRecord> = value
+            .sessions
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            instance: value.instance,
+            sessions,
+            permissions: value.permissions.into_iter().map(Into::into).collect(),
+            raids: value.raids.into_iter().map(Into::into).collect(),
+            messaging: crate::mailbox::Health {
+                audit_failed: value.messaging.audit_failed,
+                raid_audit_failed: value.messaging.raid_audit_failed,
+            },
+        })
+    }
+}
+impl From<&Snapshot> for contract::StateSnapshot {
+    fn from(value: &Snapshot) -> Self {
+        Self {
+            instance: value.instance.clone(),
+            sessions: value
+                .sessions
+                .iter()
+                .map(contract::HostSession::from)
+                .collect(),
+            permissions: value
+                .permissions
+                .iter()
+                .map(contract::PermissionRecord::from)
+                .collect(),
+            raids: value.raids.iter().map(contract::RaidRecord::from).collect(),
+            messaging: contract::StateMessagingHealth {
+                audit_failed: value.messaging.audit_failed,
+                raid_audit_failed: value.messaging.raid_audit_failed,
+            },
+        }
+    }
 }
 struct Pending {
     initial_output: Option<PathBuf>,
@@ -853,14 +851,6 @@ impl From<contract::HostLaunchParams> for Start {
     }
 }
 type Decision = contract::PermissionDecisionParams;
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Subscription {
-    subscription: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Empty {}
 type Fault = (i32, String);
 /// Permission states the snapshot keeps whatever its size: the request still
 /// waits for, or is being carried out after, a decision.
@@ -1555,13 +1545,24 @@ impl Controller {
         }
         self.dirty = false;
         self.sequence += 1;
-        let snapshot = self.snapshot();
+        let mut params = contract::StateChangedParams {
+            subscription: String::new(),
+            sequence: self.sequence,
+            snapshot: contract::StateSnapshot::from(&self.snapshot()),
+        };
         for c in &mut self.connections {
             if let Some(sub) = &c.subscription {
-                c.queue(json!({"jsonrpc":"2.0","method":"state.changed","params":{"subscription":sub,"sequence":self.sequence,"snapshot":snapshot}}));
+                params.subscription = sub.clone();
+                c.queue(
+                    contract::notification_value::<contract::host_notifications::StateChanged>(
+                        &params,
+                    )
+                    .expect("state snapshot serializes"),
+                );
             }
         }
     }
+
     fn permission_mut(&mut self, id: &str) -> Option<&mut PermissionRecord> {
         self.permissions.iter_mut().find(|p| p.id == id)
     }
@@ -2847,8 +2848,8 @@ impl Controller {
                 contract_params::<contract::host::PermissionsDecide>(value)?,
                 "host",
             ),
-            "state.subscribe" => {
-                let _: Empty = params(value)?;
+            contract::host::StateSubscribe::NAME => {
+                let _ = contract_params::<contract::host::StateSubscribe>(value)?;
                 if c.subscription.is_some() {
                     return Err(conflict());
                 }
@@ -2856,15 +2857,16 @@ impl Controller {
                 self.publish();
                 let id = self.id("sub");
                 c.subscription = Some(id.clone());
-                Ok(json!({"subscription":id,"sequence":self.sequence,"snapshot":self.snapshot()}))
+                Ok(json!(contract::StateSubscribeResult {subscription:id,sequence:self.sequence,
+                    snapshot:contract::StateSnapshot::from(&self.snapshot())}))
             }
-            "state.unsubscribe" => {
-                let p: Subscription = params(value)?;
+            contract::host::StateUnsubscribe::NAME => {
+                let p = contract_params::<contract::host::StateUnsubscribe>(value)?;
                 if c.subscription.as_deref() != Some(&p.subscription) {
                     return Err(conflict());
                 }
                 c.subscription = None;
-                Ok(json!({"accepted":true}))
+                Ok(json!(contract::StateUnsubscribeResult {accepted:true}))
             }
             m if m.starts_with("raids.") => self.host_raids(m, value),
             contract::host::HostCancel::NAME
@@ -9792,6 +9794,306 @@ mod tests {
             d.history_list().unwrap(),
             json!({"directory":directory,"records":[original,expected_nullable],"truncated":false})
         );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    mod c15_original {
+        use super::*;
+        #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+        pub struct Health {
+            pub audit_failed: bool,
+            pub raid_audit_failed: bool,
+        }
+        fn sessions<'de, D: serde::Deserializer<'de>>(
+            d: D,
+        ) -> std::result::Result<Vec<SessionRecord>, D::Error> {
+            use contract::Response;
+            Vec::<Value>::deserialize(d)?
+                .into_iter()
+                .map(|v| {
+                    if v.get("scope").is_some() && v.get("docker_scope").is_some() {
+                        return Err(serde::de::Error::custom("duplicate scope and docker_scope"));
+                    }
+                    contract::HostSessionReply::decode(v)
+                        .map_err(serde::de::Error::custom)?
+                        .try_into()
+                        .map_err(serde::de::Error::custom)
+                })
+                .collect()
+        }
+        fn permissions<'de, D: serde::Deserializer<'de>>(
+            d: D,
+        ) -> std::result::Result<Vec<PermissionRecord>, D::Error> {
+            use contract::Response;
+            Vec::<Value>::deserialize(d)?
+                .into_iter()
+                .map(|v| {
+                    contract::PermissionRecordReply::decode(v)
+                        .map(Into::into)
+                        .map_err(serde::de::Error::custom)
+                })
+                .collect()
+        }
+        fn raids<'de, D: serde::Deserializer<'de>>(
+            d: D,
+        ) -> std::result::Result<Vec<RaidRecord>, D::Error> {
+            use contract::Response;
+            Vec::<Value>::deserialize(d)?
+                .into_iter()
+                .map(|v| {
+                    contract::RaidRecordReply::decode(v)
+                        .map(Into::into)
+                        .map_err(serde::de::Error::custom)
+                })
+                .collect()
+        }
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct Snapshot {
+            pub instance: String,
+            #[serde(deserialize_with = "sessions")]
+            pub sessions: Vec<SessionRecord>,
+            #[serde(deserialize_with = "permissions")]
+            pub permissions: Vec<PermissionRecord>,
+            #[serde(default, deserialize_with = "raids")]
+            pub raids: Vec<RaidRecord>,
+            #[serde(default)]
+            pub messaging: Health,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Empty {}
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        pub struct Subscription {
+            pub subscription: String,
+        }
+    }
+    fn c15_compare_snapshot(value: Value) {
+        let old = serde_json::from_value::<c15_original::Snapshot>(value.clone())
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .map_err(|e| e.to_string());
+        let new = serde_json::from_value::<Snapshot>(value.clone())
+            .map(|v| serde_json::to_string(&v).unwrap())
+            .map_err(|e| e.to_string());
+        assert_eq!(old, new, "{value}");
+    }
+    fn c15_frame(bytes: &[u8]) -> Value {
+        let start = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        rpc::parse(&bytes[start..]).unwrap()
+    }
+    #[test]
+    fn c15_snapshot_wire_defaults_and_errors_match_original_reader() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        let minimal = json!({"instance":"i","sessions":[],"permissions":[]});
+        c15_compare_snapshot(minimal.clone());
+        let full = json!({"instance":"i","sessions":[fixtures["host_session"]],"permissions":[fixtures["permission_record_cases"][0]["result"]],
+                "raids":[fixtures["raid_record"]],"messaging":{"audit_failed":true,"raid_audit_failed":false}});
+        c15_compare_snapshot(full.clone());
+        for field in ["instance", "sessions", "permissions", "raids", "messaging"] {
+            let mut missing = full.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            c15_compare_snapshot(missing);
+            for malformed in [
+                Value::Null,
+                json!(17),
+                json!(false),
+                json!({}),
+                json!([null]),
+            ] {
+                let mut value = full.clone();
+                value[field] = malformed;
+                c15_compare_snapshot(value);
+            }
+        }
+        let mut future = full.clone();
+        future["future"] = json!(true);
+        c15_compare_snapshot(future);
+        let mut legacy = minimal.clone();
+        legacy["sessions"] = json!([fixtures["host_session_legacy"]]);
+        c15_compare_snapshot(legacy);
+        let mut future_session = full.clone();
+        future_session["sessions"][0]["state"] = json!("future-state");
+        future_session["sessions"][0]["terminals"][0]["origin"] = json!("remote");
+        c15_compare_snapshot(future_session);
+        for case in fixtures["permission_record_cases"].as_array().unwrap() {
+            let mut value = minimal.clone();
+            value["permissions"] = json!([case["result"]]);
+            c15_compare_snapshot(value);
+        }
+        for case in fixtures["raid_record_cases"].as_array().unwrap() {
+            let mut value = minimal.clone();
+            value["raids"] = json!([case["result"]]);
+            c15_compare_snapshot(value);
+        }
+        let seq = json!(["i", [], []]);
+        c15_compare_snapshot(seq);
+    }
+
+    #[test]
+    fn c15_subscription_order_results_and_cancellation_preserve_original_behavior() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut a, _a_peer) = connection(Role::Host);
+        a.initialized = true;
+        d.dirty = true;
+        let initial = dispatch(&mut d, &mut a, "state.subscribe", json!({}), Some(json!(1)));
+        let a_id = initial["result"]["subscription"].clone();
+        assert_eq!(
+            initial,
+            json!({"jsonrpc":"2.0","id":1,"result":{"subscription":a_id,"sequence":1,"snapshot":d.snapshot()}})
+        );
+        d.connections.push(a);
+        let (mut b, _b_peer) = connection(Role::Host);
+        b.initialized = true;
+        d.dirty = true;
+        let second = dispatch(&mut d, &mut b, "state.subscribe", json!([]), Some(json!(2)));
+        let b_id = second["result"]["subscription"].clone();
+        assert_ne!(a_id, b_id);
+        assert_eq!(second["result"]["sequence"], 2);
+        let prior = c15_frame(&d.connections[0].output.pop_front().unwrap());
+        assert_eq!(
+            prior,
+            json!({"jsonrpc":"2.0","method":"state.changed","params":{"subscription":a_id,"sequence":2,"snapshot":d.snapshot()}})
+        );
+        d.connections.push(b);
+        session_with_results_id(&mut d, "new", vec![]);
+        d.dirty = true;
+        d.publish();
+        for (index, id) in [a_id.clone(), b_id.clone()].into_iter().enumerate() {
+            let event = c15_frame(&d.connections[index].output.pop_front().unwrap());
+            assert_eq!(
+                event,
+                json!({"jsonrpc":"2.0","method":"state.changed","params":{"subscription":id,"sequence":3,"snapshot":d.snapshot()}})
+            );
+        }
+        d.publish();
+        assert!(d.connections.iter().all(|c| c.output.is_empty()));
+        let mut b = d.connections.pop().unwrap();
+        d.host(&mut b, "server.status", json!({})).unwrap();
+        assert_eq!(b.subscription.as_deref(), b_id.as_str());
+        assert_eq!(
+            d.host(&mut b, "state.subscribe", json!({})).unwrap_err(),
+            conflict()
+        );
+        assert_eq!(
+            d.host(&mut b, "state.unsubscribe", json!({"subscription":"wrong"}))
+                .unwrap_err(),
+            conflict()
+        );
+        assert_eq!(
+            d.host(&mut b, "state.unsubscribe", json!({"subscription":b_id}))
+                .unwrap(),
+            json!({"accepted":true})
+        );
+        assert!(b.subscription.is_none());
+        assert_eq!(
+            d.host(&mut b, "state.unsubscribe", json!({"subscription":b_id}))
+                .unwrap_err(),
+            conflict()
+        );
+        d.connections.push(b);
+        d.dirty = true;
+        d.publish();
+        assert_eq!(d.connections[0].output.len(), 1);
+        assert!(d.connections[1].output.is_empty());
+        let mut a = d.connections.remove(0);
+        assert_eq!(
+            d.host(&mut a, "server.stop", json!({})).unwrap(),
+            json!({"accepted":true})
+        );
+        assert!(a.subscription.is_none());
+        assert!(a.close);
+        assert!(d.shutdown.is_some());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn c15_subscription_dispatch_errors_match_original_serde() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        for value in [json!([1]), json!({"unknown":1}), json!(false)] {
+            let expected = serde_json::from_value::<c15_original::Empty>(value.clone())
+                .err()
+                .unwrap()
+                .to_string();
+            let actual = dispatch(&mut d, &mut c, "state.subscribe", value, Some(json!(1)));
+            assert_eq!(
+                actual,
+                json!({"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":expected}})
+            );
+        }
+        for value in [
+            json!([]),
+            json!(["s", 17]),
+            json!([17]),
+            json!({"subscription":17}),
+            json!({"subscription":"s","extra":true}),
+        ] {
+            let expected = serde_json::from_value::<c15_original::Subscription>(value.clone())
+                .err()
+                .unwrap()
+                .to_string();
+            let actual = dispatch(&mut d, &mut c, "state.unsubscribe", value, Some(json!(2)));
+            assert_eq!(
+                actual,
+                json!({"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":expected}})
+            );
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn c15_snapshot_eviction_retains_authority_and_queue_bounds() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        for (id, created) in [("old", 1), ("recent", 2), ("live", 3)] {
+            session_with_results_id(&mut d, id, vec![]);
+            let a = d.sessions.get_mut(id).unwrap();
+            a.created = created;
+            a.record.detail = Some("x".repeat(320 * 1024));
+            if id != "live" {
+                a.runtime = None;
+                a.record.state = "stopped".into();
+            }
+        }
+        let (mut c, _peer) = connection(Role::Host);
+        c.subscription = Some("sub".into());
+        d.connections.push(c);
+        // Finalized permission is evicted first; pending authority is retained.
+        d.permissions[0].state = "done".into();
+        d.permissions[0].reason = "x".repeat(64 * 1024);
+        d.dirty = true;
+        d.publish();
+        assert!(!d.sessions.contains_key("old"));
+        assert!(d.sessions.contains_key("recent"));
+        assert!(d.sessions.contains_key("live"));
+        assert_eq!(d.permissions.len(), 2);
+        assert!(d.permissions.iter().all(|p| p.state == "realizing"));
+        let event = c15_frame(d.connections[0].output.front().unwrap());
+        let ids: Vec<_> = event["params"]["snapshot"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["live", "recent"]);
+        assert!(serde_json::to_vec(&d.snapshot()).unwrap().len() <= 900 * 1024);
+        for _ in 0..4 {
+            d.dirty = true;
+            d.publish();
+        }
+        assert!(d.connections[0].dead);
+        assert!(d.connections[0].queued <= QUEUE);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

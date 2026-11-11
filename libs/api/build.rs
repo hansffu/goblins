@@ -170,6 +170,8 @@ fn main() {
         "CommunicationsListParams",
         "CommunicationsEvent",
         "HistoryPruneParams",
+        "StateUnsubscribeParams",
+        "StateMessagingHealth",
     ] {
         settings.with_patch(
             name,
@@ -209,6 +211,10 @@ fn main() {
     settings.with_replacement("CommRequeueReason", "String", [].into_iter());
     settings.with_replacement("HistoryKeep", "usize", [].into_iter());
     settings.with_replacement("HistoryRecordVersion", "u32", [].into_iter());
+    settings.with_patch(
+        "StateSnapshotReply",
+        typify::TypeSpacePatch::default().with_rename("Snapshot"),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -332,6 +338,11 @@ fn main() {
                     .attrs
                     .push(syn::parse_quote!(#[serde(alias = #alias)]));
             }
+            if let Some(path) = record["deserialize-with"].get(key).and_then(Value::as_str) {
+                field
+                    .attrs
+                    .push(syn::parse_quote!(#[serde(deserialize_with = #path)]));
+            }
             fields.named.push(field);
         }
         assert!(
@@ -407,6 +418,7 @@ fn main() {
         "CommunicationsPageReply".to_string(),
         "HistoryListReply".to_string(),
         "HistoryPruneReply".to_string(),
+        "StateSubscribeReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(

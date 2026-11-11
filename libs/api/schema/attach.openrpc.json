@@ -129,5 +129,6 @@
       "x-client-error-policy": "any-valid-correlated-error",
       "x-shared-payload-with": "attach.reply"
     }
-  ]
+  ],
+  "x-coverage": "Complete public callable, directional notification and attachment-exchange identity inventory; explicit refused methods remain separate in coverage.json. Private channel migration remains separately planned."
 }

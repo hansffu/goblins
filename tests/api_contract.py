@@ -18,6 +18,7 @@ ELISP_READERS = ROOT / "emacs/goblins-api-generated.el"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
     "raid-members-display": "Read raid/member display strings independently with - fallback, booleans strictly, members only when an array, created_by string presence and existing escaped/sorted option rendering; accept non-object legacy results.",
+    "state-subscribe-fields": "Project string subscription, u64 sequence and raw snapshot independently; preserve validation only after nonblocking setup in the Rust consumer, including original missing-field diagnostics and initial cross-instance acceptance.",
     "history-list-fields": "Read records only as an array (otherwise empty) and truncated only as true; retain every raw record and additive field.",
     "history-prune-fields": "Require failed array and removed string array, decoding failed first; retain raw failed rows for independent dash fallback and ignore result dry_run.",
     "communications-page-fields": "Read events only as an array, cursor/latest only as u64 JSON integers, and session only as a string; malformed fields and nonobjects remain absent so the CLI retains its original printing and diagnostic order.",
@@ -41,6 +42,11 @@ NORMALIZATIONS = {
 
 
 def normalize_reply(profile, result):
+    if profile == "state-subscribe-fields":
+        fields=result if isinstance(result,dict) else {}
+        seq=fields.get("sequence")
+        return dict(subscription=fields.get("subscription") if isinstance(fields.get("subscription"),str) else None,
+                    sequence=seq if type(seq) is int and 0<=seq<2**64 else None,snapshot=fields.get("snapshot"))
     if profile == "history-list-fields":
         fields=result if isinstance(result,dict) else {}
         return dict(records=fields["records"] if isinstance(fields.get("records"),list) else [],truncated=fields.get("truncated") is True)
@@ -361,7 +367,105 @@ def implementation_sources():
 
 # This scanner is deliberately limited to the current routing structure. Missing
 # functions, role branches or allowlists fail closed when routing is refactored.
-RUST_TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|[{}\[\](),:]', re.S)
+class RustToken:
+    __slots__ = ("value", "begin", "finish", "literal")
+
+    def __init__(self, value, begin, finish, literal=False):
+        self.value, self.begin, self.finish, self.literal = value, begin, finish, literal
+
+    def group(self):
+        return self.value
+
+    def start(self):
+        return self.begin
+
+    def end(self):
+        return self.finish
+
+
+RUST_RAW = re.compile(r'(?:br|cr|r)(#*)"')
+RUST_STRING = re.compile(r'(?:b|c)?"')
+RUST_CHAR = re.compile(r"(?:b)?'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\])'")
+RUST_IDENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+
+@lru_cache(maxsize=16)
+def rust_lex(source):
+    """Small shared lexer for current routing/construction syntax, not rustc."""
+    tokens=[];i=0
+    while i<len(source):
+        if source[i].isspace():i+=1;continue
+        if source.startswith('//',i):
+            end=source.find('\n',i);i=len(source) if end<0 else end+1;continue
+        if source.startswith('/*',i):
+            depth=1;i+=2
+            while depth and i<len(source):
+                if source.startswith('/*',i):depth+=1;i+=2
+                elif source.startswith('*/',i):depth-=1;i+=2
+                else:i+=1
+            if depth:raise ValueError('unclosed Rust comment')
+            continue
+        begin=i
+        raw=RUST_RAW.match(source,i)
+        if raw:
+            close='"'+raw[1];end=source.find(close,raw.end())
+            if end<0:raise ValueError('unclosed Rust raw string')
+            i=end+len(close);tokens.append(RustToken('<literal>',begin,i,True));continue
+        string=RUST_STRING.match(source,i)
+        if string:
+            i=string.end()
+            while i<len(source) and source[i]!='"':i+=2 if source[i]=='\\' else 1
+            if i>=len(source):raise ValueError('unclosed Rust string')
+            i+=1
+            value=source[begin:i] if source[begin]=='"' else '<literal>'
+            tokens.append(RustToken(value,begin,i,True));continue
+        char=RUST_CHAR.match(source,i)
+        if char:
+            i=char.end();tokens.append(RustToken('<literal>',begin,i,True));continue
+        ident=RUST_IDENT.match(source,i)
+        if ident:
+            i=ident.end();tokens.append(RustToken(ident[0],begin,i));continue
+        if source.startswith('::',i):
+            i+=2;tokens.append(RustToken('::',begin,i));continue
+        i+=1;tokens.append(RustToken(source[begin:i],begin,i))
+    return tuple(tokens)
+
+
+class RustTokens:
+    def finditer(self, text, start=0):
+        return (token for token in rust_lex(text) if token.start()>=start)
+
+
+RUST_TOKEN = RustTokens()
+
+
+@lru_cache(maxsize=16)
+def rust_code_mask(text):
+    """Keep code positions; blank literal contents/comments and test items."""
+    tokens=rust_lex(text);values=[t.value for t in tokens]
+    chars=['\n' if c=='\n' else ' ' for c in text]
+    for token in tokens:
+        if not token.literal:chars[token.start():token.end()]=text[token.start():token.end()]
+    i=0
+    while i<len(tokens):
+        if values[i:i+7]!=['#','[','cfg','(','test',')',']']:
+            i+=1;continue
+        start=i;i+=7;depth=0
+        while i<len(tokens):
+            value=values[i]
+            if value in ('(','['):depth+=1
+            elif value in (')',']'):depth-=1
+            elif not depth and value==';':break
+            elif not depth and value=='{':
+                i=rust_block_end(values,i);break
+            i+=1
+        if i>=len(tokens):raise ValueError('unterminated test item')
+        for offset in range(tokens[start].start(),tokens[i].end()):
+            if chars[offset]!='\n':chars[offset]=' '
+        i+=1
+    return ''.join(chars)
+
+
 
 
 def rust_block(text, start):
@@ -379,17 +483,14 @@ def rust_block(text, start):
 
 
 def rust_function(text, name):
-    signature = re.search(r'\bfn\s+' + re.escape(name) + r'\s*\(', text)
+    signature = re.search(r'\bfn\s+' + re.escape(name) + r'\s*\(', rust_code_mask(text))
     if signature is None: raise ValueError(f"missing routing function {name}")
     return rust_block(text, signature.end())
 
 
 def matches_patterns(text):
     """Read the pattern argument, including singleton and nested matches! calls."""
-    tokens = list(RUST_TOKEN.finditer(text))
-    for macro in re.finditer(r'\bmatches!\s*\(', text):
-        if any(token.start() <= macro.start() < token.end() for token in tokens):
-            continue  # A macro spelling inside a comment or string is not code.
+    for macro in re.finditer(r'\bmatches!\s*\(', rust_code_mask(text)):
         depth, begin = 1, None
         for token in RUST_TOKEN.finditer(text, macro.end()):
             value = token.group()
@@ -408,13 +509,13 @@ def matches_patterns(text):
 
 def notification_names(text):
     """Discover notification objects; nested params.id is not a request ID."""
-    text = re.split(r'#\[cfg\(test\)\]\s*mod\s+tests\b', text, maxsplit=1)[0]
+    code = rust_code_mask(text)
     names = set()
-    for endpoint, rust in re.findall(r'contract::notification::<\s*contract::(host|sandbox|attach)_notifications::(\w+)\s*,?\s*>', text):
+    for endpoint, rust in re.findall(r'contract::(?:notification|notification_value)::<\s*contract::(host|sandbox|attach)_notifications::(\w+)\s*,?\s*>', code):
         matches = [n["name"] for n in document(endpoint).get("x-notifications", []) if n["x-rust-name"] == rust]
         if len(matches) != 1: raise ValueError("unassigned generated notification emitter")
         names.add(matches[0])
-    for macro in re.finditer(r'\bjson!\s*\(\s*\{', text):
+    for macro in re.finditer(r'\bjson!\s*\(\s*\{', code):
         body = rust_block(text, macro.end() - 1)
         tokens = [token.group() for token in RUST_TOKEN.finditer(body) if not token.group().startswith("/")]
         depth, fields = 0, {}
@@ -431,68 +532,157 @@ def notification_names(text):
     return names
 
 
+def generated_name(endpoint,rust,notification=False):
+    entries=document(endpoint).get("x-notifications",[]) if notification else document(endpoint)["methods"]
+    matches=[entry["name"] for entry in entries if entry["x-rust-name"]==rust]
+    if len(matches)!=1:raise ValueError("unassigned generated "+("notification " if notification else "")+"identity "+endpoint+"/"+rust)
+    return matches[0]
+
+
 def method_names(text):
-    # Include OR patterns, equality checks and matches! lists, not only => arms.
-    literals = set()
+    # Routing patterns/comparisons and actual typed notification operations.
+    # Test items, comments and literal contents never supply Rust identities.
+    code=rust_code_mask(text);names=set()
+    method_pattern=r'contract::(host|sandbox)::(\w+)::NAME'
+    notification_pattern=r'contract::(host|sandbox|attach)_notifications::(\w+)::NAME'
     for pattern in matches_patterns(text):
         for token in RUST_TOKEN.finditer(pattern):
-            match = re.fullmatch(r'"([a-z]+\.[a-z_-]+)"', token.group())
-            if match: literals.add(match[1])
-    for token in RUST_TOKEN.finditer(text):
-        match = re.fullmatch(r'"([a-z]+\.[a-z_-]+)"', token.group())
+            match=re.fullmatch(r'"([a-z]+\.[a-z_-]+)"',token.group())
+            if match:names.add(match[1])
+        for endpoint,rust in re.findall(method_pattern,rust_code_mask(pattern)):
+            names.add(generated_name(endpoint,rust))
+        for endpoint,rust in re.findall(notification_pattern,rust_code_mask(pattern)):
+            names.add(generated_name(endpoint,rust,True))
+    tokens=list(RUST_TOKEN.finditer(text))
+    for i,token in enumerate(tokens):
+        if not code[token.start():token.end()].strip() and not token.literal:continue
+        match=re.fullmatch(r'"([a-z]+\.[a-z_-]+)"',token.group())
+        # Real string tokens inside excluded test items are blank in code;
+        # their neighboring code is blank too. Filter by function/test mask.
         if match:
-            before, after = text[:token.start()], text[token.end():]
-            routing = (re.search(r'(?:==|!=|\|)\s*$', before) or
-                       re.match(r'\s*(?:=>|\|)', after) or
-                       re.search(r'"method"\s*:\s*$', before) or
-                       text.strip() == token.group())
-            if routing: literals.add(match[1])
-    for endpoint, rust in re.findall(r'contract::(host|sandbox)::(\w+)::NAME', text):
-        matches = [entry["name"] for entry in document(endpoint)["methods"] if entry["x-rust-name"] == rust]
-        if len(matches) != 1: raise ValueError(f"unassigned generated identity {endpoint}/{rust}")
-        literals.add(matches[0])
-    for endpoint, rust in re.findall(r'contract::(?:decode_notification|notification)::<\s*contract::(host|sandbox|attach)_notifications::(\w+)\s*,?\s*>', text):
-        matches = [n["name"] for n in document(endpoint).get("x-notifications", []) if n["x-rust-name"] == rust]
-        if len(matches) != 1: raise ValueError("unassigned generated notification identity")
-        literals.add(matches[0])
-    return literals
+            before,after=code[:token.start()],code[token.end():]
+            previous=[t.group() for t in tokens[max(0,i-2):i]]
+            routing=(re.search(r'(?:==|!=|\|)\s*$',before) or
+                     re.match(r'\s*(?:=>|\|)',after) or
+                     previous==['"method"',':'] and code[tokens[i-1].start():tokens[i-1].end()]==':' or
+                     text.strip()==token.group())
+            if routing:names.add(match[1])
+    for regex,is_notification in [(method_pattern,False),(notification_pattern,True)]:
+        for match in re.finditer(regex,code):
+            before,after=code[:match.start()],code[match.end():]
+            if (re.search(r'(?:==|!=|\|)\s*(?:Some\(\s*)?$',before) or
+                re.match(r'\s*(?:=>|\||==|!=)',after) or code.strip()==match.group()):
+                names.add(generated_name(match[1],match[2],is_notification))
+    for endpoint,rust in re.findall(r'contract::(?:decode_notification|notification|notification_value)::<\s*contract::(host|sandbox|attach)_notifications::(\w+)\s*,?\s*>',code):
+        names.add(generated_name(endpoint,rust,True))
+    return names
 
 
 def completion_names(text):
-    text=re.split(r'#\[cfg\(test\)\]\s*mod\s+tests\b',text,maxsplit=1)[0]
+    code=rust_code_mask(text)
     found=set()
-    for rust in re.findall(r'contract::(?:decode_completion|completion_payload|completion_error)::<\s*contract::attach_exchanges::(\w+)\s*,?\s*>',text):
+    for rust in re.findall(r'contract::(?:decode_completion|completion_payload|completion_error)::<\s*contract::attach_exchanges::(\w+)\s*,?\s*>',code):
         matches=[e["name"] for e in document("attach")["x-completions"] if e["x-rust-name"]==rust]
         if len(matches)!=1:raise ValueError("unassigned generated completion identity")
         found.add(matches[0])
     return found
 
 
+def dispatch_pattern_names(text, selector="method"):
+    """Read only arm headers of the function-returning dispatch match."""
+    code=rust_code_mask(text)
+    candidates=[]
+    for match in re.finditer(r'\bmatch\s+'+re.escape(selector)+r'\s*\{',code):
+        prefix=code[:match.start()]
+        if prefix.count('{')!=prefix.count('}'):continue
+        body=rust_block(text,match.end()-1)
+        end=match.end()+len(body)+1
+        if code[end:].strip() not in ("",";"):continue
+        candidates.append(body)
+    if len(candidates)!=1:raise ValueError("missing unique returning method dispatch")
+    body=candidates[0];tokens=list(RUST_TOKEN.finditer(body));values=[t.group() for t in tokens]
+    names=set();i=0
+    while i<len(tokens):
+        while i<len(tokens) and values[i]==',':i+=1
+        if i>=len(tokens):break
+        start=i;depth=0
+        while i+1<len(tokens):
+            value=values[i]
+            if not depth and values[i:i+2]==['=','>']:break
+            if value in ('(','[','{'):depth+=1
+            elif value in (')',']','}'):depth-=1
+            i+=1
+        else:raise ValueError("unrecognized method dispatch arm")
+        names.update(method_names(body[tokens[start].start():tokens[i].start()]))
+        i+=2
+        if i>=len(tokens):raise ValueError("empty method dispatch arm")
+        if values[i]=='{':
+            i=rust_block_end(values,i)+1
+        else:
+            if values[i] in ('if','match','loop','unsafe'):
+                raise ValueError("unsupported unbraced method dispatch body")
+            depth=0
+            while i<len(tokens):
+                value=values[i]
+                if not depth and value==',':i+=1;break
+                if value in ('(','[','{'):depth+=1
+                elif value in (')',']','}'):depth-=1
+                i+=1
+    return names
+
+
+def require_state_update_reader(source):
+    """Tie the notification identity to tick's actual rejection condition."""
+    body=rust_function(source,"tick")
+    tokens=rust_production_lex(body);values=[t.group() for t in tokens]
+    comparison=['value','.','method','.','as_deref','(',')','!','=','Some','(',
+                'contract','::','host_notifications','::','StateChanged','::','NAME',')']
+    rejection=['return','Err','(','"subscription gap; reconnect for a fresh snapshot"']
+    for start,value in enumerate(values):
+        if value!='if':continue
+        i=start+1;depth=0
+        while i<len(tokens):
+            value=values[i]
+            if not depth and value=='{':break
+            if value in ('(','[','{'):depth+=1
+            elif value in (')',']','}'):depth-=1
+            i+=1
+        if i>=len(tokens):continue
+        end=rust_block_end(values,i)
+        if rust_contains(values[start+1:i],comparison) and rust_contains(values[i+1:end],rejection):
+            return
+    raise ValueError("missing notification peer in subscription tick rejection: state.changed")
+
+
 def implementation_methods(sources):
     controller = sources["controller"]
     dispatch = rust_function(controller, "dispatch")
-    messaging = dispatch[dispatch.index("let messaging ="):].split(";", 1)[0]
+    dispatch_code=rust_code_mask(dispatch)
+    start=dispatch_code.index("let messaging =")
+    messaging=dispatch[start:dispatch_code.index(";",start)]
     shared = method_names(rust_function(sources["gate"], "messaging"))
     if method_names(messaging) != shared | {"communications.list"}:
         raise ValueError("host/sandbox messaging routing changed")
-    roles = dispatch[dispatch.rindex("match &c.role"):]
-    host_role, separator, _ = roles.partition("Role::Sandbox(session) =>")
-    if not separator: raise ValueError("missing sandbox dispatch branch")
+    roles = dispatch[dispatch_code.rindex("match &c.role"):]
+    roles_code=rust_code_mask(roles)
+    split=roles_code.find("Role::Sandbox(session) =>")
+    if split<0:raise ValueError("missing sandbox dispatch branch")
+    host_role,separator=roles[:split],"Role::Sandbox(session) =>"
     sandbox_role = rust_block(roles, len(host_role) + len(separator))
-    host = (method_names(rust_function(controller, "host")) |
-            method_names(rust_function(sources["raids"], "host_raids")) |
-            method_names(rust_function(sources["terminals"], "terminals")) |
+    host = (dispatch_pattern_names(rust_function(controller, "host")) |
+            dispatch_pattern_names(rust_function(sources["raids"], "host_raids")) |
+            dispatch_pattern_names(rust_function(sources["terminals"], "terminals")) |
             method_names(host_role) | method_names(messaging) | {"initialize"})
     refused = {"sessions.attach"}
     sandbox = (method_names(sandbox_role) |
-               method_names(rust_function(controller, "sandbox_control")) |
-               method_names(rust_function(sources["raids"], "sandbox_raids")) |
+               dispatch_pattern_names(rust_function(controller, "sandbox_control")) |
+               dispatch_pattern_names(rust_function(sources["raids"], "sandbox_raids")) |
                method_names(rust_function(sources["terminals"], "sandbox_terminals")) |
                shared | {"initialize"}) - refused
     gate = rust_function(sources["gate"], "check")
-    allowed = re.search(r'if\s+!matches!\(\s*method\s*,(.*?)\)\s*\{', gate, re.S)
+    allowed = re.search(r'if\s+!matches!\(\s*method\s*,(.*?)\)\s*\{', rust_code_mask(gate), re.S)
     if allowed is None: raise ValueError("missing sandbox method allowlist")
-    admitted = method_names(allowed.group(1)) | shared | {"initialize"}
+    admitted = method_names(gate[allowed.start(1):allowed.end(1)]) | shared | {"initialize"}
     if sandbox != admitted - refused:
         raise ValueError(f"sandbox gate/controller disagree: {sandbox ^ (admitted - refused)}")
     return {"host": host, "sandbox": sandbox}
@@ -530,10 +720,11 @@ def check_coverage(registry=None, sources=None):
     for source, function, name in checks:
         if name not in method_names(rust_function(sources[source], function)):
             raise ValueError(f"notification exchange changed: {name}")
-    if "contract::host_submitted(" not in sources["sandbox_host_client"]:raise ValueError("missing notification peer: host.submitted")
-    for source, name in [("host_client", "state.changed"), ("exec_client", "exec.signal")]:
+    if "contract::host_submitted(" not in rust_code_mask(sources["sandbox_host_client"]):raise ValueError("missing notification peer: host.submitted")
+    require_state_update_reader(sources["host_client"])
+    for source, name in [("exec_client", "exec.signal")]:
         if name not in method_names(sources[source]): raise ValueError(f"missing notification peer: {name}")
-    if "attach.hello" not in method_names(rust_function(sources["attach_server"],"accept")) or "contract::attach_waiting(" not in sources["attach_client"]:
+    if "attach.hello" not in method_names(rust_function(sources["attach_server"],"accept")) or "contract::attach_waiting(" not in rust_code_mask(sources["attach_client"]):
         raise ValueError("attachment notification peer changed")
     completed=set().union(*(completion_names(sources[key]) for key in ("attach_client","attach_server","legacy_terminal","terminal_runtime")))
     if completion_names(sources["attach_client"])!={"attach.reply","legacy.attach"} or "legacy.attach" not in completion_names(sources["legacy_terminal"]) or "attach.reply" not in completion_names(sources["attach_server"]) or "attach.reply" not in completion_names(sources["terminal_runtime"]):
@@ -544,6 +735,9 @@ def check_coverage(registry=None, sources=None):
     expected_refusals = {("sandbox", "sessions.attach", "C03"), ("host", "*", "C01"), ("sandbox", "*", "C01")}
     if {(row["endpoint"], row["name"], row["chunk"]) for row in registry["refusals"]} != expected_refusals:
         raise ValueError("refusal behavior coverage differs")
+
+    if registry["pending"] or registry["notifications"] or registry["exchanges"]:
+        raise ValueError("public coverage has pending contract assignments")
 
 
 def check_nested_params(entry,params,wire):
@@ -607,61 +801,36 @@ def elisp_readers():
             lines += [f"(defun {accessor} (record)",
                       f'  "Read {field} from the compatible {row["name"]} view RECORD."',
                       f"  (plist-get ({name}-raw record) :{field}))", ""]
+    for row in common().get("x-elisp-identities",[]):
+        lines += [f'(defconst {row["name"]} \'{row["method"]})', ""]
     lines += ["(provide 'goblins-api-generated)", ";;; goblins-api-generated.el ends here", ""]
     return "\n".join(lines)
 
 
-def rust_production_tokens(source):
-    """Tokenize code, excluding comments, literal contents and cfg(test) items.
-
-    This recognizes the construction syntax used by these four producer files;
-    Rust compilation remains responsible for type/name resolution.
-    """
-    tokens=[];i=0
-    while i<len(source):
-        if source[i].isspace():i+=1;continue
-        if source.startswith('//',i):
-            end=source.find('\n',i);i=len(source) if end<0 else end+1;continue
-        if source.startswith('/*',i):
-            depth=1;i+=2
-            while depth and i<len(source):
-                if source.startswith('/*',i):depth+=1;i+=2
-                elif source.startswith('*/',i):depth-=1;i+=2
-                else:i+=1
-            if depth:raise ValueError('unclosed Rust comment')
-            continue
-        raw=re.match(r'(?:br|cr|r)(#*)"',source[i:])
-        if raw:
-            close='"'+raw[1];end=source.find(close,i+raw.end())
-            if end<0:raise ValueError('unclosed Rust raw string')
-            tokens.append('<literal>');i=end+len(close);continue
-        string=re.match(r'(?:b|c)?"',source[i:])
-        if string:
-            i+=string.end()
-            while i<len(source) and source[i]!='"':i+=2 if source[i]=='\\' else 1
-            if i>=len(source):raise ValueError('unclosed Rust string')
-            i+=1;tokens.append('<literal>');continue
-        char=re.match(r"(?:b)?'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\])'",source[i:])
-        if char:tokens.append('<literal>');i+=char.end();continue
-        ident=re.match(r'[A-Za-z_][A-Za-z0-9_]*',source[i:])
-        if ident:tokens.append(ident[0]);i+=ident.end();continue
-        if source.startswith('::',i):tokens.append('::');i+=2;continue
-        tokens.append(source[i]);i+=1
-    # Exclude actual test items, rather than splitting at text in a comment.
+def rust_production_lex(source):
+    """Keep literal tokens intact while excluding actual cfg(test) items."""
+    tokens=rust_lex(source)
+    values=[token.value for token in tokens]
     result=[];i=0
     while i<len(tokens):
-        if tokens[i:i+7]==['#','[','cfg','(','test',')',']']:
+        if values[i:i+7]==['#','[','cfg','(','test',')',']']:
             i+=7;depth=0
             while i<len(tokens):
-                token=tokens[i]
-                if token in ('(','['):depth+=1
-                elif token in (')',']'):depth-=1
-                elif not depth and token==';':i+=1;break
-                elif not depth and token=='{':
-                    i=rust_block_end(tokens,i)+1;break
+                value=values[i]
+                if value in ('(','['):depth+=1
+                elif value in (')',']'):depth-=1
+                elif not depth and value==';':i+=1;break
+                elif not depth and value=='{':
+                    i=rust_block_end(values,i)+1;break
                 i+=1
         else:result.append(tokens[i]);i+=1
     return result
+
+
+def rust_production_tokens(source):
+    """Code tokens for the construction guard, using the shared literal lexer."""
+    return ['<literal>' if token.literal else token.value
+            for token in rust_production_lex(source)]
 
 
 def rust_block_end(tokens,start):
@@ -794,8 +963,23 @@ def check_communication_readers_and_producers(*, sources=None, schema=None):
         if any(not re.fullmatch(r"[a-z]+(?:_[a-z]+)*",field) or field=="raw" for field in row["fields"]):raise ValueError("invalid Elisp field")
 
 
+def check_generated_reader_hooks_and_identities():
+    for name,row in common()["x-rust-serde-records"].items():
+        hooks=row.get("deserialize-with",{})
+        expected={"sessions":"crate::contract::snapshot_sessions","permissions":"crate::contract::snapshot_permissions","raids":"crate::contract::snapshot_raids"} if name=="StateSnapshotReply" else {}
+        if hooks!=expected:raise ValueError("snapshot field reader hook differs")
+    names=set()
+    for row in common().get("x-elisp-identities",[]):
+        if row["name"] in names or not re.fullmatch(r"goblins-api-[a-z]+(?:-[a-z]+)*",row["name"]):raise ValueError("invalid generated Elisp identity")
+        names.add(row["name"])
+        entries=document(row["endpoint"])["methods" if row["kind"]=="method" else "x-notifications"]
+        matches=[entry for entry in entries if entry["name"]==row["method"]]
+        if len(matches)!=1 or row.get("direction")!=matches[0].get("direction"):raise ValueError("generated Elisp identity differs")
+
+
 def check():
     check_references()
+    check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()
     for name, record in common().get("x-rust-serde-records",{}).items():
         props=common()["definitions"][name]["properties"]
@@ -867,7 +1051,7 @@ def check():
                 raise ValueError(f"positional schema differs from method parameter order: {entry['name']}")
             if entry.get("x-null-params-as-empty") and entry.get("paramStructure") != "by-name": raise ValueError("invalid nullable-object contract")
             direct=entry.get("x-direct-serde-params",False)
-            expected_direct=endpoint=="host" and entry["name"] in ("history.list","history.prune")
+            expected_direct=endpoint=="host" and entry["name"] in ("history.list","history.prune","state.subscribe","state.unsubscribe")
             if type(direct) is not bool or direct!=expected_direct:raise ValueError("direct Serde parameter strategy differs")
             if direct and (entry.get("paramStructure")!="either" or entry.get("x-null-params-as-empty") or entry.get("x-nested-positional-params") or entry.get("x-client-param-normalization")):raise ValueError("direct Serde cannot normalize parameters")
 
@@ -880,7 +1064,7 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"history.list":"history-list-fields","history.prune":"history-prune-fields","communications.list":"communications-page-fields","raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("messages.get","messages.send","messages.reply","inbox.next","inbox.complete","inbox.requeue","raids.create","raids.leave","raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"state.subscribe":"state-subscribe-fields","state.unsubscribe":"ignore-successful-body","history.list":"history-list-fields","history.prune":"history-prune-fields","communications.list":"communications-page-fields","raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("messages.get","messages.send","messages.reply","inbox.next","inbox.complete","inbox.requeue","raids.create","raids.leave","raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"$ref":"common.json#/x-client-result-schemas/PermissionListReply"} if entry["name"]=="permissions.list" else {"$ref":"common.json#/x-client-result-schemas/PermissionRecordReply"} if entry["name"]=="permissions.get" else {"type":"object"} if entry["name"]=="devshell.diff" else {"$ref":"common.json#/x-client-result-schemas/HistoryPruneReply"} if entry["name"]=="history.prune" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-client-param-normalization" in entry:

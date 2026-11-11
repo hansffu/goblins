@@ -22150,5 +22150,592 @@
       },
       "valid": false
     }
+  ],
+  "state_parameter_cases": [
+    {
+      "method": "state.subscribe",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "state.subscribe",
+      "params": [],
+      "valid": true
+    },
+    {
+      "method": "state.subscribe",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "state.subscribe",
+      "params": [
+        1
+      ],
+      "valid": false
+    },
+    {
+      "method": "state.subscribe",
+      "params": {
+        "future": true
+      },
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": {
+        "subscription": "sub"
+      },
+      "valid": true
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": [
+        "sub"
+      ],
+      "valid": true
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": {
+        "subscription": ""
+      },
+      "valid": true
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": [
+        1
+      ],
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": [
+        "sub",
+        0
+      ],
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": {
+        "subscription": 0
+      },
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "params": {
+        "subscription": "sub",
+        "future": true
+      },
+      "valid": false
+    }
+  ],
+  "state_result_cases": [
+    {
+      "method": "state.subscribe",
+      "result": {
+        "subscription": "sub",
+        "sequence": 0,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "method": "state.unsubscribe",
+      "result": {
+        "accepted": true
+      },
+      "valid": true
+    },
+    {
+      "method": "state.subscribe",
+      "result": {
+        "subscription": null,
+        "sequence": 0,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "state.subscribe",
+      "result": {
+        "subscription": "sub",
+        "sequence": -1,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "state.subscribe",
+      "result": {
+        "subscription": "sub",
+        "sequence": 1.0,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "state.subscribe",
+      "result": {
+        "subscription": "sub",
+        "sequence": true,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "state.subscribe",
+      "result": {
+        "subscription": "sub",
+        "sequence": 18446744073709551616,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "state.subscribe",
+      "result": {
+        "subscription": "sub",
+        "sequence": 0,
+        "snapshot": {
+          "instance": "i"
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "result": {
+        "accepted": false
+      },
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "result": {
+        "accepted": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "state.unsubscribe",
+      "result": {},
+      "valid": false
+    }
+  ],
+  "state_snapshot_cases": [
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        },
+        "future": [
+          true,
+          null
+        ]
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sessions": [],
+        "permissions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "permissions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": [],
+        "raids": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": null,
+        "sessions": [],
+        "permissions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": null,
+        "permissions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": {},
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": [],
+        "raids": [
+          null
+        ],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": [],
+        "raids": [],
+        "messaging": {}
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": 0,
+          "raid_audit_failed": false
+        }
+      },
+      "valid": false
+    }
+  ],
+  "state_notification_cases": [
+    {
+      "params": {
+        "subscription": "sub",
+        "sequence": 1,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "params": {
+        "subscription": null,
+        "sequence": 1,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "subscription": "sub",
+        "sequence": -1,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "subscription": "sub",
+        "sequence": 1.0,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "subscription": "sub",
+        "sequence": true,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "subscription": "sub",
+        "sequence": 1,
+        "snapshot": {
+          "instance": "i"
+        }
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "sequence": 1,
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "subscription": "sub",
+        "snapshot": {
+          "instance": "i",
+          "sessions": [],
+          "permissions": [],
+          "raids": [],
+          "messaging": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "subscription": "sub",
+        "sequence": 1
+      },
+      "valid": false
+    }
+  ],
+  "state_legacy_initial_cases": [
+    null,
+    [],
+    17,
+    {},
+    {
+      "subscription": 0,
+      "sequence": "1",
+      "snapshot": null
+    },
+    {
+      "subscription": "sub",
+      "sequence": 1.0,
+      "snapshot": {
+        "instance": "i"
+      }
+    },
+    {
+      "subscription": "sub",
+      "sequence": 18446744073709551615,
+      "snapshot": {
+        "instance": "other",
+        "sessions": [],
+        "permissions": []
+      }
+    },
+    {
+      "subscription": "sub",
+      "sequence": 0,
+      "snapshot": {
+        "instance": "i",
+        "sessions": [],
+        "permissions": [],
+        "raids": [],
+        "messaging": {
+          "audit_failed": false,
+          "raid_audit_failed": false
+        }
+      }
+    }
   ]
 }

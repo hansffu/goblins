@@ -97,6 +97,82 @@ impl HistoryDisplayRecord {
     }
 }
 
+/// Nested snapshot readers run during field deserialization, preserving
+/// original errors and precedence before any UI/domain conversion.
+pub fn snapshot_sessions<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<HostSessionReply>, D::Error> {
+    Vec::<Value>::deserialize(d)?
+        .into_iter()
+        .map(|value| {
+            if value.get("scope").is_some() && value.get("docker_scope").is_some() {
+                return Err(serde::de::Error::custom("duplicate scope and docker_scope"));
+            }
+            let record = HostSessionReply::decode(value).map_err(serde::de::Error::custom)?;
+            if record.agent_name.is_none() {
+                return Err(serde::de::Error::custom(
+                    "snapshot session requires agent_name",
+                ));
+            }
+            record
+                .agent_state
+                .parse::<crate::AgentState>()
+                .map_err(|_| serde::de::Error::custom("invalid snapshot agent_state"))?;
+            Ok(record)
+        })
+        .collect()
+}
+pub fn snapshot_permissions<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<PermissionRecordReply>, D::Error> {
+    Vec::<Value>::deserialize(d)?
+        .into_iter()
+        .map(|value| PermissionRecordReply::decode(value).map_err(serde::de::Error::custom))
+        .collect()
+}
+pub fn snapshot_raids<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<RaidRecordReply>, D::Error> {
+    Vec::<Value>::deserialize(d)?
+        .into_iter()
+        .map(|value| RaidRecordReply::decode(value).map_err(serde::de::Error::custom))
+        .collect()
+}
+impl Response for StateSubscribeReply {
+    const SCHEMA: &'static str = "StateSubscribeReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            subscription: value
+                .get("subscription")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            sequence: value.get("sequence").and_then(Value::as_u64),
+            snapshot: value.get("snapshot").cloned().unwrap_or(Value::Null),
+        })
+    }
+}
+impl StateChangedRead {
+    pub fn project(value: &Value) -> Self {
+        let params = value.get("params").unwrap_or(&Value::Null);
+        Self {
+            jsonrpc: value
+                .get("jsonrpc")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            method: value
+                .get("method")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            subscription: params
+                .get("subscription")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            sequence: params.get("sequence").and_then(Value::as_u64),
+            snapshot: params.get("snapshot").cloned().unwrap_or(Value::Null),
+        }
+    }
+}
+
 /// Resolve only the historical fields this reader has always consumed.
 impl CommunicationSessionStartedRead {
     pub fn name(&self) -> &str {
@@ -313,6 +389,9 @@ pub fn attach_waiting(value: &Value) -> Option<AttachWaitingReply> {
 }
 
 pub fn notification<N: Notification>(params: N::Params) -> serde_json::Result<Value> {
+    notification_value::<N>(&params)
+}
+pub fn notification_value<N: Notification>(params: &N::Params) -> serde_json::Result<Value> {
     Ok(
         serde_json::json!({"jsonrpc":"2.0", "method":N::NAME, "params":serde_json::to_value(params)?}),
     )

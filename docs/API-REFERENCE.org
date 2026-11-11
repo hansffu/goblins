@@ -6589,6 +6589,183 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =state.subscribe=
+
+Host-only subscription. Decode original closed Empty params directly before checking an existing subscription; publish all earlier dirty mutations before assigning a fresh ID and taking the initial full snapshot. Sequence is global u64, including zero before publication. Client consumes its connection, sets nonblocking before validating subscription/sequence/snapshot, and retains original missing-field messages, compatible nested records and initial cross-instance acceptance. Ordinary host calls preserve the subscription; explicit unsubscribe and server.stop cancel it.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "snapshot": {
+      "$ref": "#/definitions/StateSnapshot"
+    }
+  },
+  "required": [
+    "subscription",
+    "sequence",
+    "snapshot"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =state-subscribe-fields= adapter: Project string subscription, u64 sequence and raw snapshot independently; preserve validation only after nonblocking setup in the Rust consumer, including original missing-field diagnostics and initial cross-instance acceptance. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sequence": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "snapshot": {}
+  },
+  "required": [
+    "subscription",
+    "sequence",
+    "snapshot"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =state.unsubscribe=
+
+Host-only explicit cancellation. Direct original Subscription Serde named/positional decoding precedes exact active-ID check; wrong/stale/repeated IDs return -32009. A successful call clears the subscription and returns accepted:true. Rust dropping a subscription closes its stream without sending this method.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "subscription"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "const": true
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
 ** Notification =exec.signal=
 
 exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.
@@ -6624,6 +6801,49 @@ Positional parameters:
   ],
   "minItems": 1,
   "maxItems": 1
+}
+#+end_src
+
+** Notification =state.changed=
+
+Full replacement snapshot emitted only after a dirty publication, after raid reconciliation and bounded eviction. All subscribers observe the same global next sequence. Keep unevictable active permissions/runtime authority; finalized permissions then oldest evictable runtime-less sessions are discarded until the serialized snapshot fits900KiB or no safe eviction remains. Existing encoded-frame/2MiB connection queue overflow disconnects a slow subscriber. Rust tick reads/consumes at most16384bytes per iteration, buffers partial frames, checks method/subscription/next sequence and instance, and commits each valid replacement before any later frame error. EOF is checked before buffered data. Extra outer fields/IDs remain accepted by the compatible Rust reader. Emacs keeps partial snapshots and its signed arbitrary integer sequence policy; no strict full payload decoder is added there.
+
+Direction: =server-to-client=. Sender: daemon. Receiver: host subscriber. State: active subscription.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "snapshot": {
+      "$ref": "#/definitions/StateSnapshot"
+    }
+  },
+  "required": [
+    "subscription",
+    "sequence",
+    "snapshot"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
 }
 #+end_src
 
@@ -12377,6 +12597,66 @@ Original Serde container names, field order, required nullable sequence slots an
       "before",
       "keep",
       "dry_run"
+    ]
+  },
+  "StateMessagingHealth": {
+    "name": "Health",
+    "order": [
+      "audit_failed",
+      "raid_audit_failed"
+    ]
+  },
+  "StateSnapshotReply": {
+    "name": "Snapshot",
+    "order": [
+      "instance",
+      "sessions",
+      "permissions",
+      "raids",
+      "messaging"
+    ],
+    "emit-defaults": [
+      "raids",
+      "messaging"
+    ],
+    "deserialize-with": {
+      "sessions": "crate::contract::snapshot_sessions",
+      "permissions": "crate::contract::snapshot_permissions",
+      "raids": "crate::contract::snapshot_raids"
+    }
+  },
+  "StateUnsubscribeParams": {
+    "name": "Subscription",
+    "order": [
+      "subscription"
+    ]
+  },
+  "StateSubscribeReply": {
+    "name": "StateSubscribeReply",
+    "order": [
+      "subscription",
+      "sequence",
+      "snapshot"
+    ],
+    "required-nullable": [
+      "subscription",
+      "sequence"
+    ]
+  },
+  "StateChangedRead": {
+    "name": "StateChangedRead",
+    "order": [
+      "jsonrpc",
+      "method",
+      "subscription",
+      "sequence",
+      "snapshot"
+    ],
+    "required-nullable": [
+      "jsonrpc",
+      "method",
+      "subscription",
+      "sequence"
     ]
   }
 }
@@ -23876,6 +24156,312 @@ Original Serde container names, field order, required nullable sequence slots an
 }
 #+end_src
 
+** =StateMessagingHealth=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "audit_failed": {
+      "type": "boolean"
+    },
+    "raid_audit_failed": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "audit_failed",
+    "raid_audit_failed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =StateSnapshot=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "instance": {
+      "type": "string"
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HostSession"
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PermissionRecord"
+      }
+    },
+    "raids": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RaidRecord"
+      }
+    },
+    "messaging": {
+      "$ref": "#/definitions/StateMessagingHealth"
+    }
+  },
+  "required": [
+    "instance",
+    "sessions",
+    "permissions",
+    "raids",
+    "messaging"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =StateSnapshotReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "instance": {
+      "type": "string"
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HostSessionReply"
+      }
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PermissionRecordReply"
+      }
+    },
+    "raids": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RaidRecordReply"
+      },
+      "default": []
+    },
+    "messaging": {
+      "$ref": "#/definitions/StateMessagingHealth",
+      "default": {
+        "audit_failed": false,
+        "raid_audit_failed": false
+      }
+    }
+  },
+  "required": [
+    "instance",
+    "sessions",
+    "permissions"
+  ],
+  "additionalProperties": true,
+  "description": "Compatible Rust snapshot reader: instance/sessions/permissions required; raids defaults empty and messaging defaults false/false only when absent. Nested arrays decode through original compatible row readers during field deserialization, preserving aliases, fallback, errors and precedence. Unknown top-level fields accepted. Emacs has a separate looser partial snapshot/integer policy."
+}
+#+end_src
+
+** =StateUnsubscribeParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "subscription"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =StateSubscribeResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "snapshot": {
+      "$ref": "#/definitions/StateSnapshot"
+    }
+  },
+  "required": [
+    "subscription",
+    "sequence",
+    "snapshot"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =StateSubscribeReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sequence": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "snapshot": {}
+  },
+  "required": [
+    "subscription",
+    "sequence",
+    "snapshot"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =StateChangedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "subscription": {
+      "type": "string"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "snapshot": {
+      "$ref": "#/definitions/StateSnapshot"
+    }
+  },
+  "required": [
+    "subscription",
+    "sequence",
+    "snapshot"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =StateChangedRead=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "jsonrpc": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "method": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "subscription": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sequence": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "snapshot": {}
+  },
+  "required": [
+    "jsonrpc",
+    "method",
+    "subscription",
+    "sequence",
+    "snapshot"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =StateUnsubscribeResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "const": true
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -23983,3 +24569,4 @@ Original Serde container names, field order, required nullable sequence slots an
 - =communications-page-reader= :: The CLI page reader normalizes fields independently: events only as array of raw JSON values, cursor/latest only as u64, session only as string. Missing/malformed values remain absent so the caller retains original event printing and page/cursor/sequence error order; successful legacy bodies gain no new early refusal. The canonical producer result stays strict. C13b owns event-data consumers.
 - =communications-typed-payloads= :: Generated CommunicationKind markers bind each known kind to its DTO; CommunicationPayload keeps its fields private and exposes only a paired kind/data result. Raid and operation domain enums retain authority and map into these DTOs; public stored envelopes remain compatible String/Value readers. Canonical kind/data and delivered/undelivered/correlation constraints stay in JSON schema; only CommunicationsEvent, CommRaidNoticeData, CommOperationCompletedData, CommMessageAcceptedChange and CommMessageRepliedChange allOf clauses are omitted from the generator clone because Typify cannot express conditionals/cross-field relations. Existing producer branches and independent original-wire comparisons enforce runtime construction. Mutation markers bind their method-specific wrapper and generated change DTO; retry IDs are projected from internally generated cached results, retaining null when no ID exists. Session and recipient producers use generated bindings too. Compatible readers are separate from strict producer DTOs: the offline reader projects only independent string fields into CommunicationSessionStartedRead; generated lazy Emacs record views retain raw plist values and original evaluation/errors. Raw stored payloads remain intentionally open for unknown, malformed or partial historical data. Producer registry and source checks cover all22 known kinds. Canonical accepted/replied schemas preserve newly created message state/zero generation/null failure, accepted host/null versus raid/string correlation and null in_reply_to, and replied in_reply_to/completed equality. Requeue reason remains nonempty with a 512-byte UTF-8 limit; generated String replacements leave the existing Mutation validator authoritative.
 - =history-persistence-and-readers= :: Public history records are generated projections from the existing closed persisted Record domain type; persisted loader/version normalization/writer/order/locks and recreation reservations remain handwritten. No file rewrite. Prune generated parameters retain original Prune name/field order/default emission; selection remains a local extension trait. HistoryListResult canonical version3/online-boolean-running allOf is omitted only in Typify input; producer follows the original store/live state. Offline generated projection emits running:null. Rust display/list/prune readers project legacy fields independently, preserve raw record arrays and failed rows, preserve failed-before-removed Serde diagnostics and original fallback/printing behavior. Lazy generated Emacs field views retain partial/malformed record behavior. The two host history methods explicitly use generated direct-Serde parameter decoding, with preserved DTO field order/default slots. Positional arrays are not normalized to objects, preserving original excess-length messages and first-invalid-field precedence; other endpoint methods keep their existing decoding strategy.
+- =state-snapshot-and-stream-readers= :: Strict StateSnapshot/current subscription and notification records are generated separately from the compatible Snapshot reader. Generated nested field hooks preserve original row validation and error order, including duplicate scope aliases, required agent_name and valid AgentState before domain conversion. Required top-level sessions/permissions are not defaulted; absent raids/health are defaulted and still emitted. UI/domain Snapshot remains a local view converted from the generated reader. Initial reply and tick projections retain raw snapshots for validation at the original point; initial cross-instance acceptance, no-data/EOF/budget/frame sequencing, partial commits and stream-drop behavior stay handwritten. Lazy Emacs records and generated identities retain partial snapshot/signed integer behavior. state.subscribe/unsubscribe use original direct-Serde params to preserve dispatch diagnostics. C15b separately repairs the independently confirmed earlier sessions.resize positional-diagnostic regression; it is not an ignored test or a claim of whole-public diagnostic equivalence.

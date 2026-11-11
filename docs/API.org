@@ -122,6 +122,14 @@ Ends this connection's subscription.
 - Input :: ={"subscription"}=
 - Output :: ={"accepted": true}=
 
+State methods are host-only, and state.changed is a daemon-to-host notification on an active subscription, not a callable method. Named params are closed; original positional forms are =[]= and =[subscription]=. The generated parameter types retain direct Serde decoding, including original type, unknown-field and excess-length errors. Invalid params return -32602; existing or stale subscriptions and a stopping server return -32009. A request decodes before its subscription conflict check. Ordinary host calls preserve subscriptions; state.unsubscribe and server.stop clear them.
+
+A new subscription first publishes earlier dirty mutations, then assigns its ID and returns the global sequence with a full current snapshot. The sequence is an unsigned 64-bit JSON integer and can initially be zero. A dirty publication reconciles raid state, increments the global sequence once and sends every subscriber ={"jsonrpc":"2.0","method":"state.changed","params":{"subscription","sequence","snapshot"}}= with no request ID. No dirty state means no publication. Unsubscribe replies accepted:true, requires the exact active ID and emits no later updates for that subscription; repeated or stale IDs conflict.
+
+Rust initial readers independently project string subscription, u64 sequence and raw snapshot, set the stream nonblocking, then retain the original missing-subscription/missing-sequence/snapshot errors. They accept an initial snapshot instance different from initialize, as before. Update readers preserve additional outer fields (including id), enforce jsonrpc/method/subscription/next sequence, then decode a compatible snapshot and check its instance before replacing cached state. A good frame preceding a bad frame remains committed even when the same tick returns an error. Each tick reads and consumes at most 16384 bytes, retains partial frames/no-data behavior, and checks EOF before buffered input; dropping the subscription closes its stream without an unsubscribe RPC. Decoder/queue bounds and cleanup ownership remain unchanged.
+
+Emacs uses generated lazy field views and method/notification identities while retaining its separate compatibility policy: initial and update boundaries can accept a partial snapshot containing instance, and sequences use integerp, including signed and arbitrarily large integers. Existing callback order, failed-stream cleanup, snapshot replacement and rendering remain unchanged. These client policies do not weaken the strict current-producer schema and are not replaced by full snapshot validation at a new point.
+
 ** Sessions
 
 *** =sessions.list=
@@ -645,7 +653,9 @@ Optional values are JSON null. Timestamps are Unix milliseconds.
 | =raids=       | =[Raid]=                                                        |
 | =messaging=   | ={"audit_failed", "raid_audit_failed"}=: messaging stops while the log fails |
 
-Snapshots are capped at 900 KiB; settled permission records and stopped sessions are evicted first.
+Current snapshot producers emit all five fields. Rust compatible readers require instance, sessions and permissions, default absent raids to an empty array and absent messaging to false/false, and retain compatible nested record aliases/defaults. A present malformed array or health object remains an error; unknown top-level fields are accepted. Sessions, permission and raid row validation occurs during each field's deserialization, retaining original error precedence; duplicate scope/docker_scope session fields, missing agent_name and invalid AgentState retain their prior errors. Messaging audit_failed stops mailbox operations; raid_audit_failed stops raid routes while existing control/cleanup authority remains in the state machine.
+
+Publication aims for 900 KiB of serialized snapshot data. It evicts finalized permission rows first, then oldest evictable sessions without a runtime, and stops if further eviction would discard active authority. Unevictable pending/realizing/mounting/publishing/running permissions remain. Snapshots fully replace the prior view, including evicted rows. Encoded frame and connection output-queue bounds remain hard limits; a subscriber exceeding them is disconnected.
 
 ** Session
 

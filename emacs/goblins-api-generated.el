@@ -185,5 +185,45 @@
   "Read name from the compatible history-skipped view RECORD."
   (plist-get (goblins-api-history-skipped-raw record) :name))
 
+(cl-defstruct (goblins-api-state-subscription (:constructor goblins-api-state-subscription (raw))) raw)
+
+(defun goblins-api-state-subscription-subscription (record)
+  "Read subscription from the compatible state-subscription view RECORD."
+  (plist-get (goblins-api-state-subscription-raw record) :subscription))
+
+(defun goblins-api-state-subscription-sequence (record)
+  "Read sequence from the compatible state-subscription view RECORD."
+  (plist-get (goblins-api-state-subscription-raw record) :sequence))
+
+(defun goblins-api-state-subscription-snapshot (record)
+  "Read snapshot from the compatible state-subscription view RECORD."
+  (plist-get (goblins-api-state-subscription-raw record) :snapshot))
+
+(cl-defstruct (goblins-api-state-change (:constructor goblins-api-state-change (raw))) raw)
+
+(defun goblins-api-state-change-subscription (record)
+  "Read subscription from the compatible state-change view RECORD."
+  (plist-get (goblins-api-state-change-raw record) :subscription))
+
+(defun goblins-api-state-change-sequence (record)
+  "Read sequence from the compatible state-change view RECORD."
+  (plist-get (goblins-api-state-change-raw record) :sequence))
+
+(defun goblins-api-state-change-snapshot (record)
+  "Read snapshot from the compatible state-change view RECORD."
+  (plist-get (goblins-api-state-change-raw record) :snapshot))
+
+(cl-defstruct (goblins-api-state-snapshot (:constructor goblins-api-state-snapshot (raw))) raw)
+
+(defun goblins-api-state-snapshot-instance (record)
+  "Read instance from the compatible state-snapshot view RECORD."
+  (plist-get (goblins-api-state-snapshot-raw record) :instance))
+
+(defconst goblins-api-state-subscribe 'state.subscribe)
+
+(defconst goblins-api-state-unsubscribe 'state.unsubscribe)
+
+(defconst goblins-api-state-changed 'state.changed)
+
 (provide 'goblins-api-generated)
 ;;; goblins-api-generated.el ends here

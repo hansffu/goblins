@@ -1,20 +1,6 @@
 {
-  "pending": {
-    "C15": {
-      "host": [
-        "state.subscribe",
-        "state.unsubscribe"
-      ]
-    }
-  },
-  "notifications": [
-    {
-      "endpoint": "host",
-      "name": "state.changed",
-      "direction": "server-to-client",
-      "chunk": "C15"
-    }
-  ],
+  "pending": {},
+  "notifications": [],
   "exchanges": [],
   "refusals": [
     {

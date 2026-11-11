@@ -3,7 +3,7 @@ use crate::Result;
 use crate::controller::PermissionRecord;
 use crate::controller::Snapshot;
 use goblins_jsonrpc::{self as rpc, Decoder};
-use goblins_protocol::contract::{self, Method, Response};
+use goblins_protocol::contract::{self, Method, Notification, Response};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -195,18 +195,16 @@ impl Client {
         )
     }
     pub fn subscribe(mut self) -> Result<Subscription> {
-        let value = self.call("state.subscribe", json!({}))?;
+        let value =
+            self.call_typed::<contract::host::StateSubscribe>(contract::MailboxStatusParams {})?;
         self.stream.set_nonblocking(true)?;
         Ok(Subscription {
             stream: self.stream,
             decoder: Decoder::new(rpc::MAX_BODY, None),
             input: VecDeque::new(),
-            id: value["subscription"]
-                .as_str()
-                .ok_or("missing subscription")?
-                .into(),
-            sequence: value["sequence"].as_u64().ok_or("missing sequence")?,
-            snapshot: serde_json::from_value(value["snapshot"].clone())?,
+            id: value.subscription.ok_or("missing subscription")?,
+            sequence: value.sequence.ok_or("missing sequence")?,
+            snapshot: serde_json::from_value(value.snapshot)?,
         })
     }
 }
@@ -239,15 +237,16 @@ impl Subscription {
             };
             if let (_, Some(body)) = self.decoder.push(&[byte], Instant::now())? {
                 let value = rpc::parse(&body)?;
-                let p = &value["params"];
-                if value["jsonrpc"] != "2.0"
-                    || value["method"] != "state.changed"
-                    || p["subscription"] != self.id
-                    || p["sequence"].as_u64() != Some(self.sequence + 1)
+                let value = contract::StateChangedRead::project(&value);
+                if value.jsonrpc.as_deref() != Some("2.0")
+                    || value.method.as_deref()
+                        != Some(contract::host_notifications::StateChanged::NAME)
+                    || value.subscription.as_deref() != Some(self.id.as_str())
+                    || value.sequence != Some(self.sequence + 1)
                 {
                     return Err("subscription gap; reconnect for a fresh snapshot".into());
                 }
-                let snapshot: Snapshot = serde_json::from_value(p["snapshot"].clone())?;
+                let snapshot: Snapshot = serde_json::from_value(value.snapshot)?;
                 if snapshot.instance != self.snapshot.instance {
                     return Err("daemon instance changed; reconnect".into());
                 }
@@ -821,4 +820,211 @@ mod tests {
         drop(client);
         assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
     }
+    fn c15_snapshot() -> Snapshot {
+        serde_json::from_value(json!({"instance":"i","sessions":[],"permissions":[]})).unwrap()
+    }
+    fn c15_subscription() -> (Subscription, UnixStream) {
+        let (stream, peer) = UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+        peer.set_write_timeout(Some(rpc::TIMEOUT)).unwrap();
+        (
+            Subscription {
+                stream,
+                decoder: Decoder::new(rpc::MAX_BODY, None),
+                input: VecDeque::new(),
+                id: "sub".into(),
+                sequence: 1,
+                snapshot: c15_snapshot(),
+            },
+            peer,
+        )
+    }
+    fn c15_change(sequence: u64, snapshot: Value) -> Value {
+        json!({"jsonrpc":"2.0","method":"state.changed","params":{"subscription":"sub","sequence":sequence,"snapshot":snapshot}})
+    }
+    #[test]
+    fn c15_subscribe_preserves_outbound_request_initial_defaults_and_errors() {
+        let _no_forks = goblins_unix::no_forks();
+        let snapshot = json!({"instance":"i","sessions":[],"permissions":[]});
+        for (reply, error) in [
+            (
+                json!({"subscription":"sub","sequence":0,"snapshot":snapshot,"future":true}),
+                None,
+            ),
+            (
+                json!({"subscription":"sub","sequence":u64::MAX,"snapshot":snapshot}),
+                None,
+            ),
+            (
+                json!({"subscription":"sub","sequence":0,"snapshot":{"instance":"other","sessions":[],"permissions":[]}}),
+                None,
+            ),
+            (
+                json!({"sequence":0,"snapshot":snapshot}),
+                Some("missing subscription"),
+            ),
+            (
+                json!({"subscription":17,"sequence":0,"snapshot":snapshot}),
+                Some("missing subscription"),
+            ),
+            (
+                json!({"subscription":"sub","snapshot":snapshot}),
+                Some("missing sequence"),
+            ),
+            (
+                json!({"subscription":"sub","sequence":1.0,"snapshot":snapshot}),
+                Some("missing sequence"),
+            ),
+            (
+                json!({"subscription":"sub","sequence":0,"snapshot":{"sessions":[],"permissions":[]}}),
+                Some("missing field `instance`"),
+            ),
+        ] {
+            std::thread::scope(|scope| {
+                let (stream, mut peer) = UnixStream::pair().unwrap();
+                stream.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+                stream.set_write_timeout(Some(rpc::TIMEOUT)).unwrap();
+                peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+                peer.set_write_timeout(Some(rpc::TIMEOUT)).unwrap();
+                let sequence = reply["sequence"].as_u64();
+                let expected_instance = reply["snapshot"]["instance"].as_str().map(str::to_owned);
+                let server = scope.spawn(move || {
+                    let call = rpc::read(&mut peer).unwrap();
+                    assert_eq!(
+                        call,
+                        json!({"jsonrpc":"2.0","id":1,"method":"state.subscribe","params":{}})
+                    );
+                    peer.write_all(&rpc::encode(&rpc::result(call["id"].clone(), reply)).unwrap())
+                        .unwrap();
+                });
+                let client = Client {
+                    instance: "i".into(),
+                    features: vec![],
+                    stream,
+                    next: 0,
+                };
+                match (client.subscribe(), error) {
+                    (Ok(subscription), None) => {
+                        assert_eq!(subscription.id, "sub");
+                        assert_eq!(Some(subscription.sequence), sequence);
+                        assert_eq!(
+                            json!(subscription.snapshot),
+                            json!({"instance":expected_instance.unwrap(),"sessions":[],"permissions":[],"raids":[],"messaging":{"audit_failed":false,"raid_audit_failed":false}})
+                        );
+                        drop(subscription);
+                    }
+                    (Err(actual), Some(expected)) => assert_eq!(actual.to_string(), expected),
+                    (Ok(_), Some(expected)) => panic!("accepted invalid initial result: {expected}"),
+                    (Err(error), None) => panic!("refused legacy initial result: {error}"),
+                }
+                server.join().unwrap();
+            });
+        }
+    }
+
+    #[test]
+    fn c15_tick_preserves_partial_frames_budget_replacement_and_drop() {
+        let _no_forks = goblins_unix::no_forks();
+        let (mut sub, mut peer) = c15_subscription();
+        assert!(!sub.tick().unwrap());
+        let mut replacement = json!(c15_snapshot());
+        replacement["messaging"]["audit_failed"] = json!(true);
+        // The original reader ignores additive outer fields and even an id.
+        let mut additive = c15_change(2, replacement.clone());
+        additive["id"] = json!(17);
+        additive["future"] = json!(true);
+        let frame = rpc::encode(&additive).unwrap();
+        let half = frame.len() / 2;
+        sub.input.extend(&frame[..half]);
+        assert!(!sub.tick().unwrap());
+        assert_eq!(sub.sequence, 1);
+        sub.input.extend(&frame[half..]);
+        assert!(sub.tick().unwrap());
+        assert_eq!(sub.sequence, 2);
+        assert!(sub.snapshot.messaging.audit_failed);
+        let mut large = c15_change(3, json!(c15_snapshot()));
+        large["padding"] = json!("x".repeat(20_000));
+        sub.input.extend(rpc::encode(&large).unwrap());
+        assert!(!sub.tick().unwrap());
+        assert_eq!(sub.sequence, 2);
+        assert!(sub.tick().unwrap());
+        assert_eq!(sub.sequence, 3);
+        assert!(!sub.snapshot.messaging.audit_failed);
+        assert!(!sub.tick().unwrap());
+        drop(sub);
+        assert_eq!(
+            peer.read(&mut [0u8; 1]).unwrap(),
+            0,
+            "dropping subscription closes stream without another RPC"
+        );
+    }
+
+    #[test]
+    fn c15_tick_rejects_bad_envelopes_instances_and_eof_without_replacing_state() {
+        let _no_forks = goblins_unix::no_forks();
+        let good = c15_change(2, json!(c15_snapshot()));
+        let mut cases = Vec::new();
+        for field in ["jsonrpc", "method"] {
+            let mut bad = good.clone();
+            bad[field] = json!("wrong");
+            cases.push((bad, "subscription gap; reconnect for a fresh snapshot"));
+        }
+        for (field, value) in [
+            ("subscription", json!("other")),
+            ("sequence", json!(1)),
+            ("sequence", json!(3)),
+            ("sequence", json!(2.0)),
+        ] {
+            let mut bad = good.clone();
+            bad["params"][field] = value;
+            cases.push((bad, "subscription gap; reconnect for a fresh snapshot"));
+        }
+        let mut changed = good.clone();
+        changed["params"]["snapshot"]["instance"] = json!("other");
+        cases.push((changed, "daemon instance changed; reconnect"));
+        let mut missing = good.clone();
+        missing["params"]["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("permissions");
+        cases.push((missing, "missing field `permissions`"));
+        for (frame, expected) in cases {
+            let (mut sub, _peer) = c15_subscription();
+            sub.input.extend(rpc::encode(&frame).unwrap());
+            assert_eq!(sub.tick().unwrap_err().to_string(), expected, "{frame}");
+            assert_eq!(sub.sequence, 1);
+            assert_eq!(json!(sub.snapshot), json!(c15_snapshot()));
+        }
+        let (mut sub, peer) = c15_subscription();
+        sub.input.extend(rpc::encode(&good).unwrap());
+        drop(peer);
+        assert_eq!(
+            sub.tick().unwrap_err().to_string(),
+            "subscription disconnected; reconnect for a fresh snapshot"
+        );
+        assert_eq!(
+            sub.sequence, 1,
+            "EOF is observed before buffered input processing"
+        );
+    }
+
+    #[test]
+    fn c15_tick_keeps_committed_replacements_before_a_later_error() {
+        let _no_forks = goblins_unix::no_forks();
+        let (mut sub, _peer) = c15_subscription();
+        let mut replacement = json!(c15_snapshot());
+        replacement["messaging"]["raid_audit_failed"] = json!(true);
+        sub.input
+            .extend(rpc::encode(&c15_change(2, replacement.clone())).unwrap());
+        sub.input
+            .extend(rpc::encode(&c15_change(4, json!(c15_snapshot()))).unwrap());
+        assert_eq!(
+            sub.tick().unwrap_err().to_string(),
+            "subscription gap; reconnect for a fresh snapshot"
+        );
+        assert_eq!(sub.sequence, 2);
+        assert_eq!(json!(sub.snapshot), replacement);
+    }
+
 }

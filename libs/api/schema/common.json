@@ -9828,6 +9828,267 @@
         "reason"
       ],
       "additionalProperties": true
+    },
+    "StateMessagingHealth": {
+      "type": "object",
+      "properties": {
+        "audit_failed": {
+          "type": "boolean"
+        },
+        "raid_audit_failed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "audit_failed",
+        "raid_audit_failed"
+      ],
+      "additionalProperties": true
+    },
+    "StateSnapshot": {
+      "type": "object",
+      "properties": {
+        "instance": {
+          "type": "string"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostSession"
+          }
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PermissionRecord"
+          }
+        },
+        "raids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RaidRecord"
+          }
+        },
+        "messaging": {
+          "$ref": "#/definitions/StateMessagingHealth"
+        }
+      },
+      "required": [
+        "instance",
+        "sessions",
+        "permissions",
+        "raids",
+        "messaging"
+      ],
+      "additionalProperties": true
+    },
+    "StateSnapshotReply": {
+      "type": "object",
+      "properties": {
+        "instance": {
+          "type": "string"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HostSessionReply"
+          }
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PermissionRecordReply"
+          }
+        },
+        "raids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RaidRecordReply"
+          },
+          "default": []
+        },
+        "messaging": {
+          "$ref": "#/definitions/StateMessagingHealth",
+          "default": {
+            "audit_failed": false,
+            "raid_audit_failed": false
+          }
+        }
+      },
+      "required": [
+        "instance",
+        "sessions",
+        "permissions"
+      ],
+      "additionalProperties": true,
+      "description": "Compatible Rust snapshot reader: instance/sessions/permissions required; raids defaults empty and messaging defaults false/false only when absent. Nested arrays decode through original compatible row readers during field deserialization, preserving aliases, fallback, errors and precedence. Unknown top-level fields accepted. Emacs has a separate looser partial snapshot/integer policy."
+    },
+    "StateUnsubscribeParams": {
+      "type": "object",
+      "properties": {
+        "subscription": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscription"
+      ],
+      "additionalProperties": false
+    },
+    "StateSubscribeResult": {
+      "type": "object",
+      "properties": {
+        "subscription": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "snapshot": {
+          "$ref": "#/definitions/StateSnapshot"
+        }
+      },
+      "required": [
+        "subscription",
+        "sequence",
+        "snapshot"
+      ],
+      "additionalProperties": true
+    },
+    "StateSubscribeReply": {
+      "type": "object",
+      "properties": {
+        "subscription": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sequence": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot": {}
+      },
+      "required": [
+        "subscription",
+        "sequence",
+        "snapshot"
+      ],
+      "additionalProperties": true
+    },
+    "StateChangedParams": {
+      "type": "object",
+      "properties": {
+        "subscription": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "snapshot": {
+          "$ref": "#/definitions/StateSnapshot"
+        }
+      },
+      "required": [
+        "subscription",
+        "sequence",
+        "snapshot"
+      ],
+      "additionalProperties": true
+    },
+    "StateChangedRead": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subscription": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sequence": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot": {}
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "subscription",
+        "sequence",
+        "snapshot"
+      ],
+      "additionalProperties": true
+    },
+    "StateUnsubscribeResult": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -12375,6 +12636,66 @@
         "keep",
         "dry_run"
       ]
+    },
+    "StateMessagingHealth": {
+      "name": "Health",
+      "order": [
+        "audit_failed",
+        "raid_audit_failed"
+      ]
+    },
+    "StateSnapshotReply": {
+      "name": "Snapshot",
+      "order": [
+        "instance",
+        "sessions",
+        "permissions",
+        "raids",
+        "messaging"
+      ],
+      "emit-defaults": [
+        "raids",
+        "messaging"
+      ],
+      "deserialize-with": {
+        "sessions": "crate::contract::snapshot_sessions",
+        "permissions": "crate::contract::snapshot_permissions",
+        "raids": "crate::contract::snapshot_raids"
+      }
+    },
+    "StateUnsubscribeParams": {
+      "name": "Subscription",
+      "order": [
+        "subscription"
+      ]
+    },
+    "StateSubscribeReply": {
+      "name": "StateSubscribeReply",
+      "order": [
+        "subscription",
+        "sequence",
+        "snapshot"
+      ],
+      "required-nullable": [
+        "subscription",
+        "sequence"
+      ]
+    },
+    "StateChangedRead": {
+      "name": "StateChangedRead",
+      "order": [
+        "jsonrpc",
+        "method",
+        "subscription",
+        "sequence",
+        "snapshot"
+      ],
+      "required-nullable": [
+        "jsonrpc",
+        "method",
+        "subscription",
+        "sequence"
+      ]
     }
   },
   "x-communications-payloads": [
@@ -12782,6 +13103,58 @@
       "fields": [
         "name"
       ]
+    },
+    {
+      "name": "state-subscription",
+      "schemas": [
+        "StateSubscribeResult"
+      ],
+      "fields": [
+        "subscription",
+        "sequence",
+        "snapshot"
+      ]
+    },
+    {
+      "name": "state-change",
+      "schemas": [
+        "StateChangedParams"
+      ],
+      "fields": [
+        "subscription",
+        "sequence",
+        "snapshot"
+      ]
+    },
+    {
+      "name": "state-snapshot",
+      "schemas": [
+        "StateSnapshot"
+      ],
+      "fields": [
+        "instance"
+      ]
+    }
+  ],
+  "x-elisp-identities": [
+    {
+      "name": "goblins-api-state-subscribe",
+      "endpoint": "host",
+      "kind": "method",
+      "method": "state.subscribe"
+    },
+    {
+      "name": "goblins-api-state-unsubscribe",
+      "endpoint": "host",
+      "kind": "method",
+      "method": "state.unsubscribe"
+    },
+    {
+      "name": "goblins-api-state-changed",
+      "endpoint": "host",
+      "kind": "notification",
+      "method": "state.changed",
+      "direction": "server-to-client"
     }
   ]
 }

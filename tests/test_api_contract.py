@@ -16,6 +16,233 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c15_state_parameter_result_and_snapshot_contracts(self):
+        fixtures = contract.read("fixtures.json")
+        for key in ("state_parameter_cases", "state_result_cases", "state_snapshot_cases"):
+            self.assertTrue(fixtures[key], key)
+        for case in fixtures["state_parameter_cases"]:
+            with self.subTest(parameters=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_params("host", case["method"], case["params"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_params("host", case["method"], case["params"])
+        for case in fixtures["state_result_cases"]:
+            reply = dict(jsonrpc="2.0", id=1, result=case["result"])
+            with self.subTest(result=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_reply("host", case["method"], reply))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_reply("host", case["method"], reply)
+        validator = contract.schema_validator({"$ref": "common.json#/definitions/StateSnapshot"})
+        for case in fixtures["state_snapshot_cases"]:
+            with self.subTest(snapshot=case):
+                self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+
+    def test_c15_state_notification_direction_and_legacy_initial_normalization(self):
+        fixtures = contract.read("fixtures.json")
+        self.assertTrue(fixtures["state_notification_cases"])
+        self.assertTrue(fixtures["state_legacy_initial_cases"])
+        for case in fixtures["state_notification_cases"]:
+            frame = dict(jsonrpc="2.0", method="state.changed", params=case["params"])
+            with self.subTest(notification=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("host", "server-to-client", frame))
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("host", "server-to-client", dict(frame, id=1))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("host", "server-to-client", frame)
+            self.assertFalse(contract.validate_notification("host", "client-to-server", frame))
+            self.assertFalse(contract.validate_notification("sandbox", "server-to-client", frame))
+        self.assertIsNone(contract.method("host", "state.changed"))
+        for raw in fixtures["state_legacy_initial_cases"]:
+            # Only the compatible field-normalization artifact is validated;
+            # actual Rust/Emacs acceptance is pinned by the runtime baseline.
+            with self.subTest(legacy_initial=raw):
+                self.assertTrue(contract.validate_reply("host", "state.subscribe",
+                    dict(jsonrpc="2.0", id=1, result=raw), compatibility=True))
+
+    def test_c15_public_coverage_rejects_pending_exemption_reintroduction(self):
+        registry = copy.deepcopy(contract.read("coverage.json"))
+        self.assertEqual(registry["pending"], {})
+        self.assertEqual(registry["notifications"], [])
+        self.assertEqual(registry["exchanges"], [])
+        contract.check_coverage()
+        sources = contract.implementation_sources()
+        anchor = "contract::host::HostCancel::NAME"
+        self.assertIn(anchor, sources["controller"])
+        changed = dict(sources)
+        changed["controller"] = sources["controller"].replace(anchor,
+            'm if matches!(m, "server.extra") => Ok(json!({})),\n            ' + anchor, 1)
+        registry["pending"]["C99"] = {"host": ["server.extra"]}
+        with self.assertRaises(ValueError):
+            contract.check_coverage(registry, changed)
+
+    def test_c15_coverage_rejects_catalog_direction_completion_and_refusal_changes(self):
+        from unittest.mock import patch
+        original = contract.document
+        host = copy.deepcopy(original("host"))
+        host["methods"] = [row for row in host["methods"] if row["name"] != "state.subscribe"]
+        self.assertNotEqual(len(host["methods"]), len(original("host")["methods"]))
+        with patch.object(contract, "document", side_effect=lambda endpoint: host if endpoint == "host" else original(endpoint)):
+            with self.assertRaises(ValueError):
+                contract.check_coverage()
+        host = copy.deepcopy(original("host"))
+        row = next(row for row in host["x-notifications"] if row["name"] == "state.changed")
+        row["direction"] = "client-to-server"
+        with patch.object(contract, "document", side_effect=lambda endpoint: host if endpoint == "host" else original(endpoint)):
+            with self.assertRaises(ValueError):
+                contract.check_coverage()
+        attach = copy.deepcopy(original("attach"))
+        self.assertTrue(attach["x-completions"])
+        attach["x-completions"] = attach["x-completions"][1:]
+        with patch.object(contract, "document", side_effect=lambda endpoint: attach if endpoint == "attach" else original(endpoint)):
+            with self.assertRaises(ValueError):
+                contract.check_coverage()
+        registry = copy.deepcopy(contract.read("coverage.json"))
+        registry["refusals"] = [row for row in registry["refusals"] if row["name"] != "sessions.attach"]
+        with self.assertRaises(ValueError):
+            contract.check_coverage(registry)
+        self.assertIsNone(contract.method("sandbox", "sessions.attach"))
+        sandbox = copy.deepcopy(original("sandbox"))
+        added = copy.deepcopy(sandbox["methods"][0])
+        added.update(name="sessions.attach", **{"x-rust-name": "ForbiddenAttach"})
+        sandbox["methods"].append(added)
+        with patch.object(contract, "document", side_effect=lambda endpoint: sandbox if endpoint == "sandbox" else original(endpoint)):
+            with self.assertRaises(ValueError):
+                contract.check_coverage()
+
+    def test_c15_coverage_dispatch_cannot_be_supplied_by_comments_or_raw_strings(self):
+        sources = contract.implementation_sources()
+        source = sources["controller"]
+        body = contract.rust_function(source, "host")
+        generated = "contract::host::StateSubscribe::NAME"
+        target = generated if generated in body else '"state.subscribe"'
+        replacement = "contract::host::StateUnsubscribe::NAME" if generated in body else '"state.unsubscribe"'
+        self.assertEqual(body.count(target), 1)
+        missing = body.replace(target, replacement, 1)
+        for decoy in ("", "// " + generated + "\n", "/* outer /* nested */ " + generated + " */\n",
+                      'let decoy = r###"' + generated + '"###;\n'):
+            changed = dict(sources)
+            changed["controller"] = source.replace(body, decoy + missing, 1)
+            with self.subTest(decoy=decoy), self.assertRaises(ValueError):
+                contract.check_coverage(sources=changed)
+
+    def test_c15_coverage_requires_real_state_emitter_and_receiver(self):
+        import re
+        sources = contract.implementation_sources()
+        for key, function in (("controller", "publish"), ("host_client", "tick")):
+            source = sources[key]
+            body = contract.rust_function(source, function)
+            if key == "controller":
+                pattern = r"contract::notification_value::<\s*contract::host_notifications::StateChanged\s*,?\s*>"
+                match = re.search(pattern, body)
+                self.assertIsNotNone(match)
+                missing = body[:match.start()] + "unbound_state_value" + body[match.end():]
+                identity = "contract::notification_value::<contract::host_notifications::StateChanged>"
+            else:
+                identity = "contract::host_notifications::StateChanged::NAME"
+                self.assertEqual(body.count(identity), 1)
+                missing = body.replace(identity, '\"unbound\"', 1)
+            for decoy in ("", "// " + identity + "\n", "/* " + identity + " */\n",
+                          'let decoy = r###"' + identity + '"###;\n'):
+                changed = dict(sources)
+                changed[key] = source.replace(body, decoy + missing, 1)
+                with self.subTest(peer=key, decoy=decoy), self.assertRaises(ValueError):
+                    contract.check_coverage(sources=changed)
+
+    def test_c15_coverage_incidental_method_probe_cannot_replace_real_dispatch(self):
+        import re
+        sources = contract.implementation_sources()
+        source = sources["controller"]
+        body = contract.rust_function(source, "host")
+        header = re.search(r"contract::host::StateSubscribe::NAME\s*=>\s*\{", body)
+        self.assertIsNotNone(header)
+        arm_body = contract.rust_block(body, header.end() - 1)
+        arm = body[header.start():header.end()] + arm_body + "}"
+        self.assertIn(arm, body)
+        missing = body.replace(arm, "", 1)
+        self.assertNotIn("contract::host::StateSubscribe::NAME", missing)
+        self.assertIn("match method {", missing)
+        # Real code mentions the identity, but never dispatches that request.
+        decoy = "let _is_state = matches!(method, contract::host::StateSubscribe::NAME);\n"
+        modified = missing.replace("match method {", decoy + "match method {", 1)
+        changed = dict(sources)
+        changed["controller"] = source.replace(body, modified, 1)
+        self.assertNotIn(arm, contract.rust_function(changed["controller"], "host"))
+        with self.assertRaises(ValueError):
+            contract.check_coverage(sources=changed)
+
+    def test_c15_coverage_incidental_helper_cannot_replace_actual_tick_reader(self):
+        import re
+        sources = contract.implementation_sources()
+        source = sources["host_client"]
+        body = contract.rust_function(source, "tick")
+        comparison = r"\|\|\s*value\.method\.as_deref\(\)\s*!=\s*Some\(\s*contract::host_notifications::StateChanged::NAME\s*\)"
+        missing, count = re.subn(comparison, "", body, count=1)
+        self.assertEqual(count, 1)
+        self.assertNotIn("contract::host_notifications::StateChanged::NAME", missing)
+        changed = dict(sources)
+        modified = source.replace(body, missing, 1)
+        marker = "\n#[cfg(test)]\nmod tests {"
+        self.assertIn(marker, modified)
+        # A separate production helper is not the Subscription.tick reader.
+        helper = '\nfn incidental_state_label(method: &str) -> bool { method == contract::host_notifications::StateChanged::NAME }\n'
+        changed["host_client"] = modified.replace(marker, helper + marker, 1)
+        self.assertNotIn("contract::host_notifications::StateChanged::NAME",
+                         contract.rust_function(changed["host_client"], "tick"))
+        with self.assertRaises(ValueError):
+            contract.check_coverage(sources=changed)
+
+    def test_c15_coverage_incidental_sandbox_probe_cannot_replace_dispatch(self):
+        import re
+        sources = contract.implementation_sources()
+        source = sources["controller"]
+        body = contract.rust_function(source, "sandbox_control")
+        header = re.search(r"contract::sandbox::SessionsSetState::NAME\s*=>\s*\{", body)
+        self.assertIsNotNone(header)
+        arm_body = contract.rust_block(body, header.end() - 1)
+        arm = body[header.start():header.end()] + arm_body + "}"
+        self.assertIn(arm, body)
+        missing = body.replace(arm, "", 1)
+        self.assertNotIn("contract::sandbox::SessionsSetState::NAME", missing)
+        self.assertIn("match method {", missing)
+        probe = "let _is_state = matches!(method, contract::sandbox::SessionsSetState::NAME);\n"
+        modified = missing.replace("match method {", probe + "match method {", 1)
+        changed = dict(sources)
+        changed["controller"] = source.replace(body, modified, 1)
+        self.assertNotIn(arm, contract.rust_function(changed["controller"], "sandbox_control"))
+        with self.assertRaises(ValueError):
+            contract.check_coverage(sources=changed)
+
+    def test_c15_coverage_nested_test_helper_cannot_replace_tick_reader(self):
+        import re
+        sources = contract.implementation_sources()
+        source = sources["host_client"]
+        body = contract.rust_function(source, "tick")
+        comparison = r"\|\|\s*value\.method\.as_deref\(\)\s*!=\s*Some\(\s*contract::host_notifications::StateChanged::NAME\s*\)"
+        missing, count = re.subn(comparison, "", body, count=1)
+        self.assertEqual(count, 1)
+        self.assertNotIn("contract::host_notifications::StateChanged::NAME", missing)
+        helper = '''
+        #[cfg(test)]
+        fn test_only_state_guard(value: &contract::StateChangedRead) -> Result<()> {
+            if value.method.as_deref() != Some(contract::host_notifications::StateChanged::NAME) {
+                return Err("subscription gap; reconnect for a fresh snapshot".into());
+            }
+            Ok(())
+        }
+'''
+        changed = dict(sources)
+        changed["host_client"] = source.replace(body, helper + missing, 1)
+        mutated = contract.rust_function(changed["host_client"], "tick")
+        self.assertIn("#[cfg(test)]", mutated)
+        self.assertEqual(mutated.count("contract::host_notifications::StateChanged::NAME"), 1)
+        with self.assertRaises(ValueError):
+            contract.check_coverage(sources=changed)
+
     def test_c14_history_parameters_and_current_results_match_contract(self):
         fixtures = contract.read("fixtures.json")
         parameter_cases = fixtures["history_parameter_cases"]
@@ -816,7 +1043,8 @@ sys.stdin.buffer.read()
             contract.check_coverage(sources=changed)
         assigned = copy.deepcopy(contract.read("coverage.json"))
         assigned["pending"]["C99"] = {"host":["server.new"]}
-        contract.check_coverage(assigned, changed)
+        with self.assertRaises(ValueError):
+            contract.check_coverage(assigned, changed)
 
     def test_new_emitted_notification_requires_an_exchange_assignment(self):
         sources = contract.implementation_sources()
@@ -831,7 +1059,8 @@ sys.stdin.buffer.read()
             contract.check_coverage(sources=changed)
         assigned = copy.deepcopy(contract.read("coverage.json"))
         assigned["notifications"].append(dict(endpoint="host", name="state.new", direction="server-to-client", chunk="C15"))
-        contract.check_coverage(assigned, changed)
+        with self.assertRaises(ValueError):
+            contract.check_coverage(assigned, changed)
 
 
 class HistoricalClientTests(unittest.TestCase):
