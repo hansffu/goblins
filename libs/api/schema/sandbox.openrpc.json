@@ -952,6 +952,63 @@
       },
       "x-client-wire-result-schema": {},
       "x-client-result-normalization": "flake-run-fields"
+    },
+    {
+      "name": "devshell.diff",
+      "x-rust-name": "DevShellDiff",
+      "description": "Evaluate a read-only refresh preview. No approval request, candidate, GC root, mount or generation is changed; pending refresh candidates are left alone. Update and lock are mutually exclusive only when update is a non-null array and lock=true. Empty update means all inputs, absent/null update means no update. Requests accept named fields or [update,lock] with defaults, never null. Policy, trusted lock sources, evaluator limits and cancellation retain their existing order and ownership. Requires devshell-diff feature; client has no response timeout. Trailing input is refused before parameter and policy validation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "update",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/DevShellDiffParams/properties/update"
+          }
+        },
+        {
+          "name": "lock",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/DevShellDiffParams/properties/lock"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/DevShellPreview"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid flake inputs"
+        },
+        {
+          "code": -32009,
+          "message": "Conflicting operation or evaluation failure"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/DevShellDiffParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/DevShellDiffParams"
+      },
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/DevShellDiffParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/DevShellPreviewReply"
+      },
+      "x-client-wire-result-schema": {
+        "type": "object"
+      },
+      "x-client-result-normalization": "devshell-preview-display",
+      "x-client-omit-default-false": [
+        "lock"
+      ]
     }
   ],
   "x-notifications": [],

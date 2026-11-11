@@ -2,7 +2,7 @@
 use crate::policy::{Capabilities, Operation, Refusal};
 use goblins_jsonrpc::Call;
 use goblins_protocol::contract::{self, Method};
-use goblins_protocol::rpc::{DevShellDiffParams, PermissionParams};
+use goblins_protocol::rpc::PermissionParams;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -112,7 +112,7 @@ pub fn check(
         method,
         "permissions.request"
             | contract::sandbox::FlakeRun::NAME
-            | "devshell.diff"
+            | contract::sandbox::DevShellDiff::NAME
             | "sessions.detach"
             | "sessions.attach"
             | "editor.open"
@@ -153,7 +153,7 @@ pub fn check(
             method,
             "permissions.request"
                 | contract::sandbox::FlakeRun::NAME
-                | "devshell.diff"
+                | contract::sandbox::DevShellDiff::NAME
                 | "editor.open"
         )
     {
@@ -191,8 +191,9 @@ pub fn check(
             }
             Some(Operation::FlakeRun)
         }
-        "devshell.diff" => {
-            let p: DevShellDiffParams = parse(&call.params)?;
+        contract::sandbox::DevShellDiff::NAME => {
+            let p = contract::decode_params::<contract::sandbox::DevShellDiff>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
             if !p.validate() {
                 return Err(invalid("invalid flake inputs"));
             }
@@ -447,7 +448,11 @@ mod tests {
                 json!({"app":"hello"}),
                 Feature::FlakeApps,
             ),
-            ("devshell.diff", json!({}), Feature::DevShells),
+            (
+                contract::sandbox::DevShellDiff::NAME,
+                json!({}),
+                Feature::DevShells,
+            ),
         ];
         for (method, params, feature) in rows {
             let call = call(method, params);

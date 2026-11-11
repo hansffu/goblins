@@ -67,6 +67,15 @@ fn main() {
             [].into_iter(),
         );
     }
+    settings.with_replacement("DevShellInputName", "std::string::String", [].into_iter());
+    settings.with_replacement("DevShellInputs", "std::vec::Vec<String>", [].into_iter());
+    settings.with_replacement("PreviewCount", "usize", [].into_iter());
+    for name in ["DevShellLocked", "DevShellIncoming"] {
+        settings.with_patch(
+            name,
+            typify::TypeSpacePatch::default().with_derive("PartialEq"),
+        );
+    }
     let mut types = typify::TypeSpace::new(&settings);
     types
         .add_root_schema(serde_json::from_value(common.clone()).unwrap())
@@ -94,6 +103,7 @@ fn main() {
         "AttachResult".to_string(),
         "FlakeRunReply".to_string(),
         "DevShellLockReply".to_string(),
+        "DevShellPreviewReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(

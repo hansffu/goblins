@@ -5530,6 +5530,271 @@ The =flake-run-fields= adapter: Read string program or absent; other fields are 
 }
 #+end_src
 
+** =devshell.diff=
+
+Evaluate a read-only refresh preview. No approval request, candidate, GC root, mount or generation is changed; pending refresh candidates are left alone. Update and lock are mutually exclusive only when update is a non-null array and lock=true. Empty update means all inputs, absent/null update means no update. Requests accept named fields or [update,lock] with defaults, never null. Policy, trusted lock sources, evaluator limits and cancellation retain their existing order and ownership. Requires devshell-diff feature; client has no response timeout. Trailing input is refused before parameter and policy validation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "update": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DevShellInputs"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lock": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DevShellInputs"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "type": "boolean",
+      "default": false
+    }
+  ],
+  "minItems": 0,
+  "maxItems": 2
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "kind": {
+      "$ref": "#/definitions/DevShellPreviewKind"
+    },
+    "reference": {
+      "type": "string"
+    },
+    "from": {
+      "$ref": "#/definitions/DevShellGeneration"
+    },
+    "to": {
+      "$ref": "#/definitions/DevShellGeneration"
+    },
+    "attention": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellAttention"
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellFileChange"
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellInputChange"
+      }
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellPackageChange"
+      }
+    },
+    "env": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellEnvChange"
+      }
+    },
+    "fetch": {
+      "$ref": "#/definitions/PreviewCount"
+    },
+    "build": {
+      "$ref": "#/definitions/PreviewCount"
+    },
+    "download": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "incoming": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellIncoming"
+      },
+      "maxItems": 1000
+    },
+    "diff": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "reference",
+    "from",
+    "to",
+    "attention",
+    "files",
+    "inputs",
+    "packages",
+    "env",
+    "fetch",
+    "build",
+    "download",
+    "incoming",
+    "diff"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{
+  "type": "object"
+}
+#+end_src
+
+The =devshell-preview-display= adapter: Normalize recognized preview fields independently while preserving CLI/TUI numeric display fallbacks and object/array side presence; reject non-object diff results. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "reference": {
+      "type": "string"
+    },
+    "from": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "to": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "attention": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewAttentionReply"
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewFileReply"
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewInputReply"
+      }
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewPackageReply"
+      }
+    },
+    "env": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewEnvReply"
+      }
+    },
+    "fetch": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "build": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "download": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "incoming": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewIncomingReply"
+      }
+    },
+    "diff": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reference",
+    "from",
+    "to",
+    "attention",
+    "files",
+    "inputs",
+    "packages",
+    "env",
+    "fetch",
+    "build",
+    "download",
+    "incoming",
+    "diff"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "not": {
+    "type": "object",
+    "properties": {
+      "update": {
+        "type": "array"
+      },
+      "lock": {
+        "const": true
+      }
+    },
+    "required": [
+      "update",
+      "lock"
+    ]
+  }
+}
+#+end_src
+
 * attach
 
 ** Notification =attach.hello=
@@ -10809,6 +11074,919 @@ Errors: -32009.
 }
 #+end_src
 
+** =DevShellInputName=
+
+#+begin_src json
+{
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 200,
+  "pattern": "^[A-Za-z_][A-Za-z0-9_'-]*(/[A-Za-z_][A-Za-z0-9_'-]*)*$(?![\\s\\S])",
+  "description": "Existing rpc::input_name enforces byte bounds and ASCII path-segment syntax after structural decoding."
+}
+#+end_src
+
+** =DevShellInputs=
+
+#+begin_src json
+{
+  "type": "array",
+  "items": {
+    "$ref": "#/definitions/DevShellInputName"
+  },
+  "maxItems": 32
+}
+#+end_src
+
+** =DevShellDiffParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "update": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DevShellInputs"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "lock": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+** =PreviewCount=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 0,
+  "maximum": 18446744073709551615,
+  "x-json-integer": true,
+  "description": "A same-build usize count on the supported 64-bit platform; runtime producer bounds remain unchanged."
+}
+#+end_src
+
+** =DevShellChangeKind=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "added",
+    "removed",
+    "changed"
+  ]
+}
+#+end_src
+
+** =DevShellIncomingAction=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "build",
+    "fetch"
+  ]
+}
+#+end_src
+
+** =DevShellPreviewKind=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "devshell"
+  ]
+}
+#+end_src
+
+** =DevShellLocked=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "date": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "source",
+    "id",
+    "date"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellInputChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "change": {
+      "$ref": "#/definitions/DevShellChangeKind"
+    },
+    "old": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DevShellLocked"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "new": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DevShellLocked"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "name",
+    "change",
+    "old",
+    "new"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellPackageChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "change": {
+      "$ref": "#/definitions/DevShellChangeKind"
+    },
+    "old": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "new": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "name",
+    "change",
+    "old",
+    "new"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellEnvChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "change": {
+      "$ref": "#/definitions/DevShellChangeKind"
+    },
+    "old": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "new": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "long": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "name",
+    "change",
+    "old",
+    "new",
+    "long"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellIncoming=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "$ref": "#/definitions/DevShellIncomingAction"
+    },
+    "name": {
+      "type": "string"
+    },
+    "versions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "action",
+    "name",
+    "versions"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellFileChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "added": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "removed": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "path",
+    "added",
+    "removed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellAttention=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "input-source"
+          ]
+        },
+        "input": {
+          "type": "string"
+        },
+        "old": {
+          "type": "string"
+        },
+        "new": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "old",
+        "new"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "new-input"
+          ]
+        },
+        "input": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "source"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "nix-config"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "local-builds"
+          ]
+        },
+        "count": {
+          "$ref": "#/definitions/PreviewCount"
+        }
+      },
+      "required": [
+        "kind",
+        "count"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "shell-hook"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": true
+    }
+  ]
+}
+#+end_src
+
+** =DevShellPreview=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "kind": {
+      "$ref": "#/definitions/DevShellPreviewKind"
+    },
+    "reference": {
+      "type": "string"
+    },
+    "from": {
+      "$ref": "#/definitions/DevShellGeneration"
+    },
+    "to": {
+      "$ref": "#/definitions/DevShellGeneration"
+    },
+    "attention": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellAttention"
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellFileChange"
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellInputChange"
+      }
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellPackageChange"
+      }
+    },
+    "env": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellEnvChange"
+      }
+    },
+    "fetch": {
+      "$ref": "#/definitions/PreviewCount"
+    },
+    "build": {
+      "$ref": "#/definitions/PreviewCount"
+    },
+    "download": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "incoming": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellIncoming"
+      },
+      "maxItems": 1000
+    },
+    "diff": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "reference",
+    "from",
+    "to",
+    "attention",
+    "files",
+    "inputs",
+    "packages",
+    "env",
+    "fetch",
+    "build",
+    "download",
+    "incoming",
+    "diff"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =PreviewNumber=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "json": {
+      "type": "string"
+    },
+    "unsigned": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "json",
+    "unsigned"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =PreviewLockedReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "source": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "type": "string"
+    },
+    "date": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "source",
+    "id",
+    "date"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =PreviewAttentionReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string"
+    },
+    "input": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "old": {
+      "type": "string"
+    },
+    "new": {
+      "type": "string"
+    },
+    "count": {
+      "$ref": "#/definitions/PreviewNumber"
+    }
+  },
+  "required": [
+    "kind",
+    "input",
+    "source",
+    "old",
+    "new",
+    "count"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =PreviewFileReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string"
+    },
+    "added": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "removed": {
+      "$ref": "#/definitions/PreviewNumber"
+    }
+  },
+  "required": [
+    "path",
+    "added",
+    "removed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =PreviewInputReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "change": {
+      "type": "string"
+    },
+    "old": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PreviewLockedReply"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "new": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PreviewLockedReply"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "name",
+    "change",
+    "old",
+    "new"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =PreviewPackageReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "change": {
+      "type": "string"
+    },
+    "old": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "new": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "name",
+    "change",
+    "old",
+    "new"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =PreviewEnvReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "change": {
+      "type": "string"
+    },
+    "old": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "new": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "long": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "name",
+    "change",
+    "old",
+    "new",
+    "long"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =PreviewIncomingReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "versions": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "action",
+    "name",
+    "versions"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellPreviewReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "reference": {
+      "type": "string"
+    },
+    "from": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "to": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "attention": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewAttentionReply"
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewFileReply"
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewInputReply"
+      }
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewPackageReply"
+      }
+    },
+    "env": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewEnvReply"
+      }
+    },
+    "fetch": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "build": {
+      "$ref": "#/definitions/PreviewNumber"
+    },
+    "download": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "incoming": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PreviewIncomingReply"
+      }
+    },
+    "diff": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reference",
+    "from",
+    "to",
+    "attention",
+    "files",
+    "inputs",
+    "packages",
+    "env",
+    "fetch",
+    "build",
+    "download",
+    "incoming",
+    "diff"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -10887,3 +12065,6 @@ Errors: -32009.
 - =flake-app-validation= :: FlakeAppName maps to String. Existing FlakeRunParams::validate retains ASCII syntax, byte bounds, policy order and diagnostics after generated structural decoding. Domain evaluation, mount authority and cancellation remain handwritten.
 - =devshell-client-normalization= :: Current lock/run producers are precise. API-1 clients independently read string path/program; absent or malformed values preserve missing lock path/missing program diagnostics. Lock generation uses as_u64 with fallback 0, lock contents remain arbitrary JSON with missing treated as null. Named normalization profiles retain these behaviors even for non-object wire results. flake.run keeps its feature gate and no response deadline; the existing store_program validator still checks normalized /nix/store paths and file existence.
 - =devshell-generation= :: DevShellGeneration maps to u32, retaining the full existing runtime range. Launch starts at 1; refresh uses unchecked u32 addition, which can wrap to zero in release builds. The contract does not add overflow checks or change runtime behavior.
+- =devshell-preview-domain= :: Generated DevShellPreview and nested records replace wire-only supervisor records; the internal generic Change<T> calculation remains domain data and projects explicitly into generated input/package change records. Attention, incoming/change/kind discriminants remain trusted producer strings or generated variants. Evaluation state, candidate ownership, opaque flake locks and private Value runtime envelopes stay with their existing owners until C17.
+- =devshell-preview-validation= :: DevShellInputs maps to Vec<String>; input_name and DevShellDiffParams::validate retain byte/count/syntax bounds, update/lock exclusivity and error/policy order. PreviewCount maps to usize; generation retains the full u32 range. Source diffs remain bounded/truncated by the existing producer, and incoming lists are cut to 1000 without a truncation marker.
+- =devshell-preview-client= :: DevShellPreviewReply is a generated normalized display projection, separate from precise current producers. Legacy diff clients accept any object and reject non-objects. Missing/malformed lists become empty; list items independently retain recognized string/boolean/unsigned fields with old fallbacks. PreviewNumber carries both the original JSON display and an optional as_u64 value because the CLI and TUI intentionally format malformed numeric fields differently. Missing numeric fields display null in the TUI and ? in CLI count fields; TUI build defaults to zero. Locked sides are present only for objects; version sides only for arrays, preserving missing versus empty and each invalid member fallback. Unknown attention kinds remain readable. The TUI projects generic permission preview values at the display boundary until C09; Emacs retains its plist reader with shared contract fixtures and existing escaping tests.

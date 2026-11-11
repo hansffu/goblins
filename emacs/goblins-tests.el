@@ -187,6 +187,29 @@
       (walk magit-root-section))
     found))
 
+(ert-deftest goblins-devshell-generated-preview-contract-fixture ()
+  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+                                 (file-name-directory (file-truename (locate-library "goblins")))))
+         (fixtures (with-temp-buffer
+                     (insert-file-contents file)
+                     (json-parse-buffer :object-type 'plist :null-object nil)))
+         (preview (plist-get fixtures :devshell_preview))
+         (request (goblins-test--devshell-request)))
+    (setf (plist-get preview :reference) (concat (plist-get preview :reference) "\e[2J"))
+    (setf (plist-get request :preview) preview)
+    (goblins-test--buffer
+      (setq goblins--snapshot (goblins-test--snapshot request))
+      (goblins--render)
+      (goblins-test--goto "devshell")
+      (goblins-details)
+      (let ((text (buffer-string)))
+        (dolist (expected '("generation 1 → 2" "input 'nixpkgs'" "new input 'extra'"
+                            "nixConfig" "2 derivation(s)" "shellHook changed"
+                            "hello 2.12 → 2.13" "long value; see the diff"
+                            "1.5 MiB" "Incoming  2 packages"))
+          (should (string-match-p (regexp-quote expected) text)))
+        (should-not (string-match-p "\e" text))))))
+
 (ert-deftest goblins-devshell-summary-and-diff-sections ()
   (goblins-test--buffer
     (setq goblins--snapshot (goblins-test--snapshot (goblins-test--devshell-request)))

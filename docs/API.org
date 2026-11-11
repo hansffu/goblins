@@ -505,8 +505,10 @@ The empty request accepts ={}= and the retained positional =[]= form; null and u
 
 Previews what a refresh would change, without requesting it.
 
-- Input :: ={"update"?, "lock"?}= as for a =devshell= permission request.
+- Input :: ={"update"?, "lock"?}= as for a =devshell= permission request. =update= is absent/null or at most 32 input paths, each 1–200 ASCII bytes with slash-separated segments matching =[A-Za-z_][A-Za-z0-9_'-]*=. An empty list updates all inputs; absent/null means no update. =lock= defaults to false and cannot be true with a non-null =update= array. The retained positional form is =[update?, lock?]=; an empty array is accepted, null params and unknown fields are refused.
 - Output :: =DevShellPreview=, the same preview a =devshell= permission request shows.
+
+The =devshell-diff= feature is required. This is read-only evaluation: it stores no approval/candidate/root and leaves a pending refresh candidate unchanged. Trailing input is refused before parameter/policy checks. Evaluator bounds, trusted input-source restrictions and disconnect cancellation remain in force; the CLI has no response timeout. Evaluation failure is =-32009=. Legacy CLI results accept any object and independently fall back for missing/malformed fields; non-objects report =daemon returned an invalid preview=. These display fallbacks do not weaken current producer validation.
 
 *** =flake.run=
 
@@ -694,17 +696,17 @@ A communications log entry: ={"instance", "sequence", "timestamp", "kind", "acto
 
 ** DevShellPreview
 
-={"kind", "reference", "from", "to", "attention", "files", "inputs", "packages", "env", "fetch", "build", "download", "incoming", "diff"}=: facts about a dev shell refresh, which frontends word and lay out.
+={"kind", "reference", "from", "to", "attention", "files", "inputs", "packages", "env", "fetch", "build", "download", "incoming", "diff"}=: facts about a dev shell refresh, which frontends word and lay out. Every listed field is required, including nullable fields; nested record fields are required too. Result additions are allowed. =kind= is =devshell=, generation fields are full-range u32 values, and counts are nonnegative unsigned 64-bit values on the supported platform.
 
 - =reference= :: the dev shell's flake reference; =from= and =to= are the current and candidate generations.
 - =attention= :: items to call out, each with a =kind=: ={"kind": "input-source", "input", "old", "new"}=, ={"kind": "new-input", "input", "source"}=, ={"kind": "nix-config"}=, ={"kind": "local-builds", "count"}= or ={"kind": "shell-hook"}=.
 - =files= :: changed source files, ={"path", "added", "removed"}= (counts null for binary files).
-- =inputs= :: ={"name", "change", "old", "new"}= with =change= =added=, =removed= or =changed= and =old=/=new= ={"source", "id", "date"}= or null.
-- =packages= :: the same change shape per package =name=, with =old= and =new= as lists of that package's versions, for example ={"name": "hello", "change": "changed", "old": ["2.12"], "new": ["2.13"]}=.
-- =env= :: ={"name", "change", "old", "new", "long"}= for changed environment variables.
+- =inputs= :: ={"name", "change", "old", "new"}= with =change= =added=, =removed= or =changed= and =old=/=new= ={"source", "id", "date"}= or null. Inside a present lock record, =source= and =id= are strings, and =date= is a string or null; the =date= field is always present.
+- =packages= :: the same change shape per package =name=, with =old= and =new= as lists of that package's versions or null for the absent side of an added/removed package; empty version lists remain empty lists. For example ={"name": "hello", "change": "changed", "old": ["2.12"], "new": ["2.13"]}=.
+- =env= :: ={"name", "change", "old", "new", "long"}= for changed environment variables. =old= and =new= are strings or null; values over 80 characters or containing a newline set =long=true= and emit null for both sides. Noisy derivation fields are excluded and store hashes are normalized before comparison.
 - =fetch=, =build=, =download= :: how many store paths are fetched and built, and the estimated download size or null.
 - =incoming= :: ={"action": "build"|"fetch", "name", "versions"}= for packages built or fetched, including transitive ones, builds first. It is cut at 1000 entries without a marker, so it is not a complete dependency list.
-- =diff= :: the source patch, without =flake.lock=.
+- =diff= :: the source patch, without =flake.lock=. Source diff/numstat reads are bounded at 128 KiB, with a visible =… (diff truncated)= suffix when cut; binary file counts are null. The patch is not a complete source snapshot. Frontends escape strings before display. The CLI/TUI show at most 50 incoming entries with a remaining-count line; Emacs folds long lists.
 
 ** HistoryRecord
 

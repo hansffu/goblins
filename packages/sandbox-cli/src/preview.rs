@@ -1,47 +1,37 @@
-//! Plain-text rendering of a dev shell refresh preview for `goblin devshell
-//! diff`. The daemon sends facts only; wording follows the TUI approval
-//! summary. Every string from the preview is escaped before it is printed.
-use goblins_protocol::{patch::patch_files, plain_text};
-use serde_json::Value;
+//! Plain-text rendering of generated dev shell preview display DTOs.
+use goblins_protocol::{contract, patch::patch_files, plain_text};
 use std::fmt::Write;
-
-/// How many incoming packages are listed, as in the TUI.
 const INCOMING: usize = 50;
-
-fn text_of(v: &Value) -> String {
-    plain_text(v.as_str().unwrap_or_default())
+fn count(v: &contract::PreviewNumber) -> String {
+    v.unsigned.map_or("?".into(), |n| n.to_string())
 }
-fn count(v: &Value) -> String {
-    v.as_u64().map_or("?".into(), |n| n.to_string())
-}
-/// Old → new; either may be absent.
 fn old_new(old: Option<String>, new: Option<String>) -> String {
     match (old, new) {
         (Some(a), Some(b)) => format!("{a} → {b}"),
-        (None, Some(v)) | (Some(v), None) => v,
-        (None, None) => String::new(),
+        (Some(a), None) | (None, Some(a)) => a,
+        _ => String::new(),
     }
 }
-fn locked(v: &Value) -> Option<String> {
-    v.as_object()?;
-    Some(format!(
-        "{}{}",
-        text_of(&v["id"]),
-        v["date"]
-            .as_str()
-            .map(|d| format!(" ({})", plain_text(d)))
-            .unwrap_or_default()
-    ))
+fn locked(v: Option<&contract::PreviewLockedReply>) -> Option<String> {
+    v.map(|v| {
+        format!(
+            "{}{}",
+            plain_text(&v.id),
+            v.date
+                .as_deref()
+                .map(|d| format!(" ({})", plain_text(d)))
+                .unwrap_or_default()
+        )
+    })
 }
-fn versions(v: &Value) -> Option<String> {
-    Some(
-        v.as_array()?
-            .iter()
-            .map(text_of)
+fn versions(v: Option<&[String]>) -> Option<String> {
+    v.map(|v| {
+        v.iter()
+            .map(|s| plain_text(s))
             .map(|s| if s.is_empty() { "?".into() } else { s })
             .collect::<Vec<_>>()
-            .join(", "),
-    )
+            .join(", ")
+    })
 }
 fn tag(change: &str) -> &'static str {
     match change {
@@ -50,30 +40,25 @@ fn tag(change: &str) -> &'static str {
         _ => "[C] ",
     }
 }
-fn attention(note: &Value) -> String {
-    match note["kind"].as_str().unwrap_or_default() {
+fn attention(n: &contract::PreviewAttentionReply) -> String {
+    match n.kind.as_str() {
         "input-source" => format!(
             "input '{}' now comes from {} (was {})",
-            text_of(&note["input"]),
-            text_of(&note["new"]),
-            text_of(&note["old"])
+            plain_text(&n.input),
+            plain_text(&n.new),
+            plain_text(&n.old)
         ),
         "new-input" => format!(
             "new input '{}' from {}",
-            text_of(&note["input"]),
-            text_of(&note["source"])
+            plain_text(&n.input),
+            plain_text(&n.source)
         ),
         "nix-config" => "flake declares nixConfig (ignored, never applied)".into(),
-        "local-builds" => format!(
-            "{} derivation(s) build on this machine",
-            count(&note["count"])
-        ),
+        "local-builds" => format!("{} derivation(s) build on this machine", count(&n.count)),
         "shell-hook" => "shellHook changed; it runs in the sandbox".into(),
         other => plain_text(other),
     }
 }
-
-/// Labelled rows: the label on the first row of a section only.
 struct Rows(String);
 impl Rows {
     fn section(&mut self, label: &str, rows: impl IntoIterator<Item = String>) {
@@ -82,100 +67,9 @@ impl Rows {
             let _ = writeln!(self.0, "{label:<10}{row}");
         }
     }
-}
-
-/// The preview as plain text: summary, then the source diff with Nix files
-/// first.
-pub fn render(v: &Value) -> String {
-    let list = |key: &str| v[key].as_array().cloned().unwrap_or_default();
-    let mut out = Rows(format!(
-        "Dev shell {} · generation {} → {} (preview only; nothing was requested or changed)\n",
-        text_of(&v["reference"]),
-        count(&v["from"]),
-        count(&v["to"])
-    ));
-    let (attention_notes, files) = (list("attention"), list("files"));
-    let changes = ["inputs", "packages", "env"].map(list);
-    if attention_notes.is_empty() && files.is_empty() && changes.iter().all(Vec::is_empty) {
-        let _ = writeln!(
-            out.0,
-            "No changes: the workspace flake matches dev shell generation {}.",
-            count(&v["from"])
-        );
-        return out.0;
-    }
-    out.section(
-        "ATTENTION",
-        if attention_notes.is_empty() {
-            vec!["nothing unusual".into()]
-        } else {
-            attention_notes
-                .iter()
-                .map(|n| format!("! {}", attention(n)))
-                .collect()
-        },
-    );
-    let (nix, other): (Vec<_>, Vec<_>) = files
-        .iter()
-        .partition(|f| f["path"].as_str().unwrap_or_default().ends_with(".nix"));
-    out.section(
-        "SOURCE",
-        if files.is_empty() {
-            vec!["unchanged".into()]
-        } else {
-            nix.iter()
-                .chain(&other)
-                .map(|f| {
-                    format!(
-                        "{} +{} -{}",
-                        text_of(&f["path"]),
-                        count(&f["added"]),
-                        count(&f["removed"])
-                    )
-                })
-                .collect()
-        },
-    );
-    for ((key, name), changes) in [
-        ("inputs", "INPUTS"),
-        ("packages", "PACKAGES"),
-        ("env", "ENV"),
-    ]
-    .into_iter()
-    .zip(&changes)
-    {
-        let rows = changes.iter().map(|c| {
-            let mut row = format!(
-                "{}{} ",
-                tag(c["change"].as_str().unwrap_or_default()),
-                text_of(&c["name"])
-            );
-            row.push_str(&match key {
-                "inputs" => {
-                    let source = |side: &str| c[side]["source"].as_str().map(plain_text);
-                    let (old, new) = (source("old"), source("new"));
-                    let source = if old.is_some() && new.is_some() && old != new {
-                        old_new(old, new)
-                    } else {
-                        new.or(old).unwrap_or_default()
-                    };
-                    format!(
-                        "{source}  {}",
-                        old_new(locked(&c["old"]), locked(&c["new"]))
-                    )
-                }
-                "packages" => old_new(versions(&c["old"]), versions(&c["new"])),
-                _ if c["long"] == true => "(long value; see source diff)".into(),
-                _ => old_new(
-                    c["old"].as_str().map(plain_text),
-                    c["new"].as_str().map(plain_text),
-                ),
-            });
-            row.trim_end().to_string()
-        });
-        let rows: Vec<_> = rows.collect();
-        out.section(
-            name,
+    fn changes(&mut self, label: &str, rows: Vec<String>) {
+        self.section(
+            label,
             if rows.is_empty() {
                 vec!["unchanged".into()]
             } else {
@@ -183,39 +77,159 @@ pub fn render(v: &Value) -> String {
             },
         );
     }
+}
+fn change_row(change: &str, name: &str, description: String) -> String {
+    format!("{}{} {}", tag(change), plain_text(name), description)
+        .trim_end()
+        .to_owned()
+}
+/// The preview as plain text, preserving the historical display fallbacks.
+pub fn render(v: &contract::DevShellPreviewReply) -> String {
+    let mut out = Rows(format!(
+        "Dev shell {} · generation {} → {} (preview only; nothing was requested or changed)\n",
+        plain_text(&v.reference),
+        count(&v.from),
+        count(&v.to)
+    ));
+    if v.attention.is_empty()
+        && v.files.is_empty()
+        && v.inputs.is_empty()
+        && v.packages.is_empty()
+        && v.env.is_empty()
+    {
+        let _ = writeln!(
+            out.0,
+            "No changes: the workspace flake matches dev shell generation {}.",
+            count(&v.from)
+        );
+        return out.0;
+    }
+    out.section(
+        "ATTENTION",
+        if v.attention.is_empty() {
+            vec!["nothing unusual".into()]
+        } else {
+            v.attention
+                .iter()
+                .map(|n| format!("! {}", attention(n)))
+                .collect()
+        },
+    );
+    let (nix, other): (Vec<_>, Vec<_>) = v.files.iter().partition(|f| f.path.ends_with(".nix"));
+    out.section(
+        "SOURCE",
+        if v.files.is_empty() {
+            vec!["unchanged".into()]
+        } else {
+            nix.iter()
+                .chain(&other)
+                .map(|f| {
+                    format!(
+                        "{} +{} -{}",
+                        plain_text(&f.path),
+                        count(&f.added),
+                        count(&f.removed)
+                    )
+                })
+                .collect()
+        },
+    );
+    out.changes(
+        "INPUTS",
+        v.inputs
+            .iter()
+            .map(|c| {
+                let (old, new) = (
+                    c.old
+                        .as_ref()
+                        .and_then(|s| s.source.as_deref())
+                        .map(plain_text),
+                    c.new
+                        .as_ref()
+                        .and_then(|s| s.source.as_deref())
+                        .map(plain_text),
+                );
+                let source = if old.is_some() && new.is_some() && old != new {
+                    old_new(old, new)
+                } else {
+                    new.or(old).unwrap_or_default()
+                };
+                change_row(
+                    &c.change,
+                    &c.name,
+                    format!(
+                        "{source}  {}",
+                        old_new(locked(c.old.as_ref()), locked(c.new.as_ref()))
+                    ),
+                )
+            })
+            .collect(),
+    );
+    out.changes(
+        "PACKAGES",
+        v.packages
+            .iter()
+            .map(|c| {
+                change_row(
+                    &c.change,
+                    &c.name,
+                    old_new(versions(c.old.as_deref()), versions(c.new.as_deref())),
+                )
+            })
+            .collect(),
+    );
+    out.changes(
+        "ENV",
+        v.env
+            .iter()
+            .map(|c| {
+                change_row(
+                    &c.change,
+                    &c.name,
+                    if c.long {
+                        "(long value; see source diff)".into()
+                    } else {
+                        old_new(
+                            c.old.as_deref().map(plain_text),
+                            c.new.as_deref().map(plain_text),
+                        )
+                    },
+                )
+            })
+            .collect(),
+    );
     out.section(
         "COST",
         [format!(
             "{} to fetch{} · {} to build",
-            count(&v["fetch"]),
-            v["download"]
-                .as_str()
+            count(&v.fetch),
+            v.download
+                .as_deref()
                 .map(|d| format!(" ({})", plain_text(d)))
                 .unwrap_or_default(),
-            count(&v["build"])
+            count(&v.build)
         )],
     );
-    let incoming = list("incoming");
-    let mut rows: Vec<_> = incoming
+    let mut rows: Vec<_> = v
+        .incoming
         .iter()
         .take(INCOMING)
         .map(|item| {
             format!(
                 "[{}] {} {}",
-                if item["action"] == "build" { "B" } else { "F" },
-                text_of(&item["name"]),
-                versions(&item["versions"]).unwrap_or_default()
+                if item.action == "build" { "B" } else { "F" },
+                plain_text(&item.name),
+                versions(item.versions.as_deref()).unwrap_or_default()
             )
             .trim_end()
-            .to_string()
+            .to_owned()
         })
         .collect();
-    if incoming.len() > INCOMING {
-        rows.push(format!("… and {} more", incoming.len() - INCOMING));
+    if v.incoming.len() > INCOMING {
+        rows.push(format!("… and {} more", v.incoming.len() - INCOMING));
     }
     out.section("INCOMING", rows);
-    out.0
-        .push_str(&diff(v["diff"].as_str().unwrap_or_default()));
+    out.0.push_str(&diff(&v.diff));
     out.0
 }
 
@@ -247,6 +261,9 @@ fn diff(patch: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn render(v: &serde_json::Value) -> String {
+        super::render(&contract::preview_reply(v))
+    }
     use serde_json::json;
 
     #[test]

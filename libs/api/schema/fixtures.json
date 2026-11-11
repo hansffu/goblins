@@ -8991,5 +8991,539 @@
       },
       "valid": false
     }
-  ]
+  ],
+  "devshell_diff_parameter_cases": [
+    {
+      "params": {},
+      "valid": true
+    },
+    {
+      "params": [],
+      "valid": true
+    },
+    {
+      "params": {
+        "update": null
+      },
+      "valid": true
+    },
+    {
+      "params": {
+        "lock": true
+      },
+      "valid": true
+    },
+    {
+      "params": {
+        "update": []
+      },
+      "valid": true
+    },
+    {
+      "params": {
+        "update": null,
+        "lock": true
+      },
+      "valid": true
+    },
+    {
+      "params": [
+        null,
+        true
+      ],
+      "valid": true
+    },
+    {
+      "params": [
+        [
+          "nixpkgs",
+          "a/b"
+        ]
+      ],
+      "valid": true
+    },
+    {
+      "params": {
+        "update": [
+          "_x/a-b'"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "params": {
+        "update": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "params": {
+        "update": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "update": [],
+        "lock": true
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "lock": null
+      },
+      "valid": false
+    },
+    {
+      "params": null,
+      "valid": false
+    },
+    {
+      "params": [
+        null,
+        false,
+        1
+      ],
+      "valid": false
+    },
+    {
+      "params": {
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "update": [
+          "bad\n"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "update": [
+          "../x"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "update": [
+          "\u00e9"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "update": [
+          "-x"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "update": [
+          "a//b"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "params": {
+        "update": [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a"
+        ]
+      },
+      "valid": false
+    }
+  ],
+  "devshell_preview": {
+    "kind": "devshell",
+    "reference": "/p#default",
+    "from": 1,
+    "to": 2,
+    "attention": [
+      {
+        "kind": "input-source",
+        "input": "nixpkgs",
+        "old": "github:a/a",
+        "new": "github:b/b"
+      },
+      {
+        "kind": "new-input",
+        "input": "extra",
+        "source": "path:./sub"
+      },
+      {
+        "kind": "nix-config"
+      },
+      {
+        "kind": "local-builds",
+        "count": 2
+      },
+      {
+        "kind": "shell-hook"
+      }
+    ],
+    "files": [
+      {
+        "path": "flake.nix",
+        "added": 2,
+        "removed": 1
+      },
+      {
+        "path": "image.png",
+        "added": null,
+        "removed": null
+      }
+    ],
+    "inputs": [
+      {
+        "name": "extra",
+        "change": "added",
+        "old": null,
+        "new": {
+          "source": "path:./sub",
+          "id": "abc1234",
+          "date": null
+        }
+      }
+    ],
+    "packages": [
+      {
+        "name": "hello",
+        "change": "changed",
+        "old": [
+          "2.12"
+        ],
+        "new": [
+          "2.13"
+        ]
+      }
+    ],
+    "env": [
+      {
+        "name": "BIG",
+        "change": "changed",
+        "old": null,
+        "new": null,
+        "long": true
+      },
+      {
+        "name": "MARKER",
+        "change": "removed",
+        "old": "old",
+        "new": null,
+        "long": false
+      }
+    ],
+    "fetch": 3,
+    "build": 2,
+    "download": "1.5 MiB",
+    "incoming": [
+      {
+        "action": "build",
+        "name": "tool",
+        "versions": [
+          "1.2"
+        ]
+      },
+      {
+        "action": "fetch",
+        "name": "glibc",
+        "versions": []
+      }
+    ],
+    "diff": "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n@@ -1 +1 @@\n-a\n+b\n"
+  },
+  "devshell_preview_legacy": [
+    {},
+    {
+      "reference": 7,
+      "from": "old",
+      "to": {
+        "future": true
+      },
+      "attention": [
+        null,
+        {
+          "kind": "future\u202e"
+        },
+        {
+          "kind": "local-builds",
+          "count": "two"
+        }
+      ],
+      "files": [
+        {
+          "path": "x.nix",
+          "added": null,
+          "removed": "many"
+        },
+        null
+      ],
+      "inputs": [
+        {
+          "name": "x",
+          "old": {},
+          "new": {
+            "source": "",
+            "id": 7,
+            "date": false
+          }
+        }
+      ],
+      "packages": [
+        {
+          "old": [
+            null,
+            "",
+            7,
+            "1"
+          ],
+          "new": []
+        }
+      ],
+      "env": [
+        {
+          "old": 1,
+          "new": "\u001b[2J",
+          "long": 1
+        },
+        null
+      ],
+      "fetch": -1,
+      "build": "later",
+      "download": 7,
+      "incoming": [
+        {
+          "action": 7,
+          "versions": [
+            null,
+            "1"
+          ]
+        },
+        null
+      ],
+      "diff": 7
+    }
+  ],
+  "devshell_preview_unchanged": {
+    "kind": "devshell",
+    "reference": "/p",
+    "from": 0,
+    "to": 1,
+    "attention": [],
+    "files": [],
+    "inputs": [],
+    "packages": [],
+    "env": [],
+    "fetch": 0,
+    "build": 0,
+    "download": null,
+    "incoming": [],
+    "diff": ""
+  },
+  "devshell_preview_produced": {
+    "kind": "devshell",
+    "reference": "/p",
+    "from": 7,
+    "to": 8,
+    "attention": [
+      {
+        "kind": "new-input",
+        "input": "added",
+        "source": "path:./new"
+      },
+      {
+        "kind": "input-source",
+        "input": "changed",
+        "old": "github:old/repo",
+        "new": "github:new/repo"
+      },
+      {
+        "kind": "nix-config"
+      },
+      {
+        "kind": "local-builds",
+        "count": 2
+      },
+      {
+        "kind": "shell-hook"
+      }
+    ],
+    "files": [
+      {
+        "path": "flake.nix",
+        "added": 1,
+        "removed": 1
+      },
+      {
+        "path": "image.png",
+        "added": null,
+        "removed": null
+      }
+    ],
+    "inputs": [
+      {
+        "name": "added",
+        "change": "added",
+        "old": null,
+        "new": {
+          "source": "path:./new",
+          "id": "new1234",
+          "date": null
+        }
+      },
+      {
+        "name": "changed",
+        "change": "changed",
+        "old": {
+          "source": "github:old/repo",
+          "id": "aaaaaaa",
+          "date": null
+        },
+        "new": {
+          "source": "github:new/repo",
+          "id": "bbbbbbb",
+          "date": "1970-01-01"
+        }
+      },
+      {
+        "name": "removed",
+        "change": "removed",
+        "old": {
+          "source": "path:./gone",
+          "id": "gone123",
+          "date": null
+        },
+        "new": null
+      }
+    ],
+    "packages": [
+      {
+        "name": "added",
+        "change": "added",
+        "old": null,
+        "new": [
+          "2"
+        ]
+      },
+      {
+        "name": "changed",
+        "change": "changed",
+        "old": [
+          "1"
+        ],
+        "new": [
+          "3"
+        ]
+      },
+      {
+        "name": "removed",
+        "change": "removed",
+        "old": [],
+        "new": null
+      }
+    ],
+    "env": [
+      {
+        "name": "ADDED",
+        "change": "added",
+        "old": null,
+        "new": "new",
+        "long": false
+      },
+      {
+        "name": "CHANGED",
+        "change": "changed",
+        "old": "before",
+        "new": "after",
+        "long": false
+      },
+      {
+        "name": "LONG",
+        "change": "changed",
+        "old": null,
+        "new": null,
+        "long": true
+      },
+      {
+        "name": "REMOVED",
+        "change": "removed",
+        "old": "gone",
+        "new": null,
+        "long": false
+      },
+      {
+        "name": "shellHook",
+        "change": "changed",
+        "old": "beforehook",
+        "new": "afterhook",
+        "long": false
+      }
+    ],
+    "fetch": 1,
+    "build": 2,
+    "download": "1 MiB",
+    "incoming": [
+      {
+        "action": "build",
+        "name": "tool",
+        "versions": [
+          "1",
+          "2"
+        ]
+      },
+      {
+        "action": "fetch",
+        "name": "lib",
+        "versions": [
+          "1"
+        ]
+      }
+    ],
+    "diff": "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n@@ -1 +1 @@\n-a\n+b\n"
+  }
 }

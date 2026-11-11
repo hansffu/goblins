@@ -15,6 +15,7 @@ SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
+    "devshell-preview-display": "Normalize recognized preview fields independently while preserving CLI/TUI numeric display fallbacks and object/array side presence; reject non-object diff results.",
     "devshell-lock-fields": "Read string path or absent, unsigned u64 generation or zero, arbitrary lock JSON or null.",
     "flake-run-fields": "Read string program or absent; other fields are ignored.",
     "exec-field-fallback": "Read code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields.",
@@ -29,6 +30,34 @@ NORMALIZATIONS = {
 def normalize_reply(profile, result):
     fields = result if isinstance(result, dict) else {}
     text = lambda name: fields.get(name) if isinstance(fields.get(name), str) else None
+    if profile == "devshell-preview-display":
+        def field(v,key):return v.get(key) if isinstance(v,dict) else None
+        def text(v,key):
+            value=field(v,key)
+            return value if isinstance(value,str) else ""
+        def optional(v,key):
+            value=field(v,key)
+            return value if isinstance(value,str) else None
+        def items(v,key):
+            value=field(v,key)
+            return value if isinstance(value,list) else []
+        def number(v,key):
+            value=field(v,key)
+            return dict(json=json.dumps(value,ensure_ascii=False,separators=(",",":"),sort_keys=True),unsigned=value if type(value) is int and 0<=value<2**64 else None)
+        def locked(v,key):
+            value=field(v,key)
+            return dict(source=optional(value,"source"),id=text(value,"id"),date=optional(value,"date")) if isinstance(value,dict) else None
+        def versions(v,key):
+            value=field(v,key)
+            return [s if isinstance(s,str) else "" for s in value] if isinstance(value,list) else None
+        return dict(reference=text(fields,"reference"),**{"from":number(fields,"from")},to=number(fields,"to"),
+            attention=[dict(**{key:text(n,key) for key in ("kind","input","source","old","new")},count=number(n,"count")) for n in items(fields,"attention")],
+            files=[dict(path=text(f,"path"),added=number(f,"added"),removed=number(f,"removed")) for f in items(fields,"files")],
+            inputs=[dict(name=text(c,"name"),change=text(c,"change"),old=locked(c,"old"),new=locked(c,"new")) for c in items(fields,"inputs")],
+            packages=[dict(name=text(c,"name"),change=text(c,"change"),old=versions(c,"old"),new=versions(c,"new")) for c in items(fields,"packages")],
+            env=[dict(name=text(c,"name"),change=text(c,"change"),old=optional(c,"old"),new=optional(c,"new"),long=field(c,"long") is True) for c in items(fields,"env")],
+            fetch=number(fields,"fetch"),build=number(fields,"build"),download=optional(fields,"download"),
+            incoming=[dict(action=text(c,"action"),name=text(c,"name"),versions=versions(c,"versions")) for c in items(fields,"incoming")],diff=text(fields,"diff"))
     if profile == "flake-run-fields": return dict(program=text("program"))
     if profile == "devshell-lock-fields":
         generation=fields.get("generation")
@@ -488,8 +517,8 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
-                if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != {}:
+                expected={"devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-request-constraints" in entry:
                 schema_validator(entry["x-request-constraints"]).check_schema(resolve(entry["x-request-constraints"]))

@@ -7,8 +7,12 @@ use crate::evaluator::source_tree;
 use crate::process::Cancellation;
 use crate::session::containing_store_output;
 use crate::session::store_path;
+use goblins_protocol::contract::{
+    self, DevShellAttention as Attention, DevShellEnvChange as EnvChange,
+    DevShellFileChange as FileChange, DevShellIncoming as Incoming, DevShellLocked as Locked,
+    DevShellPreview as Preview,
+};
 use goblins_runtime::devshell::parse_reference;
-use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -886,12 +890,6 @@ fn node_source(node: &Value) -> String {
 
 /// A locked input as the approver sees it: where it comes from and which
 /// revision (or content hash) and date.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Locked {
-    pub source: String,
-    pub id: String,
-    pub date: Option<String>,
-}
 fn locked(node: &Value) -> Locked {
     let l = &node["locked"];
     Locked {
@@ -907,7 +905,7 @@ fn locked(node: &Value) -> Locked {
 }
 
 /// `added`, `removed` or `changed`, with the old and new values that apply.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Change<T> {
     pub name: String,
     pub change: &'static str,
@@ -1014,15 +1012,7 @@ fn without_hashes(value: &str) -> String {
 }
 
 /// Environment changes; long or multi-line values are left to the source
-/// diff (their `old`/`new` are omitted and `long` is set).
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct EnvChange {
-    pub name: String,
-    pub change: &'static str,
-    pub old: Option<String>,
-    pub new: Option<String>,
-    pub long: bool,
-}
+/// diff (their `old`/`new` are null and `long` is set).
 fn env_changes(old: &Summary, new: &Summary) -> Vec<EnvChange> {
     let short = |v: &String| v.chars().count() <= 80 && !v.contains('\n');
     let names: BTreeSet<_> = old.env.keys().chain(new.env.keys()).collect();
@@ -1038,7 +1028,7 @@ fn env_changes(old: &Summary, new: &Summary) -> Vec<EnvChange> {
             let long = !c.old.iter().chain(c.new.iter()).all(short);
             Some(EnvChange {
                 name: c.name,
-                change: c.change,
+                change: c.change.parse().expect("known change kind"),
                 old: c.old.filter(|_| !long),
                 new: c.new.filter(|_| !long),
                 long,
@@ -1048,12 +1038,6 @@ fn env_changes(old: &Summary, new: &Summary) -> Vec<EnvChange> {
 }
 
 /// A store path entering the machine, by package.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Incoming {
-    pub action: &'static str,
-    pub name: String,
-    pub versions: Vec<String>,
-}
 fn incoming(action: &'static str, names: &[String]) -> Vec<Incoming> {
     let mut packages: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for name in names {
@@ -1066,7 +1050,7 @@ fn incoming(action: &'static str, names: &[String]) -> Vec<Incoming> {
     packages
         .into_iter()
         .map(|(name, versions)| Incoming {
-            action,
+            action: action.parse().expect("known incoming action"),
             name,
             versions: versions.into_iter().collect(),
         })
@@ -1074,24 +1058,6 @@ fn incoming(action: &'static str, names: &[String]) -> Vec<Incoming> {
 }
 
 /// What deserves the approver's attention; frontends choose the wording.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum Attention {
-    InputSource {
-        input: String,
-        old: String,
-        new: String,
-    },
-    NewInput {
-        input: String,
-        source: String,
-    },
-    NixConfig,
-    LocalBuilds {
-        count: usize,
-    },
-    ShellHook,
-}
 fn attention(
     current: &DevShell,
     lock: &Value,
@@ -1102,14 +1068,14 @@ fn attention(
     let mut notes = Vec::new();
     for input in input_changes(&current.lock, lock) {
         match (input.old, input.new) {
-            (Some(old), Some(new)) if old.source != new.source => {
-                notes.push(Attention::InputSource {
-                    input: input.name,
-                    old: old.source,
-                    new: new.source,
-                })
-            }
-            (None, Some(new)) => notes.push(Attention::NewInput {
+            (Some(old), Some(new)) if old.source != new.source => notes.push(Attention::Variant0 {
+                kind: contract::DevShellAttentionVariant0Kind::InputSource,
+                input: input.name,
+                old: old.source,
+                new: new.source,
+            }),
+            (None, Some(new)) => notes.push(Attention::Variant1 {
+                kind: contract::DevShellAttentionVariant1Kind::NewInput,
                 input: input.name,
                 source: new.source,
             }),
@@ -1117,49 +1083,27 @@ fn attention(
         }
     }
     if config {
-        notes.push(Attention::NixConfig);
+        notes.push(Attention::Variant2 {
+            kind: contract::DevShellAttentionVariant2Kind::NixConfig,
+        });
     }
     if !cost.built.is_empty() {
-        notes.push(Attention::LocalBuilds {
+        notes.push(Attention::Variant3 {
+            kind: contract::DevShellAttentionVariant3Kind::LocalBuilds,
             count: cost.built.len(),
         });
     }
     if current.summary.env.get("shellHook") != summary.env.get("shellHook") {
-        notes.push(Attention::ShellHook);
+        notes.push(Attention::Variant4 {
+            kind: contract::DevShellAttentionVariant4Kind::ShellHook,
+        });
     }
     notes
 }
 
 /// A changed source file; counts are absent for binary files.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct FileChange {
-    pub path: String,
-    pub added: Option<u64>,
-    pub removed: Option<u64>,
-}
-
 /// Structured approval data for a refresh. Frontends assemble sections,
 /// wording and colors; the daemon sends facts only.
-#[derive(Clone, Debug, Serialize)]
-pub struct Preview {
-    pub kind: &'static str,
-    pub reference: String,
-    pub from: u32,
-    pub to: u32,
-    pub attention: Vec<Attention>,
-    pub files: Vec<FileChange>,
-    pub inputs: Vec<Change<Locked>>,
-    pub packages: Vec<Change<Vec<String>>>,
-    pub env: Vec<EnvChange>,
-    pub fetch: usize,
-    pub build: usize,
-    pub download: Option<String>,
-    /// Every package the dry run fetches or builds, including transitive ones.
-    pub incoming: Vec<Incoming>,
-    /// Source patch without `flake.lock`.
-    pub diff: String,
-}
-
 /// Drop the flake's `flake.lock` (`lock`, relative to the source tree) from a
 /// patch.
 fn without_lock(patch: &str, lock: &str) -> String {
@@ -1295,14 +1239,30 @@ fn preview(
     incoming.extend(self::incoming("fetch", &cost.fetched));
     incoming.truncate(1000);
     Preview {
-        kind: "devshell",
+        kind: contract::DevShellPreviewKind::Devshell,
         reference: current.reference.clone(),
         from: current.generation,
         to: generation,
         attention: attention(current, lock, summary, cost, config),
         files,
-        inputs: input_changes(&current.lock, lock),
-        packages: package_changes(&current.summary, summary),
+        inputs: input_changes(&current.lock, lock)
+            .into_iter()
+            .map(|c| contract::DevShellInputChange {
+                name: c.name,
+                change: c.change.parse().expect("known change kind"),
+                old: c.old,
+                new: c.new,
+            })
+            .collect(),
+        packages: package_changes(&current.summary, summary)
+            .into_iter()
+            .map(|c| contract::DevShellPackageChange {
+                name: c.name,
+                change: c.change.parse().expect("known change kind"),
+                old: c.old,
+                new: c.new,
+            })
+            .collect(),
         env: env_changes(&current.summary, summary),
         fetch: cost.fetched.len(),
         build: cost.built.len(),
@@ -1441,6 +1401,157 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn generated_preview_retains_complete_wire_projection_and_truncation() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../api/schema/fixtures.json")).unwrap();
+        let current = DevShell {
+            reference: "/p".into(),
+            path: "/p".into(),
+            attr: "default".into(),
+            generation: 0,
+            source: "/nix/store/source".into(),
+            flake: "/nix/store/source".into(),
+            lock: json!({}),
+            profile: "/nix/store/profile".into(),
+            variables: vec![],
+            script: String::new(),
+            summary: Summary::default(),
+        };
+        let unchanged = preview(
+            &current,
+            1,
+            &json!({}),
+            &Summary::default(),
+            &Cost::default(),
+            false,
+            (vec![], String::new()),
+        );
+        assert_eq!(
+            serde_json::to_value(unchanged).unwrap(),
+            fixtures["devshell_preview_unchanged"]
+        );
+        // Exercise the real producer with every attention kind and every
+        // change direction. The expected JSON is independently specified in
+        // the shared fixture and also checked against the strict schema.
+        let mut current = current.clone();
+        current.generation = 7;
+        current.lock = json!({"nodes": {
+            "root": {},
+            "changed": {"locked": {"type":"github","owner":"old","repo":"repo","rev":"aaaaaaa","lastModified":0}},
+            "removed": {"locked": {"type":"path","path":"./gone","narHash":"sha256-gone123"}}
+        }});
+        let next_lock = json!({"nodes": {
+            "root": {},
+            "added": {"locked": {"type":"path","path":"./new","narHash":"sha256-new1234"}},
+            "changed": {"locked": {"type":"github","owner":"new","repo":"repo","rev":"bbbbbbb","lastModified":1}}
+        }});
+        current.summary = Summary {
+            packages: BTreeMap::from([
+                ("changed".into(), BTreeSet::from(["1".into()])),
+                ("removed".into(), BTreeSet::new()),
+            ]),
+            env: BTreeMap::from([
+                ("CHANGED".into(), "before".into()),
+                ("LONG".into(), "old".into()),
+                ("REMOVED".into(), "gone".into()),
+                ("shellHook".into(), "beforehook".into()),
+                ("buildInputs".into(), "noise".into()),
+                (
+                    "PATH".into(),
+                    "/nix/store/00000000000000000000000000000000-tool/bin".into(),
+                ),
+            ]),
+            derivation: "/nix/store/old.drv".into(),
+        };
+        let next_summary = Summary {
+            packages: BTreeMap::from([
+                ("added".into(), BTreeSet::from(["2".into()])),
+                ("changed".into(), BTreeSet::from(["3".into()])),
+            ]),
+            env: BTreeMap::from([
+                ("ADDED".into(), "new".into()),
+                ("CHANGED".into(), "after".into()),
+                ("LONG".into(), "x".repeat(81)),
+                ("shellHook".into(), "afterhook".into()),
+                ("buildInputs".into(), "different noise".into()),
+                (
+                    "PATH".into(),
+                    "/nix/store/11111111111111111111111111111111-tool/bin".into(),
+                ),
+            ]),
+            derivation: "/nix/store/new.drv".into(),
+        };
+        let patch = concat!(
+            "diff --git a/flake.nix b/flake.nix\n",
+            "--- a/flake.nix\n",
+            "+++ b/flake.nix\n",
+            "@@ -1 +1 @@\n",
+            "-a\n",
+            "+b\n",
+        );
+        let produced = preview(
+            &current,
+            8,
+            &next_lock,
+            &next_summary,
+            &Cost {
+                built: vec!["tool-1".into(), "tool-2".into()],
+                fetched: vec!["lib-1".into()],
+                download: Some("1 MiB".into()),
+            },
+            true,
+            (
+                vec![
+                    FileChange {
+                        path: "flake.nix".into(),
+                        added: Some(1),
+                        removed: Some(1),
+                    },
+                    FileChange {
+                        path: "image.png".into(),
+                        added: None,
+                        removed: None,
+                    },
+                ],
+                patch.into(),
+            ),
+        );
+        assert_eq!(
+            serde_json::to_value(produced).unwrap(),
+            fixtures["devshell_preview_produced"]
+        );
+
+        let cost = Cost {
+            built: (0..1001).map(|i| format!("p{i}-1")).collect(),
+            fetched: vec!["z-2".into()],
+            download: Some("1 MiB".into()),
+        };
+        let mut current = current;
+        current.lock = json!({});
+        current.summary = Summary::default();
+        let truncated = preview(
+            &current,
+            1,
+            &json!({}),
+            &Summary::default(),
+            &cost,
+            false,
+            (vec![], String::new()),
+        );
+        assert_eq!(truncated.incoming.len(), 1000);
+        assert_eq!(truncated.build, 1001);
+        assert_eq!(truncated.fetch, 1);
+        assert!(
+            truncated
+                .incoming
+                .iter()
+                .all(|p| p.action == contract::DevShellIncomingAction::Build)
+        );
+        let notes = serde_json::to_value(truncated.attention).unwrap();
+        assert_eq!(notes, json!([{"kind":"local-builds","count":1001}]));
+    }
+
+    #[test]
     fn references_are_absolute_local_paths_with_simple_attributes() {
         assert_eq!(
             parse_reference("/src/app#rust").unwrap(),
@@ -1500,7 +1611,7 @@ mod tests {
         assert_eq!(
             incoming("fetch", &cost.fetched),
             vec![Incoming {
-                action: "fetch",
+                action: contract::DevShellIncomingAction::Fetch,
                 name: "glibc".into(),
                 versions: vec!["2.42".into(), "2.42-bin".into()]
             }]

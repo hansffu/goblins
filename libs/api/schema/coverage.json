@@ -1,10 +1,5 @@
 {
   "pending": {
-    "C07": {
-      "sandbox": [
-        "devshell.diff"
-      ]
-    },
     "C08": {
       "sandbox": [
         "editor.open"

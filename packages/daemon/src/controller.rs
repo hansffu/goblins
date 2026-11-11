@@ -5,7 +5,7 @@ use goblins_jsonrpc::{self as rpc, Decoder};
 use goblins_protocol::contract::{self, Method};
 use goblins_protocol::{
     Request,
-    rpc::{DevShellDiffParams, PermissionParams},
+    rpc::PermissionParams,
 };
 use goblins_runtime::Identity;
 use goblins_runtime::Source;
@@ -3037,7 +3037,7 @@ impl Controller {
                     }
                     if matches!(
                         call.method.as_str(),
-                        contract::sandbox::FlakeRun::NAME | "devshell.diff"
+                        contract::sandbox::FlakeRun::NAME | contract::sandbox::DevShellDiff::NAME
                     ) {
                         let serial = self.number();
                         let command = if call.method == contract::sandbox::FlakeRun::NAME {
@@ -3046,7 +3046,7 @@ impl Controller {
                             // no new trust, so nothing is asked of the host.
                             Command::Run { serial, app: p.app }
                         } else {
-                            let p: DevShellDiffParams = params(call.params)?;
+                            let p = contract_params::<contract::sandbox::DevShellDiff>(call.params)?;
                             // A preview only: no record, no candidate, no change.
                             Command::Diff {
                                 serial,

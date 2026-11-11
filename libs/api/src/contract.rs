@@ -136,6 +136,9 @@ pub trait Response: DeserializeOwned {
     }
 }
 
+mod preview;
+pub use preview::preview_reply;
+
 impl Response for FlakeRunReply {
     const SCHEMA: &'static str = "FlakeRunReply";
     fn decode(value: Value) -> io::Result<Self> {

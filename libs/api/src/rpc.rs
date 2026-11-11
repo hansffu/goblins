@@ -135,16 +135,7 @@ impl FlakeRunParams {
 }
 /// `devshell.diff`: the changes a refresh would make, as in
 /// `PermissionParams`, without a reason since nothing is requested.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DevShellDiffParams {
-    /// Flake inputs to update; empty means all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub update: Option<Vec<String>>,
-    /// Lock inputs `flake.nix` declares but the lock lacks.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub lock: bool,
-}
+pub use crate::contract::DevShellDiffParams;
 impl DevShellDiffParams {
     pub fn validate(&self) -> bool {
         !(self.update.is_some() && self.lock)

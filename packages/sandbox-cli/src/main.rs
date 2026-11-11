@@ -366,19 +366,14 @@ fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
             Ok(0)
         }
         cli::DevshellCommand::Diff { update, lock } => {
-            let mut params = json!({});
-            if let Some(update) = update {
-                params["update"] = json!(update);
-            }
-            if lock {
-                params["lock"] = json!(true);
-            }
-            match waiting_call("devshell-diff", "devshell.diff", params)? {
-                Ok(preview) if preview.is_object() => {
+            match waiting_call_typed::<contract::sandbox::DevShellDiff>(
+                "devshell-diff",
+                contract::DevShellDiffParams { update, lock },
+            )? {
+                Ok(preview) => {
                     print!("{}", preview::render(&preview));
                     Ok(0)
                 }
-                Ok(_) => Err("daemon returned an invalid preview".into()),
                 Err(message) => {
                     eprintln!("goblins: {message}");
                     Ok(1)

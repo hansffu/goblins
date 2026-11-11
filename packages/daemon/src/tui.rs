@@ -11,7 +11,7 @@ use goblins_controller::{
     controller::{PermissionRecord, SessionRecord, Snapshot},
     host::Client,
 };
-use goblins_protocol::plain_text;
+use goblins_protocol::{contract, plain_text};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -144,9 +144,6 @@ fn tag(change: &str) -> Span<'static> {
     };
     Span::styled(text, tone(kind))
 }
-fn text_of(v: &serde_json::Value) -> String {
-    plain_text(v.as_str().unwrap_or_default())
-}
 /// Old → new, old in red and new in green; either may be absent.
 fn old_new(old: Option<String>, new: Option<String>) -> Vec<Span<'static>> {
     match (old, new) {
@@ -160,26 +157,26 @@ fn old_new(old: Option<String>, new: Option<String>) -> Vec<Span<'static>> {
         (None, None) => vec![],
     }
 }
-fn locked(v: &serde_json::Value) -> Option<String> {
-    v.as_object()?;
-    Some(format!(
-        "{}{}",
-        text_of(&v["id"]),
-        v["date"]
-            .as_str()
-            .map(|d| format!(" ({})", plain_text(d)))
-            .unwrap_or_default()
-    ))
+fn locked(v: Option<&contract::PreviewLockedReply>) -> Option<String> {
+    v.map(|v| {
+        format!(
+            "{}{}",
+            plain_text(&v.id),
+            v.date
+                .as_deref()
+                .map(|d| format!(" ({})", plain_text(d)))
+                .unwrap_or_default()
+        )
+    })
 }
-fn versions(v: &serde_json::Value) -> Option<String> {
-    Some(
-        v.as_array()?
-            .iter()
-            .map(text_of)
+fn versions(v: Option<&[String]>) -> Option<String> {
+    v.map(|v| {
+        v.iter()
+            .map(|s| plain_text(s))
             .map(|s| if s.is_empty() { "?".into() } else { s })
             .collect::<Vec<_>>()
-            .join(", "),
-    )
+            .join(", ")
+    })
 }
 fn nix_file(path: &str) -> bool {
     path.ends_with(".nix")
@@ -250,14 +247,13 @@ fn awaiting_preview(p: &PermissionRecord) -> bool {
     p.kind == "devshell" && p.preview.is_none()
 }
 /// The refresh summary, assembled here from the daemon's structured preview.
-fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
-    let list = |key: &str| v[key].as_array().cloned().unwrap_or_default();
+fn devshell_summary(v: &contract::DevShellPreviewReply) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(
         format!(
             "Dev shell {} · generation {} → {}",
-            text_of(&v["reference"]),
-            v["from"],
-            v["to"]
+            plain_text(&v.reference),
+            v.from.json,
+            v.to.json
         ),
         tone("title"),
     )];
@@ -270,7 +266,7 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
             lines.push(Line::from(all));
         };
     let mut first = true;
-    let attention = list("attention");
+    let attention = &v.attention;
     if attention.is_empty() {
         row(
             &mut lines,
@@ -279,21 +275,21 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
             vec![Span::styled("nothing unusual", tone("ok"))],
         );
     }
-    for note in &attention {
-        let text = match note["kind"].as_str().unwrap_or_default() {
+    for note in attention {
+        let text = match note.kind.as_str() {
             "input-source" => format!(
                 "input '{}' now comes from {} (was {})",
-                text_of(&note["input"]),
-                text_of(&note["new"]),
-                text_of(&note["old"])
+                plain_text(&note.input),
+                plain_text(&note.new),
+                plain_text(&note.old)
             ),
             "new-input" => format!(
                 "new input '{}' from {}",
-                text_of(&note["input"]),
-                text_of(&note["source"])
+                plain_text(&note.input),
+                plain_text(&note.source)
             ),
             "nix-config" => "flake declares nixConfig (ignored, never applied)".into(),
-            "local-builds" => format!("{} derivation(s) build on this machine", note["count"]),
+            "local-builds" => format!("{} derivation(s) build on this machine", note.count.json),
             "shell-hook" => "shellHook changed; it runs in the sandbox".into(),
             other => plain_text(other),
         };
@@ -304,10 +300,8 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
             vec![Span::styled(format!("! {text}"), tone("attention"))],
         );
     }
-    let files = list("files");
-    let (nix, other): (Vec<_>, Vec<_>) = files
-        .iter()
-        .partition(|f| nix_file(f["path"].as_str().unwrap_or_default()));
+    let files = &v.files;
+    let (nix, other): (Vec<_>, Vec<_>) = files.iter().partition(|f| nix_file(&f.path));
     first = true;
     for file in &nix {
         row(
@@ -315,11 +309,11 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
             "SOURCE",
             &mut first,
             vec![
-                Span::raw(format!("{} ", text_of(&file["path"]))),
+                Span::raw(format!("{} ", plain_text(&file.path))),
                 Span::styled(
                     format!(
                         "+{}",
-                        file["added"].as_u64().map_or("?".into(), |n| n.to_string())
+                        file.added.unsigned.map_or("?".into(), |n| n.to_string())
                     ),
                     tone("added"),
                 ),
@@ -327,9 +321,7 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
                 Span::styled(
                     format!(
                         "-{}",
-                        file["removed"]
-                            .as_u64()
-                            .map_or("?".into(), |n| n.to_string())
+                        file.removed.unsigned.map_or("?".into(), |n| n.to_string())
                     ),
                     tone("removed"),
                 ),
@@ -355,12 +347,73 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
             vec![Span::styled("unchanged", tone("dim"))],
         );
     }
-    for (key, name) in [
-        ("inputs", "INPUTS"),
-        ("packages", "PACKAGES"),
-        ("env", "ENV"),
+    let input_rows: Vec<_> = v
+        .inputs
+        .iter()
+        .map(|c| {
+            let (old, new) = (
+                c.old
+                    .as_ref()
+                    .and_then(|s| s.source.as_deref())
+                    .map(plain_text),
+                c.new
+                    .as_ref()
+                    .and_then(|s| s.source.as_deref())
+                    .map(plain_text),
+            );
+            let mut spans = vec![
+                tag(&c.change),
+                Span::raw(format!("{} ", plain_text(&c.name))),
+            ];
+            if old.is_some() && new.is_some() && old != new {
+                spans.extend(old_new(old, new));
+                spans.push(Span::raw("  "));
+            } else {
+                spans.push(Span::raw(format!("{}  ", new.or(old).unwrap_or_default())));
+            }
+            spans.extend(old_new(locked(c.old.as_ref()), locked(c.new.as_ref())));
+            spans
+        })
+        .collect();
+    let package_rows: Vec<_> = v
+        .packages
+        .iter()
+        .map(|c| {
+            let mut spans = vec![
+                tag(&c.change),
+                Span::raw(format!("{} ", plain_text(&c.name))),
+            ];
+            spans.extend(old_new(
+                versions(c.old.as_deref()),
+                versions(c.new.as_deref()),
+            ));
+            spans
+        })
+        .collect();
+    let env_rows: Vec<_> = v
+        .env
+        .iter()
+        .map(|c| {
+            let mut spans = vec![
+                tag(&c.change),
+                Span::raw(format!("{} ", plain_text(&c.name))),
+            ];
+            if c.long {
+                spans.push(Span::styled("(long value; see source diff)", tone("dim")));
+            } else {
+                spans.extend(old_new(
+                    c.old.as_deref().map(plain_text),
+                    c.new.as_deref().map(plain_text),
+                ));
+            }
+            spans
+        })
+        .collect();
+    for (name, changes) in [
+        ("INPUTS", input_rows),
+        ("PACKAGES", package_rows),
+        ("ENV", env_rows),
     ] {
-        let changes = list(key);
         first = true;
         if changes.is_empty() {
             row(
@@ -370,35 +423,12 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
                 vec![Span::styled("unchanged", tone("dim"))],
             );
         }
-        for c in &changes {
-            let change = c["change"].as_str().unwrap_or_default();
-            let mut spans = vec![tag(change), Span::raw(format!("{} ", text_of(&c["name"])))];
-            match key {
-                "inputs" => {
-                    let source = |side: &str| c[side]["source"].as_str().map(plain_text);
-                    let (old, new) = (source("old"), source("new"));
-                    if old.is_some() && new.is_some() && old != new {
-                        spans.extend(old_new(old, new));
-                        spans.push(Span::raw("  "));
-                    } else {
-                        spans.push(Span::raw(format!("{}  ", new.or(old).unwrap_or_default())));
-                    }
-                    spans.extend(old_new(locked(&c["old"]), locked(&c["new"])));
-                }
-                "packages" => spans.extend(old_new(versions(&c["old"]), versions(&c["new"]))),
-                _ if c["long"] == true => {
-                    spans.push(Span::styled("(long value; see source diff)", tone("dim")))
-                }
-                _ => spans.extend(old_new(
-                    c["old"].as_str().map(plain_text),
-                    c["new"].as_str().map(plain_text),
-                )),
-            }
+        for spans in changes {
             row(&mut lines, name, &mut first, spans);
         }
     }
     first = true;
-    let build = v["build"].as_u64().unwrap_or(0);
+    let build = v.build.unsigned.unwrap_or(0);
     row(
         &mut lines,
         "COST",
@@ -406,9 +436,9 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
         vec![
             Span::raw(format!(
                 "{} to fetch{} · ",
-                v["fetch"],
-                v["download"]
-                    .as_str()
+                v.fetch.json,
+                v.download
+                    .as_deref()
                     .map(|d| format!(" ({})", plain_text(d)))
                     .unwrap_or_default()
             )),
@@ -423,9 +453,9 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
         ],
     );
     first = true;
-    let incoming = list("incoming");
+    let incoming = &v.incoming;
     for item in incoming.iter().take(50) {
-        let action = item["action"].as_str().unwrap_or_default();
+        let action = item.action.as_str();
         row(
             &mut lines,
             "INCOMING",
@@ -441,8 +471,8 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
                 ),
                 Span::raw(format!(
                     "{} {}",
-                    text_of(&item["name"]),
-                    versions(&item["versions"]).unwrap_or_default()
+                    plain_text(&item.name),
+                    versions(item.versions.as_deref()).unwrap_or_default()
                 )),
             ],
         );
@@ -806,7 +836,7 @@ impl View {
                 if let Some(v) = p.preview.as_ref().filter(|v| v["kind"] == "devshell") {
                     // Replace the generic preview line with the colored summary.
                     text.remove(2);
-                    text.splice(2..2, devshell_summary(v));
+                    text.splice(2..2, devshell_summary(&contract::preview_reply(v)));
                 }
                 f.render_widget(
                     Paragraph::new(text)
@@ -1241,6 +1271,32 @@ mod tests {
         )));
     }
     #[test]
+    fn devshell_legacy_numeric_and_nested_display_fallbacks_are_retained() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        let v = contract::preview_reply(&fixtures["devshell_preview_legacy"][1]);
+        let lines = devshell_summary(&v);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "Dev shell  · generation \"old\" → {\"future\":true}",
+            "ATTENTION ! ",
+            "! \"two\" derivation(s) build on this machine",
+            "SOURCE    x.nix +? -?",
+            "PACKAGES  [C]  ?, ?, ?, 1 → ",
+            "COST      -1 to fetch · 0 to build",
+            "INCOMING  [F]  ?, 1",
+        ] {
+            assert!(text.contains(expected), "{expected:?} missing in {text}");
+        }
+        assert!(!text.contains('\u{1b}'));
+        assert!(!text.contains('\u{202e}'));
+    }
+
+    #[test]
     fn devshell_summary_is_assembled_from_structured_data() {
         let preview = serde_json::json!({
             "kind": "devshell", "reference": "/src", "from": 1, "to": 2,
@@ -1251,7 +1307,7 @@ mod tests {
             "env": [], "fetch": 2, "build": 0, "download": "1 MiB",
             "incoming": [{"action": "fetch", "name": "glibc", "versions": ["2.42"]}], "diff": ""
         });
-        let lines = devshell_summary(&preview);
+        let lines = devshell_summary(&contract::preview_reply(&preview));
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert_eq!(text[0], "Dev shell /src · generation 1 → 2");
         assert!(text.contains(&"ATTENTION ! new input 'extra' from github:a/b".to_string()));

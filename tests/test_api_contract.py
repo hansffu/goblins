@@ -15,6 +15,32 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_devshell_diff_and_complete_preview_contracts(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["devshell_diff_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params("sandbox","devshell.diff",case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params("sandbox","devshell.diff",case["params"])
+        preview=fixtures["devshell_preview"]
+        validate=lambda value,compatible=False:contract.validate_reply("sandbox","devshell.diff",dict(jsonrpc="2.0",id=1,result=value),compatibility=compatible)
+        self.assertTrue(validate(preview));self.assertTrue(validate(fixtures["devshell_preview_unchanged"]))
+        self.assertTrue(validate(fixtures["devshell_preview_produced"]))
+        self.assertTrue(validate({**preview,"extension":True}))
+        for key in preview:
+            broken=copy.deepcopy(preview);del broken[key]
+            with self.assertRaises(ValidationError,msg=key):validate(broken)
+        for path,value in [(('attention',0,'kind'),'future'),(('attention',1,'source'),None),(('files',0,'added'),-1),(('inputs',0,'new','date'),7),(('packages',0,'old'),[1]),(('env',0,'long'),1),(('incoming',0,'action'),'future')]:
+            broken=copy.deepcopy(preview);target=broken
+            for key in path[:-1]:target=target[key]
+            target[path[-1]]=value
+            with self.assertRaises(ValidationError,msg=str(path)):validate(broken)
+            self.assertTrue(validate(broken,True))
+        for incoming in (preview['incoming']*501,):
+            with self.assertRaises(ValidationError):validate({**preview,'incoming':incoming})
+        for legacy in fixtures["devshell_preview_legacy"]:self.assertTrue(validate(legacy,True))
+        for nonobject in (None,[],1,"preview"):
+            with self.assertRaises(ValidationError):validate(nonobject,True)
+
     def test_nested_references_resolve_from_actual_documents(self):
         documents={"common.json":copy.deepcopy(contract.common()),**{f"{endpoint}.openrpc.json":copy.deepcopy(contract.document(endpoint)) for endpoint in contract.ENDPOINTS}}
         contract.check_references(documents)
@@ -758,6 +784,22 @@ class HistoricalClientTests(unittest.TestCase):
                     self.assertEqual(calls[0]["params"]["configuration"],str(manifest))
                     self.assertEqual(calls[0]["params"].get("recreate"),None if command=="run" else "record-id")
                     self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
+
+    def test_sandbox_devshell_diff_uses_generated_contract_and_legacy_display(self):
+        fixtures=contract.read("fixtures.json")
+        for args,params in [([],{}),(["--lock"],dict(lock=True)),(["--update"],dict(update=[])),(["--update","nixpkgs","a/b"],dict(update=["nixpkgs","a/b"]))]:
+            cli,call=self.sandbox_fake_cli(["devshell","diff",*args],fixtures["devshell_preview"],features=("devshell-diff",))
+            self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(call["method"],"devshell.diff");self.assertEqual(call["params"],params)
+            for expected in ("generation 1 → 2","hello 2.12 → 2.13","image.png +? -?","long value; see source diff","1.5 MiB"):
+                self.assertIn(expected,cli.stdout)
+        cli,_=self.sandbox_fake_cli(["devshell","diff"],fixtures["devshell_preview_legacy"][1],features=("devshell-diff",))
+        self.assertEqual(cli.returncode,0,cli.stderr)
+        for expected in ("generation ? → ?","? derivation(s) build on this machine","x.nix +? -?","?, ?, ?, 1 →","? to fetch · ? to build"):
+            self.assertIn(expected,cli.stdout)
+        self.assertNotIn("\x1b",cli.stdout);self.assertNotIn("\u202e",cli.stdout)
+        for nonobject in (None,[],1):
+            cli,_=self.sandbox_fake_cli(["devshell","diff"],nonobject,features=("devshell-diff",))
+            self.assertNotEqual(cli.returncode,0);self.assertIn("daemon returned an invalid preview",cli.stderr)
 
     def test_sandbox_trusted_lock_and_flake_cli_preserve_contracts_and_fallbacks(self):
         import shutil

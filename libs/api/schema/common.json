@@ -4344,6 +4344,799 @@
       "minimum": 0,
       "maximum": 4294967295,
       "x-json-integer": true
+    },
+    "DevShellInputName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_'-]*(/[A-Za-z_][A-Za-z0-9_'-]*)*$(?![\\s\\S])",
+      "description": "Existing rpc::input_name enforces byte bounds and ASCII path-segment syntax after structural decoding."
+    },
+    "DevShellInputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DevShellInputName"
+      },
+      "maxItems": 32
+    },
+    "DevShellDiffParams": {
+      "type": "object",
+      "properties": {
+        "update": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DevShellInputs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lock": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "PreviewCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true,
+      "description": "A same-build usize count on the supported 64-bit platform; runtime producer bounds remain unchanged."
+    },
+    "DevShellChangeKind": {
+      "type": "string",
+      "enum": [
+        "added",
+        "removed",
+        "changed"
+      ]
+    },
+    "DevShellIncomingAction": {
+      "type": "string",
+      "enum": [
+        "build",
+        "fetch"
+      ]
+    },
+    "DevShellPreviewKind": {
+      "type": "string",
+      "enum": [
+        "devshell"
+      ]
+    },
+    "DevShellLocked": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "id",
+        "date"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellInputChange": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "change": {
+          "$ref": "#/definitions/DevShellChangeKind"
+        },
+        "old": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DevShellLocked"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "new": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DevShellLocked"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "change",
+        "old",
+        "new"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellPackageChange": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "change": {
+          "$ref": "#/definitions/DevShellChangeKind"
+        },
+        "old": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "new": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "change",
+        "old",
+        "new"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellEnvChange": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "change": {
+          "$ref": "#/definitions/DevShellChangeKind"
+        },
+        "old": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "new": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "long": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "change",
+        "old",
+        "new",
+        "long"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellIncoming": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/DevShellIncomingAction"
+        },
+        "name": {
+          "type": "string"
+        },
+        "versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "action",
+        "name",
+        "versions"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellFileChange": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "added": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "removed": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "added",
+        "removed"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellAttention": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "input-source"
+              ]
+            },
+            "input": {
+              "type": "string"
+            },
+            "old": {
+              "type": "string"
+            },
+            "new": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "input",
+            "old",
+            "new"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "new-input"
+              ]
+            },
+            "input": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "input",
+            "source"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "nix-config"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "local-builds"
+              ]
+            },
+            "count": {
+              "$ref": "#/definitions/PreviewCount"
+            }
+          },
+          "required": [
+            "kind",
+            "count"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "shell-hook"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": true
+        }
+      ]
+    },
+    "DevShellPreview": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/DevShellPreviewKind"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/definitions/DevShellGeneration"
+        },
+        "to": {
+          "$ref": "#/definitions/DevShellGeneration"
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DevShellAttention"
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DevShellFileChange"
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DevShellInputChange"
+          }
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DevShellPackageChange"
+          }
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DevShellEnvChange"
+          }
+        },
+        "fetch": {
+          "$ref": "#/definitions/PreviewCount"
+        },
+        "build": {
+          "$ref": "#/definitions/PreviewCount"
+        },
+        "download": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "incoming": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DevShellIncoming"
+          },
+          "maxItems": 1000
+        },
+        "diff": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference",
+        "from",
+        "to",
+        "attention",
+        "files",
+        "inputs",
+        "packages",
+        "env",
+        "fetch",
+        "build",
+        "download",
+        "incoming",
+        "diff"
+      ],
+      "additionalProperties": true
+    },
+    "PreviewNumber": {
+      "type": "object",
+      "properties": {
+        "json": {
+          "type": "string"
+        },
+        "unsigned": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "json",
+        "unsigned"
+      ],
+      "additionalProperties": true
+    },
+    "PreviewLockedReply": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source",
+        "id",
+        "date"
+      ],
+      "additionalProperties": true
+    },
+    "PreviewAttentionReply": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "old": {
+          "type": "string"
+        },
+        "new": {
+          "type": "string"
+        },
+        "count": {
+          "$ref": "#/definitions/PreviewNumber"
+        }
+      },
+      "required": [
+        "kind",
+        "input",
+        "source",
+        "old",
+        "new",
+        "count"
+      ],
+      "additionalProperties": true
+    },
+    "PreviewFileReply": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "added": {
+          "$ref": "#/definitions/PreviewNumber"
+        },
+        "removed": {
+          "$ref": "#/definitions/PreviewNumber"
+        }
+      },
+      "required": [
+        "path",
+        "added",
+        "removed"
+      ],
+      "additionalProperties": true
+    },
+    "PreviewInputReply": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "change": {
+          "type": "string"
+        },
+        "old": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PreviewLockedReply"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "new": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PreviewLockedReply"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "change",
+        "old",
+        "new"
+      ],
+      "additionalProperties": true
+    },
+    "PreviewPackageReply": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "change": {
+          "type": "string"
+        },
+        "old": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "new": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "change",
+        "old",
+        "new"
+      ],
+      "additionalProperties": true
+    },
+    "PreviewEnvReply": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "change": {
+          "type": "string"
+        },
+        "old": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "new": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "long": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "change",
+        "old",
+        "new",
+        "long"
+      ],
+      "additionalProperties": true
+    },
+    "PreviewIncomingReply": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "versions": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "name",
+        "versions"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellPreviewReply": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/definitions/PreviewNumber"
+        },
+        "to": {
+          "$ref": "#/definitions/PreviewNumber"
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreviewAttentionReply"
+          }
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreviewFileReply"
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreviewInputReply"
+          }
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreviewPackageReply"
+          }
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreviewEnvReply"
+          }
+        },
+        "fetch": {
+          "$ref": "#/definitions/PreviewNumber"
+        },
+        "build": {
+          "$ref": "#/definitions/PreviewNumber"
+        },
+        "download": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "incoming": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreviewIncomingReply"
+          }
+        },
+        "diff": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference",
+        "from",
+        "to",
+        "attention",
+        "files",
+        "inputs",
+        "packages",
+        "env",
+        "fetch",
+        "build",
+        "download",
+        "incoming",
+        "diff"
+      ],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -5093,6 +5886,27 @@
       ],
       "minItems": 1,
       "maxItems": 1
+    },
+    "DevShellDiffParams": {
+      "type": "array",
+      "items": [
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DevShellInputs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 2
     }
   },
   "x-request-constraints": {
@@ -5296,6 +6110,23 @@
           }
         }
       ]
+    },
+    "DevShellDiffParams": {
+      "not": {
+        "type": "object",
+        "properties": {
+          "update": {
+            "type": "array"
+          },
+          "lock": {
+            "const": true
+          }
+        },
+        "required": [
+          "update",
+          "lock"
+        ]
+      }
     }
   },
   "x-attach-version": 1
