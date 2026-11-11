@@ -12727,6 +12727,90 @@ Positional parameters:
 }
 #+end_src
 
+* supervisor actor method phases
+
+These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.
+
+#+begin_src json
+[
+  {
+    "name": "entry",
+    "x-rust-name": "Entry",
+    "direction": "daemon-to-supervisor",
+    "allowed": [
+      "Setup",
+      "Maintenance",
+      "Preflight",
+      "SupervisorStart"
+    ],
+    "x-dispatch-variants": {
+      "Setup": "Setup",
+      "Maintenance": "Maintenance",
+      "Preflight": "Preflight",
+      "SupervisorStart": "SupervisorStart"
+    },
+    "pending-identities": {
+      "Setup": {
+        "chunk": "C18",
+        "reason": "Scope Setup payload contract remains separate; only the existing first-frame method identity is bound here."
+      }
+    },
+    "consumer": "libs/supervisor/src/entry.rs:main",
+    "description": "Classify the raw first method before general decoding or runtime startup. Missing, non-string or unknown methods retain the existing refusal; Setup retains its independent descriptor refusal."
+  },
+  {
+    "name": "maintenance-first",
+    "x-rust-name": "MaintenanceFirst",
+    "direction": "daemon-to-supervisor",
+    "allowed": [
+      "Maintenance"
+    ],
+    "pending-identities": {},
+    "consumer": "libs/supervisor/src/maintenance.rs:start",
+    "description": "Reject any other raw first method and dispose descriptors before logical decode, cancellation setup or cleanup operations."
+  },
+  {
+    "name": "preflight-adopted",
+    "x-rust-name": "PreflightAdopted",
+    "direction": "daemon-to-supervisor",
+    "allowed": [
+      "Adopted"
+    ],
+    "pending-identities": {},
+    "consumer": "libs/supervisor/src/preflight.rs:start",
+    "description": "After sending a rooted or unrooted manifest requiring adoption, only scalar Adopted reaches the decoder. Wrong-direction multipart data is dropped before pending receive state."
+  },
+  {
+    "name": "manifest-result",
+    "x-rust-name": "ManifestResult",
+    "direction": "supervisor-to-daemon",
+    "allowed": [
+      "Event.Manifest",
+      "PreflightFailed"
+    ],
+    "pending-identities": {
+      "Event.Manifest": {
+        "chunk": "C17",
+        "reason": "Only its existing one-shot result method identity is bound here; descriptor-bearing Event.Manifest payload generation belongs to C17."
+      }
+    },
+    "consumer": "packages/daemon/src/supervised/oneshot.rs:Expected::allows",
+    "description": "Only one single-frame manifest or operation failure may reach one-shot result decoding. Preserve raw descriptor disposal on wrong-direction rejection and all later result/ACK/EOF/reap validation."
+  },
+  {
+    "name": "maintenance-result",
+    "x-rust-name": "MaintenanceResult",
+    "direction": "supervisor-to-daemon",
+    "allowed": [
+      "MaintenanceFinished"
+    ],
+    "pending-identities": {},
+    "consumer": "packages/daemon/src/supervised/oneshot.rs:Expected::allows",
+    "description": "Only the single-frame maintenance result reaches logical decoding. Existing fixed post-result deadline, EOF and successful reap requirements remain unchanged."
+  }
+]
+#+end_src
+
 * Generated Serde reader details
 
 Original Serde container names, field order, required nullable sequence slots and legacy named aliases are generated from:

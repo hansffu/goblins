@@ -763,6 +763,50 @@ fn main() {
             "pub const COMPLETIONS: &[&str] = &{exchanges:?}; }}\n"
         ));
     }
+    let supervisor: Value =
+        serde_json::from_str(&fs::read_to_string("schema/supervisor.openrpc.json").unwrap())
+            .unwrap();
+    output.push_str("pub mod supervisor_phases {\n");
+    for phase in supervisor["x-phases"].as_array().unwrap() {
+        let rust = phase["x-rust-name"].as_str().unwrap();
+        let allowed = phase["allowed"].as_array().unwrap();
+        let identities = allowed.iter().map(|name| {
+            let name = name.as_str().unwrap();
+            if let Some(notification) = supervisor["x-notifications"].as_array().unwrap().iter().find(|n| n["name"] == name) {
+                let binding = notification["x-rust-name"].as_str().unwrap();
+                format!("<super::supervisor_notifications::{binding} as crate::contract::Notification>::NAME")
+            } else {
+                assert!(phase["pending-identities"][name].is_object(), "unassigned supervisor phase identity");
+                format!("{name:?}")
+            }
+        }).collect::<Vec<_>>();
+        let dispatch = phase["x-dispatch-variants"].as_object();
+        if let Some(variants) = dispatch {
+            let names = allowed
+                .iter()
+                .map(|name| variants[name.as_str().unwrap()].as_str().unwrap())
+                .collect::<Vec<_>>()
+                .join(",");
+            output.push_str(&format!(
+                "#[derive(Clone,Copy,Debug,PartialEq,Eq)] pub enum {rust} {{ {names} }}\n"
+            ));
+        } else {
+            output.push_str(&format!("pub struct {rust};\n"));
+        }
+        output.push_str(&format!("impl {rust} {{ pub const NAMES: &'static [&'static str] = &[{}]; pub fn allows(method: &str) -> bool {{ Self::NAMES.contains(&method) }}", identities.join(",")));
+        if let Some(variants) = dispatch {
+            output.push_str("pub fn classify(method: &str) -> Option<Self> {");
+            for (name, identity) in allowed.iter().zip(identities.iter()) {
+                let variant = variants[name.as_str().unwrap()].as_str().unwrap();
+                output.push_str(&format!(
+                    "if method == {identity} {{ return Some(Self::{variant}); }}"
+                ));
+            }
+            output.push_str("None }");
+        }
+        output.push_str("}\n");
+    }
+    output.push_str("}\n");
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("contract.rs"),
         output,

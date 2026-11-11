@@ -1,5 +1,6 @@
 //! One-shot validation/rooting before the daemon begins serving requests.
 use crate::Result;
+use goblins_protocol::contract::supervisor_phases::PreflightAdopted;
 use goblins_runtime::{
     Event,
     channel::{Channel, Frame},
@@ -55,7 +56,12 @@ pub(crate) fn start(mut channel: Channel, first: Frame) -> Result<()> {
                 if let Some(frame) = channel.receive()? {
                     // Adopted is scalar. A wrong-direction multipart Handoff
                     // must never enter the decoder's pending receive state.
-                    if frame.value.get("method").and_then(|v| v.as_str()) != Some("Adopted") {
+                    if !frame
+                        .value
+                        .get("method")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(PreflightAdopted::allows)
+                    {
                         drop(frame);
                         decoder.close(&mut channel);
                         return Err("preflight expected Adopted".into());

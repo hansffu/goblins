@@ -27229,5 +27229,548 @@
       },
       "valid": false
     }
+  ],
+  "c16c_phase_definitions": [
+    {
+      "name": "entry",
+      "rust": "Entry",
+      "direction": "daemon-to-supervisor",
+      "allowed": [
+        "Setup",
+        "Maintenance",
+        "Preflight",
+        "SupervisorStart"
+      ],
+      "consumer": "libs/supervisor/src/entry.rs:main",
+      "pending": {
+        "Setup": "C18"
+      },
+      "variants": {
+        "Setup": "Setup",
+        "Maintenance": "Maintenance",
+        "Preflight": "Preflight",
+        "SupervisorStart": "SupervisorStart"
+      }
+    },
+    {
+      "name": "maintenance-first",
+      "rust": "MaintenanceFirst",
+      "direction": "daemon-to-supervisor",
+      "allowed": [
+        "Maintenance"
+      ],
+      "consumer": "libs/supervisor/src/maintenance.rs:start",
+      "pending": {}
+    },
+    {
+      "name": "preflight-adopted",
+      "rust": "PreflightAdopted",
+      "direction": "daemon-to-supervisor",
+      "allowed": [
+        "Adopted"
+      ],
+      "consumer": "libs/supervisor/src/preflight.rs:start",
+      "pending": {}
+    },
+    {
+      "name": "manifest-result",
+      "rust": "ManifestResult",
+      "direction": "supervisor-to-daemon",
+      "allowed": [
+        "Event.Manifest",
+        "PreflightFailed"
+      ],
+      "consumer": "packages/daemon/src/supervised/oneshot.rs:Expected::allows",
+      "pending": {
+        "Event.Manifest": "C17"
+      }
+    },
+    {
+      "name": "maintenance-result",
+      "rust": "MaintenanceResult",
+      "direction": "supervisor-to-daemon",
+      "allowed": [
+        "MaintenanceFinished"
+      ],
+      "consumer": "packages/daemon/src/supervised/oneshot.rs:Expected::allows",
+      "pending": {}
+    }
+  ],
+  "c16c_phase_method_cases": [
+    {
+      "phase": "entry",
+      "method": "Setup",
+      "allowed": true
+    },
+    {
+      "phase": "entry",
+      "method": "Maintenance",
+      "allowed": true
+    },
+    {
+      "phase": "entry",
+      "method": "Preflight",
+      "allowed": true
+    },
+    {
+      "phase": "entry",
+      "method": "SupervisorStart",
+      "allowed": true
+    },
+    {
+      "phase": "entry",
+      "method": "Adopted",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Event.Manifest",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "PreflightFailed",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "MaintenanceFinished",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Leases",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Command.Start",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Event.Exported",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Stopping",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Released",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "setup",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "maintenancefinished",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Event.Manifest.extra",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Adopted.extra",
+      "allowed": false
+    },
+    {
+      "phase": "entry",
+      "method": "Unknown",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Setup",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Maintenance",
+      "allowed": true
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Preflight",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "SupervisorStart",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Adopted",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Event.Manifest",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "PreflightFailed",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "MaintenanceFinished",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Leases",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Command.Start",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Event.Exported",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Stopping",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Released",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "setup",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "maintenancefinished",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Event.Manifest.extra",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Adopted.extra",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-first",
+      "method": "Unknown",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Setup",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Maintenance",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Preflight",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "SupervisorStart",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Adopted",
+      "allowed": true
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Event.Manifest",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "PreflightFailed",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "MaintenanceFinished",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Leases",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Command.Start",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Event.Exported",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Stopping",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Released",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "setup",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "maintenancefinished",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Event.Manifest.extra",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Adopted.extra",
+      "allowed": false
+    },
+    {
+      "phase": "preflight-adopted",
+      "method": "Unknown",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Setup",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Maintenance",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Preflight",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "SupervisorStart",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Adopted",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Event.Manifest",
+      "allowed": true
+    },
+    {
+      "phase": "manifest-result",
+      "method": "PreflightFailed",
+      "allowed": true
+    },
+    {
+      "phase": "manifest-result",
+      "method": "MaintenanceFinished",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Leases",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Command.Start",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Event.Exported",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Stopping",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Released",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "setup",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "maintenancefinished",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Event.Manifest.extra",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Adopted.extra",
+      "allowed": false
+    },
+    {
+      "phase": "manifest-result",
+      "method": "Unknown",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Setup",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Maintenance",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Preflight",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "SupervisorStart",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Adopted",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Event.Manifest",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "PreflightFailed",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "MaintenanceFinished",
+      "allowed": true
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Leases",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Command.Start",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Event.Exported",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Stopping",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Released",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "setup",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "maintenancefinished",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Event.Manifest.extra",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Adopted.extra",
+      "allowed": false
+    },
+    {
+      "phase": "maintenance-result",
+      "method": "Unknown",
+      "allowed": false
+    }
   ]
 }

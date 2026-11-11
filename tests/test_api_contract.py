@@ -16,6 +16,74 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c16c_phase_manifest_matches_original_identities_and_pending_scope(self):
+        fixtures = contract.read("fixtures.json")
+        doc = contract.document("supervisor")
+        phases = doc["x-phases"]
+        self.assertEqual([r["name"] for r in phases], [r["name"] for r in fixtures["c16c_phase_definitions"]])
+        notifications = {r["name"]:r for r in doc["x-notifications"]}
+        for expected in fixtures["c16c_phase_definitions"]:
+            row = next(r for r in phases if r["name"] == expected["name"])
+            with self.subTest(phase=expected["name"]):
+                self.assertEqual(row["x-rust-name"], expected["rust"])
+                self.assertEqual(row["direction"], expected["direction"])
+                self.assertEqual(row["allowed"], expected["allowed"])
+                self.assertEqual(row["consumer"], expected["consumer"])
+                self.assertTrue(row["description"])
+                self.assertEqual(row.get("x-dispatch-variants", {}), expected.get("variants", {}))
+                self.assertEqual(set(row["pending-identities"]), set(expected["pending"]))
+                for name in row["allowed"]:
+                    if name in expected["pending"]:
+                        self.assertEqual(row["pending-identities"][name]["chunk"], expected["pending"][name])
+                        self.assertTrue(row["pending-identities"][name]["reason"])
+                        self.assertNotIn(name, notifications)  # Identity-only is not payload migration.
+                    else:
+                        self.assertIn(notifications[name]["direction"], [row["direction"], "bidirectional"])
+                        self.assertTrue(notifications[name]["x-rust-name"])
+        for case in fixtures["c16c_phase_method_cases"]:
+            row = next(r for r in phases if r["name"] == case["phase"])
+            with self.subTest(case=case):
+                self.assertEqual(case["method"] in row["allowed"], case["allowed"])
+        # This checks the manifest. Separate Rust tests execute generated APIs;
+        # reachable actor baseline tests cover guard placement and FD disposal.
+
+    def test_c16c_phase_manifest_consistency_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.document
+        cases = []
+        def mutated(label, change):
+            doc = copy.deepcopy(original("supervisor"))
+            change(doc)
+            cases.append((label, doc))
+        mutated("missing phase", lambda d: d["x-phases"].pop())
+        mutated("duplicate phase", lambda d: d["x-phases"].append(copy.deepcopy(d["x-phases"][0])))
+        mutated("unknown phase name", lambda d: d["x-phases"][0].update(name="new-entry"))
+        mutated("duplicate Rust phase name", lambda d: d["x-phases"][1].update({"x-rust-name":"Entry"}))
+        mutated("wrong Rust phase name", lambda d: d["x-phases"][0].update({"x-rust-name":"OtherEntry"}))
+        mutated("missing allowed method", lambda d: d["x-phases"][0]["allowed"].pop())
+        mutated("duplicate allowed method", lambda d: d["x-phases"][0]["allowed"].append("Maintenance"))
+        mutated("unknown allowed method", lambda d: d["x-phases"][0]["allowed"].append("Unknown"))
+        mutated("wrong direction method", lambda d: d["x-phases"][1]["allowed"].append("MaintenanceFinished"))
+        mutated("phase direction", lambda d: d["x-phases"][0].update(direction="supervisor-to-daemon"))
+        mutated("consumer binding", lambda d: d["x-phases"][0].update(consumer="libs/supervisor/src/preflight.rs:start"))
+        mutated("missing consumer", lambda d: d["x-phases"][0].pop("consumer"))
+        mutated("wrong entry dispatch variant", lambda d: d["x-phases"][0]["x-dispatch-variants"].update(Preflight="Maintenance"))
+        mutated("missing entry dispatch variant", lambda d: d["x-phases"][0]["x-dispatch-variants"].pop("Setup"))
+        mutated("extra entry dispatch variant", lambda d: d["x-phases"][0]["x-dispatch-variants"].update(Unknown="Unknown"))
+        mutated("missing Setup pending", lambda d: d["x-phases"][0]["pending-identities"].pop("Setup"))
+        mutated("wrong Setup chunk", lambda d: d["x-phases"][0]["pending-identities"]["Setup"].update(chunk="C17"))
+        mutated("empty pending reason", lambda d: d["x-phases"][0]["pending-identities"]["Setup"].update(reason=""))
+        mutated("missing Event.Manifest pending", lambda d: d["x-phases"][3]["pending-identities"].pop("Event.Manifest"))
+        mutated("wrong Event.Manifest chunk", lambda d: d["x-phases"][3]["pending-identities"]["Event.Manifest"].update(chunk="C18"))
+        mutated("generated identity marked pending", lambda d: d["x-phases"][0]["pending-identities"].update(Maintenance={"chunk":"C18","reason":"wrong fallback"}))
+        mutated("pending identity outside allowed list", lambda d: d["x-phases"][1]["pending-identities"].update(Setup={"chunk":"C18","reason":"wrong scope"}))
+        mutated("dispatch classifier outside entry", lambda d: d["x-phases"][1].update({"x-dispatch-variants":{"Maintenance":"Maintenance"}}))
+        for label, doc in cases:
+            with self.subTest(mutation=label), patch.object(contract, "document", side_effect=lambda endpoint: doc if endpoint == "supervisor" else original(endpoint)):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def _assert_c16b2_bootstrap_schema_closure(self):
         defs = contract.common()["definitions"]
         self.assertEqual(defs["SupervisorSourceSlot"], {"$ref":"#/definitions/SupervisorSource"})

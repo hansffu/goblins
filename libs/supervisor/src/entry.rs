@@ -1,5 +1,6 @@
 //! Common inherited-socket startup, before any runtime worker or subprocess.
 use crate::Result;
+use goblins_protocol::contract::supervisor_phases::Entry;
 use goblins_runtime::{channel::Channel, scope, supervisor};
 use goblins_unix as unix;
 use std::os::{fd::FromRawFd, unix::net::UnixStream};
@@ -45,8 +46,13 @@ pub fn main() -> Result<()> {
         }
         wait(&channel);
     };
-    match first.value.get("method").and_then(|v| v.as_str()) {
-        Some("Setup") => {
+    match first
+        .value
+        .get("method")
+        .and_then(|v| v.as_str())
+        .and_then(Entry::classify)
+    {
+        Some(Entry::Setup) => {
             if !first.fds.is_empty() {
                 drop(first);
                 channel.close();
@@ -55,9 +61,9 @@ pub fn main() -> Result<()> {
             let setup = scope::decode(first.value)?;
             crate::scope_process::start(channel, setup)
         }
-        Some("Maintenance") => crate::maintenance::start(channel, first),
-        Some("Preflight") => crate::preflight::start(channel, first),
-        Some("SupervisorStart") => crate::supervisor_process::start(channel, first),
+        Some(Entry::Maintenance) => crate::maintenance::start(channel, first),
+        Some(Entry::Preflight) => crate::preflight::start(channel, first),
+        Some(Entry::SupervisorStart) => crate::supervisor_process::start(channel, first),
         _ => {
             drop(first);
             channel.close();

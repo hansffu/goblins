@@ -2229,3 +2229,45 @@ mod tests {
         assert!(ServerStopResult::decode(json!({"accepted":"true","extra":1})).is_err());
     }
 }
+#[cfg(test)]
+mod c16c_phase_artifact_tests {
+    use super::supervisor_phases::{
+        Entry, MaintenanceFirst, MaintenanceResult, ManifestResult, PreflightAdopted,
+    };
+
+    #[test]
+    fn c16c_generated_phase_predicates_match_frozen_method_cases() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+        for case in fixtures["c16c_phase_method_cases"].as_array().unwrap() {
+            let method = case["method"].as_str().unwrap();
+            let actual = match case["phase"].as_str().unwrap() {
+                "entry" => Entry::allows(method),
+                "maintenance-first" => MaintenanceFirst::allows(method),
+                "preflight-adopted" => PreflightAdopted::allows(method),
+                "manifest-result" => ManifestResult::allows(method),
+                "maintenance-result" => MaintenanceResult::allows(method),
+                _ => panic!("unknown fixture phase"),
+            };
+            assert_eq!(actual, case["allowed"].as_bool().unwrap(), "{case}");
+        }
+    }
+    #[test]
+    fn c16c_generated_entry_classifier_matches_dispatch_variants_without_actor_startup() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+        for case in fixtures["c16c_phase_method_cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["phase"] == "entry")
+        {
+            let method = case["method"].as_str().unwrap();
+            let expected = fixtures["c16c_phase_definitions"][0]["variants"]
+                .get(method)
+                .and_then(serde_json::Value::as_str);
+            let actual = Entry::classify(method).map(|variant| format!("{variant:?}"));
+            assert_eq!(actual.as_deref(), expected, "{case}");
+        }
+    }
+}

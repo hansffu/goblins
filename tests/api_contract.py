@@ -340,6 +340,10 @@ def reference():
                 lines.extend([f"Legacy client classification follows ={behavior}=; the normalized DTO is:","","#+begin_src json",json.dumps(resolve(entry["x-client-params-schema"]),indent=2),"#+end_src",""])
         for entry in document(endpoint).get("x-completions",[]):
             lines.extend([f"** Completion exchange ={entry['name']}=","",entry["description"],"",f"Socket: ={entry['socket']}=. Direction: ={entry['direction']}=. Fixed response ID: ={entry['id']}=.","","#+begin_src json",json.dumps(resolve(entry["result"]["schema"]),indent=2),"#+end_src","","Errors: "+", ".join(str(e["code"]) for e in entry["errors"])+".",""])
+    for endpoint in PRIVATE_ENDPOINTS:
+        phases=document(endpoint).get("x-phases",[])
+        if phases:
+            lines.extend([f"* {endpoint} actor method phases", "", "These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.", "", "#+begin_src json", json.dumps(phases,indent=2), "#+end_src", ""])
     if common().get("x-rust-serde-records"):
         lines.extend(["* Generated Serde reader details","","Original Serde container names, field order, required nullable sequence slots and legacy named aliases are generated from:","","#+begin_src json",json.dumps(common()["x-rust-serde-records"],indent=2),"#+end_src",""])
     if common().get("x-supervisor-metadata-fallbacks"):
@@ -1057,6 +1061,40 @@ def check_supervisor_handoff_metadata():
         if "x-generator-pending" in defs[name]:raise ValueError("private bootstrap nested contract remains pending")
 
 
+def check_supervisor_phases():
+    """Pin existing actor method gates and narrowly scoped pending identities."""
+    expected=[
+        ("entry","Entry","daemon-to-supervisor",["Setup","Maintenance","Preflight","SupervisorStart"],"libs/supervisor/src/entry.rs:main",{"Setup":"C18"}),
+        ("maintenance-first","MaintenanceFirst","daemon-to-supervisor",["Maintenance"],"libs/supervisor/src/maintenance.rs:start",{}),
+        ("preflight-adopted","PreflightAdopted","daemon-to-supervisor",["Adopted"],"libs/supervisor/src/preflight.rs:start",{}),
+        ("manifest-result","ManifestResult","supervisor-to-daemon",["Event.Manifest","PreflightFailed"],"packages/daemon/src/supervised/oneshot.rs:Expected::allows",{"Event.Manifest":"C17"}),
+        ("maintenance-result","MaintenanceResult","supervisor-to-daemon",["MaintenanceFinished"],"packages/daemon/src/supervised/oneshot.rs:Expected::allows",{}),
+    ]
+    doc=document("supervisor");rows=doc.get("x-phases",[])
+    if [row.get("name") for row in rows]!=[row[0] for row in expected]:
+        raise ValueError("private supervisor phase inventory differs")
+    notifications={row["name"]:row for row in doc["x-notifications"]}
+    for row,(name,rust,direction,allowed,consumer,pending) in zip(rows,expected):
+        if (row.get("x-rust-name")!=rust or row.get("direction")!=direction or
+            row.get("allowed")!=allowed or row.get("consumer")!=consumer):
+            raise ValueError("private supervisor phase contract differs: "+name)
+        if not isinstance(row.get("description"),str) or not row["description"]:
+            raise ValueError("missing private supervisor phase description")
+        variants={name:name for name in allowed} if name=="entry" else None
+        if (variants is not None and row.get("x-dispatch-variants")!=variants) or (variants is None and "x-dispatch-variants" in row):
+            raise ValueError("private supervisor entry classifier differs")
+        actual=row.get("pending-identities",{})
+        if set(actual)!=set(pending):raise ValueError("private phase identity fallback scope differs")
+        for identity in allowed:
+            if identity in pending:
+                record=actual[identity]
+                if (identity in notifications or set(record)!={"chunk","reason"} or
+                    record.get("chunk")!=pending[identity] or not isinstance(record.get("reason"),str) or not record["reason"]):
+                    raise ValueError("invalid private phase pending identity")
+            elif identity not in notifications or notifications[identity]["direction"] not in (direction,"bidirectional"):
+                raise ValueError("private phase identity has no matching directional contract")
+
+
 def check_private_contracts():
     """Check the explicitly migrated private slice, separately from public RPCs."""
     catalog={
@@ -1140,6 +1178,7 @@ def check_private_contracts():
 def check():
     check_references()
     check_private_contracts()
+    check_supervisor_phases()
     check_supervisor_source_stdio_metadata()
     check_supervisor_handoff_metadata()
     check_generated_reader_hooks_and_identities()
