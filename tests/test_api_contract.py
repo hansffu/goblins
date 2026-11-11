@@ -16,6 +16,107 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17d1_host_job_instances_notifications_and_remaining_inventory(self):
+        fixtures = contract.read("fixtures.json")
+        for name, cases in fixtures["c17d1_host_job_schema_cases"].items():
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
+            for case in cases:
+                with self.subTest(schema=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        for case in fixtures["c17d1_notification_cases"]:
+            with self.subTest(notification=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", case["direction"], case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", case["direction"], case["frame"])
+            opposite = "supervisor-to-daemon" if case["direction"] == "daemon-to-supervisor" else "daemon-to-supervisor"
+            self.assertFalse(contract.validate_notification("supervisor", opposite, case["frame"]))
+        doc = contract.document("supervisor")
+        pending = [name for group in doc["x-pending-notifications"].values() for name in group]
+        completed = {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
+        self.assertEqual(len(completed), 6)
+        self.assertEqual(len(pending), 18)
+        self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
+        self.assertFalse(completed & set(pending))
+        self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
+
+    def test_c17d1_host_outcome_public_description_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        self.assertEqual(original["definitions"]["SupervisorHostOutcome"]["description"], "What a host job's supervisor records in its `status.json`.")
+        for mutation in ["removed", "changed"]:
+            schema = copy.deepcopy(original)
+            if mutation == "removed":
+                del schema["definitions"]["SupervisorHostOutcome"]["description"]
+            else:
+                schema["definitions"]["SupervisorHostOutcome"]["description"] = "Changed public host outcome explanation."
+            with self.subTest(description=mutation), patch.object(contract,"common",return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
+    def test_c17d1_host_job_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def changed(label, change):
+            schema = copy.deepcopy(original)
+            change(schema)
+            cases.append((label, schema))
+        def definition(s, name): return s["definitions"]["Supervisor" + name]
+        def field(s, name, key): return definition(s,name)["properties"][key]
+        for name in ["HostOutcome", "EventHostJobFinishedParams"]:
+            changed(name + " registry", lambda s,name=name: s["x-rust-explicit-records"].remove("Supervisor"+name))
+            changed(name + " original name", lambda s,name=name: definition(s,name).update({"x-rust-name":"Wrong"}))
+            changed(name + " no Clone", lambda s,name=name: definition(s,name)["x-rust-derives"].insert(0,"Clone"))
+            changed(name + " Deserialize", lambda s,name=name: definition(s,name)["x-rust-derives"].remove("Deserialize"))
+            changed(name + " field order", lambda s,name=name: definition(s,name)["x-rust-field-order"].reverse())
+        changed("Outcome Default", lambda s: definition(s,"HostOutcome")["x-rust-derives"].remove("Default"))
+        changed("Outcome original module", lambda s: definition(s,"HostOutcome").update({"x-rust-module":"host_metadata"}))
+        changed("Outcome open fields", lambda s: definition(s,"HostOutcome").update(additionalProperties=False))
+        for key in ["exit_code","signal","spawn_error","cancelled","timed_out","truncated"]:
+            changed("Outcome " + key + " native type", lambda s,key=key: field(s,"HostOutcome",key).update({"x-rust-type":"u64"}))
+            changed("Outcome " + key + " native name", lambda s,key=key: field(s,"HostOutcome",key).update({"x-rust-field-name":"other"}))
+            changed("Outcome " + key + " no serde default", lambda s,key=key: field(s,"HostOutcome",key).update({"x-rust-default":True}))
+            changed("Outcome " + key + " no skip", lambda s,key=key: field(s,"HostOutcome",key).update({"x-rust-skip-serializing-if":"Option::is_none"}))
+        for key in ["exit_code","signal","spawn_error"]:
+            changed("Outcome " + key + " optional missing", lambda s,key=key: definition(s,"HostOutcome")["required"].append(key))
+            changed("Outcome " + key + " nullable reference", lambda s,key=key: field(s,"HostOutcome",key).update({"$ref":"#/definitions/SupervisorSequence"}))
+        for key in ["cancelled","timed_out","truncated"]:
+            changed("Outcome " + key + " required bool", lambda s,key=key: definition(s,"HostOutcome")["required"].remove(key))
+            changed("Outcome " + key + " wire bool", lambda s,key=key: field(s,"HostOutcome",key).update(type="integer"))
+        changed("Finished outcome native Result", lambda s: field(s,"EventHostJobFinishedParams","outcome").update({"x-rust-type":"String"}))
+        changed("Finished outcome native name", lambda s: field(s,"EventHostJobFinishedParams","outcome").update({"x-rust-field-name":"other"}))
+        changed("Finished request native String", lambda s: field(s,"EventHostJobFinishedParams","request").update({"x-rust-type":"u64"}))
+        for name,wrong in [("HostPreparedOutcome","OptionalPath"),("HostFinishedOutcome","ApprovalReply")]:
+            changed(name + " Ok reference", lambda s,name=name,wrong=wrong: definition(s,name)["oneOf"][0]["properties"]["Ok"].update({"$ref":"#/definitions/Supervisor"+wrong}))
+            changed(name + " Err String", lambda s,name=name: definition(s,name)["oneOf"][1]["properties"]["Err"].update(type="integer"))
+            changed(name + " external Result closed", lambda s,name=name: definition(s,name)["oneOf"][0].update(additionalProperties=True))
+            changed(name + " Result required branch", lambda s,name=name: definition(s,name)["oneOf"][1]["required"].clear())
+        changed("Run timeout required nullable metadata", lambda s: s["x-rust-serde-records"]["SupervisorCommandRunHostJobParams"]["required-nullable"].remove("timeout"))
+        changed("Run extraction order", lambda s: s["x-rust-serde-records"]["SupervisorCommandRunHostJobParams"]["order"].reverse())
+        changed("Run original serde name", lambda s: s["x-rust-serde-records"]["SupervisorCommandRunHostJobParams"].update(name="Wrong"))
+        changed("Arguments array", lambda s: definition(s,"Arguments").update(type="object"))
+        changed("Arguments String elements", lambda s: definition(s,"Arguments")["items"].update(type="integer"))
+        changed("Environment pair minimum", lambda s: definition(s,"Environment")["items"].update(minItems=1))
+        changed("Environment pair maximum", lambda s: definition(s,"Environment")["items"].update(maxItems=3))
+        changed("Environment pair String element", lambda s: definition(s,"Environment")["items"]["items"][1].update(type="integer"))
+        changed("Timeout u64 reference", lambda s: definition(s,"OptionalSequence")["anyOf"][0].update({"$ref":"#/definitions/SupervisorGeneration"}))
+        changed("Timeout nullable", lambda s: definition(s,"OptionalSequence")["anyOf"].pop())
+        for root,key,wrong in [("CommandPrepareHostJobParams","cwd","OptionalPath"),("CommandRunHostJobParams","argv","OptionalArguments"),("CommandRunHostJobParams","env","Arguments"),("CommandRunHostJobParams","timeout","Sequence"),("EventHostJobPreparedParams","result","HostFinishedOutcome"),("EventHostJobFinishedParams","outcome","HostPreparedOutcome")]:
+            changed(root + "." + key + " root reference", lambda s,root=root,key=key,wrong=wrong: field(s,root,key).update({"$ref":"#/definitions/Supervisor"+wrong}))
+        for root in ["CommandPrepareHostJobParams","CommandRunHostJobParams","CommandCancelHostJobParams","EventHostJobPreparedParams","EventHostJobFailedParams","EventHostJobFinishedParams"]:
+            changed(root + " request String", lambda s,root=root: field(s,root,"request").update(type="integer"))
+            changed(root + " required slots", lambda s,root=root: definition(s,root)["required"].pop())
+            changed(root + " root closed", lambda s,root=root: definition(s,root).update(additionalProperties=True))
+        changed("Failed error String", lambda s: field(s,"EventHostJobFailedParams","error").update(type="integer"))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract,"common",return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c17c2_devshell_instances_opaque_strings_and_notifications(self):
         fixtures = contract.read("fixtures.json")
         for name, cases in fixtures["c17c2_devshell_schema_cases"].items():
@@ -43,7 +144,8 @@ class ContractTests(unittest.TestCase):
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
         completed = {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
         self.assertEqual(len(completed), 6)
-        self.assertEqual(len(pending), 24)
+        completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
+        self.assertEqual(len(pending), 18)
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -151,7 +253,8 @@ class ContractTests(unittest.TestCase):
         completed = {case["frame"]["method"] for case in fixtures["c17c1_notification_cases"]}
         self.assertEqual(len(completed), 6)
         completed |= {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
-        self.assertEqual(len(pending), 24)
+        completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
+        self.assertEqual(len(pending), 18)
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -259,11 +362,12 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(inner.is_valid(value))
         doc = contract.document("supervisor")
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
-        self.assertEqual(len(pending), 24)
+        self.assertEqual(len(pending), 18)
         completed = {case["frame"]["method"] for case in fixtures["c17b2_notification_cases"]}
         self.assertEqual(len(completed), 7)
         completed |= {case["frame"]["method"] for case in fixtures["c17c1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
+        completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -400,12 +504,13 @@ class ContractTests(unittest.TestCase):
         doc = original("supervisor")
         pending = doc["x-pending-notifications"]
         names = [name for group in pending.values() for name in group]
-        self.assertEqual(len(names), 24)
-        self.assertEqual(len(set(names)), 24)
+        self.assertEqual(len(names), 18)
+        self.assertEqual(len(set(names)), 18)
         completed = {r["method"] for r in contract.read("fixtures.json")["c17b1_process_roots"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17b2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c2_notification_cases"]}
+        completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17d1_notification_cases"]}
         declared = {r["name"] for r in doc["x-notifications"]}
         self.assertTrue(completed <= declared)
         self.assertFalse(set(names) & declared)

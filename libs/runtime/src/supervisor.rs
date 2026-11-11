@@ -497,6 +497,9 @@ macro_rules! command_codec {
                 Command::Refresh { approval,changes } => b.notification::<contract::supervisor_notifications::CommandRefresh>(contract::SupervisorCommandRefreshParams { approval:*approval,changes:changes.clone() })?,
                 Command::Run { serial,app } => b.notification::<contract::supervisor_notifications::CommandRun>(contract::SupervisorCommandRunParams { serial:*serial,app:app.clone() })?,
                 Command::Diff { serial,changes } => b.notification::<contract::supervisor_notifications::CommandDiff>(contract::SupervisorCommandDiffParams { serial:*serial,changes:changes.clone() })?,
+                Command::PrepareHostJob { request,cwd } => b.notification::<contract::supervisor_notifications::CommandPrepareHostJob>(contract::SupervisorCommandPrepareHostJobParams { request:request.clone(),cwd:cwd.clone() })?,
+                Command::RunHostJob { request,argv,env,timeout } => b.notification::<contract::supervisor_notifications::CommandRunHostJob>(contract::SupervisorCommandRunHostJobParams { request:request.clone(),argv:argv.clone(),env:env.clone(),timeout:*timeout })?,
+                Command::CancelHostJob { request } => b.notification::<contract::supervisor_notifications::CommandCancelHostJob>(contract::SupervisorCommandCancelHostJobParams { request:request.clone() })?,
                 $(Command::$v { $($f),* } => { b.method=concat!("Command.", stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
             }
             Ok(())
@@ -569,6 +572,18 @@ macro_rules! command_codec {
                     let wire=contract::SupervisorCommandDiffParams { serial:p.take("serial")?,changes:p.take("changes")? };
                     Command::Diff { serial:wire.serial,changes:wire.changes }
                 },
+                name if name==contract::supervisor_notifications::CommandPrepareHostJob::NAME => {
+                    let wire=contract::SupervisorCommandPrepareHostJobParams { request:p.take("request")?,cwd:p.take("cwd")? };
+                    Command::PrepareHostJob { request:wire.request,cwd:wire.cwd }
+                },
+                name if name==contract::supervisor_notifications::CommandRunHostJob::NAME => {
+                    let wire=contract::SupervisorCommandRunHostJobParams { request:p.take("request")?,argv:p.take("argv")?,env:p.take("env")?,timeout:p.take("timeout")? };
+                    Command::RunHostJob { request:wire.request,argv:wire.argv,env:wire.env,timeout:wire.timeout }
+                },
+                name if name==contract::supervisor_notifications::CommandCancelHostJob::NAME => {
+                    let wire=contract::SupervisorCommandCancelHostJobParams { request:p.take("request")? };
+                    Command::CancelHostJob { request:wire.request }
+                },
                 $(concat!("Command.",stringify!($v)) => Command::$v { $($f:get!(p,d,$kind,stringify!($f),$ty)),* }),*,
                 _ => return Err(invalid("unknown supervisor command")),
             };
@@ -583,9 +598,6 @@ command_codec! {
     ScopeFailed {},
     ScopeMembership { result:Result<Fd,String> =>membership },
     Export { member:String=>plain },
-    PrepareHostJob { request:String=>plain, cwd:PathBuf=>plain },
-    RunHostJob { request:String=>plain, argv:Vec<String> =>plain, env:Vec<(String,String)> =>plain, timeout:Option<u64> =>plain },
-    CancelHostJob { request:String=>plain },
 }
 macro_rules! event_codec {
     ($($v:ident { $($f:ident : $ty:ty => $kind:ident),* $(,)? }),* $(,)?) => {
@@ -641,6 +653,15 @@ macro_rules! event_codec {
                 Event::DevShell { summary } => {
                     let summary=serde_json::to_string(summary)?;
                     b.notification::<contract::supervisor_notifications::EventDevShell>(contract::SupervisorEventDevShellParams { summary })?;
+                },
+                Event::HostJobPrepared { request,result } => b.notification::<contract::supervisor_notifications::EventHostJobPrepared>(contract::SupervisorEventHostJobPreparedParams { request:request.clone(),result:result.clone() })?,
+                Event::HostJobFailed { request,error } => b.notification::<contract::supervisor_notifications::EventHostJobFailed>(contract::SupervisorEventHostJobFailedParams { request:request.clone(),error:error.clone() })?,
+                Event::HostJobFinished { request,outcome } => {
+                    let outcome=match outcome {
+                        Ok(value)=>Ok(HostOutcome { exit_code:value.exit_code,signal:value.signal,spawn_error:value.spawn_error.clone(),cancelled:value.cancelled,timed_out:value.timed_out,truncated:value.truncated }),
+                        Err(error)=>Err(error.clone()),
+                    };
+                    b.notification::<contract::supervisor_notifications::EventHostJobFinished>(contract::SupervisorEventHostJobFinishedParams { request:request.clone(),outcome })?;
                 },
                 $(Event::$v { $($f),* } => { b.method=concat!("Event.",stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
                 Event::InitLost => b.method="Event.InitLost",
@@ -702,6 +723,18 @@ macro_rules! event_codec {
                     let summary=serde_json::from_str(&wire.summary).map_err(other)?;
                     Event::DevShell { summary }
                 },
+                name if name==contract::supervisor_notifications::EventHostJobPrepared::NAME => {
+                    let wire=contract::SupervisorEventHostJobPreparedParams { request:p.take("request")?,result:p.take("result")? };
+                    Event::HostJobPrepared { request:wire.request,result:wire.result }
+                },
+                name if name==contract::supervisor_notifications::EventHostJobFailed::NAME => {
+                    let wire=contract::SupervisorEventHostJobFailedParams { request:p.take("request")?,error:p.take("error")? };
+                    Event::HostJobFailed { request:wire.request,error:wire.error }
+                },
+                name if name==contract::supervisor_notifications::EventHostJobFinished::NAME => {
+                    let wire=contract::SupervisorEventHostJobFinishedParams { request:p.take("request")?,outcome:p.take("outcome")? };
+                    Event::HostJobFinished { request:wire.request,outcome:wire.outcome }
+                },
                 $(concat!("Event.",stringify!($v))=>Event::$v { $($f:get!(p,_d,$kind,stringify!($f),$ty)),* }),*,
                 _=>return Err(invalid("unknown supervisor event")),
             };
@@ -717,9 +750,6 @@ event_codec! {
     SandboxOpened { connection:u64=>plain },
     SandboxCall { connection:u64=>plain, call:goblins_jsonrpc::Call=>call },
     SandboxClosed { connection:u64=>plain },
-    HostJobPrepared { request:String=>plain, result:Result<PathBuf,String> =>plain },
-    HostJobFailed { request:String=>plain, error:String=>plain },
-    HostJobFinished { request:String=>plain, outcome:Result<HostOutcome,String> =>plain },
     Stopped { exit_code:Option<i32> =>plain },
 }
 mod handoff;

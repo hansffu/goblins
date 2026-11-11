@@ -13804,6 +13804,234 @@ Positional parameters:
 }
 #+end_src
 
+** Notification =Command.PrepareHostJob=
+
+Prepare the host directory shown for a host command, preserving request/cwd field extraction and native path serialization; host policy stays unchanged.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational host-job command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "cwd": {
+      "$ref": "#/definitions/SupervisorPath"
+    }
+  },
+  "required": [
+    "request",
+    "cwd"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.RunHostJob=
+
+Run approved host work with original request/argv/environment pairs/required nullable u64 timeout metadata; no argument, environment-name or timeout policy is added at the wire boundary.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational host-job command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "argv": {
+      "$ref": "#/definitions/SupervisorArguments"
+    },
+    "env": {
+      "$ref": "#/definitions/SupervisorEnvironment"
+    },
+    "timeout": {
+      "$ref": "#/definitions/SupervisorOptionalSequence"
+    }
+  },
+  "required": [
+    "request",
+    "argv",
+    "env",
+    "timeout"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.CancelHostJob=
+
+Cancel host work identified by the original request string using existing cancellation policy.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational host-job command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.HostJobPrepared=
+
+Report plain Result<PathBuf,String> for the host directory. Preserve request before result parsing and native path serialization errors.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational host-job event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/definitions/SupervisorHostPreparedOutcome"
+    }
+  },
+  "required": [
+    "request",
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.HostJobFailed=
+
+Report why an approved host command could not start, with original request and error strings.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational host-job event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request",
+    "error"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.HostJobFinished=
+
+Report plain Result<HostOutcome,String> when the host supervisor exits. Preserve independent outcome flags and nullable exit/signal/spawn-error metadata, with no new exclusivity policy.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational host-job event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string",
+      "x-rust-field-name": "request",
+      "x-rust-type": "String"
+    },
+    "outcome": {
+      "$ref": "#/definitions/SupervisorHostFinishedOutcome",
+      "x-rust-field-name": "outcome",
+      "x-rust-type": "Result<crate::contract::HostOutcome,String>"
+    }
+  },
+  "required": [
+    "request",
+    "outcome"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "SupervisorEventHostJobFinishedParams",
+  "x-rust-field-order": [
+    "request",
+    "outcome"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * supervisor actor method phases
 
 These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.
@@ -13893,17 +14121,11 @@ These existing messages remain assigned to later migration slices; their payload
     "Command.ScopeFailed",
     "Command.ScopeMembership",
     "Command.Export",
-    "Command.PrepareHostJob",
-    "Command.RunHostJob",
-    "Command.CancelHostJob",
     "Command.Stop",
     "Event.ScopeFailed",
     "Event.ScopeNeeded",
     "Event.Started",
     "Event.Mode",
-    "Event.HostJobPrepared",
-    "Event.HostJobFailed",
-    "Event.HostJobFinished",
     "Event.Stopped",
     "Event.Failed",
     "Event.InitLost",
@@ -14311,6 +14533,18 @@ Original Serde container names, field order, required nullable sequence slots an
     "required-nullable": [
       "output"
     ]
+  },
+  "SupervisorCommandRunHostJobParams": {
+    "name": "SupervisorCommandRunHostJobParams",
+    "order": [
+      "request",
+      "argv",
+      "env",
+      "timeout"
+    ],
+    "required-nullable": [
+      "timeout"
+    ]
   }
 }
 #+end_src
@@ -14334,6 +14568,8 @@ Original Serde container names, field order, required nullable sequence slots an
 - =Preview result= :: Generated WirePreview and standard Result<WirePreview,String> describe private output_path/in_store/download/build_required. Native catalog::Preview retains its public skipped output_path and domain semantics. Private producer retains its original json! path serialization panic on non-UTF8 output_path before typed conversion; missing optional named fields and legacy record/Result forms remain accepted at the original Value boundary.
 - =Dev shell metadata= :: Generated devshell_metadata::{Changes,DevShellSummary} retain original names/traits/docs, open records, native u32 generation and arbitrary lock JSON. Changes Default is a Rust constructor only; lock stays required on the wire and absent update decodes None without changing explicit null output. Policy, Nix evaluation and lock handling stay native.
 - =Dev shell opaque fields= :: Event.Refresh result remains a String containing standard Result<(Value,String),String>; Event.Call result contains standard Result<Value,String>; Event.DevShell summary contains original DevShellSummary JSON. x-json-content-schema documents inner canonical shapes separately. Scalar IDs parse before inner strings, inner errors before root finish; descriptor-looking inner data remains opaque.
+- =Host job metadata= :: Generated HostOutcome retains original Debug/Serialize/Deserialize/Default, no added Clone, open fields, null optional exit_code/signal/spawn_error, three required bools and original status.json prose. Native policy and status-file behavior remain unchanged. Root Finished aggregate is explicit without Clone.
+- =Host job results= :: Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -28977,6 +29213,304 @@ Original Serde container names, field order, required nullable sequence slots an
     "summary"
   ],
   "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorHostOutcome=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "exit_code": {
+      "$ref": "#/definitions/SupervisorOptionalI32",
+      "x-rust-field-name": "exit_code",
+      "x-rust-type": "Option<i32>"
+    },
+    "signal": {
+      "$ref": "#/definitions/SupervisorOptionalI32",
+      "x-rust-field-name": "signal",
+      "x-rust-type": "Option<i32>"
+    },
+    "spawn_error": {
+      "$ref": "#/definitions/SupervisorOptionalString",
+      "x-rust-field-name": "spawn_error",
+      "x-rust-type": "Option<String>"
+    },
+    "cancelled": {
+      "type": "boolean",
+      "x-rust-field-name": "cancelled",
+      "x-rust-type": "bool"
+    },
+    "timed_out": {
+      "type": "boolean",
+      "x-rust-field-name": "timed_out",
+      "x-rust-type": "bool"
+    },
+    "truncated": {
+      "type": "boolean",
+      "x-rust-field-name": "truncated",
+      "x-rust-type": "bool"
+    }
+  },
+  "required": [
+    "cancelled",
+    "timed_out",
+    "truncated"
+  ],
+  "additionalProperties": true,
+  "x-rust-name": "HostOutcome",
+  "x-rust-field-order": [
+    "exit_code",
+    "signal",
+    "spawn_error",
+    "cancelled",
+    "timed_out",
+    "truncated"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize",
+    "Default"
+  ],
+  "description": "What a host job's supervisor records in its `status.json`."
+}
+#+end_src
+
+** =SupervisorArguments=
+
+#+begin_src json
+{
+  "type": "array",
+  "items": {
+    "type": "string"
+  }
+}
+#+end_src
+
+** =SupervisorOptionalSequence=
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    {
+      "type": "null"
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorHostPreparedOutcome=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Ok": {
+          "$ref": "#/definitions/SupervisorPath"
+        }
+      },
+      "required": [
+        "Ok"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Err": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Err"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorHostFinishedOutcome=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Ok": {
+          "$ref": "#/definitions/SupervisorHostOutcome"
+        }
+      },
+      "required": [
+        "Ok"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Err": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Err"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorCommandPrepareHostJobParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "cwd": {
+      "$ref": "#/definitions/SupervisorPath"
+    }
+  },
+  "required": [
+    "request",
+    "cwd"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorCommandRunHostJobParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "argv": {
+      "$ref": "#/definitions/SupervisorArguments"
+    },
+    "env": {
+      "$ref": "#/definitions/SupervisorEnvironment"
+    },
+    "timeout": {
+      "$ref": "#/definitions/SupervisorOptionalSequence"
+    }
+  },
+  "required": [
+    "request",
+    "argv",
+    "env",
+    "timeout"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorCommandCancelHostJobParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventHostJobPreparedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/definitions/SupervisorHostPreparedOutcome"
+    }
+  },
+  "required": [
+    "request",
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventHostJobFailedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request",
+    "error"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventHostJobFinishedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string",
+      "x-rust-field-name": "request",
+      "x-rust-type": "String"
+    },
+    "outcome": {
+      "$ref": "#/definitions/SupervisorHostFinishedOutcome",
+      "x-rust-field-name": "outcome",
+      "x-rust-type": "Result<crate::contract::HostOutcome,String>"
+    }
+  },
+  "required": [
+    "request",
+    "outcome"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "SupervisorEventHostJobFinishedParams",
+  "x-rust-field-order": [
+    "request",
+    "outcome"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
 }
 #+end_src
 

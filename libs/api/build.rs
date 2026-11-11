@@ -330,6 +330,18 @@ fn main() {
     ] {
         settings.with_replacement(name, "String", [].into_iter());
     }
+    settings.with_replacement("SupervisorArguments", "Vec<String>", [].into_iter());
+    settings.with_replacement("SupervisorOptionalSequence", "Option<u64>", [].into_iter());
+    settings.with_replacement(
+        "SupervisorHostPreparedOutcome",
+        "Result<::std::path::PathBuf,String>",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "SupervisorHostFinishedOutcome",
+        "Result<crate::contract::HostOutcome,String>",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while

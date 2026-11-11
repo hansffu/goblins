@@ -12514,6 +12514,249 @@
         "summary"
       ],
       "additionalProperties": false
+    },
+    "SupervisorHostOutcome": {
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "$ref": "#/definitions/SupervisorOptionalI32",
+          "x-rust-field-name": "exit_code",
+          "x-rust-type": "Option<i32>"
+        },
+        "signal": {
+          "$ref": "#/definitions/SupervisorOptionalI32",
+          "x-rust-field-name": "signal",
+          "x-rust-type": "Option<i32>"
+        },
+        "spawn_error": {
+          "$ref": "#/definitions/SupervisorOptionalString",
+          "x-rust-field-name": "spawn_error",
+          "x-rust-type": "Option<String>"
+        },
+        "cancelled": {
+          "type": "boolean",
+          "x-rust-field-name": "cancelled",
+          "x-rust-type": "bool"
+        },
+        "timed_out": {
+          "type": "boolean",
+          "x-rust-field-name": "timed_out",
+          "x-rust-type": "bool"
+        },
+        "truncated": {
+          "type": "boolean",
+          "x-rust-field-name": "truncated",
+          "x-rust-type": "bool"
+        }
+      },
+      "required": [
+        "cancelled",
+        "timed_out",
+        "truncated"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "HostOutcome",
+      "x-rust-field-order": [
+        "exit_code",
+        "signal",
+        "spawn_error",
+        "cancelled",
+        "timed_out",
+        "truncated"
+      ],
+      "x-rust-derives": [
+        "Debug",
+        "Serialize",
+        "Deserialize",
+        "Default"
+      ],
+      "description": "What a host job's supervisor records in its `status.json`."
+    },
+    "SupervisorArguments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "SupervisorOptionalSequence": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "SupervisorHostPreparedOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Ok": {
+              "$ref": "#/definitions/SupervisorPath"
+            }
+          },
+          "required": [
+            "Ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Err": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Err"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SupervisorHostFinishedOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Ok": {
+              "$ref": "#/definitions/SupervisorHostOutcome"
+            }
+          },
+          "required": [
+            "Ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Err": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Err"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SupervisorCommandPrepareHostJobParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "cwd": {
+          "$ref": "#/definitions/SupervisorPath"
+        }
+      },
+      "required": [
+        "request",
+        "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandRunHostJobParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "argv": {
+          "$ref": "#/definitions/SupervisorArguments"
+        },
+        "env": {
+          "$ref": "#/definitions/SupervisorEnvironment"
+        },
+        "timeout": {
+          "$ref": "#/definitions/SupervisorOptionalSequence"
+        }
+      },
+      "required": [
+        "request",
+        "argv",
+        "env",
+        "timeout"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandCancelHostJobParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventHostJobPreparedParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/SupervisorHostPreparedOutcome"
+        }
+      },
+      "required": [
+        "request",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventHostJobFailedParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventHostJobFinishedParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string",
+          "x-rust-field-name": "request",
+          "x-rust-type": "String"
+        },
+        "outcome": {
+          "$ref": "#/definitions/SupervisorHostFinishedOutcome",
+          "x-rust-field-name": "outcome",
+          "x-rust-type": "Result<crate::contract::HostOutcome,String>"
+        }
+      },
+      "required": [
+        "request",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "x-rust-name": "SupervisorEventHostJobFinishedParams",
+      "x-rust-field-order": [
+        "request",
+        "outcome"
+      ],
+      "x-rust-derives": [
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
     }
   },
   "x-api-version": 1,
@@ -15240,6 +15483,18 @@
       "required-nullable": [
         "output"
       ]
+    },
+    "SupervisorCommandRunHostJobParams": {
+      "name": "SupervisorCommandRunHostJobParams",
+      "order": [
+        "request",
+        "argv",
+        "env",
+        "timeout"
+      ],
+      "required-nullable": [
+        "timeout"
+      ]
     }
   },
   "x-communications-payloads": [
@@ -15723,7 +15978,9 @@
     "Approval metadata": "Generated approval_metadata::{Request,Reply} preserve original closed structs, names, traits, Request package_kind default, Reply null id and omitted None message; public protocol paths reexport them. Native optional paths and strings remain wire metadata, with no approval policy validation.",
     "Preview result": "Generated WirePreview and standard Result<WirePreview,String> describe private output_path/in_store/download/build_required. Native catalog::Preview retains its public skipped output_path and domain semantics. Private producer retains its original json! path serialization panic on non-UTF8 output_path before typed conversion; missing optional named fields and legacy record/Result forms remain accepted at the original Value boundary.",
     "Dev shell metadata": "Generated devshell_metadata::{Changes,DevShellSummary} retain original names/traits/docs, open records, native u32 generation and arbitrary lock JSON. Changes Default is a Rust constructor only; lock stays required on the wire and absent update decodes None without changing explicit null output. Policy, Nix evaluation and lock handling stay native.",
-    "Dev shell opaque fields": "Event.Refresh result remains a String containing standard Result<(Value,String),String>; Event.Call result contains standard Result<Value,String>; Event.DevShell summary contains original DevShellSummary JSON. x-json-content-schema documents inner canonical shapes separately. Scalar IDs parse before inner strings, inner errors before root finish; descriptor-looking inner data remains opaque."
+    "Dev shell opaque fields": "Event.Refresh result remains a String containing standard Result<(Value,String),String>; Event.Call result contains standard Result<Value,String>; Event.DevShell summary contains original DevShellSummary JSON. x-json-content-schema documents inner canonical shapes separately. Scalar IDs parse before inner strings, inner errors before root finish; descriptor-looking inner data remains opaque.",
+    "Host job metadata": "Generated HostOutcome retains original Debug/Serialize/Deserialize/Default, no added Clone, open fields, null optional exit_code/signal/spawn_error, three required bools and original status.json prose. Native policy and status-file behavior remain unchanged. Root Finished aggregate is explicit without Clone.",
+    "Host job results": "Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",
@@ -15738,7 +15995,9 @@
     "SupervisorPreview",
     "SupervisorEventGrantedParams",
     "SupervisorDevShellChanges",
-    "SupervisorDevShellSummary"
+    "SupervisorDevShellSummary",
+    "SupervisorHostOutcome",
+    "SupervisorEventHostJobFinishedParams"
   ],
   "x-rust-external-enums": [
     "SupervisorSpawnKind",

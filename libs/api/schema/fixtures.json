@@ -32809,5 +32809,946 @@
       },
       "valid": false
     }
+  ],
+  "c17d1_host_job_schema_cases": {
+    "SupervisorHostOutcome": [
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": false,
+          "truncated": false
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "exit_code": -2147483648,
+          "signal": 2147483647,
+          "spawn_error": "{\"$fd\":0}\n雪",
+          "cancelled": true,
+          "timed_out": true,
+          "truncated": true
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": false,
+          "truncated": false,
+          "exit_code": null,
+          "signal": null,
+          "spawn_error": null,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": false,
+          "truncated": false,
+          "exit_code": 2147483647,
+          "signal": -2147483648
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": false
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "cancelled": null,
+          "timed_out": false,
+          "truncated": false
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": 0,
+          "truncated": false
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": false,
+          "truncated": false,
+          "exit_code": 2147483648
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": false,
+          "truncated": false,
+          "signal": -2147483649
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": false,
+          "truncated": false,
+          "exit_code": 1.0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "cancelled": false,
+          "timed_out": false,
+          "truncated": false,
+          "spawn_error": false
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          null,
+          null,
+          null,
+          false,
+          false,
+          false
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorHostPreparedOutcome": [
+      {
+        "value": {
+          "Ok": "relative/../out\u0000雪"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Err": "failed\n雪"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Err": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": "x",
+          "Err": "e"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Other": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": "opaque",
+        "valid": false
+      }
+    ],
+    "SupervisorHostFinishedOutcome": [
+      {
+        "value": {
+          "Ok": {
+            "exit_code": -2147483648,
+            "signal": 2147483647,
+            "spawn_error": "{\"$fd\":0}\n雪",
+            "cancelled": true,
+            "timed_out": true,
+            "truncated": true
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": {
+            "cancelled": false,
+            "timed_out": false,
+            "truncated": false
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Err": "failed"
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Ok": {}
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Err": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Ok": {
+            "cancelled": false,
+            "timed_out": false,
+            "truncated": false
+          },
+          "Err": "e"
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Other": 0
+        },
+        "valid": false
+      },
+      {
+        "value": "opaque",
+        "valid": false
+      }
+    ],
+    "SupervisorArguments": [
+      {
+        "value": [],
+        "valid": true
+      },
+      {
+        "value": [
+          "",
+          "nul\u0000雪",
+          "{\"$fd\":0}"
+        ],
+        "valid": true
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": [
+          0
+        ],
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      }
+    ],
+    "SupervisorEnvironment": [
+      {
+        "value": [],
+        "valid": true
+      },
+      {
+        "value": [
+          [
+            "BAD=NAME\u0000",
+            "{\"$fd\":0}"
+          ],
+          [
+            "",
+            ""
+          ]
+        ],
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": [
+          [
+            "only"
+          ]
+        ],
+        "valid": false
+      },
+      {
+        "value": [
+          [
+            "a",
+            "b",
+            0
+          ]
+        ],
+        "valid": false
+      },
+      {
+        "value": [
+          [
+            1,
+            "b"
+          ]
+        ],
+        "valid": false
+      },
+      {
+        "value": [
+          [
+            "a",
+            null
+          ]
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorOptionalSequence": [
+      {
+        "value": null,
+        "valid": true
+      },
+      {
+        "value": 0,
+        "valid": true
+      },
+      {
+        "value": 18446744073709551615,
+        "valid": true
+      },
+      {
+        "value": -1,
+        "valid": false
+      },
+      {
+        "value": 18446744073709551616,
+        "valid": false
+      },
+      {
+        "value": 1.0,
+        "valid": false
+      },
+      {
+        "value": true,
+        "valid": false
+      },
+      {
+        "value": "1",
+        "valid": false
+      }
+    ]
+  },
+  "c17d1_notification_cases": [
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.PrepareHostJob",
+        "params": {
+          "request": "{\"$fd\":0}",
+          "cwd": "relative/../cwd\u0000雪"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.PrepareHostJob",
+        "params": {
+          "cwd": "relative/../cwd\u0000雪"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.PrepareHostJob",
+        "params": {
+          "request": "{\"$fd\":0}"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.PrepareHostJob",
+        "params": {
+          "request": "{\"$fd\":0}",
+          "cwd": "relative/../cwd\u0000雪",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.PrepareHostJob",
+        "params": {
+          "request": "{\"$fd\":0}",
+          "cwd": "relative/../cwd\u0000雪"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.PrepareHostJob",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "request": "",
+          "argv": [
+            "",
+            "{\"$fd\":0}"
+          ],
+          "env": [
+            [
+              "BAD=NAME\u0000",
+              "{\"$fd\":1}"
+            ]
+          ],
+          "timeout": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "argv": [
+            "",
+            "{\"$fd\":0}"
+          ],
+          "env": [
+            [
+              "BAD=NAME\u0000",
+              "{\"$fd\":1}"
+            ]
+          ],
+          "timeout": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "request": "",
+          "env": [
+            [
+              "BAD=NAME\u0000",
+              "{\"$fd\":1}"
+            ]
+          ],
+          "timeout": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "request": "",
+          "argv": [
+            "",
+            "{\"$fd\":0}"
+          ],
+          "timeout": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "request": "",
+          "argv": [
+            "",
+            "{\"$fd\":0}"
+          ],
+          "env": [
+            [
+              "BAD=NAME\u0000",
+              "{\"$fd\":1}"
+            ]
+          ]
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "request": "",
+          "argv": [
+            "",
+            "{\"$fd\":0}"
+          ],
+          "env": [
+            [
+              "BAD=NAME\u0000",
+              "{\"$fd\":1}"
+            ]
+          ],
+          "timeout": 18446744073709551615,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "request": "",
+          "argv": [
+            "",
+            "{\"$fd\":0}"
+          ],
+          "env": [
+            [
+              "BAD=NAME\u0000",
+              "{\"$fd\":1}"
+            ]
+          ],
+          "timeout": 18446744073709551615
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelHostJob",
+        "params": {
+          "request": ""
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelHostJob",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelHostJob",
+        "params": {
+          "request": "",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelHostJob",
+        "params": {
+          "request": ""
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.CancelHostJob",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobPrepared",
+        "params": {
+          "request": "r",
+          "result": {
+            "Ok": "relative/../out"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobPrepared",
+        "params": {
+          "result": {
+            "Ok": "relative/../out"
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobPrepared",
+        "params": {
+          "request": "r"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobPrepared",
+        "params": {
+          "request": "r",
+          "result": {
+            "Ok": "relative/../out"
+          },
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobPrepared",
+        "params": {
+          "request": "r",
+          "result": {
+            "Ok": "relative/../out"
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobPrepared",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFailed",
+        "params": {
+          "request": "",
+          "error": "{\"$fd\":0}"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFailed",
+        "params": {
+          "error": "{\"$fd\":0}"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFailed",
+        "params": {
+          "request": ""
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFailed",
+        "params": {
+          "request": "",
+          "error": "{\"$fd\":0}",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFailed",
+        "params": {
+          "request": "",
+          "error": "{\"$fd\":0}"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFailed",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFinished",
+        "params": {
+          "request": "r",
+          "outcome": {
+            "Ok": {
+              "exit_code": -2147483648,
+              "signal": 2147483647,
+              "spawn_error": "{\"$fd\":0}\n雪",
+              "cancelled": true,
+              "timed_out": true,
+              "truncated": true
+            }
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFinished",
+        "params": {
+          "outcome": {
+            "Ok": {
+              "exit_code": -2147483648,
+              "signal": 2147483647,
+              "spawn_error": "{\"$fd\":0}\n雪",
+              "cancelled": true,
+              "timed_out": true,
+              "truncated": true
+            }
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFinished",
+        "params": {
+          "request": "r"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFinished",
+        "params": {
+          "request": "r",
+          "outcome": {
+            "Ok": {
+              "exit_code": -2147483648,
+              "signal": 2147483647,
+              "spawn_error": "{\"$fd\":0}\n雪",
+              "cancelled": true,
+              "timed_out": true,
+              "truncated": true
+            }
+          },
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFinished",
+        "params": {
+          "request": "r",
+          "outcome": {
+            "Ok": {
+              "exit_code": -2147483648,
+              "signal": 2147483647,
+              "spawn_error": "{\"$fd\":0}\n雪",
+              "cancelled": true,
+              "timed_out": true,
+              "truncated": true
+            }
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFinished",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "request": "r",
+          "argv": [],
+          "env": [],
+          "timeout": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.RunHostJob",
+        "params": {
+          "request": "r",
+          "argv": [],
+          "env": [],
+          "timeout": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobPrepared",
+        "params": {
+          "request": "r",
+          "result": {
+            "Err": "failed"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.HostJobFinished",
+        "params": {
+          "request": "r",
+          "outcome": {
+            "Err": "failed"
+          }
+        }
+      },
+      "valid": true
+    }
   ]
 }

@@ -513,15 +513,7 @@ pub enum Event {
 }
 
 /// What a host job's supervisor records in its `status.json`.
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct HostOutcome {
-    pub exit_code: Option<i32>,
-    pub signal: Option<i32>,
-    pub spawn_error: Option<String>,
-    pub cancelled: bool,
-    pub timed_out: bool,
-    pub truncated: bool,
-}
+pub use goblins_protocol::contract::HostOutcome;
 
 /// Commands a `Fake` runtime received, shared with the test.
 #[cfg(any(test, feature = "test-support"))]

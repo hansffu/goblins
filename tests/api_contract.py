@@ -1313,6 +1313,49 @@ def check_supervisor_devshell_metadata():
             raise ValueError("private devshell schema/Rust metadata differs: "+name)
 
 
+def check_supervisor_host_job_metadata():
+    """Pin host job records and their original plain Result/path behavior."""
+    schema=common();defs=schema["definitions"]
+    def ref(name):return {"$ref":"#/definitions/Supervisor"+name}
+    def obj(props,required=None,closed=True):
+        return {"type":"object","properties":props,"required":list(props) if required is None else required,"additionalProperties":not closed}
+    def explicit(rust,fields,derives,required=None,closed=True,description=None):
+        value=obj({name:{**shape,"x-rust-field-name":name,"x-rust-type":native} for name,(shape,native) in fields.items()},required,closed)
+        value.update({"x-rust-name":rust,"x-rust-field-order":list(fields),"x-rust-derives":derives})
+        if description is not None:value["description"]=description
+        return value
+    expected={
+        "HostOutcome":explicit("HostOutcome",{
+            "exit_code":(ref("OptionalI32"),"Option<i32>"),
+            "signal":(ref("OptionalI32"),"Option<i32>"),
+            "spawn_error":(ref("OptionalString"),"Option<String>"),
+            "cancelled":({"type":"boolean"},"bool"),
+            "timed_out":({"type":"boolean"},"bool"),
+            "truncated":({"type":"boolean"},"bool"),
+        },["Debug","Serialize","Deserialize","Default"],["cancelled","timed_out","truncated"],False,"What a host job's supervisor records in its `status.json`."),
+        "Arguments":{"type":"array","items":{"type":"string"}},
+        "OptionalSequence":{"anyOf":[ref("Sequence"),{"type":"null"}]},
+        "HostPreparedOutcome":{"oneOf":[obj({"Ok":ref("Path")}),obj({"Err":{"type":"string"}})]},
+        "HostFinishedOutcome":{"oneOf":[obj({"Ok":ref("HostOutcome")}),obj({"Err":{"type":"string"}})]},
+        "CommandPrepareHostJobParams":obj({"request":{"type":"string"},"cwd":ref("Path")}),
+        "CommandRunHostJobParams":obj({"request":{"type":"string"},"argv":ref("Arguments"),"env":ref("Environment"),"timeout":ref("OptionalSequence")}),
+        "CommandCancelHostJobParams":obj({"request":{"type":"string"}}),
+        "EventHostJobPreparedParams":obj({"request":{"type":"string"},"result":ref("HostPreparedOutcome")}),
+        "EventHostJobFailedParams":obj({"request":{"type":"string"},"error":{"type":"string"}}),
+        "EventHostJobFinishedParams":explicit("SupervisorEventHostJobFinishedParams",{
+            "request":({"type":"string"},"String"),
+            "outcome":(ref("HostFinishedOutcome"),"Result<crate::contract::HostOutcome,String>"),
+        },["Debug","Serialize","Deserialize"]),
+    }
+    for name,value in expected.items():
+        actual=defs["Supervisor"+name]
+        if "description" not in value:actual={key:value for key,value in actual.items() if key!="description"}
+        if actual!=value:
+            raise ValueError("private host job schema/Rust metadata differs: "+name)
+    if schema["x-rust-serde-records"].get("SupervisorCommandRunHostJobParams")!={"name":"SupervisorCommandRunHostJobParams","order":["request","argv","env","timeout"],"required-nullable":["timeout"]}:
+        raise ValueError("private host job run serde slots differ")
+
+
 def check_supervisor_pending_inventory():
     """Retire covered methods from their original remaining family, without loss."""
     families={
@@ -1369,6 +1412,12 @@ def check_private_contracts():
         'Event.Refresh':('supervisor-to-daemon','SupervisorEventRefreshParams',['approval', 'result']),
         'Event.Call':('supervisor-to-daemon','SupervisorEventCallParams',['serial', 'result']),
         'Event.DevShell':('supervisor-to-daemon','SupervisorEventDevShellParams',['summary']),
+        'Command.PrepareHostJob':('daemon-to-supervisor','SupervisorCommandPrepareHostJobParams',['request', 'cwd']),
+        'Command.RunHostJob':('daemon-to-supervisor','SupervisorCommandRunHostJobParams',['request', 'argv', 'env', 'timeout']),
+        'Command.CancelHostJob':('daemon-to-supervisor','SupervisorCommandCancelHostJobParams',['request']),
+        'Event.HostJobPrepared':('supervisor-to-daemon','SupervisorEventHostJobPreparedParams',['request', 'result']),
+        'Event.HostJobFailed':('supervisor-to-daemon','SupervisorEventHostJobFailedParams',['request', 'error']),
+        'Event.HostJobFinished':('supervisor-to-daemon','SupervisorEventHostJobFinishedParams',['request', 'outcome']),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1394,7 +1443,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary","SupervisorHostOutcome","SupervisorEventHostJobFinishedParams"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1449,6 +1498,7 @@ def check():
     check_supervisor_terminal_metadata()
     check_supervisor_approval_metadata()
     check_supervisor_devshell_metadata()
+    check_supervisor_host_job_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

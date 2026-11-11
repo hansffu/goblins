@@ -5077,3 +5077,428 @@ fn c17c_path_serialization_errors_and_preview_skip_boundary_are_original() {
     );
     assert!(std::panic::catch_unwind(|| encode_preview(&Ok(preview))).is_err());
 }
+mod c17d1_original {
+    use super::*;
+    /// What a host job's supervisor records in its `status.json`.
+    #[derive(Debug, Serialize, Deserialize, Default)]
+    pub struct HostOutcome {
+        pub exit_code: Option<i32>,
+        pub signal: Option<i32>,
+        pub spawn_error: Option<String>,
+        pub cancelled: bool,
+        pub timed_out: bool,
+        pub truncated: bool,
+    }
+}
+#[test]
+fn c17d1_host_outcome_original_serde_defaults_order_ranges_and_legacy_forms() {
+    fn traits<T: Default + std::fmt::Debug + Serialize + DeserializeOwned>() {}
+    traits::<HostOutcome>();
+    assert_eq!(
+        serde_json::to_value(HostOutcome::default()).unwrap(),
+        json!({"exit_code":null,"signal":null,"spawn_error":null,"cancelled":false,"timed_out":false,"truncated":false})
+    );
+    c17b2_compare_serde::<HostOutcome, c17d1_original::HostOutcome>(&[
+        r#"{"cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{"exit_code":null,"signal":null,"spawn_error":null,"cancelled":true,"timed_out":true,"truncated":true}"#,
+        r#"{"exit_code":-2147483648,"signal":2147483647,"spawn_error":"failed\n雪","cancelled":true,"timed_out":true,"truncated":true,"future":{"$fd":0}}"#,
+        r#"{"exit_code":2147483647,"signal":-2147483648,"spawn_error":"","cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{}"#,
+        r#"{"cancelled":false}"#,
+        r#"{"cancelled":false,"timed_out":false}"#,
+        r#"{"cancelled":null,"timed_out":false,"truncated":false}"#,
+        r#"{"cancelled":false,"timed_out":0,"truncated":false}"#,
+        r#"{"exit_code":2147483648,"cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{"exit_code":-2147483649,"cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{"signal":2147483648,"cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{"signal":-2147483649,"cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{"exit_code":1.0,"cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{"spawn_error":false,"cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{"exit_code":null,"exit_code":3,"cancelled":false,"timed_out":false,"truncated":false}"#,
+        r#"{"cancelled":false,"cancelled":true,"timed_out":false,"truncated":false}"#,
+        r#"[null,null,null,false,false,false]"#,
+        r#"[-2147483648,2147483647,"error",true,true,true]"#,
+        r#"[null,null,null,false,false]"#,
+        r#"[null,null,null,false,false,false,0]"#,
+        r#"null"#,
+        r#""opaque text""#,
+    ]);
+}
+fn c17d1_outcome() -> HostOutcome {
+    HostOutcome {
+        exit_code: Some(i32::MIN),
+        signal: Some(i32::MAX),
+        spawn_error: Some("{\"$fd\":0}\n雪".into()),
+        cancelled: true,
+        timed_out: true,
+        truncated: true,
+    }
+}
+fn c17d1_cases() -> Vec<(Message, &'static str, Value, Vec<&'static str>)> {
+    vec![
+        (
+            Message::Command(Command::PrepareHostJob {
+                request: "{\"$fd\":0}".into(),
+                cwd: "relative/../cwd\0雪".into(),
+            }),
+            "Command.PrepareHostJob",
+            json!({"request":"{\"$fd\":0}","cwd":"relative/../cwd\0雪"}),
+            vec!["request", "cwd"],
+        ),
+        (
+            Message::Command(Command::RunHostJob {
+                request: "".into(),
+                argv: vec!["".into(), "{\"$fd\":0}".into(), "nul\0雪".into()],
+                env: vec![
+                    ("BAD=NAME\0".into(), "{\"$fd\":1}".into()),
+                    ("".into(), "".into()),
+                ],
+                timeout: Some(u64::MAX),
+            }),
+            "Command.RunHostJob",
+            json!({"request":"","argv":["","{\"$fd\":0}","nul\0雪"],"env":[["BAD=NAME\0","{\"$fd\":1}"],["",""]],"timeout":u64::MAX}),
+            vec!["request", "argv", "env", "timeout"],
+        ),
+        (
+            Message::Command(Command::CancelHostJob { request: "".into() }),
+            "Command.CancelHostJob",
+            json!({"request":""}),
+            vec!["request"],
+        ),
+        (
+            Message::Event(Event::HostJobPrepared {
+                request: "r".into(),
+                result: Ok("relative/../out\0雪".into()),
+            }),
+            "Event.HostJobPrepared",
+            json!({"request":"r","result":{"Ok":"relative/../out\0雪"}}),
+            vec!["request", "result"],
+        ),
+        (
+            Message::Event(Event::HostJobPrepared {
+                request: "r".into(),
+                result: Err("failed\n雪".into()),
+            }),
+            "Event.HostJobPrepared",
+            json!({"request":"r","result":{"Err":"failed\n雪"}}),
+            vec!["request", "result"],
+        ),
+        (
+            Message::Event(Event::HostJobFailed {
+                request: "".into(),
+                error: "{\"$fd\":0}".into(),
+            }),
+            "Event.HostJobFailed",
+            json!({"request":"","error":"{\"$fd\":0}"}),
+            vec!["request", "error"],
+        ),
+        (
+            Message::Event(Event::HostJobFinished {
+                request: "r".into(),
+                outcome: Ok(c17d1_outcome()),
+            }),
+            "Event.HostJobFinished",
+            json!({"request":"r","outcome":{"Ok":{"exit_code":i32::MIN,"signal":i32::MAX,"spawn_error":"{\"$fd\":0}\n雪","cancelled":true,"timed_out":true,"truncated":true}}}),
+            vec!["request", "outcome"],
+        ),
+        (
+            Message::Event(Event::HostJobFinished {
+                request: "r".into(),
+                outcome: Err("failed".into()),
+            }),
+            "Event.HostJobFinished",
+            json!({"request":"r","outcome":{"Err":"failed"}}),
+            vec!["request", "outcome"],
+        ),
+    ]
+}
+#[test]
+fn c17d1_six_host_job_envelopes_and_results_required_slots_and_no_capabilities() {
+    let _no_forks = unix::no_forks();
+    for (message, method, params, fields) in c17d1_cases() {
+        let mut prepared = Encoder::default().prepare(message).unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert!(frame.fds.is_empty());
+        assert_eq!(
+            frame.value,
+            json!({"jsonrpc":"2.0","method":method,"params":params})
+        );
+        for field in &fields {
+            let mut value = frame.value.clone();
+            value["params"].as_object_mut().unwrap().remove(*field);
+            c16a_error(
+                Frame { value, fds: vec![] },
+                &format!("missing control field {field}"),
+            );
+        }
+        let mut value = frame.value.clone();
+        value["params"] = json!({});
+        c16a_error(
+            Frame { value, fds: vec![] },
+            &format!("missing control field {}", fields[0]),
+        );
+        let mut value = frame.value.clone();
+        value["params"]["extra"] = json!(0);
+        c16a_error(Frame { value, fds: vec![] }, "unexpected control field");
+        let mut value = frame.value.clone();
+        value["params"] = json!([]);
+        c16a_error(Frame { value, fds: vec![] }, "expected control object");
+        let expected = frame.value.clone();
+        let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut sender = channel::Channel::new(left).unwrap();
+        let mut receiver = channel::Channel::new(right).unwrap();
+        sender.queue(&frame.value, &mut frame.fds).unwrap();
+        sender.flush().unwrap();
+        assert!(!sender.wants_write());
+        let received = Decoder::default()
+            .receive_channel(&mut receiver)
+            .unwrap()
+            .unwrap();
+        assert!(received.adopted.is_none());
+        assert_eq!(c16a_frame(received.message).value, expected);
+    }
+    for timeout in [None, Some(0), Some(u64::MAX)] {
+        let message = Message::Command(Command::RunHostJob {
+            request: "r".into(),
+            argv: vec![],
+            env: vec![],
+            timeout,
+        });
+        let frame = c16a_frame(message);
+        assert_eq!(frame.value["params"]["timeout"], json!(timeout));
+        let received = Decoder::default().receive(frame).unwrap().unwrap();
+        assert!(
+            matches!(received.message,Message::Command(Command::RunHostJob {timeout:actual,..}) if actual==timeout)
+        );
+    }
+    roundtrip(Message::Event(Event::HostJobFinished {
+        request: "r".into(),
+        outcome: Ok(HostOutcome::default()),
+    }));
+}
+#[test]
+fn c17d1_host_job_plain_fields_nested_errors_and_extraction_precedence() {
+    fn err<T: DeserializeOwned>(value: Value) -> String {
+        serde_json::from_value::<T>(value)
+            .err()
+            .unwrap()
+            .to_string()
+    }
+    let mut cases = vec![
+        (
+            "Command.PrepareHostJob",
+            "cwd",
+            json!([]),
+            err::<PathBuf>(json!([])),
+        ),
+        (
+            "Command.RunHostJob",
+            "argv",
+            json!([0]),
+            err::<Vec<String>>(json!([0])),
+        ),
+        (
+            "Command.RunHostJob",
+            "env",
+            json!([["x"]]),
+            err::<Vec<(String, String)>>(json!([["x"]])),
+        ),
+        (
+            "Command.RunHostJob",
+            "env",
+            json!([["x", "y", 0]]),
+            err::<Vec<(String, String)>>(json!([["x", "y", 0]])),
+        ),
+        (
+            "Command.RunHostJob",
+            "env",
+            json!([["x", 0]]),
+            err::<Vec<(String, String)>>(json!([["x", 0]])),
+        ),
+        (
+            "Command.RunHostJob",
+            "env",
+            json!({"x":"y"}),
+            err::<Vec<(String, String)>>(json!({"x":"y"})),
+        ),
+        (
+            "Command.RunHostJob",
+            "timeout",
+            json!(-1),
+            err::<Option<u64>>(json!(-1)),
+        ),
+        (
+            "Command.RunHostJob",
+            "timeout",
+            json!(1.0),
+            err::<Option<u64>>(json!(1.0)),
+        ),
+        (
+            "Command.RunHostJob",
+            "timeout",
+            serde_json::from_str::<Value>("18446744073709551616").unwrap(),
+            err::<Option<u64>>(serde_json::from_str::<Value>("18446744073709551616").unwrap()),
+        ),
+        (
+            "Event.HostJobPrepared",
+            "result",
+            json!({"Ok":null}),
+            err::<Result<PathBuf, String>>(json!({"Ok":null})),
+        ),
+        (
+            "Event.HostJobPrepared",
+            "result",
+            json!({"Err":null}),
+            err::<Result<PathBuf, String>>(json!({"Err":null})),
+        ),
+        (
+            "Event.HostJobPrepared",
+            "result",
+            json!({"Ok":"x","Err":"y"}),
+            err::<Result<PathBuf, String>>(json!({"Ok":"x","Err":"y"})),
+        ),
+        (
+            "Event.HostJobPrepared",
+            "result",
+            json!("opaque"),
+            err::<Result<PathBuf, String>>(json!("opaque")),
+        ),
+        (
+            "Event.HostJobFailed",
+            "error",
+            json!(null),
+            err::<String>(json!(null)),
+        ),
+        (
+            "Event.HostJobFinished",
+            "outcome",
+            json!({"Ok":{}}),
+            err::<Result<c17d1_original::HostOutcome, String>>(json!({"Ok":{}})),
+        ),
+        (
+            "Event.HostJobFinished",
+            "outcome",
+            json!({"Ok":{"exit_code":2147483648_i64}}),
+            err::<Result<c17d1_original::HostOutcome, String>>(
+                json!({"Ok":{"exit_code":2147483648_i64}}),
+            ),
+        ),
+        (
+            "Event.HostJobFinished",
+            "outcome",
+            json!({"Err":false}),
+            err::<Result<c17d1_original::HostOutcome, String>>(json!({"Err":false})),
+        ),
+        (
+            "Event.HostJobFinished",
+            "outcome",
+            json!({"Other":{}}),
+            err::<Result<c17d1_original::HostOutcome, String>>(json!({"Other":{}})),
+        ),
+        (
+            "Event.HostJobFinished",
+            "outcome",
+            json!("opaque"),
+            err::<Result<c17d1_original::HostOutcome, String>>(json!("opaque")),
+        ),
+    ];
+    for method in [
+        "Command.PrepareHostJob",
+        "Command.RunHostJob",
+        "Command.CancelHostJob",
+        "Event.HostJobPrepared",
+        "Event.HostJobFailed",
+        "Event.HostJobFinished",
+    ] {
+        cases.push((method, "request", json!(null), err::<String>(json!(null))));
+    }
+    for (method, field, bad, expected) in cases {
+        let (_, _, mut params, fields) = c17d1_cases()
+            .into_iter()
+            .find(|(_, name, _, _)| *name == method)
+            .unwrap();
+        let index = fields.iter().position(|name| *name == field).unwrap();
+        for later in &fields[index + 1..] {
+            params.as_object_mut().unwrap().remove(*later);
+        }
+        params[field] = bad;
+        params["extra"] = json!(true);
+        c16a_error(
+            Frame {
+                value: json!({"jsonrpc":"2.0","method":method,"params":params}),
+                fds: vec![],
+            },
+            &expected,
+        );
+    }
+}
+#[test]
+fn c17d1_host_outcome_plain_nested_compatibility_and_independent_flags() {
+    for value in [
+        json!({"Ok":{"cancelled":false,"timed_out":false,"truncated":false}}),
+        json!({"Ok":{"exit_code":null,"signal":null,"spawn_error":null,"cancelled":true,"timed_out":true,"truncated":true,"future":{"$fd":0}}}),
+        json!({"Ok":[i32::MAX,i32::MIN,"{\"$fd\":0}",true,true,true]}),
+        json!({"Err":"failed"}),
+        json!({"Ok":{"cancelled":false,"timed_out":false}}),
+        json!({"Ok":{"cancelled":false,"timed_out":null,"truncated":false}}),
+        json!({"Ok":{"signal":-2147483649_i64,"cancelled":false,"timed_out":false,"truncated":false}}),
+        json!({"Ok":{},"Err":"failed"}),
+        json!({}),
+        json!(null),
+    ] {
+        let old =
+            serde_json::from_value::<Result<c17d1_original::HostOutcome, String>>(value.clone())
+                .map(|v| serde_json::to_value(v).unwrap())
+                .map_err(|e| e.to_string());
+        let frame = Frame {
+            value: json!({"jsonrpc":"2.0","method":"Event.HostJobFinished","params":{"request":"r","outcome":value}}),
+            fds: vec![],
+        };
+        match old {
+            Err(expected) => c16a_error(frame, &expected),
+            Ok(expected) => {
+                let received = Decoder::default().receive(frame).unwrap().unwrap();
+                assert!(received.adopted.is_none());
+                assert_eq!(
+                    c16a_frame(received.message).value["params"]["outcome"],
+                    expected
+                );
+            }
+        }
+    }
+}
+#[test]
+fn c17d1_host_job_invalid_native_paths_keep_fallible_serialization_errors() {
+    use std::os::unix::ffi::OsStringExt;
+    let path = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+    let expected = serde_json::to_value(&path).unwrap_err().to_string();
+    let expected_kind = io::Error::from(serde_json::to_value(&path).unwrap_err()).kind();
+    let expected_result = serde_json::to_value(Ok::<_, String>(&path))
+        .unwrap_err()
+        .to_string();
+    for (message, expected) in [
+        (
+            Message::Command(Command::PrepareHostJob {
+                request: "r".into(),
+                cwd: path.clone(),
+            }),
+            expected,
+        ),
+        (
+            Message::Event(Event::HostJobPrepared {
+                request: "r".into(),
+                result: Ok(path),
+            }),
+            expected_result,
+        ),
+    ] {
+        let error = match Encoder::default().prepare(message) {
+            Err(error) => error,
+            Ok(_) => panic!("serialized non-UTF8 path"),
+        };
+        assert_eq!(error.kind(), expected_kind);
+        assert_eq!(error.to_string(), expected);
+    }
+}

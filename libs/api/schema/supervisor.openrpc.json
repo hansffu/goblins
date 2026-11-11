@@ -1316,9 +1316,208 @@
       "sender": "supervisor",
       "receiver": "daemon",
       "connection-state": "operational devshell/flake work event"
+    },
+    {
+      "name": "Command.PrepareHostJob",
+      "x-rust-name": "CommandPrepareHostJob",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Prepare the host directory shown for a host command, preserving request/cwd field extraction and native path serialization; host policy stays unchanged.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandPrepareHostJobParams/properties/request"
+          }
+        },
+        {
+          "name": "cwd",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandPrepareHostJobParams/properties/cwd"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandPrepareHostJobParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational host-job command"
+    },
+    {
+      "name": "Command.RunHostJob",
+      "x-rust-name": "CommandRunHostJob",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Run approved host work with original request/argv/environment pairs/required nullable u64 timeout metadata; no argument, environment-name or timeout policy is added at the wire boundary.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRunHostJobParams/properties/request"
+          }
+        },
+        {
+          "name": "argv",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRunHostJobParams/properties/argv"
+          }
+        },
+        {
+          "name": "env",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRunHostJobParams/properties/env"
+          }
+        },
+        {
+          "name": "timeout",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRunHostJobParams/properties/timeout"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandRunHostJobParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational host-job command"
+    },
+    {
+      "name": "Command.CancelHostJob",
+      "x-rust-name": "CommandCancelHostJob",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Cancel host work identified by the original request string using existing cancellation policy.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandCancelHostJobParams/properties/request"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandCancelHostJobParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational host-job command"
+    },
+    {
+      "name": "Event.HostJobPrepared",
+      "x-rust-name": "EventHostJobPrepared",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report plain Result<PathBuf,String> for the host directory. Preserve request before result parsing and native path serialization errors.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventHostJobPreparedParams/properties/request"
+          }
+        },
+        {
+          "name": "result",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventHostJobPreparedParams/properties/result"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventHostJobPreparedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational host-job event"
+    },
+    {
+      "name": "Event.HostJobFailed",
+      "x-rust-name": "EventHostJobFailed",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report why an approved host command could not start, with original request and error strings.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventHostJobFailedParams/properties/request"
+          }
+        },
+        {
+          "name": "error",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventHostJobFailedParams/properties/error"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventHostJobFailedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational host-job event"
+    },
+    {
+      "name": "Event.HostJobFinished",
+      "x-rust-name": "EventHostJobFinished",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report plain Result<HostOutcome,String> when the host supervisor exits. Preserve independent outcome flags and nullable exit/signal/spawn-error metadata, with no new exclusivity policy.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventHostJobFinishedParams/properties/request"
+          }
+        },
+        {
+          "name": "outcome",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventHostJobFinishedParams/properties/outcome"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventHostJobFinishedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational host-job event"
     }
   ],
-  "x-contract-chunk": "C17c2",
+  "x-contract-chunk": "C17d1",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -1408,17 +1607,11 @@
       "Command.ScopeFailed",
       "Command.ScopeMembership",
       "Command.Export",
-      "Command.PrepareHostJob",
-      "Command.RunHostJob",
-      "Command.CancelHostJob",
       "Command.Stop",
       "Event.ScopeFailed",
       "Event.ScopeNeeded",
       "Event.Started",
       "Event.Mode",
-      "Event.HostJobPrepared",
-      "Event.HostJobFailed",
-      "Event.HostJobFinished",
       "Event.Stopped",
       "Event.Failed",
       "Event.InitLost",
