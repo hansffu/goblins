@@ -1,14 +1,6 @@
 {
   "pending": {
     "C11": {
-      "host": [
-        "raids.invite",
-        "raids.destroy",
-        "raids.set_owner",
-        "raids.kick",
-        "raids.set_role",
-        "raids.members"
-      ],
       "sandbox": [
         "raids.create",
         "raids.leave",

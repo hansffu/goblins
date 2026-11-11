@@ -139,6 +139,12 @@ fn main() {
         "crate::contract::IgnoredResult",
         [].into_iter(),
     );
+    settings.with_replacement("RaidNameRule", "std::string::String", [].into_iter());
+    settings.with_replacement(
+        "RaidLegacyOptions",
+        "std::collections::BTreeMap<String,String>",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -192,6 +198,7 @@ fn main() {
         "PermissionRecordReply".to_string(),
         "PermissionListReply".to_string(),
         "IgnoredResult".to_string(),
+        "RaidDisplayReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(

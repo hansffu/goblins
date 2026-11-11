@@ -272,6 +272,131 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_raid_bindings_preserve_cli_request_presence_and_original_results() {
+        use std::io::Write;
+        let _no_forks = goblins_unix::no_forks();
+        std::thread::scope(|scope| {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
+            stream.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            let mut client = Client {
+                instance: "test".into(),
+                features: vec![],
+                stream,
+                next: 0,
+            };
+            let replies = [
+                json!({"extension":true}),
+                Value::Null,
+                json!({"accepted":"legacy"}),
+                json!({"name":"crew","id":"r","members":[{"id":"a","agent_name":"alpha","options":{"model":7}}]}),
+                json!([]),
+                json!({"paused":true}),
+            ];
+            let outputs = replies.clone();
+            let server = scope.spawn(move || {
+                for (index, (method, params)) in [
+                    ("raids.invite", json!({"raid":"crew","sessions":["a"]})),
+                    ("raids.destroy", json!({"raid":"crew","stop_members":false})),
+                    ("raids.set_owner", json!({"raid":"crew","session":"a"})),
+                    ("raids.members", json!({"raid":"crew"})),
+                    (
+                        "raids.set_role",
+                        json!({"raid":"crew","session":"a","role":"reviewer"}),
+                    ),
+                    ("raids.kick", json!({"raid":"crew","session":"b"})),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let call = rpc::read(&mut peer).unwrap();
+                    assert_eq!(call["method"], method);
+                    assert_eq!(call["params"], params);
+                    peer.write_all(
+                        &rpc::encode(&rpc::result(call["id"].clone(), outputs[index].clone()))
+                            .unwrap(),
+                    )
+                    .unwrap();
+                }
+            });
+            assert_eq!(
+                client
+                    .call_typed_with_wire::<contract::host::RaidsInvite>(
+                        contract::RaidInviteParams {
+                            raid: "crew".into(),
+                            sessions: vec!["a".into()]
+                        }
+                    )
+                    .unwrap()
+                    .1,
+                replies[0]
+            );
+            assert_eq!(
+                client
+                    .call_typed_with_wire::<contract::host::RaidsDestroy>(
+                        contract::RaidDestroyParams {
+                            raid: "crew".into(),
+                            id: None,
+                            generation: None,
+                            stop_members: false
+                        }
+                    )
+                    .unwrap()
+                    .1,
+                replies[1]
+            );
+            assert_eq!(
+                client
+                    .call_typed_with_wire::<contract::host::RaidsSetOwner>(
+                        contract::RaidSetOwnerParams {
+                            raid: "crew".into(),
+                            session: "a".into(),
+                            id: None,
+                            generation: None
+                        }
+                    )
+                    .unwrap()
+                    .1,
+                replies[2]
+            );
+            let (display, wire) = client
+                .call_typed_with_wire::<contract::host::RaidsMembers>(
+                    contract::RaidSelectorParams {
+                        raid: "crew".into(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(wire, replies[3]);
+            assert_eq!(display.name, "crew");
+            assert_eq!(display.members[0].options, "model=?");
+            assert_eq!(
+                client
+                    .call_typed_with_wire::<contract::host::RaidsSetRole>(
+                        contract::RaidSetRoleParams {
+                            raid: "crew".into(),
+                            session: "a".into(),
+                            role: "reviewer".into()
+                        }
+                    )
+                    .unwrap()
+                    .1,
+                replies[4]
+            );
+            assert_eq!(
+                client
+                    .call_typed_with_wire::<contract::host::RaidsKick>(contract::RaidKickParams {
+                        raid: "crew".into(),
+                        session: "b".into()
+                    })
+                    .unwrap()
+                    .1,
+                replies[5]
+            );
+            server.join().unwrap();
+        });
+    }
+
+    #[test]
     fn host_job_bindings_preserve_original_wire_for_printing_and_status_fallbacks() {
         use std::io::Write;
         let _no_forks = goblins_unix::no_forks();

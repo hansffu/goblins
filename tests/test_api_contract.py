@@ -15,6 +15,32 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_host_raid_contracts_and_legacy_display_projection(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["host_raid_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params("host",case["method"],case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params("host",case["method"],case["params"])
+        for case in fixtures["raid_record_cases"]:
+            reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+            self.assertTrue(contract.validate_reply("host","raids.members",reply,compatibility=True))
+            if case["current"]:self.assertTrue(contract.validate_reply("host","raids.members",reply))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply("host","raids.members",reply)
+            # The strict compatible record reader is used by snapshots,
+            # separately from the more permissive member display projection.
+            schema={"$ref":"common.json#/x-client-result-schemas/RaidRecordReply"}
+            if case["legacy"]:contract.schema_validator(schema).validate(case["result"])
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.schema_validator(schema).validate(case["result"])
+        for record in fixtures["raid_display_cases"]:
+            self.assertTrue(contract.validate_reply("host","raids.members",dict(jsonrpc="2.0",id=1,result=record),compatibility=True))
+        for name,result in [("raids.destroy",dict(accepted=True,stopped=[])),("raids.kick",dict(accepted=True,dissolved=False,paused=True))]:
+            self.assertTrue(contract.validate_reply("host",name,dict(jsonrpc="2.0",id=1,result=result)))
+            result={**result,"accepted":False}
+            with self.assertRaises(ValidationError):contract.validate_reply("host",name,dict(jsonrpc="2.0",id=1,result=result))
+            self.assertTrue(contract.validate_reply("host",name,dict(jsonrpc="2.0",id=1,result=result),compatibility=True))
+
     def test_host_job_contracts_and_submission_legacy_reader(self):
         fixtures=contract.read("fixtures.json")
         for endpoint in ("host","sandbox"):

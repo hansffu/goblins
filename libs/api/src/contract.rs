@@ -227,6 +227,8 @@ pub trait Response: DeserializeOwned {
 
 mod host_job;
 pub use host_job::{HostJob, host_submitted};
+mod raid;
+pub use raid::raid_display_reply;
 mod permission;
 mod preview;
 pub use preview::preview_reply;

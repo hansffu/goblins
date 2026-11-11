@@ -1504,6 +1504,382 @@
       },
       "x-client-wire-result-schema": {},
       "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "raids.invite",
+      "x-rust-name": "RaidsInvite",
+      "description": "Checks raid syntax, 1..16 entries and every target resolution/liveness before cloning/committing membership. The first invited member owns a newly created raid; duplicate targets retain existing idempotent behavior. Host-only request shape; both session IDs and live names are resolved where a session selector exists. Requests retain original positional order, closed named fields and optional null id/generation guards. Wire DTO decoding keeps plain strings so existing domain validation/error precedence is unchanged. Event capacity is checked before commits and remains -32010. Raid/member records contain no host paths, terminal endpoints or process identities. Member rows retain join order and omit vanished sessions. Current owner/paused invariants remain enforced by the pure raid domain rules. The host body limit is 16384 bytes. CLI mutations ignore successful bodies and print original JSON; members uses an independent legacy display projection without tightening malformed/additive peer replies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "raid",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidInviteParams/properties/raid"
+          }
+        },
+        {
+          "name": "sessions",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidInviteParams/properties/sessions"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name, role or invite list"
+        },
+        {
+          "code": -32004,
+          "message": "Raid or target absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale raid, membership, liveness or ownership conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/RaidInviteParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/RaidInviteParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body",
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/RaidInviteParams"
+      }
+    },
+    {
+      "name": "raids.destroy",
+      "x-rust-name": "RaidsDestroy",
+      "description": "Looks up the raid and optional exact id/generation guards before destruction. stop_members defaults false. A real stop list follows existing member-key order and includes members whose live check passed; records and cleanup remain lifecycle-owned. Host-only request shape; both session IDs and live names are resolved where a session selector exists. Requests retain original positional order, closed named fields and optional null id/generation guards. Wire DTO decoding keeps plain strings so existing domain validation/error precedence is unchanged. Event capacity is checked before commits and remains -32010. Raid/member records contain no host paths, terminal endpoints or process identities. Member rows retain join order and omit vanished sessions. Current owner/paused invariants remain enforced by the pure raid domain rules. The host body limit is 16384 bytes. CLI mutations ignore successful bodies and print original JSON; members uses an independent legacy display projection without tightening malformed/additive peer replies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "raid",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidDestroyParams/properties/raid"
+          }
+        },
+        {
+          "name": "id",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidDestroyParams/properties/id"
+          }
+        },
+        {
+          "name": "generation",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidDestroyParams/properties/generation"
+          }
+        },
+        {
+          "name": "stop_members",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidDestroyParams/properties/stop_members"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidDestroyResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name, role or invite list"
+        },
+        {
+          "code": -32004,
+          "message": "Raid or target absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale raid, membership, liveness or ownership conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/RaidDestroyParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/RaidDestroyParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "raids.set_owner",
+      "x-rust-name": "RaidsSetOwner",
+      "description": "Checks raid identity/generation, then target resolution, membership and liveness before committing the owner; owner changes resume paused raids. Host-only request shape; both session IDs and live names are resolved where a session selector exists. Requests retain original positional order, closed named fields and optional null id/generation guards. Wire DTO decoding keeps plain strings so existing domain validation/error precedence is unchanged. Event capacity is checked before commits and remains -32010. Raid/member records contain no host paths, terminal endpoints or process identities. Member rows retain join order and omit vanished sessions. Current owner/paused invariants remain enforced by the pure raid domain rules. The host body limit is 16384 bytes. CLI mutations ignore successful bodies and print original JSON; members uses an independent legacy display projection without tightening malformed/additive peer replies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "raid",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSetOwnerParams/properties/raid"
+          }
+        },
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSetOwnerParams/properties/session"
+          }
+        },
+        {
+          "name": "id",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSetOwnerParams/properties/id"
+          }
+        },
+        {
+          "name": "generation",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSetOwnerParams/properties/generation"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name, role or invite list"
+        },
+        {
+          "code": -32004,
+          "message": "Raid or target absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale raid, membership, liveness or ownership conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/RaidSetOwnerParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/RaidSetOwnerParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "raids.members",
+      "x-rust-name": "RaidsMembers",
+      "description": "Returns the current raid record or -32004; selectors remain unrestricted strings without early identifier validation. Host-only request shape; both session IDs and live names are resolved where a session selector exists. Requests retain original positional order, closed named fields and optional null id/generation guards. Wire DTO decoding keeps plain strings so existing domain validation/error precedence is unchanged. Event capacity is checked before commits and remains -32010. Raid/member records contain no host paths, terminal endpoints or process identities. Member rows retain join order and omit vanished sessions. Current owner/paused invariants remain enforced by the pure raid domain rules. The host body limit is 16384 bytes. CLI mutations ignore successful bodies and print original JSON; members uses an independent legacy display projection without tightening malformed/additive peer replies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "raid",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSelectorParams/properties/raid"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name, role or invite list"
+        },
+        {
+          "code": -32004,
+          "message": "Raid or target absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale raid, membership, liveness or ownership conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/RaidSelectorParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/RaidSelectorParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/RaidDisplayReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "raid-members-display"
+    },
+    {
+      "name": "raids.kick",
+      "x-rust-name": "RaidsKick",
+      "description": "Checks raid existence, target resolution and membership before removing it. The result reports whether it dissolved or paused the raid. Host-only request shape; both session IDs and live names are resolved where a session selector exists. Requests retain original positional order, closed named fields and optional null id/generation guards. Wire DTO decoding keeps plain strings so existing domain validation/error precedence is unchanged. Event capacity is checked before commits and remains -32010. Raid/member records contain no host paths, terminal endpoints or process identities. Member rows retain join order and omit vanished sessions. Current owner/paused invariants remain enforced by the pure raid domain rules. The host body limit is 16384 bytes. CLI mutations ignore successful bodies and print original JSON; members uses an independent legacy display projection without tightening malformed/additive peer replies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "raid",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidKickParams/properties/raid"
+          }
+        },
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidKickParams/properties/session"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidChangeResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name, role or invite list"
+        },
+        {
+          "code": -32004,
+          "message": "Raid or target absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale raid, membership, liveness or ownership conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/RaidKickParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/RaidKickParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "raids.set_role",
+      "x-rust-name": "RaidsSetRole",
+      "description": "Checks raid existence, target resolution and membership before role syntax. Roles may change but not be cleared; an unchanged role retains idempotent behavior. Host-only request shape; both session IDs and live names are resolved where a session selector exists. Requests retain original positional order, closed named fields and optional null id/generation guards. Wire DTO decoding keeps plain strings so existing domain validation/error precedence is unchanged. Event capacity is checked before commits and remains -32010. Raid/member records contain no host paths, terminal endpoints or process identities. Member rows retain join order and omit vanished sessions. Current owner/paused invariants remain enforced by the pure raid domain rules. The host body limit is 16384 bytes. CLI mutations ignore successful bodies and print original JSON; members uses an independent legacy display projection without tightening malformed/additive peer replies.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "raid",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSetRoleParams/properties/raid"
+          }
+        },
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSetRoleParams/properties/session"
+          }
+        },
+        {
+          "name": "role",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/RaidSetRoleParams/properties/role"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters, raid name, role or invite list"
+        },
+        {
+          "code": -32004,
+          "message": "Raid or target absent"
+        },
+        {
+          "code": -32009,
+          "message": "Stale raid, membership, liveness or ownership conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Raid event capacity"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/RaidSetRoleParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/RaidSetRoleParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body",
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/RaidSetRoleParams"
+      }
     }
   ],
   "x-notifications": [

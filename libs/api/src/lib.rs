@@ -173,7 +173,9 @@ pub fn launch_choices(options: &serde_json::Value) -> Option<String> {
     (!pairs.is_empty()).then(|| pairs.join(", "))
 }
 pub fn raid_members(record: &serde_json::Value) -> String {
-    let text = |v: &serde_json::Value| v.as_str().unwrap_or("-").to_string();
+    raid_members_typed(&contract::raid_display_reply(record))
+}
+pub fn raid_members_typed(record: &contract::RaidDisplayReply) -> String {
     let mut rows = vec![[
         "NAME".to_string(),
         "ROLE".into(),
@@ -184,32 +186,27 @@ pub fn raid_members(record: &serde_json::Value) -> String {
         "OPTIONS".into(),
         "ID".into(),
     ]];
-    for m in record["members"].as_array().into_iter().flatten() {
+    for m in &record.members {
         rows.push([
-            text(&m["agent_name"]),
-            text(&m["role"]),
-            text(&m["name"]),
-            text(&m["state"]),
-            if m["owner"] == true { "owner" } else { "-" }.into(),
+            m.agent_name.clone(),
+            m.role.clone(),
+            m.name.clone(),
+            m.state.clone(),
+            if m.owner { "owner" } else { "-" }.into(),
             // Run by an owner of the raid, which may stop it.
-            if m["created_by"].is_string() {
-                "yes"
-            } else {
-                "-"
-            }
-            .into(),
-            launch_choices(&m["options"]).map_or("-".into(), |c| c.replace(", ", ",")),
-            text(&m["id"]),
+            if m.created { "yes" } else { "-" }.into(),
+            m.options.clone(),
+            m.id.clone(),
         ]);
     }
     let widths: Vec<_> = (0..8)
         .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
         .collect();
-    let mut out = format!("Raid {} ({})\n", text(&record["name"]), text(&record["id"]));
-    if record["paused"] == true {
+    let mut out = format!("Raid {} ({})\n", record.name, record.id);
+    if record.paused {
         out.push_str(&format!(
             "Paused: the owner {} left; waiting for the host to select a new owner\n",
-            text(&record["former_owner"])
+            record.former_owner
         ));
     }
     for row in rows {

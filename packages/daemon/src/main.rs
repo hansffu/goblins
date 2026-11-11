@@ -123,39 +123,63 @@ fn execute(cli: Cli) -> Result<i32> {
             match command {
                 Invite { raid, goblins } => println!(
                     "{}",
-                    client.call(
-                        "raids.invite",
-                        serde_json::json!({"raid":raid,"sessions":goblins})
-                    )?
+                    client
+                        .call_typed_with_wire::<goblins_protocol::contract::host::RaidsInvite>(
+                            goblins_protocol::contract::RaidInviteParams {
+                                raid,
+                                sessions: goblins
+                            }
+                        )?
+                        .1
                 ),
                 Destroy { raid, stop_members } => println!(
                     "{}",
-                    client.call(
-                        "raids.destroy",
-                        serde_json::json!({"raid":raid,"stop_members":stop_members})
-                    )?
+                    client
+                        .call_typed_with_wire::<goblins_protocol::contract::host::RaidsDestroy>(
+                            goblins_protocol::contract::RaidDestroyParams {
+                                raid,
+                                id: None,
+                                generation: None,
+                                stop_members
+                            }
+                        )?
+                        .1
                 ),
                 SetOwner { raid, goblin } => println!(
                     "{}",
-                    client.call(
-                        "raids.set_owner",
-                        serde_json::json!({"raid":raid,"session":goblin})
-                    )?
+                    client
+                        .call_typed_with_wire::<goblins_protocol::contract::host::RaidsSetOwner>(
+                            goblins_protocol::contract::RaidSetOwnerParams {
+                                raid,
+                                session: goblin,
+                                id: None,
+                                generation: None
+                            }
+                        )?
+                        .1
                 ),
                 Members { raid, json } => {
-                    let record = client.call("raids.members", serde_json::json!({"raid":raid}))?;
+                    let (display, record) = client
+                        .call_typed_with_wire::<goblins_protocol::contract::host::RaidsMembers>(
+                            goblins_protocol::contract::RaidSelectorParams { raid },
+                        )?;
                     if json {
                         println!("{record}");
                     } else {
-                        print!("{}", goblins_protocol::raid_members(&record));
+                        print!("{}", goblins_protocol::raid_members_typed(&display));
                     }
                 }
                 SetRole { raid, goblin, role } => println!(
                     "{}",
-                    client.call(
-                        "raids.set_role",
-                        serde_json::json!({"raid":raid,"session":goblin,"role":role})
-                    )?
+                    client
+                        .call_typed_with_wire::<goblins_protocol::contract::host::RaidsSetRole>(
+                            goblins_protocol::contract::RaidSetRoleParams {
+                                raid,
+                                session: goblin,
+                                role
+                            }
+                        )?
+                        .1
                 ),
             }
         }

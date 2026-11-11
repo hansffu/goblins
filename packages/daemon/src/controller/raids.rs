@@ -6,7 +6,7 @@ use super::Fault;
 use super::Start;
 use super::params;
 use crate::raid;
-use goblins_protocol::contract;
+use goblins_protocol::contract::{self,Method};
 use crate::raid::Event;
 use crate::raid::Raids;
 use crate::raid::Reason;
@@ -69,11 +69,58 @@ pub struct RaidMemberRecord {
     pub options: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Invite {
-    raid: String,
-    sessions: Vec<String>,
+impl From<&RaidMemberRecord> for contract::RaidMemberRecord {
+    fn from(r: &RaidMemberRecord) -> Self {
+        Self {
+            id: r.id.clone(),
+            agent_name: r.agent_name.clone(),
+            name: r.name.clone(),
+            role: r.role.clone(),
+            state: r.state.clone(),
+            owner: r.owner,
+            created_by: r.created_by.clone(),
+            options: r.options.clone(),
+        }
+    }
+}
+impl From<&RaidRecord> for contract::RaidRecord {
+    fn from(r: &RaidRecord) -> Self {
+        Self {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            owner: r.owner.clone(),
+            former_owner: r.former_owner.clone(),
+            paused: r.paused,
+            generation: r.generation,
+            members: r.members.iter().map(Into::into).collect(),
+        }
+    }
+}
+impl From<contract::RaidRecordReply> for RaidRecord {
+    fn from(r: contract::RaidRecordReply) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            owner: r.owner,
+            former_owner: r.former_owner,
+            paused: r.paused,
+            generation: r.generation,
+            members: r
+                .members
+                .into_iter()
+                .map(|member| RaidMemberRecord {
+                    id: member.id,
+                    agent_name: member.agent_name,
+                    name: member.name,
+                    role: member.role,
+                    state: member.state,
+                    owner: member.owner,
+                    created_by: member.created_by,
+                    options: member.options,
+                })
+                .collect(),
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,40 +129,6 @@ struct Name {
 }
 /// `id` and `generation`, when given, must still name the raid as the
 /// caller saw it, such as in a raid-owner prompt.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SetOwner {
-    raid: String,
-    session: String,
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    generation: Option<u64>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Destroy {
-    raid: String,
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    generation: Option<u64>,
-    #[serde(default)]
-    stop_members: bool,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Kick {
-    raid: String,
-    session: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HostRole {
-    raid: String,
-    session: String,
-    role: String,
-}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Role {
@@ -425,7 +438,7 @@ impl Controller {
             .raids
             .get(name)
             .ok_or_else(|| self.raid_fault(raid::Error::Absent(name.into())))?;
-        Ok(json!(self.raid_record(raid)))
+        Ok(json!(contract::RaidRecord::from(&self.raid_record(raid))))
     }
     fn live(&self, session: &str) -> Result<(), Fault> {
         let a = &self.sessions[session];
@@ -489,8 +502,8 @@ impl Controller {
 
     pub(super) fn host_raids(&mut self, method: &str, value: Value) -> Result<Value, Fault> {
         match method {
-            "raids.invite" => {
-                let p: Invite = params(value)?;
+            contract::host::RaidsInvite::NAME => {
+                let p = super::contract_params::<contract::host::RaidsInvite>(value)?;
                 if !raid::valid_name(&p.raid) {
                     return Err(self.raid_fault(raid::Error::InvalidName));
                 }
@@ -510,8 +523,8 @@ impl Controller {
                 self.raid_commit(next, events)?;
                 self.raid_value(&p.raid)
             }
-            "raids.destroy" => {
-                let p: Destroy = params(value)?;
+            contract::host::RaidsDestroy::NAME => {
+                let p = super::contract_params::<contract::host::RaidsDestroy>(value)?;
                 self.same_raid(&p.raid, p.id.as_deref(), p.generation)?;
                 let members: Vec<_> = self
                     .raids
@@ -532,10 +545,13 @@ impl Controller {
                         }
                     }
                 }
-                Ok(json!({"accepted":true,"stopped":stopped}))
+                Ok(json!(contract::RaidDestroyResult {
+                    accepted: true,
+                    stopped
+                }))
             }
-            "raids.set_owner" => {
-                let p: SetOwner = params(value)?;
+            contract::host::RaidsSetOwner::NAME => {
+                let p = super::contract_params::<contract::host::RaidsSetOwner>(value)?;
                 self.same_raid(&p.raid, p.id.as_deref(), p.generation)?;
                 let id = self.resolve_session(&p.session)?;
                 if self.raids.of(&id).is_none_or(|r| r.name != p.raid) {
@@ -552,12 +568,12 @@ impl Controller {
                 self.raid_commit(next, events)?;
                 self.raid_value(&p.raid)
             }
-            "raids.members" => {
-                let p: Name = params(value)?;
+            contract::host::RaidsMembers::NAME => {
+                let p = super::contract_params::<contract::host::RaidsMembers>(value)?;
                 self.raid_value(&p.raid)
             }
-            "raids.kick" => {
-                let p: Kick = params(value)?;
+            contract::host::RaidsKick::NAME => {
+                let p = super::contract_params::<contract::host::RaidsKick>(value)?;
                 self.raid_value(&p.raid)?;
                 let id = self.resolve_session(&p.session)?;
                 if self.raids.of(&id).is_none_or(|r| r.name != p.raid) {
@@ -570,10 +586,14 @@ impl Controller {
                 let events = next.kick(&id, "host").map_err(|e| self.raid_fault(e))?;
                 let (dissolved, paused) = outcome(&events);
                 self.raid_commit(next, events)?;
-                Ok(json!({"accepted":true,"dissolved":dissolved,"paused":paused}))
+                Ok(json!(contract::RaidChangeResult {
+                    accepted: true,
+                    dissolved,
+                    paused
+                }))
             }
-            "raids.set_role" => {
-                let p: HostRole = params(value)?;
+            contract::host::RaidsSetRole::NAME => {
+                let p = super::contract_params::<contract::host::RaidsSetRole>(value)?;
                 self.raid_value(&p.raid)?;
                 let id = self.resolve_session(&p.session)?;
                 if self.raids.of(&id).is_none_or(|r| r.name != p.raid) {
@@ -675,6 +695,125 @@ mod preview_tests {
                     "name":record.name,"role":m.role,"state":record.state,
                     "created":m.created_by.is_some()}))
             }).collect::<Vec<_>>()})
+    }
+
+    fn original_record(controller: &Controller, raid: &raid::Raid) -> RaidRecord {
+        let mut members: Vec<_> = raid.members.iter().collect();
+        members.sort_by_key(|(_, m)| m.joined);
+        RaidRecord {
+            id: raid.id.clone(),
+            name: raid.name.clone(),
+            owner: raid.owner.clone(),
+            former_owner: raid.paused.as_ref().map(|p| p.former_owner.clone()),
+            paused: raid.paused.is_some(),
+            generation: raid.generation,
+            members: members
+                .into_iter()
+                .filter_map(|(id, member)| {
+                    let record = &controller.sessions.get(id)?.record;
+                    Some(RaidMemberRecord {
+                        id: id.clone(),
+                        agent_name: record.agent_name.clone(),
+                        name: record.name.clone(),
+                        role: member.role.clone(),
+                        state: record.state.clone(),
+                        owner: raid.owner.as_ref() == Some(id),
+                        created_by: member.created_by.clone(),
+                        options: record.options.clone(),
+                    })
+                })
+                .collect(),
+        }
+    }
+    #[test]
+    fn raid_record_producer_matches_original_fields_order_nulls_and_private_exclusion() {
+        let _no_forks = goblins_unix::no_forks();
+        let mut controller = daemon();
+        let path = controller.state.clone();
+        let _a = live(&mut controller, "a");
+        let _z = live(&mut controller, "z");
+        let active = controller.sessions.get_mut("a").unwrap();
+        active.record.agent_name = "alpha".into();
+        active.record.configuration = "/host/private/config".into();
+        active.record.terminal = "/host/private/terminal".into();
+        active.record.detail = Some("/host/private/diagnostic".into());
+        active.record.options = std::collections::BTreeMap::from([("model".into(), "fast".into())]);
+        let mut raid = raid::Raid {
+            id: "raid-fixed".into(),
+            name: "crew".into(),
+            owner: Some("a".into()),
+            paused: None,
+            generation: 0,
+            members: std::collections::BTreeMap::from([
+                (
+                    "a".into(),
+                    raid::Member {
+                        role: None,
+                        joined: 3,
+                        created_by: None,
+                    },
+                ),
+                (
+                    "gone".into(),
+                    raid::Member {
+                        role: None,
+                        joined: 2,
+                        created_by: None,
+                    },
+                ),
+                (
+                    "z".into(),
+                    raid::Member {
+                        role: Some("reviewer".into()),
+                        joined: 1,
+                        created_by: Some("a".into()),
+                    },
+                ),
+            ]),
+        };
+        for paused in [false, true] {
+            raid.owner = if paused { None } else { Some("a".into()) };
+            raid.paused = paused.then(|| raid::Paused {
+                former_owner: "a".into(),
+                reason: Reason::Left,
+            });
+            raid.generation = u64::from(paused);
+            let produced = json!(contract::RaidRecord::from(&controller.raid_record(&raid)));
+            assert_eq!(produced, json!(original_record(&controller, &raid)));
+            assert_eq!(
+                produced["members"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|m| m["id"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["z", "a"]
+            );
+            assert!(produced["members"][1]["role"].is_null());
+            assert!(produced["members"][1]["created_by"].is_null());
+            assert_eq!(produced["members"][1]["options"], json!({"model":"fast"}));
+            assert_eq!(
+                produced["owner"],
+                if paused { Value::Null } else { json!("a") }
+            );
+            assert_eq!(
+                produced["former_owner"],
+                if paused { json!("a") } else { Value::Null }
+            );
+            assert!(
+                !serde_json::to_string(&produced)
+                    .unwrap()
+                    .contains("/host/private/")
+            );
+            for member in produced["members"].as_array().unwrap() {
+                assert_eq!(member.as_object().unwrap().len(), 8);
+                for key in ["configuration", "terminal", "identity", "detail"] {
+                    assert!(member.get(key).is_none());
+                }
+            }
+        }
+        drop(controller);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

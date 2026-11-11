@@ -14341,5 +14341,1880 @@
       "current": false,
       "request": null
     }
+  ],
+  "host_raid_parameter_cases": [
+    {
+      "method": "raids.invite",
+      "params": {
+        "raid": "crew",
+        "sessions": [
+          "a",
+          "b"
+        ]
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.invite",
+      "params": [
+        "crew",
+        [
+          "a",
+          "b"
+        ]
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.invite",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.invite",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.invite",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.invite",
+      "params": {
+        "raid": "crew",
+        "sessions": [
+          "a",
+          "b"
+        ],
+        "unknown": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.destroy",
+      "params": [
+        "crew"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.destroy",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.destroy",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.destroy",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "unknown": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "session": "a"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_owner",
+      "params": [
+        "crew",
+        "a"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_owner",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_owner",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "unknown": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.members",
+      "params": {
+        "raid": "crew"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.members",
+      "params": [
+        "crew"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.members",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.members",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.members",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.members",
+      "params": {
+        "raid": "crew",
+        "unknown": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.kick",
+      "params": {
+        "raid": "crew",
+        "session": "a"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.kick",
+      "params": [
+        "crew",
+        "a"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.kick",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.kick",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.kick",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.kick",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "unknown": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "role": "reviewer"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_role",
+      "params": [
+        "crew",
+        "a",
+        "reviewer"
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_role",
+      "params": null,
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {},
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": [],
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "role": "reviewer",
+        "unknown": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.invite",
+      "params": {
+        "raid": "crew",
+        "sessions": [
+          "a",
+          "a"
+        ]
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.invite",
+      "params": {
+        "raid": "INVALID",
+        "sessions": [
+          "not-there"
+        ]
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.invite",
+      "params": {
+        "raid": "crew",
+        "sessions": []
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.invite",
+      "params": {
+        "raid": "crew",
+        "sessions": [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a"
+        ]
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.invite",
+      "params": {
+        "raid": "crew",
+        "sessions": [
+          1
+        ]
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": null,
+        "generation": null
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": "stale identity",
+        "generation": 0
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": "",
+        "generation": 18446744073709551615
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "generation": -1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "generation": 1.0
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "id": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "id": null,
+        "generation": null
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "id": "stale identity",
+        "generation": 0
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "id": "",
+        "generation": 18446744073709551615
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "generation": -1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "generation": 1.0
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_owner",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "id": 1
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.destroy",
+      "params": [
+        "crew",
+        null,
+        null,
+        false
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.destroy",
+      "params": [
+        "crew",
+        "id",
+        2,
+        true
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.destroy",
+      "params": {
+        "raid": "crew",
+        "stop_members": null
+      },
+      "decoded": false,
+      "valid": false
+    },
+    {
+      "method": "raids.set_owner",
+      "params": [
+        "crew",
+        "a",
+        null,
+        0
+      ],
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.members",
+      "params": {
+        "raid": "invalid selector"
+      },
+      "decoded": true,
+      "valid": true
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "role": ""
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "role": "INVALID"
+      },
+      "decoded": true,
+      "valid": false
+    },
+    {
+      "method": "raids.set_role",
+      "params": {
+        "raid": "crew",
+        "session": "a",
+        "role": "a b"
+      },
+      "decoded": true,
+      "valid": false
+    }
+  ],
+  "raid_record": {
+    "id": "raid-fixed",
+    "name": "crew",
+    "owner": "a",
+    "former_owner": null,
+    "paused": false,
+    "generation": 0,
+    "members": [
+      {
+        "id": "a",
+        "agent_name": "alpha",
+        "name": "shell",
+        "role": null,
+        "state": "running",
+        "owner": true,
+        "created_by": null,
+        "options": {}
+      },
+      {
+        "id": "b",
+        "agent_name": "beta",
+        "name": "codex",
+        "role": "reviewer",
+        "state": "starting",
+        "owner": false,
+        "created_by": "a",
+        "options": {
+          "model": "fast",
+          "effort": "high"
+        }
+      }
+    ]
+  },
+  "raid_record_paused": {
+    "id": "raid-fixed",
+    "name": "crew",
+    "owner": null,
+    "former_owner": "a",
+    "paused": true,
+    "generation": 1,
+    "members": [
+      {
+        "id": "b",
+        "agent_name": "beta",
+        "name": "codex",
+        "role": "reviewer",
+        "state": "starting",
+        "owner": false,
+        "created_by": "a",
+        "options": {
+          "model": "fast",
+          "effort": "high"
+        }
+      }
+    ]
+  },
+  "raid_record_cases": [
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": null,
+        "former_owner": "a",
+        "paused": true,
+        "generation": 1,
+        "members": [
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": true,
+      "legacy": true
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "state": "running",
+            "owner": true
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "state": "starting",
+            "owner": false
+          }
+        ]
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "future role",
+            "state": "future-state",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "new key": "",
+              "new": "value"
+            },
+            "extra": 1
+          }
+        ],
+        "extension": true
+      },
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": [
+        "raid-fixed",
+        "crew",
+        "a",
+        null,
+        false,
+        0,
+        [
+          [
+            "a",
+            "alpha",
+            "shell",
+            null,
+            "running",
+            true
+          ],
+          [
+            "b",
+            "beta",
+            "codex",
+            "reviewer",
+            "starting",
+            false,
+            "a",
+            {
+              "model": "fast"
+            }
+          ]
+        ]
+      ],
+      "current": false,
+      "legacy": true
+    },
+    {
+      "result": [
+        "raid-fixed",
+        "crew",
+        "a",
+        null,
+        false,
+        0
+      ],
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": -1,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 1.0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": null,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": 7,
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": null
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": null,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": null
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {
+              "model": 3
+            }
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": 7,
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": null,
+            "state": "running",
+            "owner": true,
+            "created_by": true,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {
+        "id": "raid-fixed",
+        "name": "crew",
+        "owner": "a",
+        "former_owner": null,
+        "paused": false,
+        "generation": 0,
+        "members": [
+          {
+            "id": "a",
+            "agent_name": "alpha",
+            "name": "shell",
+            "role": 7,
+            "state": "running",
+            "owner": true,
+            "created_by": null,
+            "options": {}
+          },
+          {
+            "id": "b",
+            "agent_name": "beta",
+            "name": "codex",
+            "role": "reviewer",
+            "state": "starting",
+            "owner": false,
+            "created_by": "a",
+            "options": {
+              "model": "fast",
+              "effort": "high"
+            }
+          }
+        ]
+      },
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": null,
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": [],
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": 1,
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": true,
+      "current": false,
+      "legacy": false
+    },
+    {
+      "result": {},
+      "current": false,
+      "legacy": false
+    }
+  ],
+  "raid_display_cases": [
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": null,
+      "former_owner": "a",
+      "paused": true,
+      "generation": 1,
+      "members": [
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "state": "running",
+          "owner": true
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "state": "starting",
+          "owner": false
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "future role",
+          "state": "future-state",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "new key": "",
+            "new": "value"
+          },
+          "extra": 1
+        }
+      ],
+      "extension": true
+    },
+    [
+      "raid-fixed",
+      "crew",
+      "a",
+      null,
+      false,
+      0,
+      [
+        [
+          "a",
+          "alpha",
+          "shell",
+          null,
+          "running",
+          true
+        ],
+        [
+          "b",
+          "beta",
+          "codex",
+          "reviewer",
+          "starting",
+          false,
+          "a",
+          {
+            "model": "fast"
+          }
+        ]
+      ]
+    ],
+    [
+      "raid-fixed",
+      "crew",
+      "a",
+      null,
+      false,
+      0
+    ],
+    {
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": -1,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 1.0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": null,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": 7,
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": null
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": null,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": null
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {
+            "model": 3
+          }
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": 7,
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": null,
+          "state": "running",
+          "owner": true,
+          "created_by": true,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    {
+      "id": "raid-fixed",
+      "name": "crew",
+      "owner": "a",
+      "former_owner": null,
+      "paused": false,
+      "generation": 0,
+      "members": [
+        {
+          "id": "a",
+          "agent_name": "alpha",
+          "name": "shell",
+          "role": 7,
+          "state": "running",
+          "owner": true,
+          "created_by": null,
+          "options": {}
+        },
+        {
+          "id": "b",
+          "agent_name": "beta",
+          "name": "codex",
+          "role": "reviewer",
+          "state": "starting",
+          "owner": false,
+          "created_by": "a",
+          "options": {
+            "model": "fast",
+            "effort": "high"
+          }
+        }
+      ]
+    },
+    null,
+    [],
+    1,
+    true,
+    {},
+    {
+      "name": "partial",
+      "id": 7,
+      "paused": true,
+      "former_owner": null,
+      "members": [
+        null,
+        {},
+        {
+          "id": "m",
+          "agent_name": "name",
+          "role": 3,
+          "name": "cfg",
+          "state": "future",
+          "owner": "true",
+          "created_by": "",
+          "options": {
+            "a\n": "x\u202e",
+            "b": 7,
+            "c": "a, b"
+          }
+        }
+      ]
+    },
+    {
+      "members": "not an array"
+    }
   ]
 }

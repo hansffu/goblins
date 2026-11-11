@@ -410,6 +410,19 @@ fn permission_records<'de, D: serde::Deserializer<'de>>(
         })
         .collect()
 }
+fn raid_records<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<RaidRecord>, D::Error> {
+    use contract::Response;
+    Vec::<Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(|value| {
+            contract::RaidRecordReply::decode(value)
+                .map(Into::into)
+                .map_err(serde::de::Error::custom)
+        })
+        .collect()
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub instance: String,
@@ -417,7 +430,7 @@ pub struct Snapshot {
     pub sessions: Vec<SessionRecord>,
     #[serde(deserialize_with = "permission_records")]
     pub permissions: Vec<PermissionRecord>,
-    #[serde(default)]
+    #[serde(default,deserialize_with="raid_records")]
     pub raids: Vec<RaidRecord>,
     /// The communications log's health: messaging stops while it fails.
     #[serde(default)]
@@ -4326,6 +4339,22 @@ mod tests {
         json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
                "agent_name":agent_name,"rows":24,"cols":100})
     }
+    #[test]
+    fn snapshot_raid_bridge_matches_original_record_deserialization() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        for case in fixtures["raid_record_cases"].as_array().unwrap() {
+            let old = serde_json::from_value::<RaidRecord>(case["result"].clone());
+            let snapshot = serde_json::from_value::<Snapshot>(
+                json!({"instance":"test","sessions":[],"permissions":[],"raids":[case["result"]]}),
+            );
+            assert_eq!(old.is_ok(), snapshot.is_ok(), "{case}");
+            if let (Ok(old), Ok(snapshot)) = (old, snapshot) {
+                assert_eq!(json!(snapshot.raids), json!([old]), "{case}");
+            }
+        }
+    }
+
     #[test]
     fn permission_package_preview_producer_matches_original_wire_and_keeps_output_private() {
         let _no_forks = unix::no_forks();

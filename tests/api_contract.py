@@ -16,6 +16,7 @@ SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
+    "raid-members-display": "Read raid/member display strings independently with - fallback, booleans strictly, members only when an array, created_by string presence and existing escaped/sorted option rendering; accept non-object legacy results.",
     "ignore-successful-body": "Ignore the successful body, including non-objects; retain the original validated JSON for printing.",
     "permission-record-fields": "Map original positional record order, default missing kind to package, retain required string fields, nullable options and arbitrary preview JSON, ignoring additive record fields.",
     "permission-list-records": "Apply the compatible permission-record reader element-wise to the result list.",
@@ -37,6 +38,20 @@ NORMALIZATIONS = {
 
 def normalize_reply(profile, result):
     if profile == "ignore-successful-body":return {}
+    if profile == "raid-members-display":
+        fields=result if isinstance(result,dict) else {}
+        def field(value,key):return value.get(key) if isinstance(value,dict) else None
+        def text(value,key):
+            value=field(value,key)
+            return value if isinstance(value,str) else "-"
+        def plain(value):return "".join(f"\\u{ord(c):04x}" if ord(c)<32 or 127<=ord(c)<160 or ord(c) in (0x2028,0x2029) or 0x202a<=ord(c)<=0x202e or 0x2066<=ord(c)<=0x2069 else c for c in value)
+        members=[]
+        values=fields.get("members")
+        for member in values if isinstance(values,list) else []:
+            options=field(member,"options")
+            choices=", ".join(plain(f"{key}={value if isinstance(value,str) else '?'}") for key,value in sorted(options.items())) if isinstance(options,dict) else ""
+            members.append(dict(**{key:text(member,key) for key in ("id","agent_name","name","role","state")},owner=field(member,"owner") is True,created=isinstance(field(member,"created_by"),str),options=choices.replace(", ",",") if choices else "-"))
+        return dict(**{key:text(fields,key) for key in ("id","name","former_owner")},paused=fields.get("paused") is True,members=members)
     if profile == "permission-list-records":
         return [normalize_reply("permission-record-fields",v) for v in result]
     if profile == "permission-record-fields":
@@ -600,7 +615,7 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"$ref":"common.json#/x-client-result-schemas/PermissionListReply"} if entry["name"]=="permissions.list" else {"$ref":"common.json#/x-client-result-schemas/PermissionRecordReply"} if entry["name"]=="permissions.get" else {"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-client-param-normalization" in entry:

@@ -6590,6 +6590,471 @@
         "request"
       ],
       "additionalProperties": true
+    },
+    "RaidNameRule": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9-]*$(?![\\s\\S])"
+    },
+    "RaidInviteParams": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "raid",
+        "sessions"
+      ],
+      "additionalProperties": false
+    },
+    "RaidDestroyParams": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stop_members": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "raid"
+      ],
+      "additionalProperties": false
+    },
+    "RaidSetOwnerParams": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "raid",
+        "session"
+      ],
+      "additionalProperties": false
+    },
+    "RaidSelectorParams": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raid"
+      ],
+      "additionalProperties": false
+    },
+    "RaidKickParams": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raid",
+        "session"
+      ],
+      "additionalProperties": false
+    },
+    "RaidSetRoleParams": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raid",
+        "session",
+        "role"
+      ],
+      "additionalProperties": false
+    },
+    "RaidRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "$ref": "#/definitions/RaidNameRule"
+        },
+        "owner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "former_owner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RaidMemberRecord"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "owner",
+        "former_owner",
+        "paused",
+        "generation",
+        "members"
+      ],
+      "additionalProperties": true
+    },
+    "RaidMemberRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RaidNameRule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "boolean"
+        },
+        "created_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "$ref": "#/definitions/LaunchOptions"
+        }
+      },
+      "required": [
+        "id",
+        "agent_name",
+        "name",
+        "role",
+        "state",
+        "owner",
+        "created_by",
+        "options"
+      ],
+      "additionalProperties": true
+    },
+    "RaidLegacyOptions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "RaidMemberRecordReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "boolean"
+        },
+        "created_by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "options": {
+          "$ref": "#/definitions/RaidLegacyOptions"
+        }
+      },
+      "required": [
+        "id",
+        "agent_name",
+        "name",
+        "role",
+        "state",
+        "owner",
+        "created_by",
+        "options"
+      ],
+      "additionalProperties": true
+    },
+    "RaidRecordReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "former_owner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RaidMemberRecordReply"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "owner",
+        "former_owner",
+        "paused",
+        "generation",
+        "members"
+      ],
+      "additionalProperties": true
+    },
+    "RaidDestroyResult": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "stopped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "accepted",
+        "stopped"
+      ],
+      "additionalProperties": true
+    },
+    "RaidChangeResult": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        },
+        "dissolved": {
+          "type": "boolean"
+        },
+        "paused": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "accepted",
+        "dissolved",
+        "paused"
+      ],
+      "additionalProperties": true
+    },
+    "RaidMemberDisplay": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "options": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "boolean"
+        },
+        "created": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "agent_name",
+        "name",
+        "role",
+        "state",
+        "options",
+        "owner",
+        "created"
+      ],
+      "additionalProperties": true
+    },
+    "RaidDisplayReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "former_owner": {
+          "type": "string"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RaidMemberDisplay"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "former_owner",
+        "paused",
+        "members"
+      ],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -7548,6 +8013,134 @@
       ],
       "minItems": 1,
       "maxItems": 1
+    },
+    "RaidInviteParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "RaidDestroyParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 4
+    },
+    "RaidSetOwnerParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 4
+    },
+    "RaidSelectorParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "RaidKickParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "RaidSetRoleParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 3
     }
   },
   "x-request-constraints": {
@@ -7962,6 +8555,24 @@
           }
         }
       ]
+    },
+    "RaidInviteParams": {
+      "properties": {
+        "raid": {
+          "$ref": "#/definitions/RaidNameRule"
+        },
+        "sessions": {
+          "minItems": 1,
+          "maxItems": 16
+        }
+      }
+    },
+    "RaidSetRoleParams": {
+      "properties": {
+        "role": {
+          "$ref": "#/definitions/RaidNameRule"
+        }
+      }
     }
   },
   "x-attach-version": 1,
@@ -8270,6 +8881,178 @@
       "items": {
         "$ref": "#/x-client-result-schemas/PermissionRecordReply"
       }
+    },
+    "RaidMemberRecordReply": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "agent_name": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "role": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "type": "string"
+            },
+            "owner": {
+              "type": "boolean"
+            },
+            "created_by": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "options": {
+              "$ref": "#/definitions/RaidLegacyOptions"
+            }
+          },
+          "required": [
+            "id",
+            "agent_name",
+            "name",
+            "state",
+            "owner"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "array",
+          "items": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            {
+              "$ref": "#/definitions/RaidLegacyOptions"
+            }
+          ],
+          "minItems": 6,
+          "maxItems": 8
+        }
+      ]
+    },
+    "RaidRecordReply": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "owner": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "former_owner": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "paused": {
+              "type": "boolean"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "$ref": "#/x-client-result-schemas/RaidMemberRecordReply"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "members"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "array",
+          "items": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/x-client-result-schemas/RaidMemberRecordReply"
+              }
+            }
+          ],
+          "minItems": 7,
+          "maxItems": 7
+        }
+      ]
     }
   }
 }
