@@ -59,7 +59,16 @@ fn run() -> Result<i32, String> {
                 .command;
         match command {
             cli::Command::SetState { state } => {
-                println!("{}", call("sessions.set-state", json!({"state":state}))?);
+                println!(
+                    "{}",
+                    json!(call_typed::<contract::sandbox::SessionsSetState>(
+                        contract::SetStateParams {
+                            state: state
+                                .parse::<contract::AgentState>()
+                                .map_err(|e| e.to_string())?
+                        }
+                    )?)
+                );
                 return Ok(0);
             }
             cli::Command::Variable {
@@ -68,7 +77,7 @@ fn run() -> Result<i32, String> {
                 let set = variables(&assignments)?;
                 println!(
                     "{}",
-                    call("sessions.set-variables", serde_json::to_value(set).unwrap())?
+                    json!(call_typed::<contract::sandbox::SessionsSetVariables>(set)?)
                 );
                 return Ok(0);
             }
@@ -136,29 +145,42 @@ fn run() -> Result<i32, String> {
                 return Ok(0);
             }
             cli::Command::Status => {
-                let record = call("sessions.status", json!({}))?;
-                let raid = &record["raid"];
+                let record =
+                    call_typed::<contract::sandbox::SessionsStatus>(contract::EmptyParams {})?;
+                let raid = record.raid.as_ref();
                 println!(
                     "Sandbox: {}\nConfiguration: {}\nDescription: {}\nRun targets: {}\nLaunch options: {}\nState: {}\nActivity: {}\nAttached: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}{}\nDev shell: {}\nRaid: {}\nID: {}",
-                    record["agent_name"].as_str().unwrap_or("unknown"),
-                    record["name"].as_str().unwrap_or("unknown"),
-                    record["description"].as_str().unwrap_or("unknown"),
-                    match record["allowed_run_targets"].as_array() {
+                    record.agent_name.as_deref().unwrap_or("unknown"),
+                    record.name.as_deref().unwrap_or("unknown"),
+                    record.description.as_deref().unwrap_or("unknown"),
+                    match record.allowed_run_targets.as_ref() {
                         Some(names) if !names.is_empty() => names
                             .iter()
-                            .filter_map(|n| n.as_str())
+                            .map(String::as_str)
                             .collect::<Vec<_>>()
                             .join(", "),
                         Some(_) => "none".into(),
                         None => "unknown".into(),
                     },
-                    goblins_protocol::launch_choices(&record["options"]).unwrap_or("none".into()),
-                    record["state"].as_str().unwrap_or("unknown"),
-                    record["agent_state"].as_str().unwrap_or("unknown"),
-                    match (
-                        record["attached"].as_bool(),
-                        record["attached_since"].as_u64()
-                    ) {
+                    record
+                        .options
+                        .as_ref()
+                        .filter(|o| !o.is_empty())
+                        .map(|o| o
+                            .iter()
+                            .map(|(k, v)| goblins_protocol::plain_text(&format!("{k}={v}")))
+                            .collect::<Vec<_>>()
+                            .join(", "))
+                        .unwrap_or("none".into()),
+                    record
+                        .state
+                        .map(|v| v.to_string())
+                        .unwrap_or("unknown".into()),
+                    record
+                        .agent_state
+                        .map(|v| v.to_string())
+                        .unwrap_or("unknown".into()),
+                    match (record.attached, record.attached_since) {
                         (Some(true), Some(since)) => {
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -169,47 +191,45 @@ fn run() -> Result<i32, String> {
                         (Some(false), _) => "no".into(),
                         (None, _) => "unknown".into(),
                     },
-                    record["scope"].as_str().unwrap_or("none"),
-                    if record["docker_enabled"] == true {
+                    record.scope.as_deref().unwrap_or("none"),
+                    if record.docker_enabled == Some(true) {
                         "enabled"
                     } else {
                         "disabled"
                     },
                     // Ordinary nix commands against the host daemon.
-                    if record["nix"] == true {
+                    if record.nix == Some(true) {
                         "available"
                     } else {
                         "none"
                     },
-                    if record["host_commands"] == true {
+                    if record.host_commands == Some(true) {
                         "available after approval"
                     } else {
                         "none"
                     },
                     // What the configuration asks, not what the agent's own
                     // settings make of it; no line for a goblin without an agent.
-                    match record["permission_bypass"].as_bool() {
+                    match record.permission_bypass {
                         Some(true) => "\nAgent permission bypass: requested",
                         Some(false) => "\nAgent permission bypass: not requested",
                         None => "",
                     },
-                    record["dev_shell"].as_str().unwrap_or("none"),
-                    match raid["name"].as_str() {
-                        Some(name) if raid["paused"] == true => format!(
+                    record.dev_shell.as_deref().unwrap_or("none"),
+                    match raid.and_then(|r| r.name.as_deref()) {
+                        Some(name) if raid.and_then(|r| r.paused) == Some(true) => format!(
                             "{name} (role: {}, paused until the host selects a new owner)",
-                            raid["role"].as_str().unwrap_or("none"),
+                            raid.and_then(|r| r.role.as_deref()).unwrap_or("none"),
                         ),
                         Some(name) => format!(
                             "{name} (role: {}, owner: {})",
-                            raid["role"].as_str().unwrap_or("none"),
-                            raid["owner_name"]
-                                .as_str()
-                                .or(raid["owner"].as_str())
+                            raid.and_then(|r| r.role.as_deref()).unwrap_or("none"),
+                            raid.and_then(|r| r.owner_name.as_deref().or(r.owner.as_deref()))
                                 .unwrap_or("unknown")
                         ),
                         None => "none".into(),
                     },
-                    record["id"].as_str().unwrap_or("unknown")
+                    record.id.as_deref().unwrap_or("unknown")
                 );
                 return Ok(0);
             }
@@ -601,6 +621,10 @@ fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String
             Ok((2, json!(null)))
         }
     }
+}
+pub(crate) fn call_typed<M: contract::Method>(params: M::Params) -> Result<M::Result, String> {
+    let (mut socket, _) = connect()?;
+    contract::exchange::<M>(&mut socket, json!(1), params).map_err(|e| e.to_string())
 }
 pub(crate) fn call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
     let (mut socket, _) = connect()?;

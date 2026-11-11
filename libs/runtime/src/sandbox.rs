@@ -48,11 +48,7 @@ pub struct MemberStart {
     #[serde(default)]
     pub options: std::collections::BTreeMap<String, String>,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SetWorktree {
-    name: Option<String>,
-}
+use goblins_protocol::contract::SetWorktreeParams as SetWorktree;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
@@ -244,6 +240,10 @@ pub fn check(
                     message: "no editor is configured; enable editor.emacs in mkGoblins".into(),
                 });
             }
+            None
+        }
+        "sessions.status" => {
+            let _: goblins_protocol::contract::EmptyParams = parse(&call.params)?;
             None
         }
         "sessions.set-state" => {

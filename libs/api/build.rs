@@ -6,6 +6,13 @@ fn main() {
     let common: Value =
         serde_json::from_str(&fs::read_to_string("schema/common.json").unwrap()).unwrap();
     let mut settings = typify::TypeSpaceSettings::default();
+    settings.with_map_type("::std::collections::BTreeMap");
+    settings.with_replacement(
+        "Variables",
+        "std::collections::BTreeMap<String, String>",
+        [].into_iter(),
+    );
+    settings.with_replacement("WorktreeName", "std::string::String", [].into_iter());
     settings.with_replacement(
         "EmptyParams",
         "crate::contract::EmptyParams",
@@ -26,6 +33,12 @@ fn main() {
         "\npub const API_VERSION: u32 = {};\n",
         common["x-api-version"]
     ));
+    let mut decoded = std::collections::BTreeSet::from([
+        "InitializeReply".to_string(),
+        "ServerStatusReply".to_string(),
+        "ServerStopResult".to_string(),
+        "SetVariablesResult".to_string(),
+    ]);
     for endpoint in ["host", "sandbox"] {
         let document: Value = serde_json::from_str(
             &fs::read_to_string(format!("schema/{endpoint}.openrpc.json")).unwrap(),
@@ -53,6 +66,11 @@ fn main() {
             assert!(common["definitions"].get(&params).is_some());
             assert!(common["definitions"].get(&result).is_some());
             assert!(common["definitions"].get(&reply).is_some());
+            if decoded.insert(reply.clone()) {
+                output.push_str(&format!(
+                    "impl crate::contract::Response for {reply} {{ const SCHEMA: &'static str = {reply:?}; }}\n"
+                ));
+            }
             output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; }}\n"));
             names.push(name);
         }

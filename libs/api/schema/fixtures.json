@@ -367,5 +367,477 @@
       "accepted": true
     },
     "source": "2d1f7e92e9a7183727c4935b92155c6a47a59629:crates/controller/src/controller.rs (293c878 parent), initialization and server.status handlers"
-  }
+  },
+  "self_status": {
+    "id": "session-id",
+    "agent_name": "goblin",
+    "name": "shell",
+    "description": "Shell",
+    "state": "running",
+    "agent_state": "working",
+    "scope": null,
+    "docker_enabled": false,
+    "dev_shell": null,
+    "attached": true,
+    "attached_since": 123,
+    "nix": true,
+    "host_commands": false,
+    "permission_bypass": null,
+    "allowed_run_targets": [],
+    "raid": {
+      "id": "raid-id",
+      "name": "raid",
+      "role": null,
+      "owner": "session-id",
+      "paused": false,
+      "owner_name": "goblin"
+    },
+    "worktree": {
+      "name": "branch",
+      "path": "/host/worktrees/branch"
+    },
+    "created_by": null,
+    "options": {}
+  },
+  "self_parameter_cases": [
+    {
+      "method": "sessions.status",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "sessions.status",
+      "params": [],
+      "valid": true
+    },
+    {
+      "method": "sessions.status",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "sessions.status",
+      "params": {
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.status",
+      "params": [
+        1
+      ],
+      "valid": false
+    },
+    {
+      "method": "sessions.set-state",
+      "params": {
+        "state": "idle"
+      },
+      "valid": true
+    },
+    {
+      "method": "sessions.set-state",
+      "params": [
+        "waiting-approval"
+      ],
+      "valid": true
+    },
+    {
+      "method": "sessions.set-state",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "sessions.set-state",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "sessions.set-state",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "sessions.set-state",
+      "params": {
+        "state": "running"
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-state",
+      "params": {
+        "state": "idle",
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-state",
+      "params": [
+        "idle",
+        "working"
+      ],
+      "valid": false
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": {
+        "variables": {
+          "session_id": "id",
+          "session_name": ""
+        }
+      },
+      "valid": true
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": [
+        {
+          "a": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+        }
+      ],
+      "valid": true
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": {
+        "variables": {}
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": {
+        "variables": {
+          "Bad": "text"
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": {
+        "variables": {
+          "a": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": {
+        "variables": {
+          "a": ""
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": {
+        "variables": {
+          "a0": "x",
+          "a1": "x",
+          "a2": "x",
+          "a3": "x",
+          "a4": "x",
+          "a5": "x",
+          "a6": "x",
+          "a7": "x",
+          "a8": "x",
+          "a9": "x",
+          "a10": "x",
+          "a11": "x",
+          "a12": "x",
+          "a13": "x",
+          "a14": "x",
+          "a15": "x",
+          "a16": "x"
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": {
+        "variables": {
+          "a": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-variables",
+      "params": {
+        "variables": {
+          "a": "x"
+        },
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": [],
+      "valid": true
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": [
+        null
+      ],
+      "valid": true
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": {
+        "name": null
+      },
+      "valid": true
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": {
+        "name": "branch-a"
+      },
+      "valid": true
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": [
+        "branch-a"
+      ],
+      "valid": true
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": {
+        "name": "../branch"
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": {
+        "name": ""
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": {
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": {
+        "name": "branch",
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.set-worktree",
+      "params": [
+        "a",
+        "b"
+      ],
+      "valid": false
+    }
+  ],
+  "self_result_cases": [
+    {
+      "schema": "SelfStatus",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "working",
+        "scope": null,
+        "docker_enabled": false,
+        "dev_shell": null,
+        "attached": true,
+        "attached_since": 123,
+        "nix": true,
+        "host_commands": false,
+        "permission_bypass": null,
+        "allowed_run_targets": [],
+        "raid": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "created_by": null,
+        "options": {}
+      },
+      "valid": false
+    },
+    {
+      "schema": "SelfStatus",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "working",
+        "scope": null,
+        "docker_enabled": false,
+        "dev_shell": null,
+        "attached": true,
+        "attached_since": 123,
+        "nix": true,
+        "host_commands": false,
+        "permission_bypass": null,
+        "allowed_run_targets": [],
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "session-id",
+          "paused": false,
+          "owner_name": "goblin"
+        },
+        "worktree": [
+          "branch",
+          "/tmp/branch"
+        ],
+        "created_by": null,
+        "options": {}
+      },
+      "valid": false
+    },
+    {
+      "schema": "SelfStatus",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "working",
+        "scope": null,
+        "docker_enabled": false,
+        "dev_shell": null,
+        "attached": true,
+        "attached_since": 123,
+        "nix": true,
+        "host_commands": false,
+        "permission_bypass": null,
+        "allowed_run_targets": [],
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "session-id",
+          "paused": false,
+          "owner_name": "goblin"
+        },
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "created_by": [
+          "id",
+          "name"
+        ],
+        "options": {}
+      },
+      "valid": false
+    },
+    {
+      "schema": "SelfStatusReply",
+      "result": {
+        "raid": []
+      },
+      "valid": false
+    },
+    {
+      "schema": "SelfStatusReply",
+      "result": {
+        "worktree": [
+          "branch",
+          "/tmp/branch"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "schema": "SelfStatusReply",
+      "result": {
+        "created_by": [
+          "id",
+          "name"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "schema": "SetWorktreeReply",
+      "result": {
+        "worktree": [
+          "branch",
+          "/tmp/branch"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "schema": "SetWorktreeReply",
+      "result": {
+        "worktree": null
+      },
+      "valid": true
+    },
+    {
+      "schema": "SetWorktreeReply",
+      "result": {},
+      "valid": true
+    },
+    {
+      "schema": "SetWorktreeReply",
+      "result": {
+        "worktree": {
+          "name": "branch",
+          "path": "/tmp/branch",
+          "future": true
+        }
+      },
+      "valid": true
+    },
+    {
+      "schema": "SelfStatusReply",
+      "result": {
+        "raid": null,
+        "created_by": null,
+        "worktree": null
+      },
+      "valid": true
+    },
+    {
+      "schema": "SelfStatusReply",
+      "result": {
+        "raid": {
+          "future": true
+        }
+      },
+      "valid": true
+    }
+  ]
 }

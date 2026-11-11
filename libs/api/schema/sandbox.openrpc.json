@@ -58,6 +58,155 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/InitializeReply"
       }
+    },
+    {
+      "name": "sessions.status",
+      "description": "Report this sandbox, its activity, attachment and fixed policy. Host-only paths, identities and sockets are excluded; its worktree path remains visible.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/SelfStatus"
+        }
+      },
+      "errors": [
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-rust-name": "SessionsStatus",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/SelfStatusReply"
+      }
+    },
+    {
+      "name": "sessions.set-state",
+      "description": "Report provider-neutral activity; this does not change sandbox lifecycle.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "state",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SetStateParams/properties/state"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SetStateParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SetStatePositional"
+      },
+      "x-rust-name": "SessionsSetState"
+    },
+    {
+      "name": "sessions.set-variables",
+      "description": "Update 1\u201316 history variables atomically. Empty values remove keys; values are at most 256 UTF-8 bytes without control characters.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "variables",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SetVariablesParams/properties/variables"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/SetVariablesResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        },
+        {
+          "code": -32010,
+          "message": "Resource limit or init unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SetVariablesParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SetVariablesPositional"
+      },
+      "x-rust-name": "SessionsSetVariables"
+    },
+    {
+      "name": "sessions.set-worktree",
+      "description": "Record or clear the caller worktree. Missing/null name clears; a non-null name must identify a real worktree under its configured folder.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "name",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/SetWorktreeParams/properties/name"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/SetWorktreeResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or conflicting operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SetWorktreeParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SetWorktreePositional"
+      },
+      "x-rust-name": "SessionsSetWorktree",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/SetWorktreeReply"
+      }
     }
   ],
   "x-notifications": [],

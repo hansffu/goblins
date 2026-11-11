@@ -67,7 +67,7 @@ Session parameters named =session= accept a session ID or the agent name of a li
 
 * Initialization (both endpoints)
 
-The schema-first migration currently covers =initialize=, =server.status= and =server.stop=. Their machine-readable contracts are in =libs/api/schema/=, with the generated [[file:API-REFERENCE.org][covered-method reference]]. Other surfaces remain specified here and assigned to later chunks in =libs/api/schema/coverage.json=. Generated types supplement the existing transport, policy and lifecycle checks.
+The schema-first migration currently covers =initialize=, host =server.status= / =server.stop= and sandbox =sessions.status= / =sessions.set-state= / =sessions.set-variables= / =sessions.set-worktree=. Their machine-readable contracts are in =libs/api/schema/=, with the generated [[file:API-REFERENCE.org][covered-method reference]]. Other surfaces remain specified here and assigned to later chunks in =libs/api/schema/coverage.json=. Generated types supplement the existing transport, policy and lifecycle checks.
 
 The result descriptions specify what the current daemon produces. Compatible API-1 clients also accept older replies without additive metadata: =configuration= and limits information in =initialize=, and =history=, =manifest= and =worktrees_directory= in =server.status=. The =x-client-result-schema= extension defines those generated client reply types; missing information remains optional, and clients use advertised features before relying on capabilities. Tests of the current daemon still enforce the current producer schema.
 
@@ -420,11 +420,13 @@ Pages through the communications audit log. Host only.
 
 * Sandbox endpoint
 
-A sandbox sees only itself and the goblins it controls. Results never contain host paths, process identities or terminal sockets.
+A sandbox sees only itself and the goblins it controls. Results omit process identities and terminal sockets. The shared =Worktree.path= identifies the worktree in the host repository folder; sandbox session records omit other host paths.
 
 Sandbox requests pass transport and parameter validation, then configuration policy and implementation support, before live state and capacity checks. A running =allowNix= goblin that requests a package while another request is pending therefore gets =-32602= with =this goblin has Nix; use nix shell nixpkgs#NAME instead of a package request=, rather than a pending-request conflict. Likewise, a non-owner whose configuration permits no run targets gets =-32602= with =configuration 'reviewer' permits no run targets= when its configuration is =reviewer=, before the live raid-owner check; a non-owner requesting a permitted target still gets the raid-owner =-32009= refusal. After stop is requested and before the goblin stops, calls other than =initialize= and messaging get =conflict= before their method checks; calls before initialization still get =-32001=.
 
 ** Self
+
+The self-reporting methods below have executable OpenRPC contracts and generated Rust request/result types in =libs/api/schema/sandbox.openrpc.json=. Requests reject unknown fields and also accept Serde positional arrays in the documented field order: =[]= for status, =[state]=, =[variables]= and =[name]= for the setters. Current producers emit every documented result field, using null for absent nullable values; API-1 client reply types also accept older status metadata omissions and ignore new result fields. Schema types do not replace the existing state, variable, worktree or lifecycle validators.
 
 *** =sessions.status=
 
@@ -443,7 +445,7 @@ Reports the agent's activity, shown as =agent_state=.
 Stores variables in the caller's history record (for example the agent's =session_id=). All given keys change together; an empty value removes a key. A key set to a value is ready for the current run; values a recreated goblin starts with from its record are not ready until it sets them again, and removing a key makes it not ready.
 
 - Input :: ={"variables": {name: value}}= with 1–16 entries. Names match =[a-z][a-z0-9_]{0,31}=; values are at most 256 bytes without control characters.
-- Output :: ={"accepted": true, "recorded"}=
+- Output :: ={"accepted": true, "recorded": BOOLEAN}=. =recorded= is true when the history store has the caller's record; false means the daemon retained the variables for recording when it takes over the store.
 
 *** =sessions.detach=
 
@@ -538,7 +540,7 @@ The configurations the caller may run, with their launch options.
 
 Records the worktree the goblin works in, which Emacs and other host clients follow and a resume restores. The daemon does not watch the filesystem: a removed worktree stays set until the goblin changes it or stops. Refused (=-32009=) for a goblin without a worktree folder: it was not launched at a repository's root or in one of its worktrees, or worktrees are off for its configuration (its =detail= says why).
 
-- Input :: ={"name"}= or ={"name": null}=. =name= must match =[A-Za-z0-9][A-Za-z0-9._-]{0,99}= and be a directory in the goblin's worktree folder, not a symlink, holding a =.git= file. =null= clears the worktree: the goblin works in its main checkout (=Session.checkout=), even if it was launched in a worktree.
+- Input :: ={"name"}= or ={"name": null}=. =name= must match =[A-Za-z0-9][A-Za-z0-9._-]{0,99}= and be a directory in the goblin's worktree folder, not a symlink, holding a =.git= file. =null= or an omitted =name= (={}= or =[]=) clears the worktree: the goblin works in its main checkout (=Session.checkout=), even if it was launched in a worktree.
 - Output :: ={"worktree": Worktree_OR_NULL}=
 
 ** Raids

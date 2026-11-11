@@ -1,4 +1,4 @@
-//! Schema-generated C01 contracts. Transport and authority remain handwritten.
+//! Schema-generated RPC contracts. Transport and authority remain handwritten.
 use goblins_jsonrpc as rpc;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -45,7 +45,126 @@ impl<'de> Deserialize<'de> for HistoryStatus {
 
 /// Named fallbacks for constraints not enforced by Typify 0.7's Serde output.
 pub trait Response: DeserializeOwned {
-    fn decode(value: Value) -> io::Result<Self>;
+    const SCHEMA: &'static str;
+    fn decode(value: Value) -> io::Result<Self> {
+        validate_result_shape(&value, Self::SCHEMA)?;
+        serde_json::from_value(value).map_err(io::Error::other)
+    }
+}
+
+/// Serde structs also accept arrays. Results use schema object shapes, including
+/// nested records, while request decoding deliberately retains positional forms.
+/// This guard checks containers, required presence and union discriminants;
+/// scalar bounds and other semantic constraints remain generated/named validators.
+fn validate_result_shape(value: &Value, name: &str) -> io::Result<()> {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let common =
+        SCHEMA.get_or_init(|| serde_json::from_str(include_str!("../schema/common.json")).unwrap());
+    fn check(value: &Value, schema: &Value, common: &Value) -> io::Result<()> {
+        let bad = || io::Error::other("invalid result shape");
+        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+            return check(
+                value,
+                common
+                    .pointer(reference.strip_prefix('#').ok_or_else(bad)?)
+                    .ok_or_else(bad)?,
+                common,
+            );
+        }
+        if let Some(variants) = schema
+            .get("anyOf")
+            .or_else(|| schema.get("oneOf"))
+            .and_then(Value::as_array)
+        {
+            return if variants.iter().any(|s| check(value, s, common).is_ok()) {
+                Ok(())
+            } else {
+                Err(bad())
+            };
+        }
+        if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
+            if !allowed.contains(value) {
+                return Err(bad());
+            }
+        }
+        match schema.get("type").and_then(Value::as_str) {
+            Some("object") => {
+                let object = value.as_object().ok_or_else(bad)?;
+                if let Some(required) = schema.get("required").and_then(Value::as_array) {
+                    for name in required {
+                        if !object.contains_key(name.as_str().ok_or_else(bad)?) {
+                            return Err(bad());
+                        }
+                    }
+                }
+                for (name, value) in object {
+                    if let Some(property) = schema.get("properties").and_then(|p| p.get(name)) {
+                        check(value, property, common)?;
+                    } else if let Some(additional) =
+                        schema.get("additionalProperties").filter(|s| s.is_object())
+                    {
+                        check(value, additional, common)?;
+                    }
+                }
+            }
+            Some("array") => {
+                let values = value.as_array().ok_or_else(bad)?;
+                if let Some(items) = schema.get("items").filter(|s| s.is_object()) {
+                    for item in values {
+                        check(item, items, common)?;
+                    }
+                }
+            }
+            Some("null") if !value.is_null() => return Err(bad()),
+            Some("string") if !value.is_string() => return Err(bad()),
+            Some("boolean") if !value.is_boolean() => return Err(bad()),
+            Some("integer") if !(value.is_i64() || value.is_u64()) => return Err(bad()),
+            Some("number") if !value.is_number() => return Err(bad()),
+            _ => (),
+        }
+        Ok(())
+    }
+    check(
+        value,
+        common["definitions"]
+            .get(name)
+            .ok_or_else(|| io::Error::other("unknown result schema"))?,
+        common,
+    )
+}
+
+impl Response for SelfStatus {
+    const SCHEMA: &'static str = "SelfStatus";
+    fn decode(value: Value) -> io::Result<Self> {
+        validate_result_shape(&value, Self::SCHEMA)?;
+        require(
+            &value,
+            &[
+                "scope",
+                "dev_shell",
+                "attached_since",
+                "permission_bypass",
+                "raid",
+                "worktree",
+                "created_by",
+            ],
+        )?;
+        if !value["raid"].is_null() {
+            require(&value["raid"], &["role", "owner", "owner_name"])?;
+        }
+        serde_json::from_value(value).map_err(io::Error::other)
+    }
+}
+
+impl Response for SetVariablesResult {
+    const SCHEMA: &'static str = "SetVariablesResult";
+    fn decode(value: Value) -> io::Result<Self> {
+        validate_result_shape(&value, Self::SCHEMA)?;
+        if value.get("accepted") != Some(&Value::Bool(true)) {
+            return Err(io::Error::other("invalid acknowledgement"));
+        }
+        serde_json::from_value(value).map_err(io::Error::other)
+    }
 }
 
 fn require(value: &Value, fields: &[&str]) -> io::Result<()> {
@@ -56,7 +175,9 @@ fn require(value: &Value, fields: &[&str]) -> io::Result<()> {
 }
 
 impl Response for InitializeResult {
+    const SCHEMA: &'static str = "InitializeResult";
     fn decode(value: Value) -> io::Result<Self> {
+        validate_result_shape(&value, Self::SCHEMA)?;
         require(&value, &["configuration"])?;
         if !value["limits"].is_object() {
             return Err(io::Error::other("invalid initialization limits"));
@@ -72,7 +193,9 @@ impl Response for InitializeResult {
 }
 
 impl Response for InitializeReply {
+    const SCHEMA: &'static str = "InitializeReply";
     fn decode(value: Value) -> io::Result<Self> {
+        validate_result_shape(&value, Self::SCHEMA)?;
         require(&value, &["api", "instance", "role", "features"])?;
         if value
             .get("limits")
@@ -91,7 +214,9 @@ impl Response for InitializeReply {
 }
 
 impl Response for ServerStatusReply {
+    const SCHEMA: &'static str = "ServerStatusReply";
     fn decode(value: Value) -> io::Result<Self> {
+        validate_result_shape(&value, Self::SCHEMA)?;
         require(&value, &["instance", "state", "sessions"])?;
         if value
             .get("history")
@@ -104,7 +229,9 @@ impl Response for ServerStatusReply {
 }
 
 impl Response for ServerStatusResult {
+    const SCHEMA: &'static str = "ServerStatusResult";
     fn decode(value: Value) -> io::Result<Self> {
+        validate_result_shape(&value, Self::SCHEMA)?;
         require(&value, &["manifest", "worktrees_directory"])?;
         require(&value["history"], &["directory"])?;
         let result: Self = serde_json::from_value(value).map_err(io::Error::other)?;
@@ -120,7 +247,9 @@ impl Response for ServerStatusResult {
 }
 
 impl Response for ServerStopResult {
+    const SCHEMA: &'static str = "ServerStopResult";
     fn decode(value: Value) -> io::Result<Self> {
+        validate_result_shape(&value, Self::SCHEMA)?;
         require(&value, &["accepted"])?;
         let result: Self = serde_json::from_value(value).map_err(io::Error::other)?;
         if !result.accepted {
@@ -264,6 +393,72 @@ mod tests {
         let mut bad = historical["server_status"].clone();
         bad["history"] = json!([]);
         assert!(ServerStatusReply::decode(bad).is_err());
+    }
+
+    #[test]
+    fn self_reporting_parameters_match_schema_and_existing_validators() {
+        for case in fixtures()["self_parameter_cases"].as_array().unwrap() {
+            let value = case["params"].clone();
+            let valid = match case["method"].as_str().unwrap() {
+                "sessions.status" => serde_json::from_value::<EmptyParams>(value).is_ok(),
+                "sessions.set-state" => serde_json::from_value::<SetStateParams>(value).is_ok(),
+                "sessions.set-variables" => serde_json::from_value::<SetVariablesParams>(value)
+                    .is_ok_and(|p| p.validate().is_ok()),
+                "sessions.set-worktree" => serde_json::from_value::<SetWorktreeParams>(value)
+                    .is_ok_and(|p| {
+                        p.name.as_ref().is_none_or(|n| {
+                            (1..=100).contains(&n.len())
+                                && n.as_bytes()[0].is_ascii_alphanumeric()
+                                && n.bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                        })
+                    }),
+                _ => panic!("unknown fixture"),
+            };
+            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
+        }
+        assert_eq!(AgentState::default(), AgentState::Unknown);
+    }
+
+    #[test]
+    fn self_status_round_trips_extensions_and_preserves_absent_legacy_metadata() {
+        let fixture = fixtures();
+        let value = fixture["self_status"].clone();
+        assert_eq!(json!(SelfStatus::decode(value.clone()).unwrap()), value);
+        let mut extended = value.clone();
+        extended["future"] = json!({"ignored":true});
+        extended["raid"]["future"] = json!(true);
+        extended["worktree"]["future"] = json!(true);
+        assert_eq!(json!(SelfStatus::decode(extended).unwrap()), value);
+        let legacy =
+            SelfStatusReply::decode(json!({"agent_name":"goblin","attached":true})).unwrap();
+        assert_eq!(legacy.agent_name.as_deref(), Some("goblin"));
+        assert_eq!(legacy.attached, Some(true));
+        assert!(legacy.allowed_run_targets.is_none());
+        assert!(legacy.options.is_none());
+        assert!(SelfStatusReply::decode(json!({"attached":"true"})).is_err());
+        assert!(SelfStatusReply::decode(json!([])).is_err());
+        for field in ["scope", "worktree", "created_by", "permission_bypass"] {
+            let mut bad = value.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            assert!(SelfStatus::decode(bad).is_err(), "{field}");
+        }
+        assert!(SetVariablesResult::decode(json!({"accepted":false,"recorded":true})).is_err());
+        assert!(SetVariablesResult::decode(json!({"accepted":true})).is_err());
+    }
+
+    #[test]
+    fn nested_result_records_require_objects_and_preserve_null_and_omission() {
+        for case in fixtures()["self_result_cases"].as_array().unwrap() {
+            let value = case["result"].clone();
+            let valid = match case["schema"].as_str().unwrap() {
+                "SelfStatus" => SelfStatus::decode(value).is_ok(),
+                "SelfStatusReply" => SelfStatusReply::decode(value).is_ok(),
+                "SetWorktreeReply" => SetWorktreeReply::decode(value).is_ok(),
+                _ => panic!("unknown fixture"),
+            };
+            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
+        }
     }
 
     #[test]

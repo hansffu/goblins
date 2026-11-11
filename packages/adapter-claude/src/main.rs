@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use goblins_claude::{CONTINUE, Hook, Ledger, wake_line};
 use goblins_jsonrpc as rpc;
 use goblins_protocol::AgentState;
+use goblins_protocol::contract;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -82,7 +83,7 @@ fn now_ms() -> u64 {
         .min(u64::MAX as u128) as u64
 }
 static REQUEST_SOCKET: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-fn daemon(method: &str, value: Value) -> Result<Value> {
+fn daemon_connect() -> Result<UnixStream> {
     let socket = REQUEST_SOCKET.get_or_init(|| goblins_protocol::REQUEST_SOCKET.into());
     let mut s = UnixStream::connect(socket)?;
     goblins_protocol::contract::initialize(
@@ -90,7 +91,22 @@ fn daemon(method: &str, value: Value) -> Result<Value> {
         json!(0),
         goblins_protocol::contract::EndpointRole::Sandbox,
     )?;
-    Ok(rpc::exchange(&mut s, json!(1), method, value)?)
+    Ok(s)
+}
+fn daemon(method: &str, value: Value) -> Result<Value> {
+    Ok(rpc::exchange(
+        &mut daemon_connect()?,
+        json!(1),
+        method,
+        value,
+    )?)
+}
+fn daemon_typed<M: contract::Method>(params: M::Params) -> Result<M::Result> {
+    Ok(contract::exchange::<M>(
+        &mut daemon_connect()?,
+        json!(1),
+        params,
+    )?)
 }
 /// A call bounded as a whole: the protocol's timeouts apply to each
 /// exchange. One still running when the time is up is abandoned, so only
@@ -238,7 +254,8 @@ fn report(dir: &Path, run: &str, state: AgentState) -> Result<()> {
         dir,
         run,
         state,
-        daemon("sessions.set-state", json!({"state":state})),
+        daemon_typed::<contract::sandbox::SessionsSetState>(contract::SetStateParams { state })
+            .map(|r| json!(r)),
     )
 }
 fn accepted(dir: &Path, run: &str, state: AgentState, result: Result<Value>) -> Result<()> {

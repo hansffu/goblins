@@ -1,4 +1,4 @@
-"""Schema and real-boundary checks for C01, including legacy parameter forms."""
+"""Schema and real-boundary checks for generated contracts, including legacy parameter forms."""
 import copy
 import json
 import os
@@ -56,6 +56,28 @@ class ContractTests(unittest.TestCase):
             entry = contract.method("host", case["method"])
             schema = entry["x-positional-schema"] if isinstance(case["params"], list) else entry["x-params-schema"]
             self.assertEqual(contract.schema_validator(schema).is_valid(case["params"]), case["valid"], case)
+
+    def test_self_reporting_schema_matches_parameter_corpus_and_producer(self):
+        fixtures = contract.read("fixtures.json")
+        for case in fixtures["self_parameter_cases"]:
+            entry = contract.method("sandbox", case["method"])
+            schema = entry["x-positional-schema"] if isinstance(case["params"], list) else entry["x-params-schema"]
+            self.assertEqual(contract.schema_validator(schema).is_valid(case["params"]), case["valid"], case)
+        value = fixtures["self_status"]
+        self.assertTrue(contract.validate_reply("sandbox", "sessions.status", dict(jsonrpc="2.0", id=1, result=value)))
+        for field in value:
+            bad = dict(value); del bad[field]
+            with self.assertRaises(ValidationError):
+                contract.validate_reply("sandbox", "sessions.status", dict(jsonrpc="2.0", id=1, result=bad))
+        legacy = dict(jsonrpc="2.0", id=1, result={"agent_name":"goblin", "attached":False})
+        self.assertTrue(contract.validate_reply("sandbox", "sessions.status", legacy, compatibility=True))
+        with self.assertRaises(ValidationError):
+            contract.validate_reply("sandbox", "sessions.status", legacy)
+
+    def test_nested_result_records_require_objects(self):
+        for case in contract.read("fixtures.json")["self_result_cases"]:
+            schema = {"$ref":"common.json#/definitions/" + case["schema"]}
+            self.assertEqual(contract.schema_validator(schema).is_valid(case["result"]), case["valid"], case)
 
     def test_shell_initialization_boundary_uses_contract_fixtures(self):
         script = (contract.ROOT / "nix/goblins/claude/rpc.sh").read_text()
@@ -223,6 +245,31 @@ class ContractBoundaryTests(unittest.TestCase):
         self.addCleanup(rpc.close)
         self.assertEqual(rpc.init["role"], "sandbox")
         self.assertEqual(rpc.init["limits"]["calls"], 2)
+
+    def test_self_reporting_uses_current_contracts_at_the_sandbox_boundary(self):
+        launch = self.d.start()
+        self.d.wait(lambda: self.d.get(launch["session"])["state"] == "running")
+        path = self.d.state / launch["session"] / "resources/request.sock"
+        def invoke(method, params):
+            rpc = RPC(path)
+            try:
+                return rpc.call(method, params)
+            finally:
+                rpc.close()
+        status = invoke("sessions.status", [])
+        self.assertEqual(status["id"], launch["session"])
+        self.assertNotIn("identity", status)
+        self.assertNotIn("configuration", status)
+        self.assertEqual(invoke("sessions.set-state", ["working"]), {"accepted":True})
+        self.assertEqual(invoke("sessions.status", {})["agent_state"], "working")
+        result = invoke("sessions.set-variables", [{"session_id":"contract-test"}])
+        self.assertEqual(result, {"accepted":True, "recorded":True})
+        self.assertEqual(invoke("sessions.set-worktree", []), {"worktree":None})
+        self.assertEqual(invoke("sessions.set-worktree", {"name":None}), {"worktree":None})
+        for method, params in [("sessions.set-state", {"state":"running"}), ("sessions.set-variables", {"variables":{"Bad":"x"}}), ("sessions.set-worktree", {"name":"../escape"})]:
+            with self.assertRaises(ValueError) as error:
+                invoke(method, params)
+            self.assertEqual(error.exception.args[0]["code"], -32602)
 
     def test_stop_acceptance_closes_the_connection(self):
         peer = self.raw()

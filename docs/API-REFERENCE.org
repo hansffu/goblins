@@ -176,7 +176,7 @@ Positional parameters:
 #+begin_src json
 {
   "type": "array",
-  "items": [],
+  "items": false,
   "minItems": 0,
   "maxItems": 0
 }
@@ -320,7 +320,7 @@ Positional parameters:
 #+begin_src json
 {
   "type": "array",
-  "items": [],
+  "items": false,
   "minItems": 0,
   "maxItems": 0
 }
@@ -500,6 +500,611 @@ Compatible API-1 client reply (additive information may be absent):
   ],
   "additionalProperties": true,
   "description": "Client compatibility view: additive API-1 information may be absent; known fields remain typed and unknown result fields are ignored."
+}
+#+end_src
+
+** =sessions.status=
+
+Report this sandbox, its activity, attachment and fixed policy. Host-only paths, identities and sockets are excluded; its worktree path remains visible.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/SessionState"
+    },
+    "agent_state": {
+      "$ref": "#/definitions/AgentState"
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "docker_enabled": {
+      "type": "boolean"
+    },
+    "dev_shell": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attached": {
+      "type": "boolean"
+    },
+    "attached_since": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nix": {
+      "type": "boolean"
+    },
+    "host_commands": {
+      "type": "boolean"
+    },
+    "permission_bypass": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "allowed_run_targets": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SelfRaid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_by": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CreatedBy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "agent_name",
+    "name",
+    "description",
+    "state",
+    "agent_state",
+    "scope",
+    "docker_enabled",
+    "dev_shell",
+    "attached",
+    "attached_since",
+    "nix",
+    "host_commands",
+    "permission_bypass",
+    "allowed_run_targets",
+    "raid",
+    "worktree",
+    "created_by",
+    "options"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32009. Common envelope/connection errors also apply.
+
+Compatible API-1 client reply (additive information may be absent):
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SessionState"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agent_state": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AgentState"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "docker_enabled": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dev_shell": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attached": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attached_since": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nix": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "host_commands": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "permission_bypass": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "allowed_run_targets": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SelfRaidReply"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_by": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CreatedBy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =sessions.set-state=
+
+Report provider-neutral activity; this does not change sandbox lifecycle.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "state": {
+      "$ref": "#/definitions/AgentState"
+    }
+  },
+  "required": [
+    "state"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "$ref": "#/definitions/AgentState"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "additionalProperties": true,
+  "description": " Clients ignore unknown result fields for forward compatibility."
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+** =sessions.set-variables=
+
+Update 1–16 history variables atomically. Empty values remove keys; values are at most 256 UTF-8 bytes without control characters.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "variables": {
+      "$ref": "#/definitions/Variables"
+    }
+  },
+  "required": [
+    "variables"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "$ref": "#/definitions/Variables"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    },
+    "recorded": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "accepted",
+    "recorded"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009, -32010. Common envelope/connection errors also apply.
+
+** =sessions.set-worktree=
+
+Record or clear the caller worktree. Missing/null name clears; a non-null name must identify a real worktree under its configured folder.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorktreeName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorktreeName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  ],
+  "minItems": 0,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "worktree"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+Compatible API-1 client reply (additive information may be absent):
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
 }
 #+end_src
 
@@ -1357,6 +1962,735 @@ Compatible API-1 client reply (additive information may be absent):
 }
 #+end_src
 
+** =AgentState=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "unknown",
+    "idle",
+    "working",
+    "waiting-input",
+    "waiting-approval"
+  ],
+  "default": "unknown"
+}
+#+end_src
+
+** =SessionState=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "starting",
+    "running",
+    "stopping",
+    "stopped",
+    "failed"
+  ]
+}
+#+end_src
+
+** =SetStateParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "state": {
+      "$ref": "#/definitions/AgentState"
+    }
+  },
+  "required": [
+    "state"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =Variables=
+
+#+begin_src json
+{
+  "type": "object",
+  "minProperties": 1,
+  "maxProperties": 16,
+  "propertyNames": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 32,
+    "pattern": "^[a-z]",
+    "not": {
+      "pattern": "[^a-z0-9_]"
+    }
+  },
+  "additionalProperties": {
+    "type": "string",
+    "x-max-bytes": 256,
+    "not": {
+      "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+    }
+  }
+}
+#+end_src
+
+** =SetVariablesParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "variables": {
+      "$ref": "#/definitions/Variables"
+    }
+  },
+  "required": [
+    "variables"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SetVariablesResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    },
+    "recorded": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "accepted",
+    "recorded"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =WorktreeName=
+
+#+begin_src json
+{
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 100,
+  "pattern": "^[A-Za-z0-9]",
+  "not": {
+    "pattern": "[^A-Za-z0-9._-]"
+  }
+}
+#+end_src
+
+** =SetWorktreeParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorktreeName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+** =WireWorktree=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "path": {
+      "$ref": "#/definitions/HostPath"
+    }
+  },
+  "required": [
+    "name",
+    "path"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =SetWorktreeResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "worktree"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =SetWorktreeReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CreatedBy=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "agent_name"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =SelfRaid=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "role": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "owner": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "owner_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "role",
+    "owner",
+    "paused",
+    "owner_name"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =SelfRaidReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "role": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "owner": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paused": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "owner_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =SelfStatus=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/definitions/SessionState"
+    },
+    "agent_state": {
+      "$ref": "#/definitions/AgentState"
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "docker_enabled": {
+      "type": "boolean"
+    },
+    "dev_shell": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attached": {
+      "type": "boolean"
+    },
+    "attached_since": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nix": {
+      "type": "boolean"
+    },
+    "host_commands": {
+      "type": "boolean"
+    },
+    "permission_bypass": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "allowed_run_targets": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SelfRaid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_by": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CreatedBy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "agent_name",
+    "name",
+    "description",
+    "state",
+    "agent_state",
+    "scope",
+    "docker_enabled",
+    "dev_shell",
+    "attached",
+    "attached_since",
+    "nix",
+    "host_commands",
+    "permission_bypass",
+    "allowed_run_targets",
+    "raid",
+    "worktree",
+    "created_by",
+    "options"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =SelfStatusReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SessionState"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agent_state": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AgentState"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "docker_enabled": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dev_shell": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attached": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attached_since": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nix": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "host_commands": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "permission_bypass": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "allowed_run_targets": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SelfRaidReply"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_by": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/CreatedBy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -1368,6 +2702,7 @@ Compatible API-1 client reply (additive information may be absent):
 - =parameter_forms= :: C01 methods accept named objects or positional arrays: initialize accepts {api:N} or [N], server methods accept {} or []. Omitted params default to {}. Preserve Serde refusal order.
 - =result_extensions= :: Result objects, including nested limits and history variants, may gain fields. Clients ignore unknown result fields; known fields and history owner discrimination remain validated. Request parameters stay closed.
 - =api1_compatibility= :: Producer result schemas describe the current daemon precisely. x-client-result-schema describes compatible API-1 replies accepted by clients: configuration/limits and newer server.status history/manifest/worktree metadata may be absent. Clients retain absence as optional data and use advertised features rather than inventing values.
+- =self_reporting= :: sessions.status exposes only the caller and its policy/activity. Worktree paths are deliberately visible. Activity is independent of lifecycle; variables update atomically and empty values remove keys. Missing or null set-worktree name clears the record; names are validated before filesystem access.
 
 * Common errors
 
@@ -1393,3 +2728,8 @@ Compatible API-1 client reply (additive information may be absent):
 - =integer-representation= :: JSON Schema treats 1.0 as an integer, while existing Serde integer fields reject JSON floating-point values. x-json-integer and the Python validator preserve that representation constraint; generated Rust integer decoders enforce it naturally.
 - =HistoryStatus= :: Typify does not enforce boolean singleton enums when selecting an untagged union. Select the generated OwnedHistory/UnavailableHistory record by the owner boolean, preserving unknown-field tolerance and required directory presence.
 - =API-1-client-compatibility= :: Method::Produced retains the current producer DTO; Method::Result uses the generated x-client-result-schema reply DTO when additive information was absent on older API-1 daemons. Optional fields retain absence rather than acquiring synthetic defaults. Current-daemon Python checks still validate the producer result schema.
+- =Variables= :: Generated parameter structs use BTreeMap<String,String>; existing SetVariables::validate enforces names/count/UTF-8 bytes/control characters in the gate and CLI, preserving diagnostics and validation order.
+- =WorktreeName= :: Generated request name is String; the existing runtime worktrees::valid_name validator retains syntax checks and refusal order. Missing/null optional name still clears the record.
+- =C02a-record-bridges= :: SelfStatus.state is parsed from the trusted controller lifecycle string until C02b types its record. Worktree and creator/raid public values are descriptor-free explicit projections; domain ownership remains local.
+- =positional-parameters= :: The generated named parameter struct is the Serde decoder for both named objects and positional arrays. Explicit x-positional-schemas describe those arrays and are validated against the shared parameter corpus; they are not separate Rust tuple DTOs (Typify cannot represent optional trailing tuple entries).
+- =result-shapes= :: Serde structs accept positional arrays even for result objects. Response::decode applies validate_result_shape recursively using the checked-in schema to require object/array kinds, required field presence and union discriminants before generated deserialization. This is a structural guard, not a general JSON Schema validator: other constraints retain their generated or named validators. Optional API-1 metadata remains optional and nullable.

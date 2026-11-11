@@ -91,7 +91,7 @@ def reference():
     for endpoint in ("host", "sandbox"):
         lines.extend([f"* {endpoint}", ""])
         for entry in document(endpoint)["methods"]:
-            lines.extend([f"** ={entry['name']}=", "", entry["description"], "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(entry["x-positional-schema"], indent=2), "#+end_src", "", "Result:", "", "#+begin_src json", json.dumps(resolve(entry["result"]["schema"]), indent=2), "#+end_src", "", "Method errors: " + ", ".join(str(e["code"]) for e in entry["errors"]) + ". Common envelope/connection errors also apply.", ""])
+            lines.extend([f"** ={entry['name']}=", "", entry["description"], "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", "", "Result:", "", "#+begin_src json", json.dumps(resolve(entry["result"]["schema"]), indent=2), "#+end_src", "", "Method errors: " + ", ".join(str(e["code"]) for e in entry["errors"]) + ". Common envelope/connection errors also apply.", ""])
             if "x-client-result-schema" in entry:
                 lines.extend(["Compatible API-1 client reply (additive information may be absent):", "", "#+begin_src json", json.dumps(resolve(entry["x-client-result-schema"]), indent=2), "#+end_src", ""])
     lines.extend(["* Envelopes (handwritten transport, schema checked)", "", "#+begin_src json", json.dumps(common()["x-envelope-schemas"], indent=2), "#+end_src", "", "* Shared records", ""])
@@ -296,6 +296,7 @@ def check():
             for parameter in entry["params"]:
                 if resolve(parameter["schema"]) != params["properties"][parameter["name"]] or parameter["required"] != (parameter["name"] in params["required"]):
                     raise ValueError("parameter descriptor differs from generated params")
+            schema_validator(entry["x-positional-schema"]).check_schema(resolve(entry["x-positional-schema"]))
             schema_validator(entry["x-params-schema"]).check_schema(params)
             schema_validator(entry["result"]["schema"]).check_schema(resolve(entry["result"]["schema"]))
             if "x-client-result-schema" in entry:

@@ -7,11 +7,7 @@
       ],
       "sandbox": [
         "sessions.list",
-        "sessions.get",
-        "sessions.status",
-        "sessions.set-state",
-        "sessions.set-variables",
-        "sessions.set-worktree"
+        "sessions.get"
       ]
     },
     "C03": {

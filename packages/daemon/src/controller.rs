@@ -592,12 +592,8 @@ struct Start {
     #[serde(default)]
     options: BTreeMap<String, String>,
 }
+use goblins_protocol::contract::SetWorktreeParams as SetWorktree;
 use goblins_runtime::sandbox::MemberStart;
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SetWorktree {
-    name: Option<String>,
-}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Stop {
@@ -2094,16 +2090,16 @@ impl Controller {
         value: Value,
     ) -> std::result::Result<Value, Fault> {
         match method {
-            "sessions.set-state" => {
+            contract::sandbox::SessionsSetState::NAME => {
                 let p: goblins_protocol::SetState = params(value)?;
                 let a = self.sessions.get_mut(scope).ok_or_else(missing)?;
                 if a.record.state != "running" || !a.live() {
                     return Err(conflict());
                 }
                 self.dirty |= a.report_activity(p.state);
-                Ok(json!({"accepted":true}))
+                Ok(json!(contract::ServerStopResult { accepted: true }))
             }
-            "sessions.set-worktree" => {
+            contract::sandbox::SessionsSetWorktree::NAME => {
                 let p: SetWorktree = params(value)?;
                 let a = self.sessions.get(scope).ok_or_else(missing)?;
                 if a.record.state != "running" || !a.live() {
@@ -2138,9 +2134,14 @@ impl Controller {
                     r.worktree = recorded;
                     Ok(true)
                 });
-                Ok(json!({"worktree":worktree}))
+                Ok(json!(contract::SetWorktreeResult {
+                    worktree: worktree.map(|w| contract::WireWorktree {
+                        name: w.name,
+                        path: w.path
+                    })
+                }))
             }
-            "sessions.set-variables" => {
+            contract::sandbox::SessionsSetVariables::NAME => {
                 let p: goblins_protocol::SetVariables = params(value)?;
                 let a = self.sessions.get(scope).ok_or_else(missing)?;
                 if a.record.state != "running" || !a.live() {
@@ -2173,27 +2174,54 @@ impl Controller {
                 if recorded && p.variables.contains_key("session_id") {
                     self.merge_conversation(&line);
                 }
-                Ok(json!({"accepted":true,"recorded":recorded}))
+                Ok(json!(contract::SetVariablesResult {
+                    accepted: true,
+                    recorded
+                }))
             }
-            "sessions.status" => {
-                let _: Empty = params(value)?;
+            contract::sandbox::SessionsStatus::NAME => {
+                let _: contract::EmptyParams = params(value)?;
                 let record = &self.sessions[scope].record;
-                Ok(json!({"id":record.id,"agent_name":record.agent_name,
-                    "name":record.name,"description":record.description,
-                    "state":record.state,"agent_state":record.agent_state,"scope":record.scope,"docker_enabled":record.docker_enabled,
-                    "dev_shell":record.dev_shell,
-                    "worktree":record.worktree,
-                    "attached":record.terminal_attached,
-                    "attached_since":self.sessions[scope].attach.since(),
-                    "nix":self.sessions[scope].policy.as_ref().is_some_and(|p| p.nix),
-                    "host_commands":self.sessions[scope].policy.as_ref().is_some_and(|p| p.host_commands),
-                    "permission_bypass":self.sessions[scope].policy.as_ref().and_then(|p| p.integration.as_ref().map(|_| p.bypass_permissions)),
-                    "allowed_run_targets":self.sessions[scope].policy.as_ref()
-                        .map_or(&[][..], |p| &p.run_targets[..]),
-                    "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
-                        "role":r.role,"owner":r.owner,"paused":r.paused,
-                        "owner_name":r.owner.as_ref().and_then(|o| self.sessions.get(o)).map(|a| &a.record.agent_name)})),
-                    "created_by":record.created_by,"options":record.options}))
+                let policy = self.sessions[scope].policy.as_ref();
+                Ok(json!(contract::SelfStatus {
+                    id: record.id.clone(),
+                    agent_name: record.agent_name.clone(),
+                    name: record.name.clone(),
+                    description: record.description.clone(),
+                    state: record.state.parse().expect("controller lifecycle state"),
+                    agent_state: record.agent_state,
+                    scope: record.scope.clone(),
+                    docker_enabled: record.docker_enabled,
+                    dev_shell: record.dev_shell.clone(),
+                    worktree: record.worktree.as_ref().map(|w| contract::WireWorktree {
+                        name: w.name.clone(),
+                        path: w.path.clone()
+                    }),
+                    attached: record.terminal_attached,
+                    attached_since: self.sessions[scope].attach.since(),
+                    nix: policy.is_some_and(|p| p.nix),
+                    host_commands: policy.is_some_and(|p| p.host_commands),
+                    permission_bypass: policy
+                        .and_then(|p| p.integration.as_ref().map(|_| p.bypass_permissions)),
+                    allowed_run_targets: policy.map_or_else(Vec::new, |p| p.run_targets.clone()),
+                    raid: record.raid.as_ref().map(|r| contract::SelfRaid {
+                        id: r.id.clone(),
+                        name: r.name.clone(),
+                        role: r.role.clone(),
+                        owner: r.owner.clone(),
+                        paused: r.paused,
+                        owner_name: r
+                            .owner
+                            .as_ref()
+                            .and_then(|o| self.sessions.get(o))
+                            .map(|a| a.record.agent_name.clone()),
+                    }),
+                    created_by: record.created_by.as_ref().map(|c| contract::CreatedBy {
+                        id: c.id.clone(),
+                        agent_name: c.agent_name.clone()
+                    }),
+                    options: record.options.clone(),
+                }))
             }
             "devshell.lock" => {
                 let _: Empty = params(value)?;

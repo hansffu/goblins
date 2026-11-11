@@ -21,32 +21,9 @@ pub fn env_name(name: &str) -> bool {
 pub const REQUEST_SOCKET: &str = "/run/goblins/request.sock";
 pub const INTEGRATION_PROMPT: &str = "Check your Goblins inbox and process the next item.";
 
-/// Provider-neutral live activity, independent of sandbox lifecycle.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentState {
-    #[default]
-    Unknown,
-    Idle,
-    Working,
-    WaitingInput,
-    WaitingApproval,
-}
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetState {
-    pub state: AgentState,
-}
-
+pub use contract::{AgentState, SetStateParams as SetState, SetVariablesParams as SetVariables};
 /// Variables a goblin records for its own recreate record.
 pub const MAX_VARIABLES: usize = 16;
-/// `sessions.set-variables`: all given keys change together; an empty value
-/// removes its key.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetVariables {
-    pub variables: std::collections::BTreeMap<String, String>,
-}
 impl SetVariables {
     pub fn validate(&self) -> Result<(), String> {
         if self.variables.is_empty() || self.variables.len() > MAX_VARIABLES {

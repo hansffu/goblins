@@ -406,13 +406,20 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
                     .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
         };
         // The configurations this goblin may run.
-        let status = rpc::exchange(&mut socket, json!(1), "sessions.status", json!({}))
-            .map_err(|e| e.to_string())?;
-        status["allowed_run_targets"]
-            .as_array()
+        let status = goblins_protocol::contract::exchange::<
+            goblins_protocol::contract::sandbox::SessionsStatus,
+        >(
+            &mut socket,
+            json!(1),
+            goblins_protocol::contract::EmptyParams {},
+        )
+        .map_err(|e| e.to_string())?;
+        status
+            .allowed_run_targets
+            .as_ref()
             .into_iter()
             .flatten()
-            .filter_map(|n| n.as_str())
+            .map(String::as_str)
             .filter(|n| configuration(n))
             .for_each(|n| println!("{n}"));
         return Ok(0);
@@ -573,10 +580,26 @@ mod tests {
                 if keys == ["enter", "ctrl+c"]
         ));
         assert!(matches!(
-            Cli::try_parse_from(["goblin", "terminal", "wait", "t1", "--regex", "^done$",
-                                 "--timeout", "5"]).unwrap().command,
-            Command::Terminal { command: TerminalCommand::Wait { regex: Some(_), timeout: Some(5),
-                exit: false, .. } }
+            Cli::try_parse_from([
+                "goblin",
+                "terminal",
+                "wait",
+                "t1",
+                "--regex",
+                "^done$",
+                "--timeout",
+                "5"
+            ])
+            .unwrap()
+            .command,
+            Command::Terminal {
+                command: TerminalCommand::Wait {
+                    regex: Some(_),
+                    timeout: Some(5),
+                    exit: false,
+                    ..
+                }
+            }
         ));
         assert!(Cli::try_parse_from(["goblin", "terminal", "run", "t1", "ls"]).is_ok());
         assert!(Cli::try_parse_from(["goblin", "terminal", "close", "t1"]).is_ok());

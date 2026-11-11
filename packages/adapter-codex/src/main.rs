@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use goblins_codex::{Delivery, activity};
 use goblins_jsonrpc as rpc;
 use goblins_protocol::AgentState;
+use goblins_protocol::contract;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -115,7 +116,7 @@ fn now_ms() -> u64 {
         .min(u64::MAX as u128) as u64
 }
 static REQUEST_SOCKET: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-fn daemon(method: &str, value: Value) -> Result<Value> {
+fn daemon_connect() -> Result<UnixStream> {
     let socket = REQUEST_SOCKET.get_or_init(|| goblins_protocol::REQUEST_SOCKET.into());
     let mut s = UnixStream::connect(socket)?;
     s.set_read_timeout(Some(Duration::from_secs(3)))?;
@@ -125,7 +126,22 @@ fn daemon(method: &str, value: Value) -> Result<Value> {
         json!(0),
         goblins_protocol::contract::EndpointRole::Sandbox,
     )?;
-    Ok(rpc::exchange(&mut s, json!(1), method, value)?)
+    Ok(s)
+}
+fn daemon(method: &str, value: Value) -> Result<Value> {
+    Ok(rpc::exchange(
+        &mut daemon_connect()?,
+        json!(1),
+        method,
+        value,
+    )?)
+}
+fn daemon_typed<M: contract::Method>(params: M::Params) -> Result<M::Result> {
+    Ok(contract::exchange::<M>(
+        &mut daemon_connect()?,
+        json!(1),
+        params,
+    )?)
 }
 /// A separate reporter keeps ten-second freshness heartbeats independent of
 /// provider RPC delays and reports every observed transition, even short turns.
@@ -149,9 +165,11 @@ impl Reporter {
                     Err(mpsc::RecvTimeoutError::Timeout) => (),
                 }
                 if reported != Some(state) || at.elapsed() >= Duration::from_secs(10) {
-                    let error = daemon("sessions.set-state", json!({"state":state}))
-                        .err()
-                        .map(|e| format!("activity report failed: {e}"));
+                    let error = daemon_typed::<contract::sandbox::SessionsSetState>(
+                        contract::SetStateParams { state },
+                    )
+                    .err()
+                    .map(|e| format!("activity report failed: {e}"));
                     reported = if error.is_none() { Some(state) } else { None };
                     let _ = diagnostics.send(error);
                     at = Instant::now();
@@ -198,9 +216,13 @@ fn conversation_reporter() -> Sender<(String, String)> {
             if acknowledged.as_ref() == wanted.as_ref() {
                 continue;
             }
-            match daemon(
-                "sessions.set-variables",
-                json!({"variables":{"session_id":id,"session_name":variable_text(&name)}}),
+            match daemon_typed::<contract::sandbox::SessionsSetVariables>(
+                contract::SetVariablesParams {
+                    variables: std::collections::BTreeMap::from([
+                        ("session_id".into(), id),
+                        ("session_name".into(), variable_text(&name)),
+                    ]),
+                },
             ) {
                 Ok(_) => acknowledged = wanted.clone(),
                 Err(e) => {
@@ -696,9 +718,9 @@ fn run(dir: &Path, socket: &Path, thread: Option<&str>, bypass: bool) -> Result<
     };
     let reporter = Reporter::start();
     let conversation = conversation_reporter();
-    let name = daemon("sessions.status", json!({}))
+    let name = daemon_typed::<contract::sandbox::SessionsStatus>(contract::EmptyParams {})
         .ok()
-        .and_then(|s| s["agent_name"].as_str().map(str::to_owned))
+        .and_then(|s| s.agent_name)
         .unwrap_or_else(|| "goblin".into());
     // A conversation that cannot be created or loaded stops the goblin.
     let mut s = Server::connect(socket, reporter.transitions.clone())?;
@@ -745,11 +767,12 @@ fn run(dir: &Path, socket: &Path, thread: Option<&str>, bypass: bool) -> Result<
             let s = server.as_mut().unwrap();
             // Follow the terminal only while a client is attached.
             // An unanswered status keeps the attachment last known.
-            if let Ok(status) = daemon("sessions.status", json!({}))
+            if let Ok(status) =
+                daemon_typed::<contract::sandbox::SessionsStatus>(contract::EmptyParams {})
                 && follow.attach(
-                    status["attached_since"]
-                        .as_u64()
-                        .filter(|_| status["attached"] == true),
+                    status
+                        .attached_since
+                        .filter(|_| status.attached == Some(true)),
                 )
             {
                 for thread in joined.keys().cloned().collect::<Vec<_>>() {
@@ -1223,7 +1246,15 @@ mod tests {
                 let mut peer = peer.unwrap();
                 let init = rpc::read(&mut peer).unwrap();
                 peer.write_all(
-                    &rpc::encode(&rpc::result(init["id"].clone(), serde_json::from_str::<Value>(include_str!("../../../libs/api/schema/fixtures.json")).unwrap()["sandbox_initialize"].clone())).unwrap(),
+                    &rpc::encode(&rpc::result(
+                        init["id"].clone(),
+                        serde_json::from_str::<Value>(include_str!(
+                            "../../../libs/api/schema/fixtures.json"
+                        ))
+                        .unwrap()["sandbox_initialize"]
+                            .clone(),
+                    ))
+                    .unwrap(),
                 )
                 .unwrap();
                 let call = rpc::read(&mut peer).unwrap();

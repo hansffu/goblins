@@ -1,8 +1,8 @@
 //! `goblin worktree`: work in a Git worktree of this goblin's repository
 //! (docs/specs/WORKTREES.org). Git runs here, in the sandbox, never in the
 //! daemon; the daemon records which worktree the goblin works in.
-use crate::call;
-use serde_json::json;
+use crate::call_typed;
+use goblins_protocol::contract;
 use std::{path::Path, process::Command};
 
 const NO_FOLDER: &str = "this goblin has no worktree folder: it was not launched at a repository's root or in one of its worktrees, or worktrees are off (its session detail says why)";
@@ -12,7 +12,9 @@ pub fn run(name: Option<String>, base: Option<String>, main: bool) -> Result<i32
     let Some(name) = name.filter(|_| !main) else {
         // The folder and the checkout are set together.
         let checkout = std::env::var_os("GOBLINS_CHECKOUT").ok_or(NO_FOLDER)?;
-        call("sessions.set-worktree", json!({"name":null}))?;
+        call_typed::<contract::sandbox::SessionsSetWorktree>(contract::SetWorktreeParams {
+            name: None,
+        })?;
         println!("{}", Path::new(&checkout).display());
         return Ok(0);
     };
@@ -26,7 +28,9 @@ pub fn run(name: Option<String>, base: Option<String>, main: bool) -> Result<i32
         create(&name, &target, base.as_deref())?;
     }
     // The daemon checks that it is a worktree in this goblin's folder.
-    call("sessions.set-worktree", json!({"name":name}))?;
+    call_typed::<contract::sandbox::SessionsSetWorktree>(contract::SetWorktreeParams {
+        name: Some(name),
+    })?;
     println!("{}", target.display());
     Ok(0)
 }
