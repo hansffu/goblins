@@ -16,6 +16,13 @@ pub struct ParamPresence {
     pub present_empty_strings: &'static [&'static str],
 }
 
+/// Retained positional forms inside an array of request records.
+pub struct NestedPositional {
+    pub field: &'static str,
+    pub order: &'static [&'static str],
+    pub minimum: usize,
+}
+
 pub trait Method {
     type Params: Serialize + DeserializeOwned;
     type Produced: Serialize + DeserializeOwned;
@@ -27,6 +34,7 @@ pub trait Method {
     const PRESENCE: ParamPresence;
     const POSITIONAL: bool = true;
     const NULL_AS_EMPTY: bool = false;
+    const NESTED_POSITIONAL: &'static [NestedPositional] = &[];
     const OMIT_FALSE: &'static [&'static str] = &[];
 }
 
@@ -138,6 +146,17 @@ pub trait Response: DeserializeOwned {
 
 mod preview;
 pub use preview::preview_reply;
+
+impl Response for EditorOpenReply {
+    const SCHEMA: &'static str = "EditorOpenReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        serde_json::from_value(serde_json::json!({
+            "code": value.get("code").and_then(Value::as_i64),
+            "message": value.get("message").and_then(Value::as_str),
+        }))
+        .map_err(io::Error::other)
+    }
+}
 
 impl Response for FlakeRunReply {
     const SCHEMA: &'static str = "FlakeRunReply";
@@ -465,7 +484,7 @@ impl Response for ServerStopResult {
 /// Decode requests using their original endpoint-specific positional field order.
 /// Typify emits alphabetic Rust fields, so wire arrays must first become named data.
 pub fn decode_params<M: Method>(value: Value) -> serde_json::Result<M::Params> {
-    let value = if value.is_null() && M::NULL_AS_EMPTY {
+    let mut value = if value.is_null() && M::NULL_AS_EMPTY {
         serde_json::json!({})
     } else {
         value
@@ -474,6 +493,35 @@ pub fn decode_params<M: Method>(value: Value) -> serde_json::Result<M::Params> {
         return Err(<serde_json::Error as serde::de::Error>::custom(
             "params must be an object",
         ));
+    }
+    for nested in M::NESTED_POSITIONAL {
+        let collection = match &mut value {
+            Value::Object(object) => object.get_mut(nested.field),
+            Value::Array(values) => M::PARAM_ORDER
+                .iter()
+                .position(|name| *name == nested.field)
+                .and_then(|index| values.get_mut(index)),
+            _ => None,
+        };
+        if let Some(Value::Array(records)) = collection {
+            for record in records {
+                if let Value::Array(fields) = record {
+                    if fields.len() < nested.minimum || fields.len() > nested.order.len() {
+                        return Err(<serde_json::Error as serde::de::Error>::custom(
+                            "invalid nested positional parameter length",
+                        ));
+                    }
+                    *record = Value::Object(
+                        nested
+                            .order
+                            .iter()
+                            .zip(std::mem::take(fields))
+                            .map(|(name, value)| ((*name).to_owned(), value))
+                            .collect(),
+                    );
+                }
+            }
+        }
     }
     decode_ordered(value, M::PARAM_ORDER, M::MIN_POSITIONAL)
 }

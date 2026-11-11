@@ -1009,6 +1009,77 @@
       "x-client-omit-default-false": [
         "lock"
       ]
+    },
+    {
+      "name": "editor.open",
+      "x-rust-name": "EditorOpen",
+      "description": "Open sandbox files in the configured host Emacs. Requires editor-open feature and editor policy. Requests are named or [files,wait]; each file also retains [path,line?,column?] with the original order/defaults. The generated DTO is the named representation; nested positional metadata normalizes wire arrays before decoding. Semantic file/position checks remain in the gate before policy; trailing input is refused first. The daemon derives every TRAMP filename and pins that host to the requesting session and daemon before opening, without a shell. At most eight pending edits per sandbox. Disconnect kills/reaps the editor client; stopping the goblin returns -32009. No response deadline is imposed by the CLI.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "files",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/x-wire-params-schemas/EditorOpenParams/properties/files"
+          }
+        },
+        {
+          "name": "wait",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/x-wire-params-schemas/EditorOpenParams/properties/wait"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/EditorOpenResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid files, paths or positions"
+        },
+        {
+          "code": -32009,
+          "message": "Missing editor policy, spawn failure or stopped session"
+        },
+        {
+          "code": -32010,
+          "message": "Too many pending edits"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EditorOpenParams"
+      },
+      "x-wire-params-schema": {
+        "$ref": "common.json#/x-wire-params-schemas/EditorOpenParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/EditorOpenParams"
+      },
+      "x-nested-positional-params": [
+        {
+          "field": "files",
+          "schema": "EditorFile",
+          "order": [
+            "path",
+            "line",
+            "column"
+          ],
+          "minimum": 1
+        }
+      ],
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/EditorOpenParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/EditorOpenReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "editor-open-fields"
     }
   ],
   "x-notifications": [],

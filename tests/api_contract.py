@@ -1,5 +1,6 @@
 """Offline OpenRPC/schema checks and response validation for migrated methods."""
 import argparse
+import copy
 from functools import lru_cache
 import json
 import re
@@ -15,6 +16,7 @@ SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
+    "editor-open-fields": "Read signed i64 code and string message independently; absent/malformed fields and non-objects retain exit code 1 and no message as fallbacks.",
     "devshell-preview-display": "Normalize recognized preview fields independently while preserving CLI/TUI numeric display fallbacks and object/array side presence; reject non-object diff results.",
     "devshell-lock-fields": "Read string path or absent, unsigned u64 generation or zero, arbitrary lock JSON or null.",
     "flake-run-fields": "Read string program or absent; other fields are ignored.",
@@ -62,6 +64,9 @@ def normalize_reply(profile, result):
     if profile == "devshell-lock-fields":
         generation=fields.get("generation")
         return dict(path=text("path"), lock=fields.get("lock"), generation=generation if type(generation) is int and 0 <= generation < 2**64 else 0)
+    if profile == "editor-open-fields":
+        code=fields.get("code")
+        return dict(code=code if type(code) is int and -(2**63)<=code<2**63 else None,message=text("message"))
     if profile == "exec-field-fallback":
         normalized = {name: (value if type(value) is int and -(2**63) <= value < 2**63 else None) for name in ("code", "signal") for value in [fields.get(name)]}
         return dict(normalized, message=text("message"))
@@ -126,7 +131,7 @@ def resolve(schema):
 
 
 def schema_validator(schema):
-    return Validator({**resolve(schema), "definitions": common()["definitions"], "x-envelope-schemas": common()["x-envelope-schemas"]})
+    return Validator({**resolve(schema), "definitions": common()["definitions"], "x-envelope-schemas": common()["x-envelope-schemas"], "x-positional-schemas": common()["x-positional-schemas"]})
 
 
 def method(endpoint, name):
@@ -137,8 +142,11 @@ def validate_params(endpoint, name, params):
     entry=method(endpoint,name)
     if entry is None:return False
     if params is None and entry.get("x-null-params-as-empty"):params={}
-    schema_validator(entry["x-positional-schema"] if isinstance(params,list) else entry["x-params-schema"]).validate(params)
+    schema_validator(entry["x-positional-schema"] if isinstance(params,list) else entry.get("x-wire-params-schema",entry["x-params-schema"])).validate(params)
     if isinstance(params,list):params={p["name"]:value for p,value in zip(entry["params"],params)}
+    params=copy.deepcopy(params)
+    for nested in entry.get("x-nested-positional-params",[]):
+        params[nested["field"]]=[dict(zip(nested["order"],record)) if isinstance(record,list) else record for record in params[nested["field"]]]
     if "x-request-constraints" in entry:schema_validator(entry["x-request-constraints"]).validate(params)
     return True
 
@@ -205,7 +213,9 @@ def reference():
     for endpoint in ENDPOINTS:
         lines.extend([f"* {endpoint}", ""])
         for entry in document(endpoint)["methods"]:
-            lines.extend([f"** ={entry['name']}=", "", entry["description"], "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", "", "Result:", "", "#+begin_src json", json.dumps(resolve(entry["result"]["schema"]), indent=2), "#+end_src", "", "Method errors: " + ", ".join(str(e["code"]) for e in entry["errors"]) + ". Common envelope/connection errors also apply.", ""])
+            lines.extend([f"** ={entry['name']}=", "", entry["description"], "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry.get("x-wire-params-schema", entry["x-params-schema"])), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", "", "Result:", "", "#+begin_src json", json.dumps(resolve(entry["result"]["schema"]), indent=2), "#+end_src", "", "Method errors: " + ", ".join(str(e["code"]) for e in entry["errors"]) + ". Common envelope/connection errors also apply.", ""])
+            if "x-wire-params-schema" in entry:
+                lines.extend(["Normalized generated request DTO (after nested positional mapping):", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", ""])
             if "x-client-result-schema" in entry:
                 if "x-client-result-normalization" in entry:
                     profile=entry["x-client-result-normalization"]
@@ -216,7 +226,7 @@ def reference():
             if "x-request-constraints" in entry:
                 lines.extend(["Cross-field request constraints (existing semantic validation):","","#+begin_src json",json.dumps(resolve(entry["x-request-constraints"]),indent=2),"#+end_src",""])
         for entry in document(endpoint).get("x-notifications", []):
-            lines.extend([f"** Notification ={entry['name']}=", "", entry["description"], "", f"Direction: ={entry['direction']}=. Sender: {entry['sender']}. Receiver: {entry['receiver']}. State: {entry['connection-state']}.", "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-params-schema"]), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", ""])
+            lines.extend([f"** Notification ={entry['name']}=", "", entry["description"], "", f"Direction: ={entry['direction']}=. Sender: {entry['sender']}. Receiver: {entry['receiver']}. State: {entry['connection-state']}.", "", "Named parameters:", "", "#+begin_src json", json.dumps(resolve(entry.get("x-wire-params-schema", entry["x-params-schema"])), indent=2), "#+end_src", "", "Positional parameters:", "", "#+begin_src json", json.dumps(resolve(entry["x-positional-schema"]), indent=2), "#+end_src", ""])
             if "x-client-normalization" in entry:
                 lines.extend(["Legacy client classification follows =attach-client-compatibility=; the normalized DTO is:","","#+begin_src json",json.dumps(resolve(entry["x-client-params-schema"]),indent=2),"#+end_src",""])
         for entry in document(endpoint).get("x-completions",[]):
@@ -438,6 +448,24 @@ def check_coverage(registry=None, sources=None):
         raise ValueError("refusal behavior coverage differs")
 
 
+def check_nested_params(entry,params,wire):
+    if set(params["properties"])!=set(wire["properties"]) or params["required"]!=wire["required"]:raise ValueError("wire and generated parameter fields differ")
+    expected=copy.deepcopy(params)
+    seen=set()
+    for row in entry.get("x-nested-positional-params",[]):
+        field,schema,order,minimum=(row[k] for k in ("field","schema","order","minimum"))
+        if field in seen or field not in params["properties"]:raise ValueError("invalid nested positional field")
+        seen.add(field)
+        collection=resolve({"$ref":"common.json"+params["properties"][field]["$ref"]})
+        record=common()["definitions"][schema]
+        if collection.get("type")!="array" or collection["items"]!={"$ref":"#/definitions/"+schema}:raise ValueError("nested positional field is not an array of its record")
+        if len(order)!=len(set(order)) or set(order)!=set(record["properties"]) or minimum!=max((i+1 for i,name in enumerate(order) if name in record["required"]),default=0):raise ValueError("nested positional order/minimum differs")
+        positional={"type":"array","items":[record["properties"][name] for name in order],"minItems":minimum,"maxItems":len(order)}
+        if common()["x-positional-schemas"][schema]!=positional:raise ValueError("nested positional schema differs")
+        expected["properties"][field]={**collection,"items":{"anyOf":[collection["items"],{"$ref":"#/x-positional-schemas/"+schema}]}}
+    if expected!=wire:raise ValueError("wire parameters differ from declared nested normalization")
+
+
 def check_references(documents=None):
     """Resolve every nested reference from its actual containing document.
 
@@ -477,10 +505,12 @@ def check():
                 if entry["name"] in names or entry["direction"] not in ("client-to-server", "server-to-client") or not all(entry.get(k) for k in ("sender", "receiver", "connection-state", "description")):
                     raise ValueError("invalid notification contract")
             params = resolve(entry["x-params-schema"])
+            wire_params = resolve(entry.get("x-wire-params-schema",entry["x-params-schema"]))
+            check_nested_params(entry,params,wire_params)
             if {p["name"] for p in entry["params"]} != set(params["properties"]):
                 raise ValueError(f"parameter descriptors disagree: {entry['name']}")
             for parameter in entry["params"]:
-                if resolve(parameter["schema"]) != params["properties"][parameter["name"]] or parameter["required"] != (parameter["name"] in params["required"]):
+                if resolve(parameter["schema"]) != wire_params["properties"][parameter["name"]] or parameter["required"] != (parameter["name"] in params["required"]):
                     raise ValueError("parameter descriptor differs from generated params")
             for name in entry.get("x-client-omit-empty-objects", []):
                 field=params["properties"].get(name)
@@ -502,7 +532,7 @@ def check():
                 if isinstance(value, dict): return {k:parameter_shape(v) for k,v in value.items() if k != "format"}
                 if isinstance(value, list): return [parameter_shape(v) for v in value]
                 return value
-            expected_items = [params["properties"][name] for name in order] if order else False
+            expected_items = [wire_params["properties"][name] for name in order] if order else False
             if entry.get("paramStructure") == "by-name":
                 if positional != {"not":{}}: raise ValueError("object-only method permits positional parameters")
             elif positional.get("minItems") != minimum or positional.get("maxItems") != len(order) or parameter_shape(positional.get("items")) != parameter_shape(expected_items):
@@ -517,7 +547,7 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
             if "x-request-constraints" in entry:

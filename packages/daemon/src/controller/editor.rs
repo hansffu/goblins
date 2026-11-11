@@ -9,9 +9,9 @@ use super::Connection;
 use super::Controller;
 use super::Fault;
 use super::capacity;
-use super::params;
+use super::contract_params;
 use goblins_jsonrpc as rpc;
-use goblins_protocol::editor;
+use goblins_protocol::{contract, editor};
 use serde_json::{Value, json};
 use std::{
     io::Read,
@@ -48,7 +48,10 @@ impl Edit {
         // Called after observing exit. The live drain may have seen WouldBlock
         // just before the child wrote its final refusal and exited.
         self.drain_diagnostic();
-        let mut result = json!({"code":code});
+        let mut result = contract::EditorOpenResult {
+            code,
+            message: None,
+        };
         if code != 0 {
             // emacsclient explains a missing server or an abort.
             let text = String::from_utf8_lossy(&self.diagnostic);
@@ -58,9 +61,9 @@ impl Edit {
                 .map(|l| l.trim_start_matches("*ERROR*: "))
                 .collect::<Vec<_>>()
                 .join("; ");
-            result["message"] = json!(super::bounded(&message));
+            result.message = Some(super::bounded(&message));
         }
-        result
+        json!(result)
     }
 }
 
@@ -133,7 +136,7 @@ impl Controller {
         rpc_id: Value,
         value: Value,
     ) -> Result<(), Fault> {
-        let open: editor::Open = params(value)?;
+        let open = contract_params::<contract::sandbox::EditorOpen>(value)?;
         let a = &self.sessions[session];
         let command = a
             .policy
@@ -269,6 +272,9 @@ mod tests {
             json!({"code":7,
             "message":"Goblins: opening the files in Emacs was refused"})
         );
+        assert_eq!(edit.outcome(0), json!({"code":0}));
+        edit.diagnostic.clear();
+        assert_eq!(edit.outcome(7), json!({"code":7,"message":""}));
     }
     #[test]
     fn pins_are_quoted_elisp_strings() {

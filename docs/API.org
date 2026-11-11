@@ -526,7 +526,11 @@ The retained positional request is =[app]=; null and unknown fields are refused.
 Opens files in the host's Emacs through =emacsclient=.
 
 - Input :: ={"files": [{"path", "line"?, "column"?}], "wait"}=. 1–32 absolute, normalized sandbox paths of at most 4096 bytes (no =.=, =..= or empty components, no trailing slash, no control characters). =line= and =column= start at 1, and =column= needs =line=. =wait= blocks until the editor is done with every file.
-- Output :: ={"code", "message"?}=: =emacsclient='s exit code, with a message when it failed.
+- Output :: ={"code", "message"?}=: the editor client's i32 exit code (fallback 1 when no code is available). =code= is required. Success omits =message=; nonzero exit includes a string diagnostic, filtered to remove waiting/empty lines and the =*ERROR*:= prefix, then cut to 512 characters. Result additions are allowed.
+
+The retained positional request is =[files, wait]=; both fields are required and null params/unknown fields are refused. Each file accepts either named fields or =[path, line?, column?]=, with =path= required and absent/null positions equivalent. Positions are positive u32 values; =column= requires a non-null =line=. Root =/= is a valid normalized path. The sandbox CLI makes relative names absolute lexically without resolving symlinks, and omits unset position fields.
+
+The =editor-open= feature and configured editor policy are required. Trailing input is refused before parameter/policy checks; file validation remains before editor policy. The daemon derives each =/goblins:HOST:PATH= name and pins that host to this daemon/session before opening, invokes no shell, and permits at most eight pending edits per sandbox. Disconnect kills/reaps the client, and goblin stop returns =-32009=. Missing editor/spawn failure also returns =-32009=; capacity is =-32010=. The CLI has no response timeout. Legacy readers independently accept signed i64 =code= (cast to i32, otherwise 1) and string =message= (otherwise absent), including non-object replies; these fallbacks do not weaken the current producer contract.
 
 ** Raid members
 

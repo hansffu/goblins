@@ -115,7 +115,7 @@ pub fn check(
             | contract::sandbox::DevShellDiff::NAME
             | "sessions.detach"
             | "sessions.attach"
-            | "editor.open"
+            | contract::sandbox::EditorOpen::NAME
             | "sessions.set-state"
             | "sessions.set-variables"
             | "sessions.set-worktree"
@@ -154,7 +154,7 @@ pub fn check(
             "permissions.request"
                 | contract::sandbox::FlakeRun::NAME
                 | contract::sandbox::DevShellDiff::NAME
-                | "editor.open"
+                | contract::sandbox::EditorOpen::NAME
         )
     {
         return Err(Refusal::Policy {
@@ -221,8 +221,9 @@ pub fn check(
                 configuration: p.name,
             })
         }
-        "editor.open" => {
-            let p: goblins_protocol::editor::Open = parse(&call.params)?;
+        contract::sandbox::EditorOpen::NAME => {
+            let p = contract::decode_params::<contract::sandbox::EditorOpen>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
             p.validate().map_err(invalid)?;
             if capabilities.policy.editor.is_none() {
                 return Err(Refusal::Policy {
@@ -355,6 +356,56 @@ mod tests {
         });
         p
     }
+    #[test]
+    fn editor_request_validation_precedes_policy_and_trailing_input_is_first() {
+        let policy = policy();
+        let support = Support::linux();
+        for (params, trailing, code, message) in [
+            (
+                json!({"files":[["/a",null,1]],"wait":true}),
+                false,
+                -32602,
+                "a column needs a line",
+            ),
+            (
+                json!({"files":[["/a",0]],"wait":true}),
+                false,
+                -32602,
+                "lines and columns start at 1",
+            ),
+            (
+                json!({"files":[["/a"]],"wait":true}),
+                false,
+                -32009,
+                "no editor is configured; enable editor.emacs in mkGoblins",
+            ),
+            (
+                json!({"files":[["/a",0]],"wait":true}),
+                true,
+                -32600,
+                "unexpected trailing input",
+            ),
+        ] {
+            assert_eq!(
+                check(
+                    &Capabilities {
+                        policy: &policy,
+                        support: &support
+                    },
+                    &call(contract::sandbox::EditorOpen::NAME, params),
+                    100,
+                    true,
+                    false,
+                    trailing
+                ),
+                Err(Refusal::Policy {
+                    code,
+                    message: message.into()
+                })
+            );
+        }
+    }
+
     #[test]
     fn generated_devshell_requests_preserve_gate_checks_and_precedence() {
         let mut policy = policy();

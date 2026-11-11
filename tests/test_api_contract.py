@@ -15,6 +15,41 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_editor_contract_preserves_nested_parameter_forms_and_precise_results(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["editor_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params("sandbox","editor.open",case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params("sandbox","editor.open",case["params"])
+        for case in fixtures["editor_result_cases"]:
+            reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+            self.assertTrue(contract.validate_reply("sandbox","editor.open",reply,compatibility=True))
+            if case["valid"]:self.assertTrue(contract.validate_reply("sandbox","editor.open",reply))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply("sandbox","editor.open",reply)
+
+    def test_editor_reference_distinguishes_wire_requests_from_normalized_dtos(self):
+        section=contract.reference().split("** =editor.open=",1)[1].split("\n** ",1)[0]
+        def block(label):return json.loads(section.split(label+"\n\n#+begin_src json\n",1)[1].split("\n#+end_src",1)[0])
+        wire=block("Named parameters:")
+        normalized=block("Normalized generated request DTO (after nested positional mapping):")
+        request=dict(files=[["/a"]],wait=True)
+        contract.schema_validator(wire).validate(request)
+        with self.assertRaises(ValidationError):contract.schema_validator(normalized).validate(request)
+        contract.schema_validator(normalized).validate(dict(files=[dict(path="/a")],wait=True))
+        self.assertNotEqual(wire,normalized)
+
+    def test_nested_positional_metadata_must_match_wire_and_generated_records(self):
+        entry=copy.deepcopy(contract.method("sandbox","editor.open"))
+        params=contract.resolve(entry["x-params-schema"]);wire=copy.deepcopy(contract.resolve(entry["x-wire-params-schema"]))
+        contract.check_nested_params(entry,params,wire)
+        wrong=copy.deepcopy(entry);wrong["x-nested-positional-params"][0]["order"]=["column","line","path"]
+        with self.assertRaisesRegex(ValueError,"nested positional order"):contract.check_nested_params(wrong,params,wire)
+        wrong=copy.deepcopy(entry);wrong["x-nested-positional-params"]*=2
+        with self.assertRaisesRegex(ValueError,"invalid nested positional field"):contract.check_nested_params(wrong,params,wire)
+        wire["properties"]["files"]["items"]["anyOf"].pop()
+        with self.assertRaisesRegex(ValueError,"wire parameters differ"):contract.check_nested_params(entry,params,wire)
+
     def test_devshell_diff_and_complete_preview_contracts(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["devshell_diff_parameter_cases"]:
@@ -784,6 +819,19 @@ class HistoricalClientTests(unittest.TestCase):
                     self.assertEqual(calls[0]["params"]["configuration"],str(manifest))
                     self.assertEqual(calls[0]["params"].get("recreate"),None if command=="run" else "record-id")
                     self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
+
+    def test_sandbox_editor_cli_preserves_paths_params_and_legacy_results(self):
+        with tempfile.TemporaryDirectory(prefix="gc-editor-") as root:
+            cwd=Path(root)/"work";cwd.mkdir()
+            cli,call=self.sandbox_fake_cli(["editor","open","--no-wait","+3:4","../other/./file","/tmp/msg","+9","last"],dict(code=0),cwd=cwd,features=("editor-open",))
+            self.assertEqual(cli.returncode,0,cli.stderr)
+            self.assertEqual(call["method"],"editor.open")
+            self.assertEqual(call["params"],dict(files=[dict(path=str(Path(root)/"other/file"),line=3,column=4),dict(path="/tmp/msg"),dict(path=str(cwd/"last"),line=9)],wait=False))
+        for result,code,message in [(None,1,None),([],1,None),({},1,None),(dict(code=True,message=1),1,None),(dict(code=1.0),1,None),(dict(code=4294967296),0,None),(dict(code=2**63-1),255,None),(dict(code=7,message="refused\x1b[2J"),7,"refused\\u001b[2J")]:
+            cli,call=self.sandbox_fake_cli(["editor","open","/tmp/msg"],result,features=("editor-open",))
+            self.assertEqual(cli.returncode,code,cli.stderr);self.assertEqual(call["params"],dict(files=[dict(path="/tmp/msg")],wait=True))
+            if message:self.assertIn(message,cli.stderr)
+            self.assertNotIn("\x1b",cli.stderr)
 
     def test_sandbox_devshell_diff_uses_generated_contract_and_legacy_display(self):
         fixtures=contract.read("fixtures.json")

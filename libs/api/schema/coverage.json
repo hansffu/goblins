@@ -1,10 +1,5 @@
 {
   "pending": {
-    "C08": {
-      "sandbox": [
-        "editor.open"
-      ]
-    },
     "C09": {
       "host": [
         "permissions.list",

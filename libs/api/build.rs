@@ -76,9 +76,30 @@ fn main() {
             typify::TypeSpacePatch::default().with_derive("PartialEq"),
         );
     }
+    settings.with_replacement("EditorPath", "std::string::String", [].into_iter());
+    settings.with_replacement("EditorPosition", "u32", [].into_iter());
+    settings.with_replacement("EditorExitCode", "i32", [].into_iter());
+    settings.with_replacement("EditorDiagnostic", "std::string::String", [].into_iter());
+    settings.with_replacement("EditorFiles", "std::vec::Vec<EditorFile>", [].into_iter());
+    for name in ["EditorFile", "EditorOpenParams"] {
+        settings.with_patch(
+            name,
+            typify::TypeSpacePatch::default().with_derive("PartialEq"),
+        );
+    }
     let mut types = typify::TypeSpace::new(&settings);
+    // Typify 0.7 cannot process if/then/else. Keep the canonical producer
+    // schema precise; Edit::outcome enforces this named dependency while
+    // the generated DTO describes its common fields (see exceptions.json).
+    let mut generation_schema = common.clone();
+    let editor_result = generation_schema["definitions"]["EditorOpenResult"]
+        .as_object_mut()
+        .unwrap();
+    for keyword in ["if", "then", "else"] {
+        assert!(editor_result.remove(keyword).is_some());
+    }
     types
-        .add_root_schema(serde_json::from_value(common.clone()).unwrap())
+        .add_root_schema(serde_json::from_value(generation_schema).unwrap())
         .unwrap();
     let mut output = types.to_stream().to_string();
     output.push_str(&format!(
@@ -104,6 +125,7 @@ fn main() {
         "FlakeRunReply".to_string(),
         "DevShellLockReply".to_string(),
         "DevShellPreviewReply".to_string(),
+        "EditorOpenReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(
@@ -187,7 +209,14 @@ fn main() {
                 .iter()
                 .map(|p| p["name"].as_str().unwrap())
                 .collect();
-            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const POSITIONAL: bool = {positional_allowed}; const NULL_AS_EMPTY: bool = {null_as_empty}; const OMIT_FALSE: &'static [&'static str] = &{omit_false:?}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
+            let nested: Vec<_> = method["x-nested-positional-params"].as_array().into_iter().flatten().map(|row| {
+                let field = row["field"].as_str().unwrap();
+                let order: Vec<_> = row["order"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+                let minimum = row["minimum"].as_u64().unwrap();
+                format!("crate::contract::NestedPositional {{ field: {field:?}, order: &{order:?}, minimum: {minimum} }}")
+            }).collect();
+            let nested = nested.join(",");
+            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const POSITIONAL: bool = {positional_allowed}; const NULL_AS_EMPTY: bool = {null_as_empty}; const NESTED_POSITIONAL: &'static [crate::contract::NestedPositional] = &[{nested}]; const OMIT_FALSE: &'static [&'static str] = &{omit_false:?}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
             names.push(name);
         }
         output.push_str(&format!("pub const METHODS: &[&str] = &{names:?}; }}\n"));

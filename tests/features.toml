@@ -108,7 +108,7 @@ paths = ["packages/adapter-claude/*", "nix/goblins/claude/*", "nix/builders/mk-c
 
 [features.host-tools]
 description = "Host commands, editor requests and completion notices"
-python = ["test_host_commands", "test_editor", "test_operation_notices.HostCommandNotices"]
+python = ["test_host_commands", "test_editor", "test_api_contract.HistoricalClientTests.test_sandbox_editor_cli_preserves_paths_params_and_legacy_results", "test_operation_notices.HostCommandNotices"]
 checks = ["rust"]
 paths = ["packages/daemon/src/controller/host.rs", "packages/daemon/src/controller/editor.rs", "packages/sandbox-cli/src/host.rs", "skills/goblins-host/*"]
 

@@ -5137,6 +5137,150 @@
         "diff"
       ],
       "additionalProperties": true
+    },
+    "EditorPath": {
+      "type": "string",
+      "x-max-bytes": 4096,
+      "pattern": "^/(?:(?!\\.{1,2}(?:/|$))[^/\\u0000-\\u001f\\u007f-\\u009f]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000-\\u001f\\u007f-\\u009f]+)*)?$(?![\\s\\S])",
+      "description": "Absolute normalized sandbox path, including root /. Existing editor::normalized retains UTF-8 byte/control/component validation and diagnostics."
+    },
+    "EditorPosition": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "EditorFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/definitions/EditorPath"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EditorPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "column": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EditorPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "EditorFiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/EditorFile"
+      },
+      "minItems": 1,
+      "maxItems": 32
+    },
+    "EditorOpenParams": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "$ref": "#/definitions/EditorFiles"
+        },
+        "wait": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "files",
+        "wait"
+      ],
+      "additionalProperties": false
+    },
+    "EditorOpenResult": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/EditorExitCode"
+        },
+        "message": {
+          "$ref": "#/definitions/EditorDiagnostic"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "additionalProperties": true,
+      "if": {
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "message"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "message"
+        ]
+      }
+    },
+    "EditorOpenReply": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": true
+    },
+    "EditorExitCode": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 2147483647,
+      "x-json-integer": true
+    },
+    "EditorDiagnostic": {
+      "type": "string",
+      "maxLength": 512
     }
   },
   "x-api-version": 1,
@@ -5907,6 +6051,61 @@
       ],
       "minItems": 0,
       "maxItems": 2
+    },
+    "EditorFile": {
+      "type": "array",
+      "items": [
+        {
+          "$ref": "#/definitions/EditorPath"
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EditorPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EditorPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 3
+    },
+    "EditorOpenParams": {
+      "type": "array",
+      "items": [
+        {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EditorFile"
+              },
+              {
+                "$ref": "#/x-positional-schemas/EditorFile"
+              }
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 32
+        },
+        {
+          "type": "boolean"
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
     }
   },
   "x-request-constraints": {
@@ -6127,7 +6326,65 @@
           "lock"
         ]
       }
+    },
+    "EditorOpenParams": {
+      "properties": {
+        "files": {
+          "items": {
+            "if": {
+              "required": [
+                "column"
+              ],
+              "properties": {
+                "column": {
+                  "type": "integer"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "line"
+              ],
+              "properties": {
+                "line": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
-  "x-attach-version": 1
+  "x-attach-version": 1,
+  "x-wire-params-schemas": {
+    "EditorOpenParams": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/EditorFile"
+              },
+              {
+                "$ref": "#/x-positional-schemas/EditorFile"
+              }
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 32
+        },
+        "wait": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "files",
+        "wait"
+      ],
+      "additionalProperties": false
+    }
+  }
 }

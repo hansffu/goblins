@@ -1,29 +1,12 @@
 //! `editor.open`: files a sandbox asks the host editor to open. The daemon
 //! builds every editor file name itself from these sandbox paths.
-use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
 pub const FEATURE: &str = "editor-open";
 pub const MAX_FILES: usize = 32;
 const MAX_PATH: usize = 4096;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct File {
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub column: Option<u32>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Open {
-    pub files: Vec<File>,
-    /// Block until the editor is done with every file, like emacsclient.
-    pub wait: bool,
-}
+pub use crate::contract::{EditorFile as File, EditorOpenParams as Open};
 
 /// An absolute, normalized path: no `.`, `..` or empty components, no
 /// trailing slash and no control characters.
@@ -127,6 +110,82 @@ pub fn parse(args: &[String]) -> Result<(Vec<File>, bool), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generated_editor_requests_preserve_original_nested_decoding() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OldFile {
+            path: String,
+            #[serde(default)]
+            line: Option<u32>,
+            #[serde(default)]
+            column: Option<u32>,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OldOpen {
+            files: Vec<OldFile>,
+            wait: bool,
+        }
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+        for case in fixtures["editor_parameter_cases"].as_array().unwrap() {
+            let old = serde_json::from_value::<OldOpen>(case["params"].clone());
+            let new = crate::contract::decode_params::<crate::contract::sandbox::EditorOpen>(
+                case["params"].clone(),
+            );
+            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
+            if let (Ok(old), Ok(new)) = (old, new) {
+                assert_eq!(old.wait, new.wait);
+                assert_eq!(old.files.len(), new.files.len());
+                for (old, new) in old.files.iter().zip(&new.files) {
+                    assert_eq!(old.path, new.path);
+                    assert_eq!(old.line, new.line);
+                    assert_eq!(old.column, new.column);
+                }
+                let valid = (1..=32).contains(&old.files.len())
+                    && old.files.iter().all(|f| {
+                        normalized(&f.path)
+                            && f.line != Some(0)
+                            && f.column != Some(0)
+                            && !(f.column.is_some() && f.line.is_none())
+                    });
+                assert_eq!(new.validate().is_ok(), valid, "{case}");
+                assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
+            } else {
+                assert_eq!(case["valid"], false);
+            }
+        }
+    }
+    #[test]
+    fn editor_reply_keeps_independent_i64_and_message_fallbacks() {
+        use crate::contract::{EditorOpenReply, Response};
+        use serde_json::{Value, json};
+        for value in [
+            Value::Null,
+            json!([]),
+            json!({}),
+            json!({"code":true,"message":7}),
+            json!({"code":1.0}),
+            json!({"code":i64::MAX,"message":"refused"}),
+            json!({"code":4294967296_u64}),
+        ] {
+            let reply = EditorOpenReply::decode(value.clone()).unwrap();
+            assert_eq!(reply.code, value.get("code").and_then(Value::as_i64));
+            assert_eq!(
+                reply.message.as_deref(),
+                value.get("message").and_then(Value::as_str)
+            );
+            assert_eq!(
+                reply.code.map_or(1, |n| n as i32),
+                value
+                    .get("code")
+                    .and_then(Value::as_i64)
+                    .map_or(1, |n| n as i32)
+            );
+        }
+    }
+
     #[test]
     fn arguments_positions_and_paths() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();

@@ -5795,6 +5795,211 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =editor.open=
+
+Open sandbox files in the configured host Emacs. Requires editor-open feature and editor policy. Requests are named or [files,wait]; each file also retains [path,line?,column?] with the original order/defaults. The generated DTO is the named representation; nested positional metadata normalizes wire arrays before decoding. Semantic file/position checks remain in the gate before policy; trailing input is refused first. The daemon derives every TRAMP filename and pins that host to the requesting session and daemon before opening, without a shell. At most eight pending edits per sandbox. Disconnect kills/reaps the editor client; stopping the goblin returns -32009. No response deadline is imposed by the CLI.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "files": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/EditorFile"
+          },
+          {
+            "$ref": "#/x-positional-schemas/EditorFile"
+          }
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 32
+    },
+    "wait": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "files",
+    "wait"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/EditorFile"
+          },
+          {
+            "$ref": "#/x-positional-schemas/EditorFile"
+          }
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 32
+    },
+    {
+      "type": "boolean"
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 2
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "$ref": "#/definitions/EditorExitCode"
+    },
+    "message": {
+      "$ref": "#/definitions/EditorDiagnostic"
+    }
+  },
+  "required": [
+    "code"
+  ],
+  "additionalProperties": true,
+  "if": {
+    "required": [
+      "code"
+    ],
+    "properties": {
+      "code": {
+        "const": 0
+      }
+    }
+  },
+  "then": {
+    "not": {
+      "required": [
+        "message"
+      ]
+    }
+  },
+  "else": {
+    "required": [
+      "message"
+    ]
+  }
+}
+#+end_src
+
+Method errors: -32602, -32009, -32010. Common envelope/connection errors also apply.
+
+Normalized generated request DTO (after nested positional mapping):
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "files": {
+      "$ref": "#/definitions/EditorFiles"
+    },
+    "wait": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "files",
+    "wait"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =editor-open-fields= adapter: Read signed i64 code and string message independently; absent/malformed fields and non-objects retain exit code 1 and no message as fallbacks. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "properties": {
+    "files": {
+      "items": {
+        "if": {
+          "required": [
+            "column"
+          ],
+          "properties": {
+            "column": {
+              "type": "integer"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "line"
+          ],
+          "properties": {
+            "line": {
+              "type": "integer"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+#+end_src
+
 * attach
 
 ** Notification =attach.hello=
@@ -11987,6 +12192,195 @@ Errors: -32009.
 }
 #+end_src
 
+** =EditorPath=
+
+#+begin_src json
+{
+  "type": "string",
+  "x-max-bytes": 4096,
+  "pattern": "^/(?:(?!\\.{1,2}(?:/|$))[^/\\u0000-\\u001f\\u007f-\\u009f]+(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000-\\u001f\\u007f-\\u009f]+)*)?$(?![\\s\\S])",
+  "description": "Absolute normalized sandbox path, including root /. Existing editor::normalized retains UTF-8 byte/control/component validation and diagnostics."
+}
+#+end_src
+
+** =EditorPosition=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 1,
+  "maximum": 4294967295,
+  "x-json-integer": true
+}
+#+end_src
+
+** =EditorFile=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "$ref": "#/definitions/EditorPath"
+    },
+    "line": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/EditorPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "column": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/EditorPosition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =EditorFiles=
+
+#+begin_src json
+{
+  "type": "array",
+  "items": {
+    "$ref": "#/definitions/EditorFile"
+  },
+  "minItems": 1,
+  "maxItems": 32
+}
+#+end_src
+
+** =EditorOpenParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "files": {
+      "$ref": "#/definitions/EditorFiles"
+    },
+    "wait": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "files",
+    "wait"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =EditorOpenResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "$ref": "#/definitions/EditorExitCode"
+    },
+    "message": {
+      "$ref": "#/definitions/EditorDiagnostic"
+    }
+  },
+  "required": [
+    "code"
+  ],
+  "additionalProperties": true,
+  "if": {
+    "required": [
+      "code"
+    ],
+    "properties": {
+      "code": {
+        "const": 0
+      }
+    }
+  },
+  "then": {
+    "not": {
+      "required": [
+        "message"
+      ]
+    }
+  },
+  "else": {
+    "required": [
+      "message"
+    ]
+  }
+}
+#+end_src
+
+** =EditorOpenReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807,
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =EditorExitCode=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": -2147483648,
+  "maximum": 2147483647,
+  "x-json-integer": true
+}
+#+end_src
+
+** =EditorDiagnostic=
+
+#+begin_src json
+{
+  "type": "string",
+  "maxLength": 512
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -12068,3 +12462,7 @@ Errors: -32009.
 - =devshell-preview-domain= :: Generated DevShellPreview and nested records replace wire-only supervisor records; the internal generic Change<T> calculation remains domain data and projects explicitly into generated input/package change records. Attention, incoming/change/kind discriminants remain trusted producer strings or generated variants. Evaluation state, candidate ownership, opaque flake locks and private Value runtime envelopes stay with their existing owners until C17.
 - =devshell-preview-validation= :: DevShellInputs maps to Vec<String>; input_name and DevShellDiffParams::validate retain byte/count/syntax bounds, update/lock exclusivity and error/policy order. PreviewCount maps to usize; generation retains the full u32 range. Source diffs remain bounded/truncated by the existing producer, and incoming lists are cut to 1000 without a truncation marker.
 - =devshell-preview-client= :: DevShellPreviewReply is a generated normalized display projection, separate from precise current producers. Legacy diff clients accept any object and reject non-objects. Missing/malformed lists become empty; list items independently retain recognized string/boolean/unsigned fields with old fallbacks. PreviewNumber carries both the original JSON display and an optional as_u64 value because the CLI and TUI intentionally format malformed numeric fields differently. Missing numeric fields display null in the TUI and ? in CLI count fields; TUI build defaults to zero. Locked sides are present only for objects; version sides only for arrays, preserving missing versus empty and each invalid member fallback. Unknown attention kinds remain readable. The TUI projects generic permission preview values at the display boundary until C09; Emacs retains its plist reader with shared contract fixtures and existing escaping tests.
+- =editor-validation= :: EditorPath maps to String, EditorPosition to u32 and EditorFiles to Vec<EditorFile>. editor::Open::validate retains 1..32 file count, UTF-8 path bounds, control/component checks, positive positions and column-needs-line diagnostics before editor policy. CLI lexical normalization does not resolve symlinks. Generated request DTOs never construct host filenames or select another session.
+- =nested-positional-parameters= :: Typify alphabetically orders fields, including nested record fields. x-wire-params-schema models the accepted named request with object-or-positional file records; x-params-schema models its normalized generated DTO. x-nested-positional-params publishes original order/minimum for array items. decode_params maps only these declared nested arrays before generated named decoding. The checker verifies metadata against the nested record, shared positional schema and wire schema. Legacy decoder comparison covers mixed named/positional records, absence/null/defaults, counts and malformed forms.
+- =editor-client-result= :: Current producers emit i32 code and omit message on success; nonzero exit emits the existing filtered diagnostic bounded to 512 characters. EditorOpenReply normalizes code independently as signed i64 and message as a string, otherwise absent, retaining CLI code fallback 1 and the original i64-to-i32 cast. Non-object results retain these fallbacks. Canonical JSON-RPC envelope/correlation checks, feature gate and patient wait remain unchanged.
+- =editor-producer-dependency= :: The strict canonical producer schema uses if/then/else to require message for nonzero code and forbid it for zero code. Typify 0.7 rejects conditional schemas; build.rs removes only this named dependency from its temporary generation input, retaining the structural DTO and every other schema field. Edit::outcome preserves the existing branch enforcing the dependency. Strict schema corpora and actual outcome tests check both branches; independent legacy client normalization is unchanged.

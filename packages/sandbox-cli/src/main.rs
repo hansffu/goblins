@@ -523,13 +523,12 @@ fn editor_open(args: &[String]) -> Result<i32, String> {
     }
     let open = editor::Open { files, wait };
     open.validate()?;
-    let params = serde_json::to_value(&open).map_err(|e| e.to_string())?;
-    match waiting_call(editor::FEATURE, "editor.open", params)? {
+    match waiting_call_typed::<contract::sandbox::EditorOpen>(editor::FEATURE, open)? {
         Ok(result) => {
-            if let Some(message) = result["message"].as_str() {
+            if let Some(message) = result.message.as_deref() {
                 eprintln!("goblins: {}", goblins_protocol::plain_text(message));
             }
-            Ok(result["code"].as_i64().map_or(1, |c| c as i32))
+            Ok(result.code.map_or(1, |c| c as i32))
         }
         Err(message) => {
             eprintln!("goblins: {message}");

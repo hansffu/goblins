@@ -3021,7 +3021,7 @@ impl Controller {
                             "goblins do not attach to other goblins' terminals; the host can, with goblins attach NAME".into(),
                         ));
                     }
-                    if call.method == "editor.open" {
+                    if call.method == contract::sandbox::EditorOpen::NAME {
                         return self
                             .editor_open(c, &session, id.clone(), call.params)
                             .map(|()| None);
