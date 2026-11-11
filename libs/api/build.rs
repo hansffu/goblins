@@ -347,6 +347,12 @@ fn main() {
         "Result<crate::contract::Descriptor,String>",
         [].into_iter(),
     );
+    settings.with_replacement(
+        "SupervisorStartedSupport",
+        "crate::contract::SupervisorStartedSupport",
+        [].into_iter(),
+    );
+    settings.with_replacement("SupervisorStartedPid", "u32", [].into_iter());
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -483,6 +489,12 @@ fn main() {
         );
     }
     let mut output = quote::quote!(#generated).to_string();
+    let support_type = common["definitions"]["SupervisorStartedSupport"]["x-rust-type"]
+        .as_str()
+        .unwrap();
+    output.push_str(&format!(
+        "pub type SupervisorStartedSupport = {support_type};\n"
+    ));
     // A canonical explicit record preserves externally visible Rust field names
     // when the wire property (such as $fd) is not that Rust identifier.
     let mut metadata_modules: std::collections::BTreeMap<String, String> =
@@ -564,7 +576,11 @@ fn main() {
         if let Some(description) = schema["description"].as_str() {
             enum_output.push_str(&format!("#[doc = {description:?}]"));
         }
-        enum_output.push_str(&format!("#[derive({derives})] pub enum {rust} {{"));
+        enum_output.push_str(&format!("#[derive({derives})] "));
+        if let Some(rename_all) = schema["x-rust-rename-all"].as_str() {
+            enum_output.push_str(&format!("#[serde(rename_all={rename_all:?})] "));
+        }
+        enum_output.push_str(&format!("pub enum {rust} {{"));
         for variant in schema["x-rust-variants"].as_array().unwrap() {
             let name = variant["name"].as_str().unwrap();
             if let Some(description) = variant["description"].as_str() {

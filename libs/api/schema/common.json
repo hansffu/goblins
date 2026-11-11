@@ -13199,6 +13199,147 @@
         "Serialize",
         "Deserialize"
       ]
+    },
+    "SupervisorStartedFeature": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "live-packages",
+            "dev-shells",
+            "flake-apps",
+            "nix-daemon",
+            "host-jobs",
+            "exec",
+            "attach-clients",
+            "scopes",
+            "shared-pid",
+            "docker"
+          ]
+        }
+      ],
+      "x-rust-name": "Feature",
+      "x-rust-module": "started_metadata",
+      "x-rust-derives": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "PartialOrd",
+        "Ord",
+        "Serialize",
+        "Deserialize"
+      ],
+      "x-rust-rename-all": "kebab-case",
+      "x-rust-variants": [
+        {
+          "name": "LivePackages",
+          "kind": "unit"
+        },
+        {
+          "name": "DevShells",
+          "kind": "unit"
+        },
+        {
+          "name": "FlakeApps",
+          "kind": "unit"
+        },
+        {
+          "name": "NixDaemon",
+          "kind": "unit"
+        },
+        {
+          "name": "HostJobs",
+          "kind": "unit"
+        },
+        {
+          "name": "Exec",
+          "kind": "unit"
+        },
+        {
+          "name": "AttachClients",
+          "kind": "unit"
+        },
+        {
+          "name": "Scopes",
+          "kind": "unit"
+        },
+        {
+          "name": "SharedPid",
+          "kind": "unit"
+        },
+        {
+          "name": "Docker",
+          "kind": "unit"
+        }
+      ]
+    },
+    "SupervisorStartedSupport": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SupervisorStartedFeature"
+      },
+      "x-rust-type": "::std::collections::BTreeSet<crate::contract::started_metadata::Feature>"
+    },
+    "SupervisorStartedPid": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "SupervisorStartedIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "$ref": "#/definitions/SupervisorStartedPid",
+          "x-rust-field-name": "pid",
+          "x-rust-type": "u32"
+        },
+        "helper_userns": {
+          "$ref": "#/definitions/SupervisorSequence",
+          "x-rust-field-name": "helper_userns",
+          "x-rust-type": "u64"
+        },
+        "mount_owner": {
+          "$ref": "#/definitions/SupervisorSequence",
+          "x-rust-field-name": "mount_owner",
+          "x-rust-type": "u64"
+        },
+        "source_mountns": {
+          "$ref": "#/definitions/SupervisorSequence",
+          "x-rust-field-name": "source_mountns",
+          "x-rust-type": "u64"
+        },
+        "mountns": {
+          "$ref": "#/definitions/SupervisorSequence",
+          "x-rust-field-name": "mountns",
+          "x-rust-type": "u64"
+        }
+      },
+      "required": [
+        "pid",
+        "helper_userns",
+        "mount_owner",
+        "source_mountns",
+        "mountns"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "Identity",
+      "x-rust-module": "started_metadata",
+      "x-rust-field-order": [
+        "pid",
+        "helper_userns",
+        "mount_owner",
+        "source_mountns",
+        "mountns"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
     }
   },
   "x-api-version": 1,
@@ -16434,7 +16575,8 @@
     "Host job results": "Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added.",
     "Lifecycle scalar roots": "Generated parameter records and identities retain present empty object params for Command.ScopeFailed/Stop and Event.InitLost/PayloadExited, original member/name/error strings and bool mode, plus required nullable i32 stopped exit_code. Root fieldwise decoding and original unknown-method/extra/missing diagnostics stay unchanged. Stop remains distinct from lifecycle control notifications Stopping/Released; no lifecycle, scope or export policy is added.",
     "Scope membership": "Generated Command.ScopeMembership root and standard Result<Descriptor,String> metadata preserve the original plain Result shape. The producer duplicates the owned Fd at the original result point; the reader parses the Result, consumes its referenced capability, then finishes root params. Actual ownership, cleanup, framing, no-adoption and scope authority remain native. Legacy descriptor sequences accepted at the typed Value boundary do not claim Channel framing accepts forms without its $fd marker.",
-    "Started policy/config": "Generated started_metadata Policy/ScopePolicy/DevShellPolicy/Editor/OnAttach/Handlers preserve original Serde names, field order/types/traits and open/closed/default behavior. Live Started.policy field uses native-to-wire and wire-to-native conversions at the original serialization/extraction point. Runtime domain types, methods, docs and authority remain native. Event.Started root and its other fields stay pending in later C17d3b slices; this is not whole-root closure."
+    "Started policy/config": "Generated started_metadata Policy/ScopePolicy/DevShellPolicy/Editor/OnAttach/Handlers preserve original Serde names, field order/types/traits and open/closed/default behavior. Live Started.policy field uses native-to-wire and wire-to-native conversions at the original serialization/extraction point. Runtime domain types, methods, docs and authority remain native. Event.Started root and its other fields stay pending in later C17d3b slices; this is not whole-root closure.",
+    "Started support/identity": "Generated Feature metadata retains original kebab-case variants, declaration order and ordering traits. Support uses a generated BTreeSet alias preserving declaration-order serialization and duplicate normalization; its schema permits repeated input features as the native reader does. Identity metadata retains original open record, u32 pid and u64 namespace fields. Live fields convert at original codec points; native Support helpers, Feature docs and Identity authority/ownership remain unchanged. Started root is still pending."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",
@@ -16457,13 +16599,15 @@
     "SupervisorStartedHandlers",
     "SupervisorStartedScopePolicy",
     "SupervisorStartedDevShellPolicy",
-    "SupervisorStartedPolicy"
+    "SupervisorStartedPolicy",
+    "SupervisorStartedIdentity"
   ],
   "x-rust-external-enums": [
     "SupervisorSpawnKind",
     "SupervisorTerminalId",
     "SupervisorTerminalSource",
     "SupervisorTerminalCondition",
-    "SupervisorTerminalCall"
+    "SupervisorTerminalCall",
+    "SupervisorStartedFeature"
   ]
 }

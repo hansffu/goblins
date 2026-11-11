@@ -1147,7 +1147,7 @@ def check_supervisor_process_metadata():
     ]
     for variant, description in zip(expected["SupervisorSpawnKind"]["x-rust-variants"], variant_docs):
         variant["description"] = description
-    if schema.get("x-rust-external-enums")!=["SupervisorSpawnKind","SupervisorTerminalId","SupervisorTerminalSource","SupervisorTerminalCondition","SupervisorTerminalCall"]:
+    if schema.get("x-rust-external-enums")!=["SupervisorSpawnKind","SupervisorTerminalId","SupervisorTerminalSource","SupervisorTerminalCondition","SupervisorTerminalCall","SupervisorStartedFeature"]:
         raise ValueError("private external enum registry differs")
     for name,value in expected.items():
         if {k:v for k,v in defs[name].items() if k!="description"}!=value:
@@ -1425,8 +1425,33 @@ def check_supervisor_started_policy_metadata():
     for name,value in expected.items():
         if {key:value for key,value in defs["SupervisorStarted"+name].items() if key!="description"}!=value:
             raise ValueError("private Started policy schema/Rust metadata differs: "+name)
-    if document("supervisor").get("x-pending-payload-contracts")!={"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"}}}:
+    if document("supervisor").get("x-pending-payload-contracts")!={"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"}}}:
         raise ValueError("private Started pending payload projection differs")
+
+
+def check_supervisor_started_support_identity_metadata():
+    """Pin declaration-ordered features, wire set type and native identity data."""
+    defs=common()["definitions"]
+    variants=[("LivePackages","live-packages"),("DevShells","dev-shells"),("FlakeApps","flake-apps"),("NixDaemon","nix-daemon"),("HostJobs","host-jobs"),("Exec","exec"),("AttachClients","attach-clients"),("Scopes","scopes"),("SharedPid","shared-pid"),("Docker","docker")]
+    fields={"pid":({"$ref":"#/definitions/SupervisorStartedPid"},"u32"),**{name:({"$ref":"#/definitions/SupervisorSequence"},"u64") for name in ["helper_userns","mount_owner","source_mountns","mountns"]}}
+    expected={
+        "SupervisorStartedFeature":{
+            "oneOf":[{"type":"string","enum":[wire for _,wire in variants]}],
+            "x-rust-name":"Feature","x-rust-module":"started_metadata",
+            "x-rust-derives":["Clone","Copy","Debug","PartialEq","Eq","PartialOrd","Ord","Serialize","Deserialize"],
+            "x-rust-rename-all":"kebab-case","x-rust-variants":[{"name":name,"kind":"unit"} for name,_ in variants],
+        },
+        "SupervisorStartedSupport":{"type":"array","items":{"$ref":"#/definitions/SupervisorStartedFeature"},"x-rust-type":"::std::collections::BTreeSet<crate::contract::started_metadata::Feature>"},
+        "SupervisorStartedPid":{"type":"integer","minimum":0,"maximum":2**32-1,"x-json-integer":True},
+        "SupervisorStartedIdentity":{
+            "type":"object","properties":{name:{**shape,"x-rust-field-name":name,"x-rust-type":native} for name,(shape,native) in fields.items()},
+            "required":list(fields),"additionalProperties":True,"x-rust-name":"Identity","x-rust-module":"started_metadata",
+            "x-rust-field-order":list(fields),"x-rust-derives":["Clone","Debug","Serialize","Deserialize"],
+        },
+    }
+    for name,value in expected.items():
+        if {key:value for key,value in defs[name].items() if key!="description"}!=value:
+            raise ValueError("private Started feature/support/identity metadata differs: "+name)
 
 
 def check_supervisor_pending_inventory():
@@ -1527,7 +1552,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary","SupervisorHostOutcome","SupervisorEventHostJobFinishedParams","SupervisorStartedEditor","SupervisorStartedOnAttach","SupervisorStartedHandlers","SupervisorStartedScopePolicy","SupervisorStartedDevShellPolicy","SupervisorStartedPolicy"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary","SupervisorHostOutcome","SupervisorEventHostJobFinishedParams","SupervisorStartedEditor","SupervisorStartedOnAttach","SupervisorStartedHandlers","SupervisorStartedScopePolicy","SupervisorStartedDevShellPolicy","SupervisorStartedPolicy","SupervisorStartedIdentity"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1586,6 +1611,7 @@ def check():
     check_supervisor_lifecycle_metadata()
     check_supervisor_membership_metadata()
     check_supervisor_started_policy_metadata()
+    check_supervisor_started_support_identity_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

@@ -443,6 +443,8 @@ impl Descriptors {
 macro_rules! put {
     ($b:ident, plain, $name:expr, $v:expr) => { $b.value($name, $v) };
     ($b:ident, started_policy, $name:expr, $v:expr) => {{ let value=encode_started_policy($v); $b.value($name, &value) }};
+    ($b:ident, started_support, $name:expr, $v:expr) => {{ let value=encode_started_support($v); $b.value($name, &value) }};
+    ($b:ident, started_identity, $name:expr, $v:expr) => {{ let value=encode_started_identity($v); $b.value($name, &value) }};
     ($b:ident, opaque, $name:expr, $v:expr) => { $b.opaque($name, $v) };
     ($b:ident, call, $name:expr, $v:expr) => { $b.opaque($name, &json!({"jsonrpc":$v.jsonrpc,"id":$v.id,"method":$v.method,"params":$v.params})) };
 }
@@ -452,6 +454,12 @@ macro_rules! get {
     };
     ($p:ident, $d:ident, started_policy, $name:expr, $ty:ty) => {
         decode_started_policy($p.take($name)?)
+    };
+    ($p:ident, $d:ident, started_support, $name:expr, $ty:ty) => {
+        decode_started_support($p.take($name)?)
+    };
+    ($p:ident, $d:ident, started_identity, $name:expr, $ty:ty) => {
+        decode_started_identity($p.take($name)?)
     };
     ($p:ident, $d:ident, opaque, $name:expr, $ty:ty) => {
         $p.opaque::<$ty>($name)?
@@ -776,13 +784,16 @@ macro_rules! event_codec {
     }
 }
 event_codec! {
-    Started { docker_enabled:bool=>plain, policy:Box<crate::policy::Policy> =>started_policy, support:crate::policy::Support=>plain, dev_shell:Option<crate::policy::DevShellSummary> =>opaque, identity:crate::Identity=>plain, recreated:Option<Box<crate::Recreated>> =>plain, auto:Box<crate::Auto> =>plain, worktrees:Box<crate::worktrees::Report> =>plain },
+    Started { docker_enabled:bool=>plain, policy:Box<crate::policy::Policy> =>started_policy, support:crate::policy::Support=>started_support, dev_shell:Option<crate::policy::DevShellSummary> =>opaque, identity:crate::Identity=>started_identity, recreated:Option<Box<crate::Recreated>> =>plain, auto:Box<crate::Auto> =>plain, worktrees:Box<crate::worktrees::Report> =>plain },
     SandboxOpened { connection:u64=>plain },
     SandboxCall { connection:u64=>plain, call:goblins_jsonrpc::Call=>call },
     SandboxClosed { connection:u64=>plain },
 }
 mod started;
-use started::{decode_started_policy, encode_started_policy};
+use started::{
+    decode_started_identity, decode_started_policy, decode_started_support,
+    encode_started_identity, encode_started_policy, encode_started_support,
+};
 mod handoff;
 pub mod outbound;
 pub use handoff::Decoder;

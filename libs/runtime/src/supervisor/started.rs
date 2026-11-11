@@ -69,3 +69,50 @@ pub(super) fn decode_started_policy(value: wire::Policy) -> Box<policy::Policy> 
         }),
     })
 }
+
+macro_rules! feature_bridge {
+    ($($name:ident),* $(,)?) => {
+        fn encode_feature(value: policy::Feature) -> wire::Feature {
+            match value { $(policy::Feature::$name => wire::Feature::$name),* }
+        }
+        fn decode_feature(value: wire::Feature) -> policy::Feature {
+            match value { $(wire::Feature::$name => policy::Feature::$name),* }
+        }
+    };
+}
+feature_bridge! {
+    LivePackages, DevShells, FlakeApps, NixDaemon, HostJobs,
+    Exec, AttachClients, Scopes, SharedPid, Docker,
+}
+
+pub(super) fn encode_started_support(
+    value: &policy::Support,
+) -> goblins_protocol::contract::SupervisorStartedSupport {
+    value.0.iter().copied().map(encode_feature).collect()
+}
+
+pub(super) fn decode_started_support(
+    value: goblins_protocol::contract::SupervisorStartedSupport,
+) -> policy::Support {
+    policy::Support(value.into_iter().map(decode_feature).collect())
+}
+
+pub(super) fn encode_started_identity(value: &crate::Identity) -> wire::Identity {
+    wire::Identity {
+        pid: value.pid,
+        helper_userns: value.helper_userns,
+        mount_owner: value.mount_owner,
+        source_mountns: value.source_mountns,
+        mountns: value.mountns,
+    }
+}
+
+pub(super) fn decode_started_identity(value: wire::Identity) -> crate::Identity {
+    crate::Identity {
+        pid: value.pid,
+        helper_userns: value.helper_userns,
+        mount_owner: value.mount_owner,
+        source_mountns: value.source_mountns,
+        mountns: value.mountns,
+    }
+}

@@ -35713,5 +35713,494 @@
         "valid": true
       }
     ]
+  },
+  "c17d3b2_feature_bindings": [
+    {
+      "native": "LivePackages",
+      "wire": "live-packages"
+    },
+    {
+      "native": "DevShells",
+      "wire": "dev-shells"
+    },
+    {
+      "native": "FlakeApps",
+      "wire": "flake-apps"
+    },
+    {
+      "native": "NixDaemon",
+      "wire": "nix-daemon"
+    },
+    {
+      "native": "HostJobs",
+      "wire": "host-jobs"
+    },
+    {
+      "native": "Exec",
+      "wire": "exec"
+    },
+    {
+      "native": "AttachClients",
+      "wire": "attach-clients"
+    },
+    {
+      "native": "Scopes",
+      "wire": "scopes"
+    },
+    {
+      "native": "SharedPid",
+      "wire": "shared-pid"
+    },
+    {
+      "native": "Docker",
+      "wire": "docker"
+    }
+  ],
+  "c17d3b2_identity_binding": {
+    "fields": [
+      "pid",
+      "helper_userns",
+      "mount_owner",
+      "source_mountns",
+      "mountns"
+    ],
+    "types": [
+      "u32",
+      "u64",
+      "u64",
+      "u64",
+      "u64"
+    ],
+    "refs": [
+      "SupervisorStartedPid",
+      "SupervisorSequence",
+      "SupervisorSequence",
+      "SupervisorSequence",
+      "SupervisorSequence"
+    ],
+    "derives": [
+      "Clone",
+      "Debug",
+      "Serialize",
+      "Deserialize"
+    ]
+  },
+  "c17d3b2_started_value_cases": {
+    "SupervisorStartedFeature": [
+      {
+        "value": "live-packages",
+        "valid": true
+      },
+      {
+        "value": "dev-shells",
+        "valid": true
+      },
+      {
+        "value": "flake-apps",
+        "valid": true
+      },
+      {
+        "value": "nix-daemon",
+        "valid": true
+      },
+      {
+        "value": "host-jobs",
+        "valid": true
+      },
+      {
+        "value": "exec",
+        "valid": true
+      },
+      {
+        "value": "attach-clients",
+        "valid": true
+      },
+      {
+        "value": "scopes",
+        "valid": true
+      },
+      {
+        "value": "shared-pid",
+        "valid": true
+      },
+      {
+        "value": "docker",
+        "valid": true
+      },
+      {
+        "value": "future",
+        "valid": false
+      },
+      {
+        "value": "LivePackages",
+        "valid": false
+      },
+      {
+        "value": "live_packages",
+        "valid": false
+      },
+      {
+        "value": {
+          "docker": null
+        },
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": 0,
+        "valid": false
+      }
+    ],
+    "SupervisorStartedSupport": [
+      {
+        "value": [],
+        "valid": true
+      },
+      {
+        "value": [
+          "live-packages",
+          "dev-shells",
+          "flake-apps",
+          "nix-daemon",
+          "host-jobs",
+          "exec",
+          "attach-clients",
+          "scopes",
+          "shared-pid",
+          "docker"
+        ],
+        "valid": true
+      },
+      {
+        "value": [
+          "docker",
+          "exec",
+          "live-packages",
+          "docker"
+        ],
+        "valid": true
+      },
+      {
+        "value": [
+          "future"
+        ],
+        "valid": false
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": [
+          0
+        ],
+        "valid": false
+      },
+      {
+        "value": [
+          "LivePackages"
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorStartedIdentity": [
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "pid": 0,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0,
+          "future": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967296,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": -1,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 1.0,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": -1,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551616,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 1.0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": null,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": -1,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 18446744073709551616,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 1.0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": null,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": -1,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 18446744073709551616,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 1.0,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": null,
+          "mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": -1
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 18446744073709551616
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 1.0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "pid": 4294967295,
+          "helper_userns": 18446744073709551615,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": null
+        },
+        "valid": false
+      }
+    ],
+    "SupervisorStartedPid": [
+      {
+        "value": 0,
+        "valid": true
+      },
+      {
+        "value": 4294967295,
+        "valid": true
+      },
+      {
+        "value": -1,
+        "valid": false
+      },
+      {
+        "value": 4294967296,
+        "valid": false
+      },
+      {
+        "value": 1.0,
+        "valid": false
+      },
+      {
+        "value": true,
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      }
+    ]
   }
 }
