@@ -9,6 +9,7 @@ use crate::{
     config::ManifestLease,
     lease::ResourceLease,
 };
+use goblins_protocol::contract::{self, Notification};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use std::{
@@ -34,20 +35,7 @@ pub struct SupervisorStart {
     pub handoff: Option<Box<Handoff>>,
 }
 /// Maintenance selects paths, while the implementation retains deletion policy.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub enum MaintenanceOperation {
-    Gc {
-        runtime: Option<PathBuf>,
-        state: PathBuf,
-        dry_run: bool,
-    },
-    ClearScope {
-        runtime: Option<PathBuf>,
-        name: Option<String>,
-        dry_run: bool,
-    },
-}
+pub use contract::MaintenanceOperation;
 pub struct Maintenance {
     pub supervisor_api: u32,
     pub operation: MaintenanceOperation,
@@ -205,15 +193,21 @@ impl Encoder {
                 sequence,
             } => {
                 valid_preflight(*supervisor_api, directory)?;
-                b.method = "Preflight";
-                b.value("supervisor_api", supervisor_api)?;
-                b.value("path", path)?;
-                b.value("directory", directory)?;
-                b.value("sequence", sequence)?;
+                b.notification::<contract::supervisor_notifications::Preflight>(
+                    contract::SupervisorPreflightParams {
+                        supervisor_api: *supervisor_api,
+                        path: path.clone(),
+                        directory: directory.clone(),
+                        sequence: *sequence,
+                    },
+                )?;
             }
             Message::PreflightFailed { error } => {
-                b.method = "PreflightFailed";
-                b.value("error", error)?;
+                b.notification::<contract::supervisor_notifications::PreflightFailed>(
+                    contract::SupervisorPreflightFailedParams {
+                        error: error.clone(),
+                    },
+                )?;
             }
             Message::Maintenance(request) => {
                 valid_maintenance(request)?;
@@ -226,16 +220,26 @@ impl Encoder {
                 b.value("stderr", &stderr)?;
             }
             Message::MaintenanceFinished { result } => {
-                b.method = "MaintenanceFinished";
-                b.value("result", result)?;
+                b.notification::<contract::supervisor_notifications::MaintenanceFinished>(
+                    contract::SupervisorMaintenanceFinishedParams {
+                        result: result.clone(),
+                    },
+                )?;
             }
             Message::Command(command) => encode_command(command, &mut b)?,
             Message::Event(event) => encode_event(event, &mut b)?,
-            Message::Stopping => b.method = "Stopping",
-            Message::Released => b.method = "Released",
+            Message::Stopping => b.notification::<contract::supervisor_notifications::Stopping>(
+                contract::SupervisorEmptyParams {},
+            )?,
+            Message::Released => b.notification::<contract::supervisor_notifications::Released>(
+                contract::SupervisorEmptyParams {},
+            )?,
             Message::Adopted { transfer } => {
-                b.method = "Adopted";
-                b.value("transfer", transfer)?;
+                b.notification::<contract::supervisor_notifications::Adopted>(
+                    contract::SupervisorAdoptedParams {
+                        transfer: *transfer,
+                    },
+                )?;
             }
         }
         let adoption = matches!(
@@ -318,6 +322,14 @@ impl Builder {
             transfer,
             manifest: None,
         }
+    }
+    fn notification<N: Notification>(&mut self, value: N::Params) -> io::Result<()> {
+        let Value::Object(params) = serde_json::to_value(value)? else {
+            return Err(invalid("expected control object"));
+        };
+        self.method = N::NAME;
+        self.params = params;
+        Ok(())
     }
     fn value(&mut self, key: &str, value: &impl Serialize) -> io::Result<()> {
         self.params.insert(key.into(), serde_json::to_value(value)?);

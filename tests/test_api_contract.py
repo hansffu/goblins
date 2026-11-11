@@ -16,6 +16,66 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c16a1_private_notification_instances(self):
+        for case in contract.read("fixtures.json")["c16a1_supervisor_notifications"]:
+            with self.subTest(case=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", case["direction"], case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", case["direction"], case["frame"])
+        self.assertFalse(contract.validate_notification("supervisor", "daemon-to-supervisor",
+            dict(jsonrpc="2.0", method="Stopping", params={})))
+
+    def test_c16a1_maintenance_operation_schema_instances(self):
+        validator = contract.schema_validator({"$ref":"common.json#/definitions/SupervisorMaintenanceOperation"})
+        for case in contract.read("fixtures.json")["c16a1_maintenance_operations"]:
+            with self.subTest(case=case):
+                self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+
+    def test_c16a1_private_catalog_consistency_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()  # The unmodified input must have no setup/reference errors.
+        original = contract.document
+        cases = []
+        def mutated(label, change):
+            doc = copy.deepcopy(original("supervisor"))
+            change(doc)
+            cases.append((label, doc))
+        mutated("duplicate notification", lambda d: d["x-notifications"].append(copy.deepcopy(d["x-notifications"][0])))
+        mutated("duplicate Rust marker", lambda d: d["x-notifications"][1].update({"x-rust-name":"Preflight"}))
+        mutated("invalid direction", lambda d: d["x-notifications"][0].update(direction="client-to-server"))
+        mutated("missing sender", lambda d: d["x-notifications"][0].pop("sender"))
+        mutated("parameter order", lambda d: d["x-notifications"][0]["params"].reverse())
+        mutated("required mismatch", lambda d: d["x-notifications"][0]["params"][0].update(required=False))
+        mutated("parameter shape", lambda d: d["x-notifications"][0]["params"][0].update(schema={"type":"string"}))
+        mutated("unknown parameter", lambda d: d["x-notifications"][0]["params"][0].update(name="not_a_field"))
+        mutated("positional accepted", lambda d: d["x-notifications"][0].update({"x-positional-schema":{"type":"array"}}))
+        for label, doc in cases:
+            with self.subTest(mutation=label), patch.object(contract, "document", side_effect=lambda endpoint: doc if endpoint == "supervisor" else original(endpoint)):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
+    def test_c16a1_tagged_enum_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def mutated(label, change):
+            schema = copy.deepcopy(original)
+            change(schema["definitions"]["SupervisorMaintenanceOperation"])
+            cases.append((label, schema))
+        mutated("duplicate variant", lambda e: e["oneOf"][1]["properties"]["kind"].update(enum=["Gc"]))
+        mutated("unknown ordered field", lambda e: e["oneOf"][0]["x-rust-field-order"].append("ghost"))
+        mutated("missing ordered field", lambda e: e["oneOf"][0]["x-rust-field-order"].pop())
+        mutated("bool Rust type mismatch", lambda e: e["oneOf"][0]["properties"]["dry_run"].update({"x-rust-type":"String"}))
+        mutated("optional Rust type mismatch", lambda e: e["oneOf"][0]["properties"]["runtime"].update({"x-rust-type":"::std::path::PathBuf"}))
+        mutated("nullable required Rust field", lambda e: e["oneOf"][0]["properties"]["state"].update({"x-rust-type":"Option<::std::path::PathBuf>"}))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract, "common", return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c15_state_parameter_result_and_snapshot_contracts(self):
         fixtures = contract.read("fixtures.json")
         for key in ("state_parameter_cases", "state_result_cases", "state_snapshot_cases"):

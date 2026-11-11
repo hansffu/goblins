@@ -22737,5 +22737,700 @@
         }
       }
     }
+  ],
+  "c16a1_supervisor_notifications": [
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 1,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 0,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 4294967295,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 1.0,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": -1,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 4294967296,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": null,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": true,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 1,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 1,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 1.0
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 1,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": -1
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 1,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": 18446744073709551616
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 1,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Preflight",
+        "params": {
+          "supervisor_api": 1,
+          "path": "relative/manifest",
+          "directory": "/state",
+          "sequence": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "Adopted",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "Adopted",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": 1.0
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": -1
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": 18446744073709551616
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "Adopted",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "Adopted",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": 1.0
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": -1
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": 18446744073709551616
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Adopted",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Adopted",
+        "params": {
+          "transfer": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Stopping",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Stopping",
+        "params": {}
+      },
+      "valid": true
+    },
+    {
+      "name": "Stopping",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Stopping",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "name": "Stopping",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Stopping",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "name": "Stopping",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Stopping",
+        "params": {
+          "extra": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Stopping",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Stopping"
+      },
+      "valid": false
+    },
+    {
+      "name": "Released",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Released",
+        "params": {}
+      },
+      "valid": true
+    },
+    {
+      "name": "Released",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Released",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "name": "Released",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Released",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "name": "Released",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Released",
+        "params": {
+          "extra": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "Released",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Released"
+      },
+      "valid": false
+    },
+    {
+      "name": "MaintenanceFinished",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "MaintenanceFinished",
+        "params": {
+          "result": {
+            "Ok": null
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "MaintenanceFinished",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "MaintenanceFinished",
+        "params": {
+          "result": {
+            "Err": "\u96ea\n"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "MaintenanceFinished",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "MaintenanceFinished",
+        "params": {
+          "result": {
+            "Ok": 1
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "MaintenanceFinished",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "MaintenanceFinished",
+        "params": {
+          "result": {
+            "Err": null
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "MaintenanceFinished",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "MaintenanceFinished",
+        "params": {
+          "result": {
+            "Unknown": null
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "MaintenanceFinished",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "MaintenanceFinished",
+        "params": {
+          "result": {
+            "Ok": null,
+            "Err": "x"
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "PreflightFailed",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "PreflightFailed",
+        "params": {
+          "error": "failed"
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "PreflightFailed",
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "PreflightFailed",
+        "params": {
+          "error": null
+        }
+      },
+      "valid": false
+    }
+  ],
+  "c16a1_maintenance_operations": [
+    {
+      "value": {
+        "kind": "Gc",
+        "state": "relative/\u96ea\u0000",
+        "dry_run": true
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Gc",
+        "runtime": null,
+        "state": "",
+        "dry_run": false
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "ClearScope",
+        "dry_run": false
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "ClearScope",
+        "runtime": "../runtime",
+        "name": null,
+        "dry_run": true
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "ClearScope",
+        "name": "\u96ea",
+        "dry_run": true
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Gc",
+        "state": "x"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Gc",
+        "state": null,
+        "dry_run": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Gc",
+        "runtime": 1,
+        "state": "x",
+        "dry_run": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "ClearScope",
+        "name": false,
+        "dry_run": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "ClearScope",
+        "dry_run": true,
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "gc",
+        "dry_run": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": null
+      },
+      "valid": false
+    },
+    {
+      "value": null,
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    }
   ]
 }

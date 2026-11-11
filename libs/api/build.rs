@@ -216,6 +216,24 @@ fn main() {
         "StateSnapshotReply",
         typify::TypeSpacePatch::default().with_rename("Snapshot"),
     );
+    settings.with_replacement("SupervisorPath", "::std::path::PathBuf", [].into_iter());
+    settings.with_replacement("SupervisorSequence", "u64", [].into_iter());
+    settings.with_replacement(
+        "SupervisorMaintenanceOutcome",
+        "::std::result::Result<(), String>",
+        [].into_iter(),
+    );
+    for name in common["x-rust-tagged-enums"].as_array().unwrap() {
+        let name = name.as_str().unwrap();
+        settings.with_replacement(
+            name,
+            format!(
+                "crate::contract::{}",
+                common["definitions"][name]["x-rust-name"].as_str().unwrap()
+            ),
+            [].into_iter(),
+        );
+    }
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -352,6 +370,29 @@ fn main() {
         );
     }
     let mut output = quote::quote!(#generated).to_string();
+    // Generate the original internally tagged enum directly from its canonical
+    // branches. This preserves Serde variant names, optional-null emission and
+    // diagnostics while Typify references the generated type as a replacement.
+    for name in common["x-rust-tagged-enums"].as_array().unwrap() {
+        let name = name.as_str().unwrap();
+        let schema = &common["definitions"][name];
+        let rust = schema["x-rust-name"].as_str().unwrap();
+        output.push_str(&format!("#[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)] #[serde(tag=\"kind\", deny_unknown_fields)] pub enum {rust} {{"));
+        for variant in schema["oneOf"].as_array().unwrap() {
+            let tag = variant["properties"]["kind"]["enum"][0].as_str().unwrap();
+            output.push_str(&format!("{tag} {{"));
+            for field in variant["x-rust-field-order"].as_array().unwrap() {
+                let field = field.as_str().unwrap();
+                let ty = variant["properties"][field]["x-rust-type"]
+                    .as_str()
+                    .unwrap();
+                output.push_str(&format!("{field}: {ty},"));
+            }
+            output.push_str("},");
+        }
+        output.push_str("}\n");
+        output.push_str(&format!("pub type {name} = {rust};\n"));
+    }
     for (name, record) in common["x-rust-serde-records"].as_object().unwrap() {
         let legacy_name = record["name"].as_str().unwrap();
         if name != legacy_name {
@@ -421,7 +462,7 @@ fn main() {
         "HistoryPruneReply".to_string(),
         "StateSubscribeReply".to_string(),
     ]);
-    for endpoint in ["host", "sandbox", "attach"] {
+    for endpoint in ["host", "sandbox", "attach", "supervisor"] {
         let document: Value = serde_json::from_str(
             &fs::read_to_string(format!("schema/{endpoint}.openrpc.json")).unwrap(),
         )

@@ -12386,6 +12386,197 @@ Socket: =terminal.sock=. Direction: =server-to-client=. Fixed response ID: =0=.
 
 Errors: -32009.
 
+* supervisor
+
+** Notification =Preflight=
+
+Startup-only pinned-child validation; API and absolute directory validation follow field extraction and unknown-field rejection.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: startup one-shot.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "supervisor_api": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "path": {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    "sequence": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "supervisor_api",
+    "path",
+    "directory",
+    "sequence"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =PreflightFailed=
+
+Operation error; one-shot child still completes successfully.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: startup one-shot.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =MaintenanceFinished=
+
+Operation Result<(),String>; success is Ok:null and failure Err:string.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: maintenance one-shot.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "result": {
+      "$ref": "#/definitions/SupervisorMaintenanceOutcome"
+    }
+  },
+  "required": [
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Stopping=
+
+Stop reached dispatcher; cleanup is not complete.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: existing supervisor lifecycle/ownership phase.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Released=
+
+Monotonic resource release, independent of terminal lifetime.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: existing supervisor lifecycle/ownership phase.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Adopted=
+
+Ownership acknowledgement, never admission credit. Wire u64 includes zero; pending-transfer validation retains its original separate checks.
+
+Direction: =bidirectional=. Sender: owner-adopting peer. Receiver: transfer-sending peer. State: existing supervisor lifecycle/ownership phase.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "transfer": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "transfer"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * Generated Serde reader details
 
 Original Serde container names, field order, required nullable sequence slots and legacy named aliases are generated from:
@@ -12669,6 +12860,14 @@ Original Serde container names, field order, required nullable sequence slots an
   }
 }
 #+end_src
+
+* Supervisor generation boundaries
+
+- =Params= :: Field-by-field extraction remains handwritten to preserve missing control field errors, finish-before-validation ordering, API checks and descriptor ownership. Generated DTOs are assembled only at the original extraction points.
+- =SupervisorStart and Maintenance= :: FD-index records remain C16a2 work; live OwnedFd/Fd ownership, duplication, validation and cleanup remain handwritten.
+- =Source and Handoff= :: Source, directory, resource/manifest lease and multipart metadata remain C16b work; no Value substitution claims generation of these surfaces.
+- =Result<(), String>= :: SupervisorMaintenanceOutcome maps to the standard Serde Result<(),String>, preserving exact enum errors and Ok:null / Err:string encoding.
+- =MaintenanceOperation= :: Schema-driven tagged enum generation retains named variants/field order/optional-null emission and original Serde diagnostics; Typify replacements reference this generated enum.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -24467,6 +24666,248 @@ Original Serde container names, field order, required nullable sequence slots an
     "accepted"
   ],
   "additionalProperties": true
+}
+#+end_src
+
+** =SupervisorPath=
+
+#+begin_src json
+{
+  "type": "string",
+  "description": "Original PathBuf JSON representation; no normalization added."
+}
+#+end_src
+
+** =SupervisorSequence=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 0,
+  "maximum": 18446744073709551615,
+  "x-json-integer": true
+}
+#+end_src
+
+** =SupervisorMaintenanceOutcome=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Ok": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "Ok"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Err": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Err"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorMaintenanceOperation=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Gc"
+          ]
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-type": "Option<::std::path::PathBuf>"
+        },
+        "state": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-type": "::std::path::PathBuf"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "x-rust-type": "bool"
+        }
+      },
+      "required": [
+        "kind",
+        "state",
+        "dry_run"
+      ],
+      "additionalProperties": false,
+      "x-rust-field-order": [
+        "runtime",
+        "state",
+        "dry_run"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "ClearScope"
+          ]
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-type": "Option<::std::path::PathBuf>"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-rust-type": "Option<String>"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "x-rust-type": "bool"
+        }
+      },
+      "required": [
+        "kind",
+        "dry_run"
+      ],
+      "additionalProperties": false,
+      "x-rust-field-order": [
+        "runtime",
+        "name",
+        "dry_run"
+      ]
+    }
+  ],
+  "x-rust-name": "MaintenanceOperation",
+  "description": "Original internally tagged closed MaintenanceOperation enum; absent optional paths/names decode as None and serialize as explicit null."
+}
+#+end_src
+
+** =SupervisorPreflightParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "supervisor_api": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
+    },
+    "path": {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    "sequence": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "supervisor_api",
+    "path",
+    "directory",
+    "sequence"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorPreflightFailedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorMaintenanceFinishedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "result": {
+      "$ref": "#/definitions/SupervisorMaintenanceOutcome"
+    }
+  },
+  "required": [
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorAdoptedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "transfer": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "transfer"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEmptyParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
 }
 #+end_src
 

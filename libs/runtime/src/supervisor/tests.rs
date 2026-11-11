@@ -1458,3 +1458,444 @@ fn startup_payload_limit_is_required_nullable_and_strict() {
         );
     }
 }
+
+// Frozen pre-C16 decoder: keep independent of the production wire declaration.
+mod c16a_original {
+    use super::*;
+    #[derive(Debug, Serialize, Deserialize)]
+    #[serde(tag = "kind", deny_unknown_fields)]
+    pub enum MaintenanceOperation {
+        Gc {
+            runtime: Option<PathBuf>,
+            state: PathBuf,
+            dry_run: bool,
+        },
+        ClearScope {
+            runtime: Option<PathBuf>,
+            name: Option<String>,
+            dry_run: bool,
+        },
+    }
+}
+
+#[test]
+fn c16a_maintenance_operation_preserves_original_json_and_diagnostics() {
+    let cases = [
+        json!({"kind":"Gc","state":"relative/雪\u{0000}","dry_run":true}),
+        json!({"kind":"Gc","runtime":null,"state":"","dry_run":false}),
+        json!({"kind":"Gc","runtime":"../runtime","state":"/state","dry_run":true}),
+        json!({"kind":"ClearScope","dry_run":false}),
+        json!({"kind":"ClearScope","runtime":null,"name":null,"dry_run":true}),
+        json!({"kind":"ClearScope","runtime":"","name":"雪\n","dry_run":false}),
+        json!(null),
+        json!([]),
+        json!("Gc"),
+        json!({}),
+        json!({"kind":null}),
+        json!({"kind":42}),
+        json!({"kind":"gc"}),
+        json!({"kind":"Gc","dry_run":true}),
+        json!({"kind":"Gc","state":null,"dry_run":true}),
+        json!({"kind":"Gc","state":[],"dry_run":true}),
+        json!({"kind":"Gc","state":"x"}),
+        json!({"kind":"Gc","state":"x","dry_run":null}),
+        json!({"kind":"Gc","state":"x","dry_run":0}),
+        json!({"kind":"Gc","state":"x","dry_run":true,"extra":1}),
+        json!({"kind":"ClearScope","name":false,"dry_run":true}),
+        json!({"kind":"ClearScope","runtime":{},"dry_run":true}),
+        json!({"kind":"ClearScope","dry_run":true,"state":"x"}),
+    ];
+    for input in cases {
+        let expected = serde_json::from_value::<c16a_original::MaintenanceOperation>(input.clone())
+            .map(|v| serde_json::to_value(v).unwrap())
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_value::<MaintenanceOperation>(input.clone())
+            .map(|v| serde_json::to_value(v).unwrap())
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, expected, "input {input}");
+    }
+    assert_eq!(
+        serde_json::to_value(MaintenanceOperation::Gc {
+            runtime: None,
+            state: "relative/state".into(),
+            dry_run: true,
+        })
+        .unwrap(),
+        json!({"kind":"Gc","runtime":null,"state":"relative/state","dry_run":true})
+    );
+    assert_eq!(
+        serde_json::to_value(MaintenanceOperation::ClearScope {
+            runtime: Some("../runtime".into()),
+            name: None,
+            dry_run: false,
+        })
+        .unwrap(),
+        json!({"kind":"ClearScope","runtime":"../runtime","name":null,"dry_run":false})
+    );
+}
+
+fn c16a_frame(message: Message) -> Frame {
+    let mut prepared = Encoder::default().prepare(message).unwrap();
+    assert_eq!(prepared.frames.len(), 1);
+    prepared.frames.pop_front().unwrap()
+}
+fn c16a_error(frame: Frame, expected: &str) {
+    let error = match Decoder::default().receive(frame) {
+        Err(error) => error,
+        Ok(_) => panic!("accepted malformed frame; expected {expected}"),
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), expected);
+}
+
+#[test]
+fn c16a_scalar_producers_pin_envelopes_and_transfer_metadata() {
+    let cases = vec![
+        (Message::Stopping, "Stopping", json!({})),
+        (Message::Released, "Released", json!({})),
+        (
+            Message::Adopted { transfer: 0 },
+            "Adopted",
+            json!({"transfer":0}),
+        ),
+        (
+            Message::Adopted { transfer: u64::MAX },
+            "Adopted",
+            json!({"transfer":u64::MAX}),
+        ),
+        (
+            Message::MaintenanceFinished { result: Ok(()) },
+            "MaintenanceFinished",
+            json!({"result":{"Ok":null}}),
+        ),
+        (
+            Message::MaintenanceFinished {
+                result: Err("雪\nfailed".into()),
+            },
+            "MaintenanceFinished",
+            json!({"result":{"Err":"雪\nfailed"}}),
+        ),
+        (
+            Message::Preflight {
+                supervisor_api: API,
+                path: "relative/manifest".into(),
+                directory: "/state".into(),
+                sequence: u64::MAX,
+            },
+            "Preflight",
+            json!({"supervisor_api":1,"path":"relative/manifest","directory":"/state","sequence":u64::MAX}),
+        ),
+        (
+            Message::PreflightFailed {
+                error: "failed\n".into(),
+            },
+            "PreflightFailed",
+            json!({"error":"failed\n"}),
+        ),
+    ];
+    let mut encoder = Encoder::default();
+    for (index, (message, method, params)) in cases.into_iter().enumerate() {
+        let mut prepared = encoder.prepare(message).unwrap();
+        assert_eq!(prepared.transfer(), index as u64 + 1);
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        assert!(prepared.frames[0].fds.is_empty());
+        assert_eq!(
+            prepared.frames[0].value,
+            json!({"jsonrpc":"2.0","method":method,"params":params})
+        );
+        assert!(
+            decode(&mut prepared, &mut Decoder::default())
+                .adopted
+                .is_none()
+        );
+    }
+    let mut exhausted = Encoder { next: u64::MAX };
+    assert_eq!(
+        exhausted
+            .prepare(Message::Stopping)
+            .err()
+            .unwrap()
+            .to_string(),
+        "transfer id exhausted"
+    );
+    let mut encoder = Encoder::default();
+    assert!(
+        encoder
+            .prepare(Message::Preflight {
+                supervisor_api: 2,
+                path: "x".into(),
+                directory: "/".into(),
+                sequence: 0
+            })
+            .is_err()
+    );
+    assert_eq!(encoder.prepare(Message::Stopping).unwrap().transfer(), 2);
+}
+
+#[test]
+fn c16a_bootstrap_and_maintenance_pin_exact_frames_and_fd_indexes() {
+    let mut prepared = Encoder::default().prepare(startup(host(), None)).unwrap();
+    let expected = json!({"jsonrpc":"2.0","method":"SupervisorStart","params":{
+        "supervisor_api":1,"directory":"/state/session/resources","dimensions":[37,123],"detached":true,
+        "payload_nofile":null,"legacy_listener":null,"handoff":null,
+        "source":{"kind":"Host","configuration":"/config.json","name":"shell","scope":"shared",
+            "dev_shell":"/flake#dev","workspace":"/workspace","cwd":"/workspace/sub","state":"/state",
+            "history":"/history","sequence":23,"recreate":{"packages":["hello"],"auto_approve":["jq"],
+            "docker":true,"variables":{"session":"abc"},"worktree":null}}
+    }});
+    assert_eq!(prepared.frames[0].value, expected);
+    assert!(prepared.frames[0].fds.is_empty());
+    assert!(!prepared.needs_adoption());
+    assert!(
+        decode(&mut prepared, &mut Decoder::default())
+            .adopted
+            .is_none()
+    );
+    let mut start = match startup(host(), None) {
+        Message::SupervisorStart(s) => s,
+        _ => unreachable!(),
+    };
+    start.legacy_listener = Some(null());
+    start.payload_nofile = Some(128);
+    let mut prepared = Encoder::default()
+        .prepare(Message::SupervisorStart(start))
+        .unwrap();
+    let mut expected = expected;
+    expected["params"]["legacy_listener"] = json!({"$fd":0});
+    expected["params"]["payload_nofile"] = json!(128);
+    assert_eq!(prepared.frames[0].value, expected);
+    assert_eq!(prepared.frames[0].fds.len(), 1);
+    assert!(!prepared.needs_adoption());
+    assert!(
+        decode(&mut prepared, &mut Decoder::default())
+            .adopted
+            .is_none()
+    );
+    let mut prepared = Encoder::default().prepare(maintenance_request()).unwrap();
+    assert_eq!(
+        prepared.frames[0].value,
+        json!({"jsonrpc":"2.0","method":"Maintenance","params":{
+            "supervisor_api":1,"operation":{"kind":"Gc","runtime":null,"state":"relative/state","dry_run":true},
+            "stdout":{"$fd":0},"stderr":{"$fd":1}
+        }})
+    );
+    assert_eq!(prepared.frames[0].fds.len(), 2);
+    assert!(!prepared.needs_adoption());
+    assert!(
+        decode(&mut prepared, &mut Decoder::default())
+            .adopted
+            .is_none()
+    );
+}
+
+#[test]
+fn c16a_control_decoders_pin_missing_fields_and_validation_precedence() {
+    for (message, fields) in [
+        (
+            startup(host(), None),
+            vec![
+                "supervisor_api",
+                "source",
+                "directory",
+                "dimensions",
+                "detached",
+                "payload_nofile",
+                "handoff",
+            ],
+        ),
+        (
+            maintenance_request(),
+            vec!["supervisor_api", "operation", "stdout", "stderr"],
+        ),
+        (
+            Message::Preflight {
+                supervisor_api: 1,
+                path: "relative".into(),
+                directory: "/state".into(),
+                sequence: 0,
+            },
+            vec!["supervisor_api", "path", "directory", "sequence"],
+        ),
+        (
+            Message::PreflightFailed { error: "x".into() },
+            vec!["error"],
+        ),
+        (
+            Message::MaintenanceFinished { result: Ok(()) },
+            vec!["result"],
+        ),
+        (Message::Adopted { transfer: 1 }, vec!["transfer"]),
+    ] {
+        let mut prepared = Encoder::default().prepare(message).unwrap();
+        let original = prepared.frames.pop_front().unwrap();
+        for field in fields {
+            let mut value = original.value.clone();
+            value["params"].as_object_mut().unwrap().remove(field);
+            let fds = original
+                .fds
+                .iter()
+                .map(|fd| fd.try_clone().unwrap())
+                .collect();
+            c16a_error(
+                Frame { value, fds },
+                &format!("missing control field {field}"),
+            );
+        }
+        let mut value = original.value.clone();
+        value["params"]["extra"] = json!(true);
+        c16a_error(
+            Frame {
+                value,
+                fds: original.fds,
+            },
+            "unexpected control field",
+        );
+    }
+    let mut start = c16a_frame(startup(host(), None));
+    start.value["params"]["supervisor_api"] = json!(2);
+    start.value["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("source");
+    c16a_error(start, "incompatible supervisor API");
+    let mut preflight = c16a_frame(Message::Preflight {
+        supervisor_api: 1,
+        path: "x".into(),
+        directory: "/".into(),
+        sequence: 0,
+    });
+    preflight.value["params"]["supervisor_api"] = json!(2);
+    preflight.value["params"]["extra"] = json!(true);
+    c16a_error(preflight, "unexpected control field");
+    let mut maintenance = c16a_frame(maintenance_request());
+    maintenance.value["params"]["supervisor_api"] = json!(2);
+    maintenance.value["params"]["stderr"] = json!({"$fd":0});
+    c16a_error(maintenance, "invalid or duplicate descriptor reference");
+    let mut legacy = c16a_frame(startup(host(), None));
+    legacy.value["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("legacy_listener");
+    assert!(Decoder::default().receive(legacy).unwrap().is_some());
+}
+
+#[test]
+fn c16a_control_envelopes_and_scalar_types_keep_exact_errors() {
+    for (value, expected) in [
+        (json!([]), "expected control object"),
+        (json!({}), "missing control field jsonrpc"),
+        (
+            json!({"jsonrpc":"1.0"}),
+            "invalid supervisor protocol envelope",
+        ),
+        (json!({"jsonrpc":"2.0"}), "missing control field method"),
+        (
+            json!({"jsonrpc":"2.0","method":"Stopping"}),
+            "missing control field params",
+        ),
+        (
+            json!({"jsonrpc":"2.0","method":"Stopping","params":null}),
+            "expected control object",
+        ),
+        (
+            json!({"jsonrpc":"2.0","method":"unknown","params":{},"extra":true}),
+            "unexpected control field",
+        ),
+        (
+            json!({"jsonrpc":"2.0","method":"unknown","params":{}}),
+            "unknown supervisor message",
+        ),
+        (
+            json!({"jsonrpc":"2.0","method":"Stopping","params":{"extra":true}}),
+            "unexpected control field",
+        ),
+        (
+            json!({"jsonrpc":"2.0","method":"Released","params":{"extra":true}}),
+            "unexpected control field",
+        ),
+    ] {
+        c16a_error(Frame { value, fds: vec![] }, expected);
+    }
+    for value in [
+        json!(null),
+        json!(-1),
+        json!(1.5),
+        json!("1"),
+        json!(true),
+        json!([]),
+    ] {
+        let expected = serde_json::from_value::<u64>(value.clone())
+            .unwrap_err()
+            .to_string();
+        let mut frame = c16a_frame(Message::Adopted { transfer: 1 });
+        frame.value["params"]["transfer"] = value;
+        c16a_error(frame, &expected);
+    }
+    for value in [
+        json!(null),
+        json!({"Ok":1}),
+        json!({"Err":null}),
+        json!({"Unknown":null}),
+        json!({"Ok":null,"Err":"x"}),
+    ] {
+        let expected = serde_json::from_value::<Result<(), String>>(value.clone())
+            .unwrap_err()
+            .to_string();
+        let mut frame = c16a_frame(Message::MaintenanceFinished { result: Ok(()) });
+        frame.value["params"]["result"] = value;
+        c16a_error(frame, &expected);
+    }
+}
+
+#[test]
+fn c16a_rejected_descriptor_indexes_close_received_copies_but_keep_sender_ownership() {
+    let _no_forks = unix::no_forks();
+    for duplicate in [true, false] {
+        let (reader, writer) = unix::pipe().unwrap();
+        let writer_copy = writer.try_clone().unwrap();
+        let mut reader = fs::File::from(reader);
+        let mut prepared = Encoder::default()
+            .prepare(Message::Maintenance(Maintenance {
+                supervisor_api: API,
+                operation: MaintenanceOperation::ClearScope {
+                    runtime: None,
+                    name: None,
+                    dry_run: false,
+                },
+                stdout: writer.into(),
+                stderr: writer_copy.into(),
+            }))
+            .unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        frame.value["params"]["stderr"] = json!({"$fd": if duplicate { 0 } else { 2 }});
+        c16a_error(frame, "invalid or duplicate descriptor reference");
+        assert!(
+            !unix::readable(reader.as_raw_fd(), 0).unwrap(),
+            "sender must retain both original writers"
+        );
+        drop(prepared);
+        assert!(
+            unix::readable(reader.as_raw_fd(), 100).unwrap(),
+            "decoder must not leak received writers"
+        );
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    }
+}
+
+#[test]
+fn c16a1_preflight_float_api_matches_original_u32_diagnostic() {
+    let frame = Frame {
+        value: json!({"jsonrpc":"2.0","method":"Preflight","params":{
+            "supervisor_api":1.0,"path":"relative/manifest","directory":"/state","sequence":0
+        }}),
+        fds: vec![],
+    };
+    let expected = serde_json::from_value::<u32>(json!(1.0)).unwrap_err().to_string();
+    let error = match Decoder::default().receive(frame) {
+        Err(error) => error,
+        Ok(_) => panic!("Preflight accepted floating-point supervisor_api"),
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), expected);
+}

@@ -1,0 +1,179 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "Goblins private supervisor notifications",
+    "version": "1"
+  },
+  "methods": [],
+  "x-notifications": [
+    {
+      "name": "Preflight",
+      "x-rust-name": "Preflight",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Startup-only pinned-child validation; API and absolute directory validation follow field extraction and unknown-field rejection.",
+      "params": [
+        {
+          "name": "supervisor_api",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorPreflightParams/properties/supervisor_api"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorPreflightParams/properties/path"
+          }
+        },
+        {
+          "name": "directory",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorPreflightParams/properties/directory"
+          }
+        },
+        {
+          "name": "sequence",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorPreflightParams/properties/sequence"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorPreflightParams"
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "startup one-shot",
+      "x-positional-schema": {
+        "not": {}
+      }
+    },
+    {
+      "name": "PreflightFailed",
+      "x-rust-name": "PreflightFailed",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Operation error; one-shot child still completes successfully.",
+      "params": [
+        {
+          "name": "error",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorPreflightFailedParams/properties/error"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorPreflightFailedParams"
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "startup one-shot",
+      "x-positional-schema": {
+        "not": {}
+      }
+    },
+    {
+      "name": "MaintenanceFinished",
+      "x-rust-name": "MaintenanceFinished",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Operation Result<(),String>; success is Ok:null and failure Err:string.",
+      "params": [
+        {
+          "name": "result",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorMaintenanceFinishedParams/properties/result"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorMaintenanceFinishedParams"
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "maintenance one-shot",
+      "x-positional-schema": {
+        "not": {}
+      }
+    },
+    {
+      "name": "Stopping",
+      "x-rust-name": "Stopping",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Stop reached dispatcher; cleanup is not complete.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEmptyParams"
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "existing supervisor lifecycle/ownership phase",
+      "x-positional-schema": {
+        "not": {}
+      }
+    },
+    {
+      "name": "Released",
+      "x-rust-name": "Released",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Monotonic resource release, independent of terminal lifetime.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEmptyParams"
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "existing supervisor lifecycle/ownership phase",
+      "x-positional-schema": {
+        "not": {}
+      }
+    },
+    {
+      "name": "Adopted",
+      "x-rust-name": "Adopted",
+      "direction": "bidirectional",
+      "paramStructure": "by-name",
+      "description": "Ownership acknowledgement, never admission credit. Wire u64 includes zero; pending-transfer validation retains its original separate checks.",
+      "params": [
+        {
+          "name": "transfer",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorAdoptedParams/properties/transfer"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorAdoptedParams"
+      },
+      "sender": "owner-adopting peer",
+      "receiver": "transfer-sending peer",
+      "connection-state": "existing supervisor lifecycle/ownership phase",
+      "x-positional-schema": {
+        "not": {}
+      }
+    }
+  ],
+  "x-contract-chunk": "C16a1",
+  "x-transport": {
+    "jsonrpc": "2.0",
+    "framing": "Content-Length plus Descriptor-Count over channel::Channel",
+    "body-bytes": 8388608,
+    "descriptors-per-frame": 240,
+    "ids": "absent",
+    "decoding": "Original Params take/finish order; raw envelope and owned descriptors remain handwritten."
+  },
+  "x-pending": [
+    "C16a2 SupervisorStart and Maintenance FD-index params",
+    "C16b source/handoff/multipart transfer metadata",
+    "C17 Command.* and Event.*"
+  ]
+}

@@ -558,58 +558,70 @@ impl Decoder {
                     adopted: None,
                 })
             }
-            "MaintenanceFinished" => {
-                let result = p.take("result")?;
+            name if name == contract::supervisor_notifications::MaintenanceFinished::NAME => {
+                let wire = contract::SupervisorMaintenanceFinishedParams {
+                    result: p.take("result")?,
+                };
                 p.finish()?;
                 Some(Received {
-                    message: Message::MaintenanceFinished { result },
-                    adopted: None,
-                })
-            }
-            "Preflight" => {
-                let supervisor_api = p.take("supervisor_api")?;
-                let path = p.take("path")?;
-                let directory: PathBuf = p.take("directory")?;
-                let sequence = p.take("sequence")?;
-                p.finish()?;
-                valid_preflight(supervisor_api, &directory)?;
-                Some(Received {
-                    message: Message::Preflight {
-                        supervisor_api,
-                        path,
-                        directory,
-                        sequence,
+                    message: Message::MaintenanceFinished {
+                        result: wire.result,
                     },
                     adopted: None,
                 })
             }
-            "PreflightFailed" => {
-                let error = p.take("error")?;
+            name if name == contract::supervisor_notifications::Preflight::NAME => {
+                let wire = contract::SupervisorPreflightParams {
+                    supervisor_api: p.take("supervisor_api")?,
+                    path: p.take("path")?,
+                    directory: p.take("directory")?,
+                    sequence: p.take("sequence")?,
+                };
                 p.finish()?;
+                valid_preflight(wire.supervisor_api, &wire.directory)?;
                 Some(Received {
-                    message: Message::PreflightFailed { error },
+                    message: Message::Preflight {
+                        supervisor_api: wire.supervisor_api,
+                        path: wire.path,
+                        directory: wire.directory,
+                        sequence: wire.sequence,
+                    },
                     adopted: None,
                 })
             }
-            "Stopping" => {
+            name if name == contract::supervisor_notifications::PreflightFailed::NAME => {
+                let wire = contract::SupervisorPreflightFailedParams {
+                    error: p.take("error")?,
+                };
+                p.finish()?;
+                Some(Received {
+                    message: Message::PreflightFailed { error: wire.error },
+                    adopted: None,
+                })
+            }
+            name if name == contract::supervisor_notifications::Stopping::NAME => {
                 p.finish()?;
                 Some(Received {
                     message: Message::Stopping,
                     adopted: None,
                 })
             }
-            "Released" => {
+            name if name == contract::supervisor_notifications::Released::NAME => {
                 p.finish()?;
                 Some(Received {
                     message: Message::Released,
                     adopted: None,
                 })
             }
-            "Adopted" => {
-                let transfer = p.take("transfer")?;
+            name if name == contract::supervisor_notifications::Adopted::NAME => {
+                let wire = contract::SupervisorAdoptedParams {
+                    transfer: p.take("transfer")?,
+                };
                 p.finish()?;
                 Some(Received {
-                    message: Message::Adopted { transfer },
+                    message: Message::Adopted {
+                        transfer: wire.transfer,
+                    },
                     adopted: None,
                 })
             }
