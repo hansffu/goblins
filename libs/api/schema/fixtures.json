@@ -33750,5 +33750,878 @@
       },
       "valid": true
     }
+  ],
+  "c17d2_lifecycle_bindings": [
+    {
+      "method": "Command.ScopeFailed",
+      "schema": "SupervisorEmptyParams",
+      "marker": "CommandScopeFailed",
+      "direction": "daemon-to-supervisor",
+      "fields": []
+    },
+    {
+      "method": "Command.Export",
+      "schema": "SupervisorCommandExportParams",
+      "marker": "CommandExport",
+      "direction": "daemon-to-supervisor",
+      "fields": [
+        "member"
+      ]
+    },
+    {
+      "method": "Command.Stop",
+      "schema": "SupervisorEmptyParams",
+      "marker": "CommandStop",
+      "direction": "daemon-to-supervisor",
+      "fields": []
+    },
+    {
+      "method": "Event.ScopeFailed",
+      "schema": "SupervisorEventScopeFailedParams",
+      "marker": "EventScopeFailed",
+      "direction": "supervisor-to-daemon",
+      "fields": [
+        "name"
+      ]
+    },
+    {
+      "method": "Event.ScopeNeeded",
+      "schema": "SupervisorEventScopeNeededParams",
+      "marker": "EventScopeNeeded",
+      "direction": "supervisor-to-daemon",
+      "fields": [
+        "name"
+      ]
+    },
+    {
+      "method": "Event.Mode",
+      "schema": "SupervisorEventModeParams",
+      "marker": "EventMode",
+      "direction": "supervisor-to-daemon",
+      "fields": [
+        "server"
+      ]
+    },
+    {
+      "method": "Event.Stopped",
+      "schema": "SupervisorEventStoppedParams",
+      "marker": "EventStopped",
+      "direction": "supervisor-to-daemon",
+      "fields": [
+        "exit_code"
+      ]
+    },
+    {
+      "method": "Event.Failed",
+      "schema": "SupervisorEventFailedParams",
+      "marker": "EventFailed",
+      "direction": "supervisor-to-daemon",
+      "fields": [
+        "error"
+      ]
+    },
+    {
+      "method": "Event.InitLost",
+      "schema": "SupervisorEmptyParams",
+      "marker": "EventInitLost",
+      "direction": "supervisor-to-daemon",
+      "fields": []
+    },
+    {
+      "method": "Event.PayloadExited",
+      "schema": "SupervisorEmptyParams",
+      "marker": "EventPayloadExited",
+      "direction": "supervisor-to-daemon",
+      "fields": []
+    }
+  ],
+  "c17d2_notification_cases": [
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeFailed",
+        "params": {}
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeFailed",
+        "params": {
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeFailed",
+        "params": {},
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeFailed"
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeFailed",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeFailed",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Export",
+        "params": {
+          "member": "../bad/name\u0000雪"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Export",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Export",
+        "params": {
+          "member": "../bad/name\u0000雪",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Export",
+        "params": {
+          "member": "../bad/name\u0000雪"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Export"
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Export",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Export",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Stop",
+        "params": {}
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Stop",
+        "params": {
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Stop",
+        "params": {},
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Stop"
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Stop",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Stop",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeFailed",
+        "params": {
+          "name": "../bad/name\u0000雪"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeFailed",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeFailed",
+        "params": {
+          "name": "../bad/name\u0000雪",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeFailed",
+        "params": {
+          "name": "../bad/name\u0000雪"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeFailed"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeFailed",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeFailed",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeNeeded",
+        "params": {
+          "name": ""
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeNeeded",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeNeeded",
+        "params": {
+          "name": "",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeNeeded",
+        "params": {
+          "name": ""
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeNeeded"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeNeeded",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeNeeded",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Mode",
+        "params": {
+          "server": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Mode",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Mode",
+        "params": {
+          "server": false,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Mode",
+        "params": {
+          "server": false
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Mode"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Mode",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Mode",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": null,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": null
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Failed",
+        "params": {
+          "error": "{\"$fd\":0}\n雪"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Failed",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Failed",
+        "params": {
+          "error": "{\"$fd\":0}\n雪",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Failed",
+        "params": {
+          "error": "{\"$fd\":0}\n雪"
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Failed"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Failed",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Failed",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.InitLost",
+        "params": {}
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.InitLost",
+        "params": {
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.InitLost",
+        "params": {},
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.InitLost"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.InitLost",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.InitLost",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.PayloadExited",
+        "params": {}
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.PayloadExited",
+        "params": {
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.PayloadExited",
+        "params": {},
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.PayloadExited"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.PayloadExited",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.PayloadExited",
+        "params": null
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": -2147483648
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": 2147483647
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": -2147483649
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": 2147483648
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": 1.0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": "0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Stopped",
+        "params": {
+          "exit_code": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Export",
+        "params": {
+          "member": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeFailed",
+        "params": {
+          "name": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.ScopeNeeded",
+        "params": {
+          "name": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Mode",
+        "params": {
+          "server": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Failed",
+        "params": {
+          "error": []
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.ScopeFailed",
+        "params": {
+          "name": "x"
+        }
+      },
+      "valid": false
+    }
   ]
 }

@@ -12757,6 +12757,78 @@
         "Serialize",
         "Deserialize"
       ]
+    },
+    "SupervisorCommandExportParams": {
+      "type": "object",
+      "properties": {
+        "member": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "member"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventScopeFailedParams": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventScopeNeededParams": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventModeParams": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "server"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventStoppedParams": {
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "$ref": "#/definitions/SupervisorOptionalI32"
+        }
+      },
+      "required": [
+        "exit_code"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventFailedParams": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
     }
   },
   "x-api-version": 1,
@@ -15495,6 +15567,15 @@
       "required-nullable": [
         "timeout"
       ]
+    },
+    "SupervisorEventStoppedParams": {
+      "name": "SupervisorEventStoppedParams",
+      "order": [
+        "exit_code"
+      ],
+      "required-nullable": [
+        "exit_code"
+      ]
     }
   },
   "x-communications-payloads": [
@@ -15980,7 +16061,8 @@
     "Dev shell metadata": "Generated devshell_metadata::{Changes,DevShellSummary} retain original names/traits/docs, open records, native u32 generation and arbitrary lock JSON. Changes Default is a Rust constructor only; lock stays required on the wire and absent update decodes None without changing explicit null output. Policy, Nix evaluation and lock handling stay native.",
     "Dev shell opaque fields": "Event.Refresh result remains a String containing standard Result<(Value,String),String>; Event.Call result contains standard Result<Value,String>; Event.DevShell summary contains original DevShellSummary JSON. x-json-content-schema documents inner canonical shapes separately. Scalar IDs parse before inner strings, inner errors before root finish; descriptor-looking inner data remains opaque.",
     "Host job metadata": "Generated HostOutcome retains original Debug/Serialize/Deserialize/Default, no added Clone, open fields, null optional exit_code/signal/spawn_error, three required bools and original status.json prose. Native policy and status-file behavior remain unchanged. Root Finished aggregate is explicit without Clone.",
-    "Host job results": "Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added."
+    "Host job results": "Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added.",
+    "Lifecycle scalar roots": "Generated parameter records and identities retain present empty object params for Command.ScopeFailed/Stop and Event.InitLost/PayloadExited, original member/name/error strings and bool mode, plus required nullable i32 stopped exit_code. Root fieldwise decoding and original unknown-method/extra/missing diagnostics stay unchanged. Stop remains distinct from lifecycle control notifications Stopping/Released; no lifecycle, scope or export policy is added."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",

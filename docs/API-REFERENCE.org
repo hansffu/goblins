@@ -14032,6 +14032,292 @@ Positional parameters:
 }
 #+end_src
 
+** Notification =Command.ScopeFailed=
+
+Preserve the scope-wide exit outcome after unexpected engine death. Present empty object params are required.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational lifecycle command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.Export=
+
+Export the published generation and fresh resource lease chain for member without waiting for Nix work, answered by Event.Exported.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational lifecycle command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "member": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "member"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.Stop=
+
+Begin cancellation and teardown with present empty object params; existing teardown barriers and lifecycle control notifications Stopping/Released stay unchanged.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational lifecycle command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.ScopeFailed=
+
+Report the named scope failure using the original event string; this payload is distinct from the empty ScopeFailed command.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational lifecycle event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.ScopeNeeded=
+
+Request private scope membership by name without blocking the event pump. The daemon uses its captured executable pin.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational lifecycle event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Mode=
+
+Announce whether the agent runs without a terminal before slow launch work.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational lifecycle event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "server": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "server"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Stopped=
+
+Report sandbox, host-job and resource cleanup complete, independently of retained terminal output. exit_code is required and nullable, with full native i32 range.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational lifecycle event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "exit_code": {
+      "$ref": "#/definitions/SupervisorOptionalI32"
+    }
+  },
+  "required": [
+    "exit_code"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Failed=
+
+Report launch/runtime failure as the original error string.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational lifecycle event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.InitLost=
+
+Report the sandbox init channel closed: no process can start and none reports further. Present empty object params are required.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational lifecycle event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.PayloadExited=
+
+Report the main payload exited; the daemon decides the session outcome. Present empty object params are required.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational lifecycle event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * supervisor actor method phases
 
 These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.
@@ -14118,18 +14404,8 @@ These existing messages remain assigned to later migration slices; their payload
 #+begin_src json
 {
   "C17d-lifecycle-host-jobs": [
-    "Command.ScopeFailed",
     "Command.ScopeMembership",
-    "Command.Export",
-    "Command.Stop",
-    "Event.ScopeFailed",
-    "Event.ScopeNeeded",
-    "Event.Started",
-    "Event.Mode",
-    "Event.Stopped",
-    "Event.Failed",
-    "Event.InitLost",
-    "Event.PayloadExited"
+    "Event.Started"
   ],
   "C17e-relay-logging": [
     "Command.RecordEvent",
@@ -14545,6 +14821,15 @@ Original Serde container names, field order, required nullable sequence slots an
     "required-nullable": [
       "timeout"
     ]
+  },
+  "SupervisorEventStoppedParams": {
+    "name": "SupervisorEventStoppedParams",
+    "order": [
+      "exit_code"
+    ],
+    "required-nullable": [
+      "exit_code"
+    ]
   }
 }
 #+end_src
@@ -14570,6 +14855,7 @@ Original Serde container names, field order, required nullable sequence slots an
 - =Dev shell opaque fields= :: Event.Refresh result remains a String containing standard Result<(Value,String),String>; Event.Call result contains standard Result<Value,String>; Event.DevShell summary contains original DevShellSummary JSON. x-json-content-schema documents inner canonical shapes separately. Scalar IDs parse before inner strings, inner errors before root finish; descriptor-looking inner data remains opaque.
 - =Host job metadata= :: Generated HostOutcome retains original Debug/Serialize/Deserialize/Default, no added Clone, open fields, null optional exit_code/signal/spawn_error, three required bools and original status.json prose. Native policy and status-file behavior remain unchanged. Root Finished aggregate is explicit without Clone.
 - =Host job results= :: Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added.
+- =Lifecycle scalar roots= :: Generated parameter records and identities retain present empty object params for Command.ScopeFailed/Stop and Event.InitLost/PayloadExited, original member/name/error strings and bool mode, plus required nullable i32 stopped exit_code. Root fieldwise decoding and original unknown-method/extra/missing diagnostics stay unchanged. Stop remains distinct from lifecycle control notifications Stopping/Released; no lifecycle, scope or export policy is added.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -29511,6 +29797,108 @@ Original Serde container names, field order, required nullable sequence slots an
     "Serialize",
     "Deserialize"
   ]
+}
+#+end_src
+
+** =SupervisorCommandExportParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "member": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "member"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventScopeFailedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventScopeNeededParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventModeParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "server": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "server"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventStoppedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "exit_code": {
+      "$ref": "#/definitions/SupervisorOptionalI32"
+    }
+  },
+  "required": [
+    "exit_code"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventFailedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "additionalProperties": false
 }
 #+end_src
 

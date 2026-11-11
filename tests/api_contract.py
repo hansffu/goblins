@@ -1356,6 +1356,25 @@ def check_supervisor_host_job_metadata():
         raise ValueError("private host job run serde slots differ")
 
 
+def check_supervisor_lifecycle_metadata():
+    """Pin scalar lifecycle roots while shared catalog checks cover identities."""
+    schema=common();defs=schema["definitions"]
+    expected={
+        "CommandExportParams":{"member":{"type":"string"}},
+        "EventScopeFailedParams":{"name":{"type":"string"}},
+        "EventScopeNeededParams":{"name":{"type":"string"}},
+        "EventModeParams":{"server":{"type":"boolean"}},
+        "EventStoppedParams":{"exit_code":{"$ref":"#/definitions/SupervisorOptionalI32"}},
+        "EventFailedParams":{"error":{"type":"string"}},
+    }
+    for name,props in expected.items():
+        actual={key:value for key,value in defs["Supervisor"+name].items() if key!="description"}
+        if actual!={"type":"object","properties":props,"required":list(props),"additionalProperties":False}:
+            raise ValueError("private lifecycle schema differs: "+name)
+    if schema["x-rust-serde-records"].get("SupervisorEventStoppedParams")!={"name":"SupervisorEventStoppedParams","order":["exit_code"],"required-nullable":["exit_code"]}:
+        raise ValueError("private stopped event serde slots differ")
+
+
 def check_supervisor_pending_inventory():
     """Retire covered methods from their original remaining family, without loss."""
     families={
@@ -1418,6 +1437,16 @@ def check_private_contracts():
         'Event.HostJobPrepared':('supervisor-to-daemon','SupervisorEventHostJobPreparedParams',['request', 'result']),
         'Event.HostJobFailed':('supervisor-to-daemon','SupervisorEventHostJobFailedParams',['request', 'error']),
         'Event.HostJobFinished':('supervisor-to-daemon','SupervisorEventHostJobFinishedParams',['request', 'outcome']),
+        'Command.ScopeFailed':('daemon-to-supervisor','SupervisorEmptyParams',[]),
+        'Command.Export':('daemon-to-supervisor','SupervisorCommandExportParams',['member']),
+        'Command.Stop':('daemon-to-supervisor','SupervisorEmptyParams',[]),
+        'Event.ScopeFailed':('supervisor-to-daemon','SupervisorEventScopeFailedParams',['name']),
+        'Event.ScopeNeeded':('supervisor-to-daemon','SupervisorEventScopeNeededParams',['name']),
+        'Event.Mode':('supervisor-to-daemon','SupervisorEventModeParams',['server']),
+        'Event.Stopped':('supervisor-to-daemon','SupervisorEventStoppedParams',['exit_code']),
+        'Event.Failed':('supervisor-to-daemon','SupervisorEventFailedParams',['error']),
+        'Event.InitLost':('supervisor-to-daemon','SupervisorEmptyParams',[]),
+        'Event.PayloadExited':('supervisor-to-daemon','SupervisorEmptyParams',[]),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1499,6 +1528,7 @@ def check():
     check_supervisor_approval_metadata()
     check_supervisor_devshell_metadata()
     check_supervisor_host_job_metadata()
+    check_supervisor_lifecycle_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

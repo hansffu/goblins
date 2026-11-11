@@ -468,7 +468,8 @@ macro_rules! command_codec {
         fn encode_command(command: &Command, b: &mut Builder) -> io::Result<()> {
             match command {
                 Command::Cancel(id) => b.notification::<contract::supervisor_notifications::CommandCancel>(contract::SupervisorCommandCancelParams { id:*id })?,
-                Command::Stop => b.method="Command.Stop",
+                Command::Stop => b.notification::<contract::supervisor_notifications::CommandStop>(contract::SupervisorEmptyParams {})?,
+                Command::ScopeFailed => b.notification::<contract::supervisor_notifications::CommandScopeFailed>(contract::SupervisorEmptyParams {})?,
                 Command::Start(handoff) => {
                     let handoff=encode_handoff_wire(handoff,b)?;
                     // Preserve the original helper's serialization boundary.
@@ -500,6 +501,7 @@ macro_rules! command_codec {
                 Command::PrepareHostJob { request,cwd } => b.notification::<contract::supervisor_notifications::CommandPrepareHostJob>(contract::SupervisorCommandPrepareHostJobParams { request:request.clone(),cwd:cwd.clone() })?,
                 Command::RunHostJob { request,argv,env,timeout } => b.notification::<contract::supervisor_notifications::CommandRunHostJob>(contract::SupervisorCommandRunHostJobParams { request:request.clone(),argv:argv.clone(),env:env.clone(),timeout:*timeout })?,
                 Command::CancelHostJob { request } => b.notification::<contract::supervisor_notifications::CommandCancelHostJob>(contract::SupervisorCommandCancelHostJobParams { request:request.clone() })?,
+                Command::Export { member } => b.notification::<contract::supervisor_notifications::CommandExport>(contract::SupervisorCommandExportParams { member:member.clone() })?,
                 $(Command::$v { $($f),* } => { b.method=concat!("Command.", stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
             }
             Ok(())
@@ -510,7 +512,8 @@ macro_rules! command_codec {
                     let wire=contract::SupervisorCommandCancelParams { id:p.take("id")? };
                     Command::Cancel(wire.id)
                 },
-                "Command.Stop" => Command::Stop,
+                name if name==contract::supervisor_notifications::CommandStop::NAME => Command::Stop,
+                name if name==contract::supervisor_notifications::CommandScopeFailed::NAME => Command::ScopeFailed,
                 name if name==contract::supervisor_notifications::CommandSpawn::NAME => {
                     let wire=contract::SupervisorCommandSpawnParams {
                         id:p.take("id")?,kind:p.take("kind")?,argv:p.take("argv")?,cwd:p.take("cwd")?,env:p.take("env")?,
@@ -584,6 +587,10 @@ macro_rules! command_codec {
                     let wire=contract::SupervisorCommandCancelHostJobParams { request:p.take("request")? };
                     Command::CancelHostJob { request:wire.request }
                 },
+                name if name==contract::supervisor_notifications::CommandExport::NAME => {
+                    let wire=contract::SupervisorCommandExportParams { member:p.take("member")? };
+                    Command::Export { member:wire.member }
+                },
                 $(concat!("Command.",stringify!($v)) => Command::$v { $($f:get!(p,d,$kind,stringify!($f),$ty)),* }),*,
                 _ => return Err(invalid("unknown supervisor command")),
             };
@@ -595,15 +602,13 @@ command_codec! {
     RecordEvent { event:String=>plain, fields:Value=>opaque },
     SandboxSend { connection:u64=>plain, message:Value=>opaque },
     SandboxClose { connection:u64=>plain },
-    ScopeFailed {},
     ScopeMembership { result:Result<Fd,String> =>membership },
-    Export { member:String=>plain },
 }
 macro_rules! event_codec {
     ($($v:ident { $($f:ident : $ty:ty => $kind:ident),* $(,)? }),* $(,)?) => {
         fn encode_event(event:&Event,b:&mut Builder) -> io::Result<()> {
             match event {
-                Event::Failed(error) => { b.method="Event.Failed"; b.value("error",error)?; }
+                Event::Failed(error) => b.notification::<contract::supervisor_notifications::EventFailed>(contract::SupervisorEventFailedParams { error:error.clone() })?,
                 Event::Manifest { sequence,lease,catalogue } => {
                     // Preserve path/root serialization before catalogue and owner.
                     serde_json::to_value(&lease.path)?;
@@ -663,17 +668,24 @@ macro_rules! event_codec {
                     };
                     b.notification::<contract::supervisor_notifications::EventHostJobFinished>(contract::SupervisorEventHostJobFinishedParams { request:request.clone(),outcome })?;
                 },
+                Event::ScopeFailed { name } => b.notification::<contract::supervisor_notifications::EventScopeFailed>(contract::SupervisorEventScopeFailedParams { name:name.clone() })?,
+                Event::ScopeNeeded { name } => b.notification::<contract::supervisor_notifications::EventScopeNeeded>(contract::SupervisorEventScopeNeededParams { name:name.clone() })?,
+                Event::Mode { server } => b.notification::<contract::supervisor_notifications::EventMode>(contract::SupervisorEventModeParams { server:*server })?,
+                Event::Stopped { exit_code } => b.notification::<contract::supervisor_notifications::EventStopped>(contract::SupervisorEventStoppedParams { exit_code:*exit_code })?,
                 $(Event::$v { $($f),* } => { b.method=concat!("Event.",stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
-                Event::InitLost => b.method="Event.InitLost",
-                Event::PayloadExited => b.method="Event.PayloadExited",
+                Event::InitLost => b.notification::<contract::supervisor_notifications::EventInitLost>(contract::SupervisorEmptyParams {})?,
+                Event::PayloadExited => b.notification::<contract::supervisor_notifications::EventPayloadExited>(contract::SupervisorEmptyParams {})?,
             }
             Ok(())
         }
         fn decode_event(method:&str,mut p:Params,_d:&mut Descriptors)->io::Result<Event> {
             let event=match method {
-                "Event.Failed"=>Event::Failed(p.take("error")?),
-                "Event.InitLost"=>Event::InitLost,
-                "Event.PayloadExited"=>Event::PayloadExited,
+                name if name==contract::supervisor_notifications::EventFailed::NAME => {
+                    let wire=contract::SupervisorEventFailedParams { error:p.take("error")? };
+                    Event::Failed(wire.error)
+                },
+                name if name==contract::supervisor_notifications::EventInitLost::NAME => Event::InitLost,
+                name if name==contract::supervisor_notifications::EventPayloadExited::NAME => Event::PayloadExited,
                 name if name==contract::supervisor_notifications::EventSpawned::NAME => {
                     let wire=contract::SupervisorEventSpawnedParams { id:p.take("id")?,pid:p.take("pid")? };
                     Event::Spawned { id:wire.id,pid:wire.pid }
@@ -735,6 +747,22 @@ macro_rules! event_codec {
                     let wire=contract::SupervisorEventHostJobFinishedParams { request:p.take("request")?,outcome:p.take("outcome")? };
                     Event::HostJobFinished { request:wire.request,outcome:wire.outcome }
                 },
+                name if name==contract::supervisor_notifications::EventScopeFailed::NAME => {
+                    let wire=contract::SupervisorEventScopeFailedParams { name:p.take("name")? };
+                    Event::ScopeFailed { name:wire.name }
+                },
+                name if name==contract::supervisor_notifications::EventScopeNeeded::NAME => {
+                    let wire=contract::SupervisorEventScopeNeededParams { name:p.take("name")? };
+                    Event::ScopeNeeded { name:wire.name }
+                },
+                name if name==contract::supervisor_notifications::EventMode::NAME => {
+                    let wire=contract::SupervisorEventModeParams { server:p.take("server")? };
+                    Event::Mode { server:wire.server }
+                },
+                name if name==contract::supervisor_notifications::EventStopped::NAME => {
+                    let wire=contract::SupervisorEventStoppedParams { exit_code:p.take("exit_code")? };
+                    Event::Stopped { exit_code:wire.exit_code }
+                },
                 $(concat!("Event.",stringify!($v))=>Event::$v { $($f:get!(p,_d,$kind,stringify!($f),$ty)),* }),*,
                 _=>return Err(invalid("unknown supervisor event")),
             };
@@ -743,14 +771,10 @@ macro_rules! event_codec {
     }
 }
 event_codec! {
-    ScopeFailed { name:String=>plain },
-    ScopeNeeded { name:String=>plain },
     Started { docker_enabled:bool=>plain, policy:Box<crate::policy::Policy> =>plain, support:crate::policy::Support=>plain, dev_shell:Option<crate::policy::DevShellSummary> =>opaque, identity:crate::Identity=>plain, recreated:Option<Box<crate::Recreated>> =>plain, auto:Box<crate::Auto> =>plain, worktrees:Box<crate::worktrees::Report> =>plain },
-    Mode { server:bool=>plain },
     SandboxOpened { connection:u64=>plain },
     SandboxCall { connection:u64=>plain, call:goblins_jsonrpc::Call=>call },
     SandboxClosed { connection:u64=>plain },
-    Stopped { exit_code:Option<i32> =>plain },
 }
 mod handoff;
 pub mod outbound;

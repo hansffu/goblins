@@ -5502,3 +5502,238 @@ fn c17d1_host_job_invalid_native_paths_keep_fallible_serialization_errors() {
         assert_eq!(error.to_string(), expected);
     }
 }
+fn c17d2_cases() -> Vec<(Message, &'static str, Value, Option<&'static str>)> {
+    vec![
+        (
+            Message::Command(Command::ScopeFailed {}),
+            "Command.ScopeFailed",
+            json!({}),
+            None,
+        ),
+        (
+            Message::Command(Command::Export {
+                member: "../bad/name\0雪".into(),
+            }),
+            "Command.Export",
+            json!({"member":"../bad/name\0雪"}),
+            Some("member"),
+        ),
+        (
+            Message::Command(Command::Stop),
+            "Command.Stop",
+            json!({}),
+            None,
+        ),
+        (
+            Message::Event(Event::ScopeFailed {
+                name: "../bad/name\0雪".into(),
+            }),
+            "Event.ScopeFailed",
+            json!({"name":"../bad/name\0雪"}),
+            Some("name"),
+        ),
+        (
+            Message::Event(Event::ScopeNeeded { name: "".into() }),
+            "Event.ScopeNeeded",
+            json!({"name":""}),
+            Some("name"),
+        ),
+        (
+            Message::Event(Event::Mode { server: false }),
+            "Event.Mode",
+            json!({"server":false}),
+            Some("server"),
+        ),
+        (
+            Message::Event(Event::Stopped { exit_code: None }),
+            "Event.Stopped",
+            json!({"exit_code":null}),
+            Some("exit_code"),
+        ),
+        (
+            Message::Event(Event::Failed("{\"$fd\":0}\n雪".into())),
+            "Event.Failed",
+            json!({"error":"{\"$fd\":0}\n雪"}),
+            Some("error"),
+        ),
+        (
+            Message::Event(Event::InitLost),
+            "Event.InitLost",
+            json!({}),
+            None,
+        ),
+        (
+            Message::Event(Event::PayloadExited),
+            "Event.PayloadExited",
+            json!({}),
+            None,
+        ),
+    ]
+}
+#[test]
+fn c17d2_ten_lifecycle_envelopes_channel_roundtrips_and_required_params() {
+    let _no_forks = unix::no_forks();
+    for (message, method, params, field) in c17d2_cases() {
+        let mut prepared = Encoder::default().prepare(message).unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert!(frame.fds.is_empty());
+        assert_eq!(
+            frame.value,
+            json!({"jsonrpc":"2.0","method":method,"params":params})
+        );
+        if let Some(field) = field {
+            let mut value = frame.value.clone();
+            value["params"].as_object_mut().unwrap().remove(field);
+            value["params"]["extra"] = json!(0);
+            c16a_error(
+                Frame { value, fds: vec![] },
+                &format!("missing control field {field}"),
+            );
+        }
+        let mut value = frame.value.clone();
+        value.as_object_mut().unwrap().remove("params");
+        c16a_error(Frame { value, fds: vec![] }, "missing control field params");
+        for bad in [json!([]), json!(null)] {
+            let mut value = frame.value.clone();
+            value["params"] = bad;
+            c16a_error(Frame { value, fds: vec![] }, "expected control object");
+        }
+        let mut value = frame.value.clone();
+        value["params"]["extra"] = json!(0);
+        c16a_error(Frame { value, fds: vec![] }, "unexpected control field");
+        let expected = frame.value.clone();
+        let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut sender = channel::Channel::new(left).unwrap();
+        let mut receiver = channel::Channel::new(right).unwrap();
+        sender.queue(&frame.value, &mut frame.fds).unwrap();
+        sender.flush().unwrap();
+        assert!(!sender.wants_write());
+        let received = Decoder::default()
+            .receive_channel(&mut receiver)
+            .unwrap()
+            .unwrap();
+        assert!(received.adopted.is_none());
+        assert_eq!(c16a_frame(received.message).value, expected);
+    }
+    // Lifecycle control notifications have their own identities; operational Stop is distinct.
+    assert_eq!(
+        c16a_frame(Message::Stopping).value,
+        json!({"jsonrpc":"2.0","method":"Stopping","params":{}})
+    );
+    assert_eq!(
+        c16a_frame(Message::Released).value,
+        json!({"jsonrpc":"2.0","method":"Released","params":{}})
+    );
+    for exit_code in [None, Some(i32::MIN), Some(i32::MAX)] {
+        let frame = c16a_frame(Message::Event(Event::Stopped { exit_code }));
+        assert_eq!(frame.value["params"], json!({"exit_code":exit_code}));
+        let received = Decoder::default().receive(frame).unwrap().unwrap();
+        assert!(
+            matches!(received.message,Message::Event(Event::Stopped {exit_code:actual}) if actual==exit_code)
+        );
+    }
+    roundtrip(Message::Event(Event::Mode { server: true }));
+}
+#[test]
+fn c17d2_lifecycle_scalar_errors_precede_payload_finish_without_policy_checks() {
+    for (_, method, params, field) in c17d2_cases() {
+        let Some(field) = field else { continue };
+        let invalid = if field == "exit_code" {
+            vec![
+                json!(-2147483649_i64),
+                json!(2147483648_i64),
+                json!(1.0),
+                json!(true),
+                json!("0"),
+                json!([]),
+            ]
+        } else if field == "server" {
+            vec![json!(null), json!(0), json!("true"), json!([])]
+        } else {
+            vec![
+                json!(null),
+                json!(0),
+                json!(false),
+                json!([]),
+                json!({"$fd":0}),
+            ]
+        };
+        for bad in invalid {
+            let expected = if field == "exit_code" {
+                serde_json::from_value::<Option<i32>>(bad.clone())
+                    .err()
+                    .unwrap()
+                    .to_string()
+            } else if field == "server" {
+                serde_json::from_value::<bool>(bad.clone())
+                    .err()
+                    .unwrap()
+                    .to_string()
+            } else {
+                serde_json::from_value::<String>(bad.clone())
+                    .err()
+                    .unwrap()
+                    .to_string()
+            };
+            let mut params = params.clone();
+            params[field] = bad;
+            params["extra"] = json!(true);
+            c16a_error(
+                Frame {
+                    value: json!({"jsonrpc":"2.0","method":method,"params":params}),
+                    fds: vec![],
+                },
+                &expected,
+            );
+        }
+    }
+    // Empty strings are wire values, even where a later scope/member policy may refuse them.
+    for message in [
+        Message::Command(Command::Export { member: "".into() }),
+        Message::Event(Event::ScopeFailed { name: "".into() }),
+        Message::Event(Event::Failed("".into())),
+    ] {
+        roundtrip(message);
+    }
+}
+#[test]
+fn c17d2_lifecycle_method_identity_and_empty_payloads_are_exact() {
+    for (method, expected) in [
+        ("Command.scopeFailed", "unknown supervisor command"),
+        ("Command.stop", "unknown supervisor command"),
+        ("Command.Stopping", "unknown supervisor command"),
+        ("Command.ScopeNeeded", "unknown supervisor command"),
+        ("Command.Unknown", "unknown supervisor command"),
+        ("Event.scopeFailed", "unknown supervisor event"),
+        ("Event.Stop", "unknown supervisor event"),
+        ("Event.Released", "unknown supervisor event"),
+        ("Event.Unknown", "unknown supervisor event"),
+        ("command.Stop", "unknown supervisor message"),
+        ("ScopeFailed", "unknown supervisor message"),
+    ] {
+        c16a_error(
+            Frame {
+                value: json!({"jsonrpc":"2.0","method":method,"params":{}}),
+                fds: vec![],
+            },
+            expected,
+        );
+    }
+    // Same suffix, different direction and shape: command is empty; event needs name.
+    c16a_error(
+        Frame {
+            value: json!({"jsonrpc":"2.0","method":"Event.ScopeFailed","params":{}}),
+            fds: vec![],
+        },
+        "missing control field name",
+    );
+    c16a_error(
+        Frame {
+            value: json!({"jsonrpc":"2.0","method":"Command.ScopeFailed","params":{"name":"x"}}),
+            fds: vec![],
+        },
+        "unexpected control field",
+    );
+}

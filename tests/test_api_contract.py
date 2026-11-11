@@ -16,6 +16,77 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17d2_lifecycle_instances_bindings_and_remaining_inventory(self):
+        fixtures = contract.read("fixtures.json")
+        for case in fixtures["c17d2_notification_cases"]:
+            with self.subTest(notification=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", case["direction"], case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", case["direction"], case["frame"])
+            opposite = "supervisor-to-daemon" if case["direction"] == "daemon-to-supervisor" else "daemon-to-supervisor"
+            self.assertFalse(contract.validate_notification("supervisor", opposite, case["frame"]))
+        doc = contract.document("supervisor")
+        for binding in fixtures["c17d2_lifecycle_bindings"]:
+            row = next(row for row in doc["x-notifications"] if row["name"] == binding["method"])
+            self.assertEqual(row["x-rust-name"], binding["marker"])
+            self.assertEqual(row["direction"], binding["direction"])
+            self.assertEqual(row["x-params-schema"], {"$ref":"common.json#/definitions/" + binding["schema"]})
+            self.assertEqual([field["name"] for field in row["params"]], binding["fields"])
+        pending = [name for group in doc["x-pending-notifications"].values() for name in group]
+        completed = {binding["method"] for binding in fixtures["c17d2_lifecycle_bindings"]}
+        self.assertEqual(len(completed), 10)
+        self.assertEqual(len(pending), 8)
+        self.assertEqual(doc["x-pending-notifications"]["C17d-lifecycle-host-jobs"], ["Command.ScopeMembership", "Event.Started"])
+        self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
+        self.assertFalse(completed & set(pending))
+        self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
+
+    def test_c17d2_lifecycle_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def changed(label, change):
+            schema = copy.deepcopy(original)
+            change(schema)
+            cases.append((label, schema))
+        def definition(s, name): return s["definitions"]["Supervisor" + name]
+        for root,key in [("CommandExportParams","member"),("EventScopeFailedParams","name"),("EventScopeNeededParams","name"),("EventModeParams","server"),("EventFailedParams","error")]:
+            changed(root + " native scalar", lambda s,root=root,key=key: definition(s,root)["properties"][key].update(type="integer"))
+        changed("Stopped nullable i32 reference", lambda s: definition(s,"EventStoppedParams")["properties"]["exit_code"].update({"$ref":"#/definitions/SupervisorOptionalSequence"}))
+        for root in ["CommandExportParams","EventScopeFailedParams","EventScopeNeededParams","EventModeParams","EventStoppedParams","EventFailedParams"]:
+            changed(root + " required field", lambda s,root=root: definition(s,root)["required"].clear())
+            changed(root + " root closed", lambda s,root=root: definition(s,root).update(additionalProperties=True))
+        changed("Stopped serde original name", lambda s: s["x-rust-serde-records"]["SupervisorEventStoppedParams"].update(name="Wrong"))
+        changed("Stopped serde field order", lambda s: s["x-rust-serde-records"]["SupervisorEventStoppedParams"]["order"].clear())
+        changed("Stopped required nullable slot", lambda s: s["x-rust-serde-records"]["SupervisorEventStoppedParams"]["required-nullable"].remove("exit_code"))
+        changed("Stopped no default field", lambda s: s["x-rust-serde-records"]["SupervisorEventStoppedParams"].update({"emit-defaults":["exit_code"]}))
+        changed("Stopped no field aliases", lambda s: s["x-rust-serde-records"]["SupervisorEventStoppedParams"].update({"aliases":{"exit_code":["status"]}}))
+        changed("Empty params closed", lambda s: definition(s,"EmptyParams").update(additionalProperties=True))
+        changed("Empty params object", lambda s: definition(s,"EmptyParams").update(type="array"))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract,"common",return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
+    def test_c17d2_lifecycle_notification_markers_directions_and_payloads_reject_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.document
+        doc = original("supervisor")
+        for binding in contract.read("fixtures.json")["c17d2_lifecycle_bindings"]:
+            for mutation in ["marker", "direction", "payload"]:
+                changed = copy.deepcopy(doc)
+                row = next(row for row in changed["x-notifications"] if row["name"] == binding["method"])
+                if mutation == "marker": row["x-rust-name"] = "Wrong" + binding["marker"]
+                elif mutation == "direction": row["direction"] = "supervisor-to-daemon" if binding["direction"] == "daemon-to-supervisor" else "daemon-to-supervisor"
+                else: row["x-params-schema"] = {"$ref":"common.json#/definitions/SupervisorDescriptor"}
+                with self.subTest(method=binding["method"], mutation=mutation), patch.object(contract,"document",side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
+                    with self.assertRaises(ValueError):
+                        contract.check()
+
     def test_c17d1_host_job_instances_notifications_and_remaining_inventory(self):
         fixtures = contract.read("fixtures.json")
         for name, cases in fixtures["c17d1_host_job_schema_cases"].items():
@@ -36,7 +107,8 @@ class ContractTests(unittest.TestCase):
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
         completed = {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         self.assertEqual(len(completed), 6)
-        self.assertEqual(len(pending), 18)
+        completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
+        self.assertEqual(len(pending), 8)
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -145,7 +217,8 @@ class ContractTests(unittest.TestCase):
         completed = {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
         self.assertEqual(len(completed), 6)
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
-        self.assertEqual(len(pending), 18)
+        completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
+        self.assertEqual(len(pending), 8)
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -254,7 +327,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(len(completed), 6)
         completed |= {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
-        self.assertEqual(len(pending), 18)
+        completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
+        self.assertEqual(len(pending), 8)
         self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
@@ -362,12 +436,13 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(inner.is_valid(value))
         doc = contract.document("supervisor")
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
-        self.assertEqual(len(pending), 18)
+        self.assertEqual(len(pending), 8)
         completed = {case["frame"]["method"] for case in fixtures["c17b2_notification_cases"]}
         self.assertEqual(len(completed), 7)
         completed |= {case["frame"]["method"] for case in fixtures["c17c1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17c2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
+        completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -504,13 +579,14 @@ class ContractTests(unittest.TestCase):
         doc = original("supervisor")
         pending = doc["x-pending-notifications"]
         names = [name for group in pending.values() for name in group]
-        self.assertEqual(len(names), 18)
-        self.assertEqual(len(set(names)), 18)
+        self.assertEqual(len(names), 8)
+        self.assertEqual(len(set(names)), 8)
         completed = {r["method"] for r in contract.read("fixtures.json")["c17b1_process_roots"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17b2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17d1_notification_cases"]}
+        completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17d2_notification_cases"]}
         declared = {r["name"] for r in doc["x-notifications"]}
         self.assertTrue(completed <= declared)
         self.assertFalse(set(names) & declared)

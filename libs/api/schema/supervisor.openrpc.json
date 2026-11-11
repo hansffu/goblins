@@ -1515,9 +1515,227 @@
       "sender": "supervisor",
       "receiver": "daemon",
       "connection-state": "operational host-job event"
+    },
+    {
+      "name": "Command.ScopeFailed",
+      "x-rust-name": "CommandScopeFailed",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Preserve the scope-wide exit outcome after unexpected engine death. Present empty object params are required.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEmptyParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational lifecycle command"
+    },
+    {
+      "name": "Command.Export",
+      "x-rust-name": "CommandExport",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Export the published generation and fresh resource lease chain for member without waiting for Nix work, answered by Event.Exported.",
+      "params": [
+        {
+          "name": "member",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandExportParams/properties/member"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandExportParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational lifecycle command"
+    },
+    {
+      "name": "Command.Stop",
+      "x-rust-name": "CommandStop",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Begin cancellation and teardown with present empty object params; existing teardown barriers and lifecycle control notifications Stopping/Released stay unchanged.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEmptyParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational lifecycle command"
+    },
+    {
+      "name": "Event.ScopeFailed",
+      "x-rust-name": "EventScopeFailed",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report the named scope failure using the original event string; this payload is distinct from the empty ScopeFailed command.",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventScopeFailedParams/properties/name"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventScopeFailedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational lifecycle event"
+    },
+    {
+      "name": "Event.ScopeNeeded",
+      "x-rust-name": "EventScopeNeeded",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Request private scope membership by name without blocking the event pump. The daemon uses its captured executable pin.",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventScopeNeededParams/properties/name"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventScopeNeededParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational lifecycle event"
+    },
+    {
+      "name": "Event.Mode",
+      "x-rust-name": "EventMode",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Announce whether the agent runs without a terminal before slow launch work.",
+      "params": [
+        {
+          "name": "server",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventModeParams/properties/server"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventModeParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational lifecycle event"
+    },
+    {
+      "name": "Event.Stopped",
+      "x-rust-name": "EventStopped",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report sandbox, host-job and resource cleanup complete, independently of retained terminal output. exit_code is required and nullable, with full native i32 range.",
+      "params": [
+        {
+          "name": "exit_code",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStoppedParams/properties/exit_code"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventStoppedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational lifecycle event"
+    },
+    {
+      "name": "Event.Failed",
+      "x-rust-name": "EventFailed",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report launch/runtime failure as the original error string.",
+      "params": [
+        {
+          "name": "error",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventFailedParams/properties/error"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventFailedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational lifecycle event"
+    },
+    {
+      "name": "Event.InitLost",
+      "x-rust-name": "EventInitLost",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report the sandbox init channel closed: no process can start and none reports further. Present empty object params are required.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEmptyParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational lifecycle event"
+    },
+    {
+      "name": "Event.PayloadExited",
+      "x-rust-name": "EventPayloadExited",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report the main payload exited; the daemon decides the session outcome. Present empty object params are required.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEmptyParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational lifecycle event"
     }
   ],
-  "x-contract-chunk": "C17d1",
+  "x-contract-chunk": "C17d2",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -1604,18 +1822,8 @@
   ],
   "x-pending-notifications": {
     "C17d-lifecycle-host-jobs": [
-      "Command.ScopeFailed",
       "Command.ScopeMembership",
-      "Command.Export",
-      "Command.Stop",
-      "Event.ScopeFailed",
-      "Event.ScopeNeeded",
-      "Event.Started",
-      "Event.Mode",
-      "Event.Stopped",
-      "Event.Failed",
-      "Event.InitLost",
-      "Event.PayloadExited"
+      "Event.Started"
     ],
     "C17e-relay-logging": [
       "Command.RecordEvent",
