@@ -1,5 +1,5 @@
 use super::*;
-use contract::{WireSource, WireStdio};
+use contract::{WireDirectory, WireHandoff, WireLease, WireSource, WireStdio};
 use serde::Deserialize;
 
 pub(super) fn encode_stdio(stdio: &Stdio, b: &mut Builder) -> io::Result<Value> {
@@ -52,7 +52,7 @@ fn recreate_from_wire(value: contract::Recreate) -> crate::Recreate {
         }),
     }
 }
-pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Value> {
+pub(super) fn encode_source_wire(source: &Source, b: &mut Builder) -> io::Result<WireSource> {
     let wire = match source {
         Source::Host {
             configuration,
@@ -102,9 +102,11 @@ pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Valu
             }
         }
     };
-    // The original Source producer used json!, including its serialization
-    // failure behavior. Keep that boundary while generating the wire fields.
-    Ok(json!(wire))
+    Ok(wire)
+}
+pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Value> {
+    // Preserve the original Source producer's json! failure boundary.
+    Ok(json!(encode_source_wire(source, b)?))
 }
 
 fn decode_source(value: Value, d: &mut Descriptors) -> io::Result<Source> {
@@ -155,33 +157,6 @@ fn decode_source(value: Value, d: &mut Descriptors) -> io::Result<Source> {
         },
     })
 }
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireLease {
-    directory: PathBuf,
-    lock: Descriptor,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireDirectory {
-    fd: Descriptor,
-    source: PathBuf,
-    destination: PathBuf,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireHandoff {
-    transfer: u64,
-    count: usize,
-    workspace: Descriptor,
-    working_directory: Option<WireDirectory>,
-    // The generation contains arbitrary lock-file JSON. It is opaque to the
-    // transport's descriptor scanner, like relayed RPC values.
-    dev_shell: String,
-    docker: bool,
-    leases: Vec<WireLease>,
-    more: bool,
-}
 fn lease(lease: &ResourceLease, b: &mut Builder) -> io::Result<WireLease> {
     let fd = unsafe { BorrowedFd::borrow_raw(lease.fd()) }.try_clone_to_owned()?;
     Ok(WireLease {
@@ -189,7 +164,7 @@ fn lease(lease: &ResourceLease, b: &mut Builder) -> io::Result<WireLease> {
         lock: b.owned(fd)?,
     })
 }
-pub(super) fn encode_handoff(h: &Handoff, b: &mut Builder) -> io::Result<Value> {
+pub(super) fn encode_handoff_wire(h: &Handoff, b: &mut Builder) -> io::Result<WireHandoff> {
     let workspace = b.fd(&h.workspace)?;
     let working_directory = h
         .working_directory
@@ -226,18 +201,25 @@ pub(super) fn encode_handoff(h: &Handoff, b: &mut Builder) -> io::Result<Value> 
     let mut at = first;
     while at < count {
         let end = (at + channel::MAX_FDS).min(count);
-        let mut part = Builder::new("Leases", b.transfer);
-        part.value("transfer", &b.transfer)?;
+        let mut part = Builder::new(contract::supervisor_notifications::Leases::NAME, b.transfer);
         let leases = h.leases[at..end]
             .iter()
             .map(|l| lease(l, &mut part))
             .collect::<io::Result<Vec<_>>>()?;
-        part.value("leases", &leases)?;
-        part.value("more", &(end < count))?;
+        part.notification::<contract::supervisor_notifications::Leases>(
+            contract::SupervisorLeasesParams {
+                transfer: b.transfer,
+                leases,
+                more: end < count,
+            },
+        )?;
         b.following.push_back(part.frame());
         at = end;
     }
-    serde_json::to_value(header).map_err(other)
+    Ok(header)
+}
+pub(super) fn encode_handoff(h: &Handoff, b: &mut Builder) -> io::Result<Value> {
+    serde_json::to_value(encode_handoff_wire(h, b)?).map_err(other)
 }
 fn decode_leases(leases: Vec<WireLease>, d: &mut Descriptors) -> io::Result<Vec<ResourceLease>> {
     // Adopt each batch immediately. Partial transfers retain real cleanup
@@ -434,7 +416,7 @@ impl Decoder {
                 }
                 let source_wire: Value = p.take("source")?;
                 let source = decode_source(source_wire.clone(), &mut d)?;
-                let mut wire = contract::SupervisorStartParams {
+                let mut wire = contract::SupervisorStartRead {
                     supervisor_api,
                     source: source_wire,
                     directory: p.take("directory")?,
@@ -498,11 +480,18 @@ impl Decoder {
                     }),
                 }
             }
-            "Leases" => {
-                let transfer = p.take::<u64>("transfer")?;
-                let leases = p.take::<Vec<WireLease>>("leases")?;
-                let more = p.take::<bool>("more")?;
+            name if name == contract::supervisor_notifications::Leases::NAME => {
+                let wire = contract::SupervisorLeasesParams {
+                    transfer: p.take("transfer")?,
+                    leases: p.take("leases")?,
+                    more: p.take("more")?,
+                };
                 p.finish()?;
+                let contract::SupervisorLeasesParams {
+                    transfer,
+                    leases,
+                    more,
+                } = wire;
                 let pending = self
                     .pending
                     .as_mut()

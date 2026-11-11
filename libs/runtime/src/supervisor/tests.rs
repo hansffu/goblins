@@ -2653,3 +2653,419 @@ fn c16b1_source_scope_precedes_other_capabilities_and_rejection_closes_copies() 
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
     }
 }
+mod c16b2_original {
+    use super::*;
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct WireLease {
+        pub directory: PathBuf,
+        pub lock: Descriptor,
+    }
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct WireDirectory {
+        pub fd: Descriptor,
+        pub source: PathBuf,
+        pub destination: PathBuf,
+    }
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct WireHandoff {
+        pub transfer: u64,
+        pub count: usize,
+        pub workspace: Descriptor,
+        pub working_directory: Option<WireDirectory>,
+        pub dev_shell: String,
+        pub docker: bool,
+        pub leases: Vec<WireLease>,
+        pub more: bool,
+    }
+}
+fn c16b2_start(root: &Path, count: usize) -> Prepared {
+    Encoder::default()
+        .prepare(Message::Command(Command::Start(Box::new(handoff(
+            root, count,
+        )))))
+        .unwrap()
+}
+fn c16b2_decoder_error(decoder: &mut Decoder, frame: Frame, expected: &str) {
+    let error = decoder
+        .receive(frame)
+        .err()
+        .expect("reject malformed handoff");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), expected);
+    decoder.finish().unwrap(); // A rejected frame must settle pending ownership.
+}
+
+#[test]
+fn c16b2_handoff_records_original_serde_names_order_optional_and_sequence_forms() {
+    let root = unix::temp_directory().unwrap();
+    let base = c16b2_start(&root, 0).frames[0].value["params"]["handoff"].clone();
+    assert_eq!(
+        base,
+        json!({"transfer":1,"count":0,"workspace":{"$fd":0},
+        "working_directory":{"fd":{"$fd":1},"source":root,"destination":"/workspace"},
+        "dev_shell":"null","docker":true,"leases":[],"more":false})
+    );
+    let mut cases = vec![
+        base.clone(),
+        json!([1,0,{"$fd":0},null,"null",true,[],false]),
+        json!([]),
+        json!(null),
+    ];
+    for field in [
+        "transfer",
+        "count",
+        "workspace",
+        "dev_shell",
+        "docker",
+        "leases",
+        "more",
+    ] {
+        let mut v = base.clone();
+        v.as_object_mut().unwrap().remove(field);
+        cases.push(v);
+        let mut v = base.clone();
+        v[field] = json!(null);
+        cases.push(v);
+    }
+    let mut v = base.clone();
+    v.as_object_mut().unwrap().remove("working_directory");
+    cases.push(v);
+    for (field, value) in [
+        ("transfer", json!(1.0)),
+        ("count", json!(1.0)),
+        ("count", json!(-1)),
+        ("workspace", json!({})),
+        ("dev_shell", json!({"$fd":999})),
+        ("extra", json!(true)),
+        ("working_directory", json!([{"$fd":1},root,"/workspace"])),
+    ] {
+        let mut v = base.clone();
+        v[field] = value;
+        cases.push(v);
+    }
+    let directory = base["working_directory"].clone();
+    for field in ["fd", "source", "destination"] {
+        let mut v = base.clone();
+        v["working_directory"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        cases.push(v);
+    }
+    for (field, value) in [
+        ("extra", json!(true)),
+        ("source", json!(null)),
+        ("fd", json!({"$fd":1.0})),
+    ] {
+        let mut d = directory.clone();
+        d[field] = value;
+        let mut v = base.clone();
+        v["working_directory"] = d;
+        cases.push(v);
+    }
+    for lease in [
+        json!({"directory":"/unused"}),
+        json!({"lock":{"$fd":0}}),
+        json!({"directory":null,"lock":{"$fd":0}}),
+        json!({"directory":"/unused","lock":{"$fd":0},"extra":true}),
+        json!(["/unused"]),
+    ] {
+        let mut v = base.clone();
+        v["leases"] = json!([lease]);
+        cases.push(v);
+    }
+    for value in cases {
+        let expected = serde_json::from_value::<c16b2_original::WireHandoff>(value.clone());
+        let mut prepared = c16b2_start(&root, 0);
+        let mut frame = prepared.frames.pop_front().unwrap();
+        frame.value["params"]["handoff"] = value.clone();
+        match expected {
+            Err(error) => c16a_error(frame, &error.to_string()),
+            Ok(expected) => {
+                if expected.working_directory.is_none() {
+                    frame.fds.pop();
+                }
+                let received = Decoder::default().receive(frame).unwrap().unwrap();
+                assert_eq!(received.adopted, Some(1));
+                let repeated = Encoder::default().prepare(received.message).unwrap();
+                assert_eq!(
+                    repeated.frames[0].value["params"]["handoff"],
+                    serde_json::to_value(expected).unwrap(),
+                    "input {value}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn c16b2_multipart_producer_pins_header_and_continuation_indexes_and_adoption() {
+    let _no_forks = unix::no_forks();
+    let root = unix::temp_directory().unwrap();
+    let count = channel::MAX_FDS + 1;
+    let first = channel::MAX_FDS - 2;
+    let mut prepared = c16b2_start(&root, count);
+    assert_eq!(prepared.transfer(), 1);
+    assert!(prepared.needs_adoption());
+    assert_eq!(prepared.frames.len(), 2);
+    let first_leases: Vec<_> = (0..first)
+        .map(|i| json!({"directory":root.join(format!("r{i}")),"lock":{"$fd":i+2}}))
+        .collect();
+    let rest: Vec<_> = (first..count)
+        .enumerate()
+        .map(|(index, i)| json!({"directory":root.join(format!("r{i}")),"lock":{"$fd":index}}))
+        .collect();
+    assert_eq!(
+        prepared.frames[0].value,
+        json!({"jsonrpc":"2.0","method":"Command.Start","params":{"handoff":{
+        "transfer":1,"count":count,"workspace":{"$fd":0},"working_directory":{"fd":{"$fd":1},"source":root,"destination":"/workspace"},
+        "dev_shell":"null","docker":true,"leases":first_leases,"more":true}}})
+    );
+    assert_eq!(
+        prepared.frames[1].value,
+        json!({"jsonrpc":"2.0","method":"Leases","params":{"transfer":1,"leases":rest,"more":false}})
+    );
+    assert_eq!(prepared.frames[0].fds.len(), channel::MAX_FDS);
+    assert_eq!(prepared.frames[1].fds.len(), 3);
+    let mut decoder = Decoder::default();
+    assert!(
+        decoder
+            .receive(prepared.frames.pop_front().unwrap())
+            .unwrap()
+            .is_none()
+    );
+    let received = decoder
+        .receive(prepared.frames.pop_front().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(received.adopted, Some(1));
+    prepared.adopted(1).unwrap();
+    assert!(root.join("r0").exists());
+    drop(received);
+    assert!(!root.join("r0").exists());
+    assert!(!root.join(format!("r{}", count - 1)).exists());
+    let mut encoder = Encoder { next: u64::MAX - 1 };
+    let mut exported = encoder
+        .prepare(Message::Event(Event::Exported {
+            member: "child".into(),
+            result: Ok(Box::new(handoff(&root, 0))),
+        }))
+        .unwrap();
+    assert_eq!(exported.frames[0].value["method"], "Event.Exported");
+    assert_eq!(
+        exported.frames[0].value["params"]["result"]["Ok"]["transfer"],
+        json!(u64::MAX)
+    );
+    assert_eq!(
+        decode(&mut exported, &mut Decoder::default()).adopted,
+        Some(u64::MAX)
+    );
+    assert_eq!(
+        encoder
+            .prepare(Message::Stopping)
+            .err()
+            .unwrap()
+            .to_string(),
+        "transfer id exhausted"
+    );
+}
+
+#[test]
+fn c16b2_handoff_counts_and_opaque_generation_keep_semantic_error_order() {
+    let root = unix::temp_directory().unwrap();
+    for (transfer, count, more, expected) in [
+        (0, 0, false, Some("invalid handoff descriptor count")),
+        (1, 0, true, Some("invalid handoff descriptor count")),
+        (1, 1, false, Some("invalid handoff descriptor count")),
+        (
+            1,
+            usize::MAX,
+            true,
+            Some("invalid handoff descriptor count"),
+        ),
+        (u64::MAX, 0, false, None),
+        (1, channel::MAX_BODY, true, None),
+    ] {
+        let mut prepared = c16b2_start(&root, 0);
+        let mut frame = prepared.frames.pop_front().unwrap();
+        let h = &mut frame.value["params"]["handoff"];
+        h["transfer"] = json!(transfer);
+        h["count"] = json!(count);
+        h["more"] = json!(more);
+        let mut decoder = Decoder::default();
+        if let Some(error) = expected {
+            frame.value["params"]["handoff"]["workspace"] = json!({"$fd":99});
+            c16b2_decoder_error(&mut decoder, frame, error);
+        } else if more {
+            assert!(decoder.receive(frame).unwrap().is_none());
+            assert_eq!(
+                decoder.finish().err().unwrap().to_string(),
+                "EOF during handoff transfer"
+            );
+        } else {
+            assert_eq!(
+                decoder.receive(frame).unwrap().unwrap().adopted,
+                Some(transfer)
+            );
+        }
+    }
+    let mut frame = c16b2_start(&root, 0).frames.pop_front().unwrap();
+    frame.value["params"]["handoff"]["dev_shell"] = json!("{");
+    let expected = io::Error::from(
+        serde_json::from_str::<Option<crate::devshell::DevShell>>("{").unwrap_err(),
+    );
+    let error = Decoder::default().receive(frame).err().unwrap();
+    assert_eq!(error.kind(), expected.kind());
+    assert_eq!(error.to_string(), expected.to_string());
+    let mut frame = c16b2_start(&root, 0).frames.pop_front().unwrap();
+    frame.value["params"]["handoff"]["workspace"] = json!({"$fd":99});
+    frame.value["params"]["handoff"]["dev_shell"] = json!("{");
+    c16a_error(frame, "invalid or duplicate descriptor reference");
+    let generation = json!({"reference":"/flake#dev","path":"/flake","attr":"dev","generation":1,
+        "source":"/source","flake":"/source/sub","lock":{"$fd":999,"nested":[{"$fd":0}]},
+        "profile":"/profile","variables":[["NAME","value"]],"script":"export NAME=value",
+        "summary":{"packages":{},"env":{},"derivation":"/drv"}});
+    let mut h = handoff(&root, 0);
+    h.dev_shell = Some(serde_json::from_value(generation.clone()).unwrap());
+    let mut prepared = Encoder::default()
+        .prepare(Message::Command(Command::Start(Box::new(h))))
+        .unwrap();
+    let mut frame = prepared.frames.pop_front().unwrap();
+    let opaque = frame.value["params"]["handoff"]["dev_shell"]
+        .as_str()
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(opaque).unwrap(), generation);
+    let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut sender = channel::Channel::new(left).unwrap();
+    let mut receiver = channel::Channel::new(right).unwrap();
+    sender.queue(&frame.value, &mut frame.fds).unwrap();
+    sender.flush().unwrap();
+    assert!(!sender.wants_write());
+    let received = Decoder::default()
+        .receive_channel(&mut receiver)
+        .unwrap()
+        .unwrap();
+    assert_eq!(received.adopted, Some(1));
+    let Message::Command(Command::Start(h)) = received.message else {
+        unreachable!()
+    };
+    assert_eq!(serde_json::to_value(h.dev_shell).unwrap(), generation);
+}
+
+fn c16b2_partial(root: &Path) -> (Prepared, Decoder, Frame) {
+    let mut prepared = c16b2_start(root, 1);
+    let mut header = prepared.frames.pop_front().unwrap();
+    let lease = header.value["params"]["handoff"]["leases"][0].clone();
+    let lock = header.fds.pop().unwrap();
+    header.value["params"]["handoff"]["leases"] = json!([]);
+    header.value["params"]["handoff"]["more"] = json!(true);
+    let mut decoder = Decoder::default();
+    assert!(decoder.receive(header).unwrap().is_none());
+    let mut lease = lease;
+    lease["lock"] = json!({"$fd":0});
+    let continuation = Frame {
+        value: json!({"jsonrpc":"2.0","method":"Leases","params":{"transfer":1,"leases":[lease],"more":false}}),
+        fds: vec![lock],
+    };
+    (prepared, decoder, continuation)
+}
+
+#[test]
+fn c16b2_continuation_field_errors_precede_pending_state_and_unknown_fields() {
+    for (params, expected) in [
+        (json!({}), "missing control field transfer".into()),
+        (json!({"transfer":1}), "missing control field leases".into()),
+        (
+            json!({"transfer":1,"leases":[]}),
+            "missing control field more".into(),
+        ),
+        (
+            json!({"transfer":1,"leases":[],"more":false,"extra":true}),
+            "unexpected control field".into(),
+        ),
+        (
+            json!({"transfer":1,"leases":[],"more":false}),
+            "unexpected handoff batch".into(),
+        ),
+        (
+            json!({"transfer":1.0,"leases":[],"more":false}),
+            serde_json::from_value::<u64>(json!(1.0))
+                .unwrap_err()
+                .to_string(),
+        ),
+        (
+            json!({"transfer":1,"leases":[{}],"more":false}),
+            serde_json::from_value::<Vec<c16b2_original::WireLease>>(json!([{}]))
+                .err()
+                .unwrap()
+                .to_string(),
+        ),
+    ] {
+        c16a_error(
+            Frame {
+                value: json!({"jsonrpc":"2.0","method":"Leases","params":params}),
+                fds: vec![],
+            },
+            &expected,
+        );
+    }
+}
+
+#[test]
+fn c16b2_continuation_counts_overlap_and_cleanup_keep_exact_precedence() {
+    let _no_forks = unix::no_forks();
+    for fault in 0..7 {
+        let root = unix::temp_directory().unwrap();
+        let (prepared, mut decoder, mut frame) = c16b2_partial(&root);
+        let expected = match fault {
+            0 => {
+                frame.value["params"]["transfer"] = json!(2);
+                "invalid handoff batch"
+            }
+            1 => {
+                frame.value["params"]["leases"] = json!([]);
+                "invalid handoff batch"
+            }
+            2 => {
+                let lease = frame.value["params"]["leases"][0].clone();
+                frame.value["params"]["leases"] = json!([lease.clone(), lease]);
+                "handoff exceeds declared budget"
+            }
+            3 => {
+                frame.value["params"]["more"] = json!(true);
+                "invalid handoff continuation"
+            }
+            4 => {
+                frame.value["params"]["leases"][0]["lock"] = json!({"$fd":1});
+                "invalid or duplicate descriptor reference"
+            }
+            5 => {
+                frame.value =
+                    json!({"jsonrpc":"2.0","method":"Command.Start","params":{"handoff":null}});
+                "overlapping handoff transfers"
+            }
+            6 => {
+                frame.value["params"]["extra"] = json!(true);
+                "unexpected control field"
+            }
+            _ => unreachable!(),
+        };
+        c16b2_decoder_error(&mut decoder, frame, expected);
+        assert!(root.join("r0").exists());
+        drop(prepared);
+        assert!(!root.join("r0").exists());
+    }
+    // Legacy positional WireLease is accepted by the original typed decoder.
+    let root = unix::temp_directory().unwrap();
+    let (mut prepared, mut decoder, mut frame) = c16b2_partial(&root);
+    frame.value["params"]["leases"] = json!([[root.join("r0"),{"$fd":0}]]);
+    let received = decoder.receive(frame).unwrap().unwrap();
+    assert_eq!(received.adopted, Some(1));
+    prepared.adopted(1).unwrap();
+    assert!(root.join("r0").exists());
+    drop(received);
+    assert!(!root.join("r0").exists());
+}

@@ -1004,17 +1004,17 @@ def check_supervisor_source_stdio_metadata():
     def record(name,rust,fields,derives,closed=True,defaults=()):
         props={field:{**schema,"x-rust-field-name":field,"x-rust-type":ty,**({"x-rust-default":True} if field in defaults else {})} for field,ty,schema in fields}
         check(name,{"type":"object","properties":props,"required":[field for field,ty,_ in fields if not ty.startswith("Option<")],"additionalProperties":not closed,"x-rust-name":rust,"x-rust-field-order":list(props),"x-rust-derives":derives})
-    def enum(name,rust,variants):
+    def enum(name,rust,variants,derives=None):
         branches=[]
         for tag,fields in variants:
             props={"kind":{"type":"string","enum":[tag]}}
             for field,ty,schema,default in fields:
                 props[field]={**schema,"x-rust-type":ty,**({"x-rust-default":True} if default else {})}
             branches.append({"type":"object","properties":props,"required":["kind"]+[field for field,ty,_,_ in fields if not ty.startswith("Option<")],"additionalProperties":False,"x-rust-field-order":[field for field,_,_,_ in fields]})
-        check(name,{"oneOf":branches,"x-rust-name":rust,"x-rust-derives":serde})
+        check(name,{"oneOf":branches,"x-rust-name":rust,"x-rust-derives":serde if derives is None else derives})
     def fields(*rows):return [(*row,False) for row in rows]
     record("SupervisorWorktree","Worktree",[("name","String",string),("path","::std::path::PathBuf",path)],["Clone","Debug","PartialEq","Eq"]+serde)
-    record("SupervisorRecreate","Recreate",[("packages","Vec<String>",strings),("auto_approve","Vec<String>",strings),("docker","bool",boolean),("variables","::std::collections::BTreeMap<String, String>",{"type":"object","additionalProperties":string}),("worktree","Option<crate::contract::Worktree>",optional(ref("SupervisorWorktree")))],serde,closed=False,defaults=("worktree",))
+    record("SupervisorRecreate","Recreate",[("packages","Vec<String>",strings),("auto_approve","Vec<String>",strings),("docker","bool",boolean),("variables","::std::collections::BTreeMap<String, String>",{"type":"object","additionalProperties":string}),("worktree","Option<crate::contract::Worktree>",optional(ref("SupervisorWorktree")))],["Clone","Debug"]+serde,closed=False,defaults=("worktree",))
     enum("SupervisorStdio","WireStdio",[
         ("Fds",fields(("fds","[crate::contract::Descriptor; 3]",{"type":"array","items":descriptor,"minItems":3,"maxItems":3}))),
         ("Tty",fields(("slave","crate::contract::Descriptor",descriptor))),
@@ -1022,7 +1022,39 @@ def check_supervisor_source_stdio_metadata():
     enum("SupervisorSource","WireSource",[
         ("Host",fields(("configuration","::std::path::PathBuf",path),("name","String",string),("scope","Option<String>",{"type":["string","null"]}),("dev_shell","Option<String>",{"type":["string","null"]}),("workspace","Option<::std::path::PathBuf>",optional(path)),("cwd","Option<::std::path::PathBuf>",optional(path)),("state","::std::path::PathBuf",path),("history","Option<::std::path::PathBuf>",optional(path)),("recreate","Option<crate::contract::Recreate>",optional(ref("SupervisorRecreate"))),("sequence","u64",ref("SupervisorSequence")))),
         ("Member",fields(("scope","Option<crate::contract::Descriptor>",optional(descriptor)),("owner_scope","Option<String>",{"type":["string","null"]}),("manifest","::std::path::PathBuf",path),("configuration","String",string),("auto","::std::collections::BTreeMap<String, ::std::path::PathBuf>",{"type":"object","additionalProperties":path}),("state","::std::path::PathBuf",path),("history","Option<::std::path::PathBuf>",optional(path)))+[
-            ("worktree","Option<::std::path::PathBuf>",optional(path),True),("arguments","Option<Vec<String>>",optional(strings),True)])])
+            ("worktree","Option<::std::path::PathBuf>",optional(path),True),("arguments","Option<Vec<String>>",optional(strings),True)])],["Clone","Debug"]+serde)
+
+
+def check_supervisor_handoff_metadata():
+    """Check generated handoff records and canonical/read bootstrap boundaries."""
+    defs=common()["definitions"]
+    def ref(name):return {"$ref":"#/definitions/"+name}
+    def optional(schema):return {"anyOf":[schema,{"type":"null"}]}
+    def record(name,rust,fields):
+        props={field:{**schema,"x-rust-field-name":field,"x-rust-type":ty} for field,ty,schema in fields}
+        expected={"type":"object","properties":props,"required":[field for field,ty,_ in fields if not ty.startswith("Option<")],"additionalProperties":False,"x-rust-name":rust,"x-rust-field-order":list(props),"x-rust-derives":["Clone","Debug","Serialize","Deserialize"]}
+        if {k:v for k,v in defs[name].items() if k!="description"}!=expected:
+            raise ValueError("private handoff schema/Rust metadata differs: "+name)
+    path=ref("SupervisorPath");descriptor=ref("SupervisorDescriptor")
+    record("SupervisorDirectory","WireDirectory",[("fd","crate::contract::Descriptor",descriptor),("source","::std::path::PathBuf",path),("destination","::std::path::PathBuf",path)])
+    record("SupervisorLease","WireLease",[("directory","::std::path::PathBuf",path),("lock","crate::contract::Descriptor",descriptor)])
+    record("SupervisorHandoff","WireHandoff",[("transfer","u64",ref("SupervisorSequence")),("count","usize",ref("SupervisorLeaseCount")),("workspace","crate::contract::Descriptor",descriptor),("working_directory","Option<crate::contract::WireDirectory>",optional(ref("SupervisorDirectory"))),("dev_shell","String",{"type":"string"}),("docker","bool",{"type":"boolean"}),("leases","Vec<crate::contract::WireLease>",{"type":"array","items":ref("SupervisorLease")}),("more","bool",{"type":"boolean"})])
+    if {k:v for k,v in defs["SupervisorLeaseCount"].items() if k!="description"}!={"type":"integer","minimum":0,"maximum":2**64-1,"x-json-integer":True}:
+        raise ValueError("private native lease count differs")
+    if defs["SupervisorSourceSlot"]!=ref("SupervisorSource") or defs["SupervisorHandoffSlot"]!=optional(ref("SupervisorHandoff")):
+        raise ValueError("private canonical bootstrap nested links differ")
+    canonical=defs["SupervisorStartParams"]
+    for field,slot in [("source","SupervisorSourceSlot"),("handoff","SupervisorHandoffSlot")]:
+        if canonical["properties"][field]!=ref(slot):raise ValueError("private canonical bootstrap field link differs")
+    expected=copy.deepcopy(canonical)
+    expected["properties"]["source"]=ref("SupervisorSourceRead")
+    expected["properties"]["handoff"]=ref("SupervisorHandoffRead")
+    if defs["SupervisorStartRead"]!=expected:raise ValueError("private fieldwise bootstrap read projection differs")
+    for name,shape in [("SupervisorSourceRead",{"type":"object"}),("SupervisorHandoffRead",{"type":["object","null"]})]:
+        if {k:v for k,v in defs[name].items() if k!="description"}!=shape:
+            raise ValueError("private raw bootstrap read slot differs")
+    for name in ("SupervisorSourceSlot","SupervisorHandoffSlot","SupervisorSource","SupervisorHandoff"):
+        if "x-generator-pending" in defs[name]:raise ValueError("private bootstrap nested contract remains pending")
 
 
 def check_private_contracts():
@@ -1036,6 +1068,7 @@ def check_private_contracts():
         "Adopted":("bidirectional","SupervisorAdoptedParams",["transfer"]),
         "SupervisorStart":("daemon-to-supervisor","SupervisorStartParams",["supervisor_api","source","directory","dimensions","detached","payload_nofile","legacy_listener","handoff"]),
         "Maintenance":("daemon-to-supervisor","SupervisorMaintenanceParams",["supervisor_api","operation","stdout","stderr"]),
+        "Leases":("bidirectional","SupervisorLeasesParams",["transfer","leases","more"]),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1060,7 +1093,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1108,6 +1141,7 @@ def check():
     check_references()
     check_private_contracts()
     check_supervisor_source_stdio_metadata()
+    check_supervisor_handoff_metadata()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()
     for name, record in common().get("x-rust-serde-records",{}).items():

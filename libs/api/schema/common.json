@@ -10361,17 +10361,17 @@
       "description": "Original Option<u64>; existing startup semantic validation rejects zero and u64::MAX after field extraction."
     },
     "SupervisorSourceSlot": {
-      "type": "object",
-      "x-generator-pending": "C16b",
-      "description": "Outer bootstrap projection only. The existing closed tagged WireSource decoder defines and validates nested fields; full schema/generated metadata is assigned to C16b. This slot does not claim nested acceptance equivalence."
+      "$ref": "#/definitions/SupervisorSource"
     },
     "SupervisorHandoffSlot": {
-      "type": [
-        "object",
-        "null"
-      ],
-      "x-generator-pending": "C16b",
-      "description": "Outer bootstrap projection only. Existing WireHandoff decoder and multipart ownership state validate non-null data; full nested schema/generated metadata is assigned to C16b."
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorHandoff"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "SupervisorStartParams": {
       "type": "object",
@@ -10538,6 +10538,8 @@
         "worktree"
       ],
       "x-rust-derives": [
+        "Clone",
+        "Debug",
         "Serialize",
         "Deserialize"
       ]
@@ -10852,9 +10854,246 @@
       ],
       "x-rust-name": "WireSource",
       "x-rust-derives": [
+        "Clone",
+        "Debug",
         "Serialize",
         "Deserialize"
       ]
+    },
+    "SupervisorLeaseCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true,
+      "description": "Native usize structural count; existing MAX_BODY, cumulative lease and continuation checks remain semantic and do not allocate declared-count storage."
+    },
+    "SupervisorDirectory": {
+      "type": "object",
+      "properties": {
+        "fd": {
+          "$ref": "#/definitions/SupervisorDescriptor",
+          "x-rust-field-name": "fd",
+          "x-rust-type": "crate::contract::Descriptor"
+        },
+        "source": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-field-name": "source",
+          "x-rust-type": "::std::path::PathBuf"
+        },
+        "destination": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-field-name": "destination",
+          "x-rust-type": "::std::path::PathBuf"
+        }
+      },
+      "required": [
+        "fd",
+        "source",
+        "destination"
+      ],
+      "additionalProperties": false,
+      "x-rust-name": "WireDirectory",
+      "x-rust-field-order": [
+        "fd",
+        "source",
+        "destination"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorLease": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-field-name": "directory",
+          "x-rust-type": "::std::path::PathBuf"
+        },
+        "lock": {
+          "$ref": "#/definitions/SupervisorDescriptor",
+          "x-rust-field-name": "lock",
+          "x-rust-type": "crate::contract::Descriptor"
+        }
+      },
+      "required": [
+        "directory",
+        "lock"
+      ],
+      "additionalProperties": false,
+      "x-rust-name": "WireLease",
+      "x-rust-field-order": [
+        "directory",
+        "lock"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorHandoff": {
+      "type": "object",
+      "properties": {
+        "transfer": {
+          "$ref": "#/definitions/SupervisorSequence",
+          "x-rust-field-name": "transfer",
+          "x-rust-type": "u64"
+        },
+        "count": {
+          "$ref": "#/definitions/SupervisorLeaseCount",
+          "x-rust-field-name": "count",
+          "x-rust-type": "usize"
+        },
+        "workspace": {
+          "$ref": "#/definitions/SupervisorDescriptor",
+          "x-rust-field-name": "workspace",
+          "x-rust-type": "crate::contract::Descriptor"
+        },
+        "working_directory": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorDirectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "working_directory",
+          "x-rust-type": "Option<crate::contract::WireDirectory>"
+        },
+        "dev_shell": {
+          "type": "string",
+          "x-rust-field-name": "dev_shell",
+          "x-rust-type": "String"
+        },
+        "docker": {
+          "type": "boolean",
+          "x-rust-field-name": "docker",
+          "x-rust-type": "bool"
+        },
+        "leases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SupervisorLease"
+          },
+          "x-rust-field-name": "leases",
+          "x-rust-type": "Vec<crate::contract::WireLease>"
+        },
+        "more": {
+          "type": "boolean",
+          "x-rust-field-name": "more",
+          "x-rust-type": "bool"
+        }
+      },
+      "required": [
+        "transfer",
+        "count",
+        "workspace",
+        "dev_shell",
+        "docker",
+        "leases",
+        "more"
+      ],
+      "additionalProperties": false,
+      "x-rust-name": "WireHandoff",
+      "x-rust-field-order": [
+        "transfer",
+        "count",
+        "workspace",
+        "working_directory",
+        "dev_shell",
+        "docker",
+        "leases",
+        "more"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStartRead": {
+      "type": "object",
+      "properties": {
+        "supervisor_api": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "x-json-integer": true
+        },
+        "source": {
+          "$ref": "#/definitions/SupervisorSourceRead"
+        },
+        "directory": {
+          "$ref": "#/definitions/SupervisorPath"
+        },
+        "dimensions": {
+          "$ref": "#/definitions/SupervisorDimensions"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "payload_nofile": {
+          "$ref": "#/definitions/SupervisorPayloadLimit"
+        },
+        "legacy_listener": {
+          "$ref": "#/definitions/SupervisorOptionalDescriptor"
+        },
+        "handoff": {
+          "$ref": "#/definitions/SupervisorHandoffRead"
+        }
+      },
+      "required": [
+        "supervisor_api",
+        "source",
+        "directory",
+        "dimensions",
+        "detached",
+        "payload_nofile",
+        "legacy_listener",
+        "handoff"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorSourceRead": {
+      "type": "object",
+      "description": "Normalized fieldwise decoder projection only. The generated nested codec runs at its original validation/ownership point; this shape alone does not assert accepted input."
+    },
+    "SupervisorHandoffRead": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Normalized fieldwise decoder projection only. The generated nested codec runs at its original validation/ownership point; this shape alone does not assert accepted input."
+    },
+    "SupervisorLeasesParams": {
+      "type": "object",
+      "properties": {
+        "transfer": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "leases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SupervisorLease"
+          }
+        },
+        "more": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "transfer",
+        "leases",
+        "more"
+      ],
+      "additionalProperties": false
     }
   },
   "x-api-version": 1,
@@ -13488,6 +13727,24 @@
         "legacy_listener",
         "handoff"
       ]
+    },
+    "SupervisorStartRead": {
+      "name": "SupervisorStartRead",
+      "order": [
+        "supervisor_api",
+        "source",
+        "directory",
+        "dimensions",
+        "detached",
+        "payload_nofile",
+        "legacy_listener",
+        "handoff"
+      ],
+      "required-nullable": [
+        "payload_nofile",
+        "legacy_listener",
+        "handoff"
+      ]
     }
   },
   "x-communications-payloads": [
@@ -13956,15 +14213,19 @@
   ],
   "x-supervisor-metadata-fallbacks": {
     "Params": "Field-by-field extraction remains handwritten to preserve missing control field errors, finish-before-validation ordering, API checks and descriptor ownership. Generated DTOs are assembled only at the original extraction points.",
-    "Source and Handoff": "Source/Stdio and Recreate/Worktree subcodec metadata are generated in C16b1. The existing bootstrap outer SourceSlot/HandoffSlot stay partial projections until C16b2 connects both complete nested schemas to the bootstrap contract. Directory/resource-lease/handoff/multipart metadata and owned transfer state remain C16b2 work. No outer-only schema claims full nested bootstrap validation.",
+    "Source and Handoff": "Canonical bootstrap SourceSlot/HandoffSlot now reference generated complete Source/Handoff metadata. The separate SupervisorStartRead carries raw nested JSON only until original API-before-source and finish-before-handoff/overlap checks; generated nested decoders then run at those original points. Owned resource/manifest leases, descriptors, transfer guards and channel IO remain handwritten.",
     "Result<(), String>": "SupervisorMaintenanceOutcome maps to the standard Serde Result<(),String>, preserving exact enum errors and Ok:null / Err:string encoding.",
     "MaintenanceOperation": "Schema-driven tagged enum generation retains named variants/field order/optional-null emission and original Serde diagnostics; Typify replacements reference this generated enum.",
     "Descriptor": "Schema-driven explicit record generation retains the original Descriptor Rust name, public index usize field, $fd rename, Copy/Clone/Debug and exact Serde diagnostics, including standalone positional [index]. channel::references still requires exact object markers; standalone compatibility does not bypass transport scanning.",
-    "Recreate and Worktree": "Generated wire-only Recreate and Worktree project explicitly to/from the original runtime domain records. Recreate ignores additive fields and defaults absent worktree; Worktree stays closed. No domain validation, paths, resource policy or history writer is moved."
+    "Recreate and Worktree": "Generated wire-only Recreate and Worktree project explicitly to/from the original runtime domain records. Recreate ignores additive fields and defaults absent worktree; Worktree stays closed. No domain validation, paths, resource policy or history writer is moved.",
+    "Handoff dev_shell": "The WireHandoff dev_shell field is an opaque serialized JSON String, not traversable JSON: serde_json::to_string/from_str of the existing runtime DevShell retains arbitrary lock-file JSON without exposing its $fd-looking keys to channel descriptor scanning. Inner domain decoding, including exact UnexpectedEof/error behavior, remains with the existing runtime decoder; its implementation is not a new transport."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",
     "SupervisorRecreate",
-    "SupervisorWorktree"
+    "SupervisorWorktree",
+    "SupervisorDirectory",
+    "SupervisorLease",
+    "SupervisorHandoff"
   ]
 }

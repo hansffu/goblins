@@ -259,11 +259,22 @@ fn main() {
     settings.with_replacement("SupervisorPayloadLimit", "Option<u64>", [].into_iter());
     settings.with_replacement(
         "SupervisorSourceSlot",
-        "::serde_json::Value",
+        "crate::contract::WireSource",
         [].into_iter(),
     );
     settings.with_replacement(
         "SupervisorHandoffSlot",
+        "Option<crate::contract::WireHandoff>",
+        [].into_iter(),
+    );
+    settings.with_replacement("SupervisorLeaseCount", "usize", [].into_iter());
+    settings.with_replacement(
+        "SupervisorSourceRead",
+        "::serde_json::Value",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "SupervisorHandoffRead",
         "Option<::serde_json::Value>",
         [].into_iter(),
     );

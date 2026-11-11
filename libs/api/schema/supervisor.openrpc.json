@@ -166,7 +166,7 @@
       "x-rust-name": "SupervisorStart",
       "direction": "daemon-to-supervisor",
       "paramStructure": "by-name",
-      "description": "Bootstrap outer metadata; validates API before Source decoding. Listener descriptor allocation precedes handoff batching. The current producer emits every field including nullable slots; the legacy receiver also accepts absent legacy_listener. Nested source/handoff validation remains with existing codecs pending C16b.",
+      "description": "Bootstrap with complete generated Source/Handoff metadata. API is checked before Source decoding; listener descriptor allocation precedes handoff batching. Current producers emit every nullable field; the fieldwise legacy receiver accepts absent legacy_listener. Unknown outer fields reject before handoff validation, and overlap/count/descriptor checks retain their original order. Ownership adoption occurs only when the full handoff is complete.",
       "params": [
         {
           "name": "supervisor_api",
@@ -280,9 +280,48 @@
       "sender": "daemon",
       "receiver": "supervisor",
       "connection-state": "first frame; maintenance one-shot"
+    },
+    {
+      "name": "Leases",
+      "x-rust-name": "Leases",
+      "direction": "bidirectional",
+      "paramStructure": "by-name",
+      "description": "Continuation of one already pending handoff. Fields decode and unknown keys reject before pending-state lookup. Transfer must match; leases must be nonempty; count, more and cumulative bytes/descriptor references are checked before final adoption. No allocation is based on declared count. Either transfer-sending peer can emit these frames.",
+      "params": [
+        {
+          "name": "transfer",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorLeasesParams/properties/transfer"
+          }
+        },
+        {
+          "name": "leases",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorLeasesParams/properties/leases"
+          }
+        },
+        {
+          "name": "more",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorLeasesParams/properties/more"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorLeasesParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "transfer-sending peer",
+      "receiver": "transfer-adopting peer",
+      "connection-state": "after a handoff header with more=true, until declared count is satisfied"
     }
   ],
-  "x-contract-chunk": "C16a2",
+  "x-contract-chunk": "C16b2",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -292,7 +331,7 @@
     "decoding": "Original Params take/finish order; raw envelope and owned descriptors remain handwritten."
   },
   "x-pending": [
-    "C16b source/handoff/multipart nested schema and generated metadata",
+    "C16c actor entry/one-shot phase identity bindings",
     "C17 Command.* and Event.*"
   ]
 }

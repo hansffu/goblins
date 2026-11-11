@@ -163,7 +163,9 @@ impl Encoder {
         match &message {
             Message::SupervisorStart(start) => {
                 valid_start(start)?;
-                let source = encode_source(&start.source, &mut b)?;
+                let source = encode_source_wire(&start.source, &mut b)?;
+                // Retain the original Source json! failure point before other fields.
+                let _ = json!(&source);
                 // Preserve path serialization failure before descriptor duplication.
                 serde_json::to_value(&start.directory)?;
                 // Precede handoff batching so its first-frame allowance still
@@ -176,8 +178,12 @@ impl Encoder {
                 let handoff = start
                     .handoff
                     .as_deref()
-                    .map(|h| encode_handoff(h, &mut b))
+                    .map(|h| encode_handoff_wire(h, &mut b))
                     .transpose()?;
+                // The original handoff helper serialized its completed header here.
+                if let Some(header) = &handoff {
+                    serde_json::to_value(header).map_err(other)?;
+                }
                 b.notification::<contract::supervisor_notifications::SupervisorStart>(
                     contract::SupervisorStartParams {
                         supervisor_api: start.supervisor_api,

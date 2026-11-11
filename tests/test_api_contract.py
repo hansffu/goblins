@@ -16,6 +16,76 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def _assert_c16b2_bootstrap_schema_closure(self):
+        defs = contract.common()["definitions"]
+        self.assertEqual(defs["SupervisorSourceSlot"], {"$ref":"#/definitions/SupervisorSource"})
+        self.assertEqual(defs["SupervisorHandoffSlot"], {"anyOf":[{"$ref":"#/definitions/SupervisorHandoff"},{"type":"null"}]})
+        for field, canonical, read in [("source", "SupervisorSourceSlot", "SupervisorSourceRead"),
+                                       ("handoff", "SupervisorHandoffSlot", "SupervisorHandoffRead")]:
+            self.assertEqual(defs["SupervisorStartParams"]["properties"][field], {"$ref":"#/definitions/" + canonical})
+            self.assertEqual(defs["SupervisorStartRead"]["properties"][field], {"$ref":"#/definitions/" + read})
+        for name in ["SupervisorSourceSlot", "SupervisorHandoffSlot", "SupervisorSource", "SupervisorHandoff"]:
+            self.assertNotIn("x-generator-pending", defs[name])
+        row = next(r for r in contract.document("supervisor")["x-notifications"] if r["name"] == "SupervisorStart")
+        self.assertEqual(row["x-params-schema"], {"$ref":"common.json#/definitions/SupervisorStartParams"})
+
+    def test_c16b2_nested_records_and_strict_bootstrap_schema_instances(self):
+        self._assert_c16b2_bootstrap_schema_closure()
+        fixtures = contract.read("fixtures.json")
+        for key, name in [("c16b2_directory_cases", "SupervisorDirectory"), ("c16b2_lease_cases", "SupervisorLease"),
+                          ("c16b2_handoff_cases", "SupervisorHandoff"), ("c16b2_strict_bootstrap_cases", "SupervisorStartParams")]:
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
+            self.assertTrue(fixtures[key])
+            for case in fixtures[key]:
+                with self.subTest(record=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        # Schema validates structural metadata, leaving count/more, FD ownership,
+        # phase and inner dev-shell JSON semantics at the original runtime checks.
+
+    def test_c16b2_leases_notification_both_directions_and_envelopes(self):
+        for case in contract.read("fixtures.json")["c16b2_leases_notification_cases"]:
+            with self.subTest(case=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", case["direction"], case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", case["direction"], case["frame"])
+        self.assertFalse(contract.validate_notification("supervisor", "client-to-server", dict(jsonrpc="2.0",method="Leases",params={})))
+
+    def test_c16b2_handoff_codegen_and_profile_links_reject_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def mutated(name, label, change):
+            schema = copy.deepcopy(original)
+            change(schema["definitions"][name])
+            cases.append((name, label, schema))
+        for name in ["SupervisorDirectory", "SupervisorLease", "SupervisorHandoff"]:
+            mutated(name, "original record name", lambda d: d.update({"x-rust-name":"OtherRecord"}))
+            mutated(name, "field order", lambda d: d["x-rust-field-order"].reverse())
+            mutated(name, "closed fields", lambda d: d.update(additionalProperties=True))
+            mutated(name, "required fields", lambda d: d["required"].pop())
+            mutated(name, "derive traits", lambda d: d["x-rust-derives"].remove("Deserialize"))
+        mutated("SupervisorDirectory", "fd Rust type", lambda d: d["properties"]["fd"].update({"x-rust-type":"u64"}))
+        mutated("SupervisorLease", "lock Rust field name", lambda d: d["properties"]["lock"].update({"x-rust-field-name":"descriptor"}))
+        mutated("SupervisorHandoff", "count native type", lambda d: d["properties"]["count"].update({"x-rust-type":"u64"}))
+        mutated("SupervisorHandoff", "count schema reference", lambda d: d["properties"]["count"].update({"$ref":"#/definitions/SupervisorSequence"}))
+        mutated("SupervisorHandoff", "working directory ref", lambda d: d["properties"]["working_directory"]["anyOf"][0].update({"$ref":"#/definitions/SupervisorLease"}))
+        mutated("SupervisorHandoff", "working directory default flag", lambda d: d["properties"]["working_directory"].update({"x-rust-default":True}))
+        mutated("SupervisorHandoff", "opaque string shape", lambda d: d["properties"]["dev_shell"].update(type="object"))
+        mutated("SupervisorHandoff", "lease array reference", lambda d: d["properties"]["leases"]["items"].update({"$ref":"#/definitions/SupervisorDirectory"}))
+        mutated("SupervisorLeaseCount", "native count bounds", lambda d: d.update(maximum=8388608))
+        mutated("SupervisorLeaseCount", "exact integer representation", lambda d: d.pop("x-json-integer"))
+        mutated("SupervisorSourceSlot", "canonical source link", lambda d: d.update({"$ref":"#/definitions/SupervisorSourceRead"}))
+        mutated("SupervisorHandoffSlot", "canonical handoff link", lambda d: d["anyOf"][0].update({"$ref":"#/definitions/SupervisorHandoffRead"}))
+        mutated("SupervisorStartRead", "raw source read link", lambda d: d["properties"]["source"].update({"$ref":"#/definitions/SupervisorSourceSlot"}))
+        mutated("SupervisorStartRead", "raw handoff read link", lambda d: d["properties"]["handoff"].update({"$ref":"#/definitions/SupervisorHandoffSlot"}))
+        for name, label, schema in cases:
+            with self.subTest(record=name, mutation=label), patch.object(contract, "common", return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c16b1_nested_subcodec_schema_instances(self):
         fixtures = contract.read("fixtures.json")
         for key, name in [("c16b1_stdio_cases", "SupervisorStdio"),
@@ -28,10 +98,8 @@ class ContractTests(unittest.TestCase):
                 with self.subTest(record=name, case=case):
                     self.assertEqual(validator.is_valid(case["value"]), case["valid"])
         # These canonical named records intentionally exclude legacy Serde
-        # sequences pinned by runtime tests. Outer bootstrap remains C16b2 work.
-        defs = contract.common()["definitions"]
-        self.assertEqual(defs["SupervisorSourceSlot"]["x-generator-pending"], "C16b")
-        self.assertEqual(defs["SupervisorHandoffSlot"]["x-generator-pending"], "C16b")
+        # sequences pinned by runtime tests. Bootstrap now links complete schemas.
+        self._assert_c16b2_bootstrap_schema_closure()
 
     def test_c16b1_nested_codegen_metadata_rejects_drift(self):
         from unittest.mock import patch
@@ -74,18 +142,16 @@ class ContractTests(unittest.TestCase):
     def test_c16a2_descriptor_and_outer_projection_schema_instances(self):
         fixtures = contract.read("fixtures.json")
         for key, name in [("c16a2_descriptor_cases", "SupervisorDescriptor"),
-                          ("c16a2_start_projection_cases", "SupervisorStartParams"),
+                          ("c16a2_start_projection_cases", "SupervisorStartRead"),
                           ("c16a2_maintenance_projection_cases", "SupervisorMaintenanceParams")]:
             validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
             self.assertTrue(fixtures[key])
             for case in fixtures[key]:
                 with self.subTest(record=name, case=case):
                     self.assertEqual(validator.is_valid(case["value"]), case["valid"])
-        # C16a2 deliberately validates the outer projection; these nested slots
-        # and runtime API/dimension/payload semantics remain separate work.
-        defs = contract.common()["definitions"]
-        self.assertEqual(defs["SupervisorSourceSlot"]["x-generator-pending"], "C16b")
-        self.assertEqual(defs["SupervisorHandoffSlot"]["x-generator-pending"], "C16b")
+        # Preserve C16a2's unchanged outer fixture data against the separate
+        # decoder projection, and require complete canonical bootstrap links.
+        self._assert_c16b2_bootstrap_schema_closure()
 
     def test_c16a2_explicit_descriptor_codegen_metadata_rejects_drift(self):
         from unittest.mock import patch
