@@ -1,14 +1,7 @@
 use super::*;
+use contract::{WireSource, WireStdio};
 use serde::Deserialize;
-use std::collections::BTreeMap;
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-enum WireStdio {
-    Fds { fds: [Descriptor; 3] },
-    Tty { slave: Descriptor },
-    NewPty { rows: u16, cols: u16 },
-}
 pub(super) fn encode_stdio(stdio: &Stdio, b: &mut Builder) -> io::Result<Value> {
     serde_json::to_value(match stdio {
         Stdio::Fds(fds) => WireStdio::Fds {
@@ -35,37 +28,32 @@ pub(super) fn decode_stdio(value: Value, d: &mut Descriptors) -> io::Result<Stdi
         WireStdio::NewPty { rows, cols } => Stdio::NewPty { rows, cols },
     })
 }
-#[derive(Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-enum WireSource {
-    Host {
-        configuration: PathBuf,
-        name: String,
-        scope: Option<String>,
-        dev_shell: Option<String>,
-        workspace: Option<PathBuf>,
-        cwd: Option<PathBuf>,
-        state: PathBuf,
-        history: Option<PathBuf>,
-        recreate: Option<Recreate>,
-        sequence: u64,
-    },
-    Member {
-        scope: Option<Descriptor>,
-        owner_scope: Option<String>,
-        manifest: PathBuf,
-        configuration: String,
-        auto: BTreeMap<String, PathBuf>,
-        state: PathBuf,
-        history: Option<PathBuf>,
-        #[serde(default)]
-        worktree: Option<PathBuf>,
-        #[serde(default)]
-        arguments: Option<Vec<String>>,
-    },
+fn recreate_to_wire(value: &crate::Recreate) -> contract::Recreate {
+    contract::Recreate {
+        packages: value.packages.clone(),
+        auto_approve: value.auto_approve.clone(),
+        docker: value.docker,
+        variables: value.variables.clone(),
+        worktree: value.worktree.as_ref().map(|w| contract::Worktree {
+            name: w.name.clone(),
+            path: w.path.clone(),
+        }),
+    }
+}
+fn recreate_from_wire(value: contract::Recreate) -> crate::Recreate {
+    crate::Recreate {
+        packages: value.packages,
+        auto_approve: value.auto_approve,
+        docker: value.docker,
+        variables: value.variables,
+        worktree: value.worktree.map(|w| crate::worktrees::Worktree {
+            name: w.name,
+            path: w.path,
+        }),
+    }
 }
 pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Value> {
-    Ok(match source {
+    let wire = match source {
         Source::Host {
             configuration,
             name,
@@ -77,9 +65,18 @@ pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Valu
             history,
             recreate,
             sequence,
-        } => {
-            json!({"kind":"Host","configuration":configuration,"name":name,"scope":scope,"dev_shell":dev_shell,"workspace":workspace,"cwd":cwd,"state":state,"history":history,"recreate":recreate,"sequence":sequence})
-        }
+        } => WireSource::Host {
+            configuration: configuration.clone(),
+            name: name.clone(),
+            scope: scope.clone(),
+            dev_shell: dev_shell.clone(),
+            workspace: workspace.clone(),
+            cwd: cwd.clone(),
+            state: state.clone(),
+            history: history.clone(),
+            recreate: recreate.as_ref().map(recreate_to_wire),
+            sequence: *sequence,
+        },
         Source::Member {
             scope,
             owner_scope,
@@ -92,10 +89,24 @@ pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Valu
             arguments,
         } => {
             let scope = scope.as_ref().map(|fd| b.fd(fd)).transpose()?;
-            json!({"kind":"Member","scope":scope,"owner_scope":owner_scope,"manifest":manifest,"configuration":configuration,"auto":auto,"state":state,"history":history,"worktree":worktree,"arguments":arguments})
+            WireSource::Member {
+                scope,
+                owner_scope: owner_scope.clone(),
+                manifest: manifest.clone(),
+                configuration: configuration.clone(),
+                auto: auto.clone(),
+                state: state.clone(),
+                history: history.clone(),
+                worktree: worktree.clone(),
+                arguments: arguments.clone(),
+            }
         }
-    })
+    };
+    // The original Source producer used json!, including its serialization
+    // failure behavior. Keep that boundary while generating the wire fields.
+    Ok(json!(wire))
 }
+
 fn decode_source(value: Value, d: &mut Descriptors) -> io::Result<Source> {
     Ok(match serde_json::from_value::<WireSource>(value)? {
         WireSource::Host {
@@ -118,7 +129,7 @@ fn decode_source(value: Value, d: &mut Descriptors) -> io::Result<Source> {
             cwd,
             state,
             history,
-            recreate,
+            recreate: recreate.map(recreate_from_wire),
             sequence,
         },
         WireSource::Member {

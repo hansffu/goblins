@@ -24547,5 +24547,834 @@
       },
       "valid": false
     }
+  ],
+  "c16b1_stdio_cases": [
+    {
+      "value": {
+        "kind": "Fds",
+        "fds": [
+          {
+            "$fd": 0
+          },
+          {
+            "$fd": 1
+          },
+          {
+            "$fd": 2
+          }
+        ]
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Fds",
+        "fds": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Fds",
+        "fds": [
+          {
+            "$fd": 0
+          },
+          {
+            "$fd": 0
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Fds",
+        "fds": [
+          {
+            "$fd": 0
+          },
+          {
+            "$fd": 0
+          },
+          {
+            "$fd": 0
+          },
+          {
+            "$fd": 0
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Fds",
+        "fds": [
+          [
+            0
+          ],
+          [
+            1
+          ],
+          [
+            2
+          ]
+        ]
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Fds",
+        "fds": [
+          {
+            "$fd": 0
+          },
+          {
+            "$fd": 1
+          },
+          {
+            "$fd": 1.0
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Fds"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Fds",
+        "fds": [
+          {
+            "$fd": 0
+          },
+          {
+            "$fd": 1
+          },
+          {
+            "$fd": 2
+          }
+        ],
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Tty",
+        "slave": {
+          "$fd": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Tty",
+        "slave": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "NewPty",
+        "rows": 0,
+        "cols": 65535
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "NewPty",
+        "rows": 1.0,
+        "cols": 2
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "NewPty",
+        "rows": 65536,
+        "cols": 2
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "NewPty",
+        "rows": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "unknown"
+      },
+      "valid": false
+    },
+    {
+      "value": null,
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    }
+  ],
+  "c16b1_recreate_cases": [
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        },
+        "worktree": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        },
+        "worktree": {
+          "name": "branch",
+          "path": "relative/\u96ea"
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        },
+        "extra": {
+          "$fd": 999
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        },
+        "worktree": {
+          "name": "branch",
+          "path": "relative/\u96ea",
+          "extra": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        },
+        "worktree": [
+          "branch",
+          "x"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "x": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "packages": [
+          1
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": null,
+        "variables": {
+          "session": "abc"
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "docker": true,
+        "variables": {
+          "session": "abc"
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "variables": {
+          "session": "abc"
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "packages": [
+          "hello"
+        ],
+        "auto_approve": [
+          "jq"
+        ],
+        "docker": true
+      },
+      "valid": false
+    },
+    {
+      "value": [
+        [],
+        [],
+        false,
+        {}
+      ],
+      "valid": false
+    }
+  ],
+  "c16b1_worktree_cases": [
+    {
+      "value": {
+        "name": "branch",
+        "path": "relative/\u96ea"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "name": "branch",
+        "path": "relative/\u96ea",
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "path": "relative/\u96ea"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "name": "branch"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "name": "branch",
+        "path": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "name": 0,
+        "path": "relative/\u96ea"
+      },
+      "valid": false
+    },
+    {
+      "value": [
+        "branch",
+        "x"
+      ],
+      "valid": false
+    },
+    {
+      "value": null,
+      "valid": false
+    }
+  ],
+  "c16b1_source_cases": [
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "scope": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "scope": "scope"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "workspace": "relative/\u96ea"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "cwd": null
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "recreate": {
+          "packages": [
+            "hello"
+          ],
+          "auto_approve": [
+            "jq"
+          ],
+          "docker": true,
+          "variables": {
+            "session": "abc"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "recreate": {
+          "packages": [
+            "hello"
+          ],
+          "auto_approve": [
+            "jq"
+          ],
+          "docker": true,
+          "variables": {
+            "session": "abc"
+          },
+          "worktree": {
+            "name": "branch",
+            "path": "relative/\u96ea"
+          },
+          "extra": true
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "recreate": {
+          "packages": [
+            "hello"
+          ],
+          "auto_approve": [
+            "jq"
+          ],
+          "docker": true,
+          "variables": {
+            "session": "abc"
+          },
+          "worktree": {
+            "name": "branch",
+            "path": "relative/\u96ea",
+            "extra": true
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "recreate": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 18446744073709551615
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 18446744073709551616
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 1.0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0,
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "name": "shell",
+        "state": "/state",
+        "sequence": 0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "state": "/state",
+        "sequence": 0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "sequence": 0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Host",
+        "configuration": "/config",
+        "name": "shell",
+        "state": "/state"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": {
+          "hello": "/output"
+        },
+        "state": "/state"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": {
+          "hello": "/output"
+        },
+        "state": "/state",
+        "scope": {
+          "$fd": 0
+        },
+        "owner_scope": "owner",
+        "history": null,
+        "worktree": null,
+        "arguments": [
+          "--model",
+          "x={a}"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": {
+          "hello": "/output"
+        },
+        "state": "/state",
+        "scope": [
+          0
+        ]
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": {
+          "hello": "/output"
+        },
+        "state": "/state",
+        "scope": {
+          "$fd": 1.0
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": {
+          "hello": null
+        },
+        "state": "/state"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": [],
+        "state": "/state"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": {
+          "hello": "/output"
+        },
+        "state": "/state",
+        "arguments": [
+          1
+        ]
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": {
+          "hello": "/output"
+        },
+        "state": "/state",
+        "worktree": "relative/tree"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": "relative/manifest",
+        "configuration": "child",
+        "auto": {
+          "hello": "/output"
+        },
+        "state": "/state",
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "Member",
+        "manifest": null,
+        "configuration": "child",
+        "auto": {
+          "hello": "/output"
+        },
+        "state": "/state"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "kind": "unknown"
+      },
+      "valid": false
+    },
+    {
+      "value": null,
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    }
   ]
 }

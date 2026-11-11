@@ -10442,6 +10442,419 @@
         "stderr"
       ],
       "additionalProperties": false
+    },
+    "SupervisorWorktree": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "x-rust-field-name": "name",
+          "x-rust-type": "String"
+        },
+        "path": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-field-name": "path",
+          "x-rust-type": "::std::path::PathBuf"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "additionalProperties": false,
+      "x-rust-name": "Worktree",
+      "x-rust-field-order": [
+        "name",
+        "path"
+      ],
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorRecreate": {
+      "type": "object",
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-rust-field-name": "packages",
+          "x-rust-type": "Vec<String>"
+        },
+        "auto_approve": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-rust-field-name": "auto_approve",
+          "x-rust-type": "Vec<String>"
+        },
+        "docker": {
+          "type": "boolean",
+          "x-rust-field-name": "docker",
+          "x-rust-type": "bool"
+        },
+        "variables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "x-rust-field-name": "variables",
+          "x-rust-type": "::std::collections::BTreeMap<String, String>"
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorWorktree"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-field-name": "worktree",
+          "x-rust-type": "Option<crate::contract::Worktree>",
+          "x-rust-default": true
+        }
+      },
+      "required": [
+        "packages",
+        "auto_approve",
+        "docker",
+        "variables"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "Recreate",
+      "x-rust-field-order": [
+        "packages",
+        "auto_approve",
+        "docker",
+        "variables",
+        "worktree"
+      ],
+      "x-rust-derives": [
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorStdio": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "Fds"
+              ]
+            },
+            "fds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SupervisorDescriptor"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "x-rust-type": "[crate::contract::Descriptor; 3]"
+            }
+          },
+          "required": [
+            "kind",
+            "fds"
+          ],
+          "additionalProperties": false,
+          "x-rust-field-order": [
+            "fds"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "Tty"
+              ]
+            },
+            "slave": {
+              "$ref": "#/definitions/SupervisorDescriptor",
+              "x-rust-type": "crate::contract::Descriptor"
+            }
+          },
+          "required": [
+            "kind",
+            "slave"
+          ],
+          "additionalProperties": false,
+          "x-rust-field-order": [
+            "slave"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "NewPty"
+              ]
+            },
+            "rows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535,
+              "x-json-integer": true,
+              "x-rust-type": "u16"
+            },
+            "cols": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535,
+              "x-json-integer": true,
+              "x-rust-type": "u16"
+            }
+          },
+          "required": [
+            "kind",
+            "rows",
+            "cols"
+          ],
+          "additionalProperties": false,
+          "x-rust-field-order": [
+            "rows",
+            "cols"
+          ]
+        }
+      ],
+      "x-rust-name": "WireStdio",
+      "x-rust-derives": [
+        "Serialize",
+        "Deserialize"
+      ]
+    },
+    "SupervisorSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "Host"
+              ]
+            },
+            "configuration": {
+              "$ref": "#/definitions/SupervisorPath",
+              "x-rust-type": "::std::path::PathBuf"
+            },
+            "name": {
+              "type": "string",
+              "x-rust-type": "String"
+            },
+            "scope": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "x-rust-type": "Option<String>"
+            },
+            "dev_shell": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "x-rust-type": "Option<String>"
+            },
+            "workspace": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SupervisorPath"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<::std::path::PathBuf>"
+            },
+            "cwd": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SupervisorPath"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<::std::path::PathBuf>"
+            },
+            "state": {
+              "$ref": "#/definitions/SupervisorPath",
+              "x-rust-type": "::std::path::PathBuf"
+            },
+            "history": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SupervisorPath"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<::std::path::PathBuf>"
+            },
+            "recreate": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SupervisorRecreate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<crate::contract::Recreate>"
+            },
+            "sequence": {
+              "$ref": "#/definitions/SupervisorSequence",
+              "x-rust-type": "u64"
+            }
+          },
+          "required": [
+            "kind",
+            "configuration",
+            "name",
+            "state",
+            "sequence"
+          ],
+          "additionalProperties": false,
+          "x-rust-field-order": [
+            "configuration",
+            "name",
+            "scope",
+            "dev_shell",
+            "workspace",
+            "cwd",
+            "state",
+            "history",
+            "recreate",
+            "sequence"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "Member"
+              ]
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SupervisorDescriptor"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<crate::contract::Descriptor>"
+            },
+            "owner_scope": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "x-rust-type": "Option<String>"
+            },
+            "manifest": {
+              "$ref": "#/definitions/SupervisorPath",
+              "x-rust-type": "::std::path::PathBuf"
+            },
+            "configuration": {
+              "type": "string",
+              "x-rust-type": "String"
+            },
+            "auto": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/SupervisorPath"
+              },
+              "x-rust-type": "::std::collections::BTreeMap<String, ::std::path::PathBuf>"
+            },
+            "state": {
+              "$ref": "#/definitions/SupervisorPath",
+              "x-rust-type": "::std::path::PathBuf"
+            },
+            "history": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SupervisorPath"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<::std::path::PathBuf>"
+            },
+            "worktree": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SupervisorPath"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<::std::path::PathBuf>",
+              "x-rust-default": true
+            },
+            "arguments": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "x-rust-type": "Option<Vec<String>>",
+              "x-rust-default": true
+            }
+          },
+          "required": [
+            "kind",
+            "manifest",
+            "configuration",
+            "auto",
+            "state"
+          ],
+          "additionalProperties": false,
+          "x-rust-field-order": [
+            "scope",
+            "owner_scope",
+            "manifest",
+            "configuration",
+            "auto",
+            "state",
+            "history",
+            "worktree",
+            "arguments"
+          ]
+        }
+      ],
+      "x-rust-name": "WireSource",
+      "x-rust-derives": [
+        "Serialize",
+        "Deserialize"
+      ]
     }
   },
   "x-api-version": 1,
@@ -13537,16 +13950,21 @@
     }
   ],
   "x-rust-tagged-enums": [
-    "SupervisorMaintenanceOperation"
+    "SupervisorMaintenanceOperation",
+    "SupervisorStdio",
+    "SupervisorSource"
   ],
   "x-supervisor-metadata-fallbacks": {
     "Params": "Field-by-field extraction remains handwritten to preserve missing control field errors, finish-before-validation ordering, API checks and descriptor ownership. Generated DTOs are assembled only at the original extraction points.",
-    "Source and Handoff": "C16a2 generates the outer bootstrap fields and FD indexes only. SourceSlot/HandoffSlot are explicitly partial outer object projections replaced with Value/Option<Value>; existing typed source/handoff codecs retain nested validation. Complete schema and generated nested source/directory/lease/handoff/multipart metadata remain C16b work. No claim of complete bootstrap schema validation is made by these slots.",
+    "Source and Handoff": "Source/Stdio and Recreate/Worktree subcodec metadata are generated in C16b1. The existing bootstrap outer SourceSlot/HandoffSlot stay partial projections until C16b2 connects both complete nested schemas to the bootstrap contract. Directory/resource-lease/handoff/multipart metadata and owned transfer state remain C16b2 work. No outer-only schema claims full nested bootstrap validation.",
     "Result<(), String>": "SupervisorMaintenanceOutcome maps to the standard Serde Result<(),String>, preserving exact enum errors and Ok:null / Err:string encoding.",
     "MaintenanceOperation": "Schema-driven tagged enum generation retains named variants/field order/optional-null emission and original Serde diagnostics; Typify replacements reference this generated enum.",
-    "Descriptor": "Schema-driven explicit record generation retains the original Descriptor Rust name, public index usize field, $fd rename, Copy/Clone/Debug and exact Serde diagnostics, including standalone positional [index]. channel::references still requires exact object markers; standalone compatibility does not bypass transport scanning."
+    "Descriptor": "Schema-driven explicit record generation retains the original Descriptor Rust name, public index usize field, $fd rename, Copy/Clone/Debug and exact Serde diagnostics, including standalone positional [index]. channel::references still requires exact object markers; standalone compatibility does not bypass transport scanning.",
+    "Recreate and Worktree": "Generated wire-only Recreate and Worktree project explicitly to/from the original runtime domain records. Recreate ignores additive fields and defaults absent worktree; Worktree stays closed. No domain validation, paths, resource policy or history writer is moved."
   },
   "x-rust-explicit-records": [
-    "SupervisorDescriptor"
+    "SupervisorDescriptor",
+    "SupervisorRecreate",
+    "SupervisorWorktree"
   ]
 }

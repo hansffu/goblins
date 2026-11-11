@@ -420,14 +420,22 @@ fn main() {
             })
             .collect::<Vec<_>>()
             .join(",");
+        let closed = if schema["additionalProperties"] == false {
+            "#[serde(deny_unknown_fields)]"
+        } else {
+            ""
+        };
         output.push_str(&format!(
-            "#[derive({derives})] #[serde(deny_unknown_fields)] pub struct {rust} {{"
+            "#[derive({derives})] {closed} pub struct {rust} {{"
         ));
         for field in schema["x-rust-field-order"].as_array().unwrap() {
             let wire = field.as_str().unwrap();
             let property = &schema["properties"][wire];
             let field = property["x-rust-field-name"].as_str().unwrap();
             let ty = property["x-rust-type"].as_str().unwrap();
+            if property["x-rust-default"] == true {
+                output.push_str("#[serde(default)]");
+            }
             output.push_str(&format!("#[serde(rename={wire:?})] pub {field}: {ty},"));
         }
         output.push_str("}\n");
@@ -440,7 +448,22 @@ fn main() {
         let name = name.as_str().unwrap();
         let schema = &common["definitions"][name];
         let rust = schema["x-rust-name"].as_str().unwrap();
-        output.push_str(&format!("#[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)] #[serde(tag=\"kind\", deny_unknown_fields)] pub enum {rust} {{"));
+        let derives = schema["x-rust-derives"]
+            .as_array()
+            .map(|ds| {
+                ds.iter()
+                    .map(|d| match d.as_str().unwrap() {
+                        "Serialize" => "::serde::Serialize",
+                        "Deserialize" => "::serde::Deserialize",
+                        other => other,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_else(|| "Clone,Debug,::serde::Serialize,::serde::Deserialize".into());
+        output.push_str(&format!(
+            "#[derive({derives})] #[serde(tag=\"kind\", deny_unknown_fields)] pub enum {rust} {{"
+        ));
         for variant in schema["oneOf"].as_array().unwrap() {
             let tag = variant["properties"]["kind"]["enum"][0].as_str().unwrap();
             output.push_str(&format!("{tag} {{"));
@@ -449,6 +472,9 @@ fn main() {
                 let ty = variant["properties"][field]["x-rust-type"]
                     .as_str()
                     .unwrap();
+                if variant["properties"][field]["x-rust-default"] == true {
+                    output.push_str("#[serde(default)]");
+                }
                 output.push_str(&format!("{field}: {ty},"));
             }
             output.push_str("},");

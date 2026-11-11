@@ -989,6 +989,42 @@ def check_generated_reader_hooks_and_identities():
         if len(matches)!=1 or row.get("direction")!=matches[0].get("direction"):raise ValueError("generated Elisp identity differs")
 
 
+def check_supervisor_source_stdio_metadata():
+    """Bind wire-only generation metadata to the original nested codec shapes."""
+    def ref(name):return {"$ref":"#/definitions/"+name}
+    def optional(schema):return {"anyOf":[schema,{"type":"null"}]}
+    def uint(bits):return {"type":"integer","minimum":0,"maximum":2**bits-1,"x-json-integer":True}
+    string={"type":"string"};boolean={"type":"boolean"}
+    path=ref("SupervisorPath");descriptor=ref("SupervisorDescriptor")
+    strings={"type":"array","items":string};serde=["Serialize","Deserialize"]
+    def check(name,expected):
+        actual=common()["definitions"][name]
+        if {key:value for key,value in actual.items() if key!="description"}!=expected:
+            raise ValueError("private nested schema/Rust metadata differs: "+name)
+    def record(name,rust,fields,derives,closed=True,defaults=()):
+        props={field:{**schema,"x-rust-field-name":field,"x-rust-type":ty,**({"x-rust-default":True} if field in defaults else {})} for field,ty,schema in fields}
+        check(name,{"type":"object","properties":props,"required":[field for field,ty,_ in fields if not ty.startswith("Option<")],"additionalProperties":not closed,"x-rust-name":rust,"x-rust-field-order":list(props),"x-rust-derives":derives})
+    def enum(name,rust,variants):
+        branches=[]
+        for tag,fields in variants:
+            props={"kind":{"type":"string","enum":[tag]}}
+            for field,ty,schema,default in fields:
+                props[field]={**schema,"x-rust-type":ty,**({"x-rust-default":True} if default else {})}
+            branches.append({"type":"object","properties":props,"required":["kind"]+[field for field,ty,_,_ in fields if not ty.startswith("Option<")],"additionalProperties":False,"x-rust-field-order":[field for field,_,_,_ in fields]})
+        check(name,{"oneOf":branches,"x-rust-name":rust,"x-rust-derives":serde})
+    def fields(*rows):return [(*row,False) for row in rows]
+    record("SupervisorWorktree","Worktree",[("name","String",string),("path","::std::path::PathBuf",path)],["Clone","Debug","PartialEq","Eq"]+serde)
+    record("SupervisorRecreate","Recreate",[("packages","Vec<String>",strings),("auto_approve","Vec<String>",strings),("docker","bool",boolean),("variables","::std::collections::BTreeMap<String, String>",{"type":"object","additionalProperties":string}),("worktree","Option<crate::contract::Worktree>",optional(ref("SupervisorWorktree")))],serde,closed=False,defaults=("worktree",))
+    enum("SupervisorStdio","WireStdio",[
+        ("Fds",fields(("fds","[crate::contract::Descriptor; 3]",{"type":"array","items":descriptor,"minItems":3,"maxItems":3}))),
+        ("Tty",fields(("slave","crate::contract::Descriptor",descriptor))),
+        ("NewPty",fields(("rows","u16",uint(16)),("cols","u16",uint(16))))])
+    enum("SupervisorSource","WireSource",[
+        ("Host",fields(("configuration","::std::path::PathBuf",path),("name","String",string),("scope","Option<String>",{"type":["string","null"]}),("dev_shell","Option<String>",{"type":["string","null"]}),("workspace","Option<::std::path::PathBuf>",optional(path)),("cwd","Option<::std::path::PathBuf>",optional(path)),("state","::std::path::PathBuf",path),("history","Option<::std::path::PathBuf>",optional(path)),("recreate","Option<crate::contract::Recreate>",optional(ref("SupervisorRecreate"))),("sequence","u64",ref("SupervisorSequence")))),
+        ("Member",fields(("scope","Option<crate::contract::Descriptor>",optional(descriptor)),("owner_scope","Option<String>",{"type":["string","null"]}),("manifest","::std::path::PathBuf",path),("configuration","String",string),("auto","::std::collections::BTreeMap<String, ::std::path::PathBuf>",{"type":"object","additionalProperties":path}),("state","::std::path::PathBuf",path),("history","Option<::std::path::PathBuf>",optional(path)))+[
+            ("worktree","Option<::std::path::PathBuf>",optional(path),True),("arguments","Option<Vec<String>>",optional(strings),True)])])
+
+
 def check_private_contracts():
     """Check the explicitly migrated private slice, separately from public RPCs."""
     catalog={
@@ -1024,7 +1060,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1037,7 +1073,7 @@ def check_private_contracts():
     index=common()["definitions"]["SupervisorDescriptorIndex"]
     if {key:value for key,value in index.items() if key!="description"}!={"type":"integer","minimum":0,"maximum":2**64-1,"x-json-integer":True}:
         raise ValueError("private descriptor index representation differs")
-    if common().get("x-rust-tagged-enums")!=["SupervisorMaintenanceOperation"]:
+    if common().get("x-rust-tagged-enums")!=["SupervisorMaintenanceOperation","SupervisorStdio","SupervisorSource"]:
         raise ValueError("private tagged enum registry differs")
     enum=common()["definitions"]["SupervisorMaintenanceOperation"]
     if enum.get("x-rust-name")!="MaintenanceOperation":raise ValueError("private tagged enum Rust name differs")
@@ -1071,6 +1107,7 @@ def check_private_contracts():
 def check():
     check_references()
     check_private_contracts()
+    check_supervisor_source_stdio_metadata()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()
     for name, record in common().get("x-rust-serde-records",{}).items():

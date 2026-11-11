@@ -16,6 +16,61 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c16b1_nested_subcodec_schema_instances(self):
+        fixtures = contract.read("fixtures.json")
+        for key, name in [("c16b1_stdio_cases", "SupervisorStdio"),
+                          ("c16b1_source_cases", "SupervisorSource"),
+                          ("c16b1_recreate_cases", "SupervisorRecreate"),
+                          ("c16b1_worktree_cases", "SupervisorWorktree")]:
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
+            self.assertTrue(fixtures[key])
+            for case in fixtures[key]:
+                with self.subTest(record=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        # These canonical named records intentionally exclude legacy Serde
+        # sequences pinned by runtime tests. Outer bootstrap remains C16b2 work.
+        defs = contract.common()["definitions"]
+        self.assertEqual(defs["SupervisorSourceSlot"]["x-generator-pending"], "C16b")
+        self.assertEqual(defs["SupervisorHandoffSlot"]["x-generator-pending"], "C16b")
+
+    def test_c16b1_nested_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def mutated(name, label, change):
+            schema = copy.deepcopy(original)
+            change(schema["definitions"][name])
+            cases.append((name, label, schema))
+        for name in ["SupervisorStdio", "SupervisorSource"]:
+            mutated(name, "original container name", lambda d: d.update({"x-rust-name":"OtherWireType"}))
+            mutated(name, "derive traits", lambda d: d["x-rust-derives"].remove("Deserialize"))
+            mutated(name, "duplicate variant", lambda d: d["oneOf"].append(copy.deepcopy(d["oneOf"][0])))
+            mutated(name, "unknown field order", lambda d: d["oneOf"][0]["x-rust-field-order"].append("ghost"))
+            mutated(name, "open variant", lambda d: d["oneOf"][0].update(additionalProperties=True))
+        mutated("SupervisorStdio", "descriptor array Rust type", lambda d: d["oneOf"][0]["properties"]["fds"].update({"x-rust-type":"Vec<crate::contract::Descriptor>"}))
+        mutated("SupervisorStdio", "descriptor array length", lambda d: d["oneOf"][0]["properties"]["fds"].update(maxItems=4))
+        mutated("SupervisorStdio", "u16 exact integer", lambda d: d["oneOf"][2]["properties"]["rows"].pop("x-json-integer"))
+        mutated("SupervisorSource", "Recreate reference", lambda d: d["oneOf"][0]["properties"]["recreate"]["anyOf"][0].update({"$ref":"#/definitions/SupervisorWorktree"}))
+        mutated("SupervisorSource", "scope descriptor Rust type", lambda d: d["oneOf"][1]["properties"]["scope"].update({"x-rust-type":"Option<String>"}))
+        mutated("SupervisorSource", "worktree explicit default", lambda d: d["oneOf"][1]["properties"]["worktree"].pop("x-rust-default"))
+        mutated("SupervisorSource", "arguments explicit default", lambda d: d["oneOf"][1]["properties"]["arguments"].pop("x-rust-default"))
+        mutated("SupervisorSource", "required sequence", lambda d: d["oneOf"][0]["required"].remove("sequence"))
+        for name in ["SupervisorRecreate", "SupervisorWorktree"]:
+            mutated(name, "original record name", lambda d: d.update({"x-rust-name":"OtherRecord"}))
+            mutated(name, "field order", lambda d: d["x-rust-field-order"].reverse())
+            mutated(name, "required fields", lambda d: d["required"].pop())
+        mutated("SupervisorRecreate", "ignore additive fields", lambda d: d.update(additionalProperties=False))
+        mutated("SupervisorRecreate", "worktree explicit default", lambda d: d["properties"]["worktree"].pop("x-rust-default"))
+        mutated("SupervisorRecreate", "worktree Rust type", lambda d: d["properties"]["worktree"].update({"x-rust-type":"Option<::std::path::PathBuf>"}))
+        mutated("SupervisorWorktree", "closed fields", lambda d: d.update(additionalProperties=True))
+        mutated("SupervisorWorktree", "path public field name", lambda d: d["properties"]["path"].update({"x-rust-field-name":"directory"}))
+        mutated("SupervisorWorktree", "path Rust type", lambda d: d["properties"]["path"].update({"x-rust-type":"String"}))
+        for name, label, schema in cases:
+            with self.subTest(record=name, mutation=label), patch.object(contract, "common", return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c16a2_descriptor_and_outer_projection_schema_instances(self):
         fixtures = contract.read("fixtures.json")
         for key, name in [("c16a2_descriptor_cases", "SupervisorDescriptor"),

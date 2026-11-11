@@ -2306,3 +2306,350 @@ fn c16a2_maintenance_descriptor_diagnostics_and_api_validation_order() {
         c16a_error(frame, "expected control object");
     }
 }
+mod c16b1_original {
+    use super::*;
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "kind", deny_unknown_fields)]
+    pub enum WireStdio {
+        Fds { fds: [Descriptor; 3] },
+        Tty { slave: Descriptor },
+        NewPty { rows: u16, cols: u16 },
+    }
+    #[derive(Serialize, Deserialize)]
+    pub struct Recreate {
+        packages: Vec<String>,
+        auto_approve: Vec<String>,
+        docker: bool,
+        variables: std::collections::BTreeMap<String, String>,
+        #[serde(default)]
+        worktree: Option<Worktree>,
+    }
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Worktree {
+        name: String,
+        path: PathBuf,
+    }
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "kind", deny_unknown_fields)]
+    pub enum WireSource {
+        Host {
+            configuration: PathBuf,
+            name: String,
+            scope: Option<String>,
+            dev_shell: Option<String>,
+            workspace: Option<PathBuf>,
+            cwd: Option<PathBuf>,
+            state: PathBuf,
+            history: Option<PathBuf>,
+            recreate: Option<Recreate>,
+            sequence: u64,
+        },
+        Member {
+            scope: Option<Descriptor>,
+            owner_scope: Option<String>,
+            manifest: PathBuf,
+            configuration: String,
+            auto: std::collections::BTreeMap<String, PathBuf>,
+            state: PathBuf,
+            history: Option<PathBuf>,
+            #[serde(default)]
+            worktree: Option<PathBuf>,
+            #[serde(default)]
+            arguments: Option<Vec<String>>,
+        },
+    }
+}
+
+#[test]
+fn c16b1_stdio_original_variants_and_diagnostics_at_actual_codec() {
+    let mut cases = vec![
+        json!({"kind":"Fds","fds":[{"$fd":0},{"$fd":1},{"$fd":2}]}),
+        json!({"kind":"Fds","fds":[[0],[1],[2]]}),
+        json!({"kind":"Tty","slave":{"$fd":0}}),
+        json!({"kind":"NewPty","rows":0,"cols":65535}),
+        json!({"kind":"NewPty","rows":1.0,"cols":2}),
+        json!({"kind":"NewPty","rows":65536,"cols":2}),
+        json!({"kind":"NewPty","rows":1}),
+        json!({"kind":"Tty"}),
+        json!({"kind":"Tty","slave":null}),
+        json!({"kind":"Fds","fds":[]}),
+        json!({"kind":"Fds","fds":[{"$fd":0},{"$fd":1}]}),
+        json!({"kind":"Fds","fds":[{"$fd":0},{"$fd":1},{"$fd":2},{"$fd":3}]}),
+        json!({"kind":"unknown"}),
+        json!({"kind":null}),
+        json!({}),
+        json!(null),
+        json!([]),
+    ];
+    for value in cases.clone().into_iter().take(4) {
+        let mut value = value;
+        value["extra"] = json!(true);
+        cases.push(value);
+    }
+    for input in cases {
+        let original = serde_json::from_value::<c16b1_original::WireStdio>(input.clone());
+        let count = match input["kind"].as_str() {
+            Some("Fds") => 3,
+            Some("Tty") => 1,
+            _ => 0,
+        };
+        let fds = (0..count)
+            .map(|_| fs::File::open("/dev/null").unwrap().into())
+            .collect();
+        let mut descriptors = Descriptors::new(fds).unwrap();
+        match original {
+            Err(expected) => {
+                let error = decode_stdio(input.clone(), &mut descriptors).err().unwrap();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert_eq!(error.to_string(), expected.to_string(), "input {input}");
+            }
+            Ok(original) => {
+                let actual = decode_stdio(input.clone(), &mut descriptors).unwrap();
+                descriptors.finish().unwrap();
+                let mut builder = Builder::new("test", 1);
+                assert_eq!(
+                    encode_stdio(&actual, &mut builder).unwrap(),
+                    serde_json::to_value(original).unwrap(),
+                    "input {input}"
+                );
+                assert_eq!(builder.fds.len(), count);
+            }
+        }
+    }
+}
+
+fn c16b1_member() -> Source {
+    Source::Member {
+        scope: None,
+        owner_scope: None,
+        manifest: "relative/manifest".into(),
+        configuration: "child".into(),
+        auto: [("hello".into(), "/output".into())].into(),
+        state: "/state".into(),
+        history: None,
+        worktree: None,
+        arguments: None,
+    }
+}
+
+#[test]
+fn c16b1_source_original_variants_defaults_and_exact_errors_at_decoder() {
+    let root = unix::temp_directory().unwrap();
+    let mut builder = Builder::new("test", 1);
+    let host = encode_source(&host(), &mut builder).unwrap();
+    let member = encode_source(&c16b1_member(), &mut builder).unwrap();
+    assert_eq!(
+        member,
+        json!({"kind":"Member","scope":null,"owner_scope":null,
+        "manifest":"relative/manifest","configuration":"child","auto":{"hello":"/output"},
+        "state":"/state","history":null,"worktree":null,"arguments":null})
+    );
+    let mut cases = vec![
+        host.clone(),
+        member.clone(),
+        json!(null),
+        json!([]),
+        json!({}),
+        json!({"kind":"unknown"}),
+    ];
+    for (base, required, optional) in [
+        (
+            &host,
+            vec!["configuration", "name", "state", "sequence"],
+            vec![
+                "scope",
+                "dev_shell",
+                "workspace",
+                "cwd",
+                "history",
+                "recreate",
+            ],
+        ),
+        (
+            &member,
+            vec!["manifest", "configuration", "auto", "state"],
+            vec!["scope", "owner_scope", "history", "worktree", "arguments"],
+        ),
+    ] {
+        for field in required {
+            let mut v = base.clone();
+            v.as_object_mut().unwrap().remove(field);
+            cases.push(v);
+            let mut v = base.clone();
+            v[field] = json!(null);
+            cases.push(v);
+        }
+        let mut v = base.clone();
+        for field in optional {
+            v.as_object_mut().unwrap().remove(field);
+        }
+        cases.push(v);
+        let mut v = base.clone();
+        v["extra"] = json!(true);
+        cases.push(v);
+    }
+    for (field, value) in [
+        ("sequence", json!(1.0)),
+        ("sequence", json!(-1)),
+        ("sequence", json!(u64::MAX)),
+        ("configuration", json!(0)),
+    ] {
+        let mut v = host.clone();
+        v[field] = value;
+        cases.push(v);
+    }
+    for (field, value) in [
+        ("auto", json!([])),
+        ("auto", json!({"hello":null})),
+        ("arguments", json!([1])),
+        ("arguments", json!([])),
+        ("worktree", json!("relative/雪")),
+        ("scope", json!({"$fd":1.0})),
+    ] {
+        let mut v = member.clone();
+        v[field] = value;
+        cases.push(v);
+    }
+    for input in cases {
+        let expected = serde_json::from_value::<c16b1_original::WireSource>(input.clone());
+        let mut frame = if input["kind"] == "Member" {
+            c16a_frame(startup(c16b1_member(), Some(handoff(&root, 0))))
+        } else {
+            c16a_frame(startup(self::host(), None))
+        };
+        frame.value["params"]["source"] = input.clone();
+        match expected {
+            Err(error) => c16a_error(frame, &error.to_string()),
+            Ok(expected) => {
+                let received = Decoder::default().receive(frame).unwrap().unwrap();
+                assert_eq!(
+                    received.adopted,
+                    if input["kind"] == "Member" {
+                        Some(1)
+                    } else {
+                        None
+                    }
+                );
+                let Message::SupervisorStart(start) = received.message else {
+                    unreachable!()
+                };
+                let mut builder = Builder::new("test", 1);
+                assert_eq!(
+                    encode_source(&start.source, &mut builder).unwrap(),
+                    serde_json::to_value(expected).unwrap(),
+                    "input {input}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn c16b1_recreate_worktree_domain_conversion_defaults_additive_and_tuple_errors() {
+    let base = json!({"packages":["hello"],"auto_approve":["jq"],"docker":true,"variables":{"session":"abc"}});
+    let mut cases = vec![
+        base.clone(),
+        json!([[], [], false, {}]),
+        json!([[], [], false, {}, null]),
+        json!([[], [], false, {}, ["branch", "relative/tree"]]),
+    ];
+    for (field, value) in [
+        ("worktree", json!(null)),
+        ("worktree", json!({"name":"branch","path":"relative/雪"})),
+        ("worktree", json!({"name":"branch","path":"x","extra":true})),
+        ("worktree", json!({"name":"branch"})),
+        ("worktree", json!(["branch"])),
+        ("worktree", json!(["branch", "x", "extra"])),
+        ("worktree", json!(false)),
+        ("extra", json!({"$fd":999})),
+        ("packages", json!([1])),
+        ("variables", json!({"x":null})),
+    ] {
+        let mut v = base.clone();
+        v[field] = value;
+        cases.push(v);
+    }
+    for field in ["packages", "auto_approve", "docker", "variables"] {
+        let mut v = base.clone();
+        v.as_object_mut().unwrap().remove(field);
+        cases.push(v);
+    }
+    for input in cases {
+        let mut frame = c16a_frame(startup(host(), None));
+        frame.value["params"]["source"]["recreate"] = input.clone();
+        let expected = serde_json::from_value::<c16b1_original::WireSource>(
+            frame.value["params"]["source"].clone(),
+        )
+        .map(|v| serde_json::to_value(v).unwrap()["recreate"].clone())
+        .map_err(|e| e.to_string());
+        match expected {
+            Err(error) => c16a_error(frame, &error),
+            Ok(expected) => {
+                let received = Decoder::default().receive(frame).unwrap().unwrap();
+                let Message::SupervisorStart(start) = received.message else {
+                    unreachable!()
+                };
+                let mut builder = Builder::new("test", 1);
+                assert_eq!(
+                    encode_source(&start.source, &mut builder).unwrap()["recreate"],
+                    expected,
+                    "input {input}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn c16b1_source_scope_precedes_other_capabilities_and_rejection_closes_copies() {
+    let _no_forks = unix::no_forks();
+    let root = unix::temp_directory().unwrap();
+    for invalid in [false, true] {
+        let (reader, writer) = unix::pipe().unwrap();
+        let mut reader = fs::File::from(reader);
+        let mut member = c16b1_member();
+        let Source::Member { scope, .. } = &mut member else {
+            unreachable!()
+        };
+        *scope = Some(writer.into());
+        let Message::SupervisorStart(mut start) = startup(member, Some(handoff(&root, 0))) else {
+            unreachable!()
+        };
+        start.legacy_listener = Some(null());
+        let mut prepared = Encoder::default()
+            .prepare(Message::SupervisorStart(start))
+            .unwrap();
+        assert!(prepared.needs_adoption());
+        assert_eq!(
+            prepared.frames[0].value["params"]["source"]["scope"],
+            json!({"$fd":0})
+        );
+        assert_eq!(
+            prepared.frames[0].value["params"]["legacy_listener"],
+            json!({"$fd":1})
+        );
+        assert_eq!(
+            prepared.frames[0].value["params"]["handoff"]["workspace"],
+            json!({"$fd":2})
+        );
+        assert_eq!(
+            prepared.frames[0].value["params"]["handoff"]["working_directory"]["fd"],
+            json!({"$fd":3})
+        );
+        let mut frame = prepared.frames.pop_front().unwrap();
+        if invalid {
+            frame.value["params"]["source"]["scope"] = json!({"$fd":99});
+            frame.value["params"]["legacy_listener"] = json!({});
+            c16a_error(frame, "invalid or duplicate descriptor reference");
+        } else {
+            let received = Decoder::default().receive(frame).unwrap().unwrap();
+            assert_eq!(received.adopted, Some(1));
+            drop(received);
+        }
+        assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+        drop(prepared);
+        assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    }
+}
