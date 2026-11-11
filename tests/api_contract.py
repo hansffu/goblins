@@ -344,6 +344,10 @@ def reference():
         phases=document(endpoint).get("x-phases",[])
         if phases:
             lines.extend([f"* {endpoint} actor method phases", "", "These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.", "", "#+begin_src json", json.dumps(phases,indent=2), "#+end_src", ""])
+    for endpoint in PRIVATE_ENDPOINTS:
+        pending=document(endpoint).get("x-pending-notifications",{})
+        if pending:
+            lines.extend([f"* {endpoint} remaining notification chunks", "", "These existing messages remain assigned to later migration slices; their payloads are not claimed as generated yet.", "", "#+begin_src json", json.dumps(pending,indent=2), "#+end_src", ""])
     if common().get("x-rust-serde-records"):
         lines.extend(["* Generated Serde reader details","","Original Serde container names, field order, required nullable sequence slots and legacy named aliases are generated from:","","#+begin_src json",json.dumps(common()["x-rust-serde-records"],indent=2),"#+end_src",""])
     if common().get("x-supervisor-metadata-fallbacks"):
@@ -1067,7 +1071,7 @@ def check_supervisor_phases():
         ("entry","Entry","daemon-to-supervisor",["Setup","Maintenance","Preflight","SupervisorStart"],"libs/supervisor/src/entry.rs:main",{"Setup":"C18"}),
         ("maintenance-first","MaintenanceFirst","daemon-to-supervisor",["Maintenance"],"libs/supervisor/src/maintenance.rs:start",{}),
         ("preflight-adopted","PreflightAdopted","daemon-to-supervisor",["Adopted"],"libs/supervisor/src/preflight.rs:start",{}),
-        ("manifest-result","ManifestResult","supervisor-to-daemon",["Event.Manifest","PreflightFailed"],"packages/daemon/src/supervised/oneshot.rs:Expected::allows",{"Event.Manifest":"C17"}),
+        ("manifest-result","ManifestResult","supervisor-to-daemon",["Event.Manifest","PreflightFailed"],"packages/daemon/src/supervised/oneshot.rs:Expected::allows",{}),
         ("maintenance-result","MaintenanceResult","supervisor-to-daemon",["MaintenanceFinished"],"packages/daemon/src/supervised/oneshot.rs:Expected::allows",{}),
     ]
     doc=document("supervisor");rows=doc.get("x-phases",[])
@@ -1095,6 +1099,26 @@ def check_supervisor_phases():
                 raise ValueError("private phase identity has no matching directional contract")
 
 
+def check_supervisor_handoff_roots():
+    """Bind launch/export/manifest root metadata and its original serde slots."""
+    defs=common()["definitions"]
+    def ref(name):return {"$ref":"#/definitions/"+name}
+    def obj(props):return {"type":"object","properties":props,"required":list(props),"additionalProperties":False}
+    def optional(schema):return {"anyOf":[schema,{"type":"null"}]}
+    expected={
+        "SupervisorCommandStartParams":obj({"handoff":ref("SupervisorHandoff")}),
+        "SupervisorEventExportedParams":obj({"member":{"type":"string"},"result":ref("SupervisorHandoffOutcome")}),
+        "SupervisorEventManifestParams":obj({"sequence":ref("SupervisorSequence"),"path":ref("SupervisorPath"),"root":optional(ref("SupervisorPath")),"catalogue":{"type":"string"},"owner":ref("SupervisorOptionalDescriptor"),"transfer":ref("SupervisorSequence")}),
+        "SupervisorHandoffOutcome":{"oneOf":[obj({"Ok":ref("SupervisorHandoff")}),obj({"Err":{"type":"string"}})]},
+    }
+    for name,schema in expected.items():
+        if {k:v for k,v in defs[name].items() if k!="description"}!=schema:
+            raise ValueError("private root/outcome contract differs: "+name)
+    record=common()["x-rust-serde-records"].get("SupervisorEventManifestParams")
+    if record!={"name":"SupervisorEventManifestParams","order":["sequence","path","root","catalogue","owner","transfer"],"required-nullable":["root","owner"]}:
+        raise ValueError("private manifest generated serde contract differs")
+
+
 def check_private_contracts():
     """Check the explicitly migrated private slice, separately from public RPCs."""
     catalog={
@@ -1107,6 +1131,9 @@ def check_private_contracts():
         "SupervisorStart":("daemon-to-supervisor","SupervisorStartParams",["supervisor_api","source","directory","dimensions","detached","payload_nofile","legacy_listener","handoff"]),
         "Maintenance":("daemon-to-supervisor","SupervisorMaintenanceParams",["supervisor_api","operation","stdout","stderr"]),
         "Leases":("bidirectional","SupervisorLeasesParams",["transfer","leases","more"]),
+        "Command.Start":("daemon-to-supervisor","SupervisorCommandStartParams",["handoff"]),
+        "Event.Exported":("supervisor-to-daemon","SupervisorEventExportedParams",["member","result"]),
+        "Event.Manifest":("supervisor-to-daemon","SupervisorEventManifestParams",["sequence","path","root","catalogue","owner","transfer"]),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1118,7 +1145,8 @@ def check_private_contracts():
         if len(names)!=len(set(names)):raise ValueError("duplicate private Rust notification marker")
         for row in rows:
             name=row["name"];direction,record,order=catalog[name]
-            if row.get("x-rust-name")!=name or row.get("direction")!=direction:
+            rust={"Command.Start":"CommandStart","Event.Exported":"EventExported","Event.Manifest":"EventManifest"}.get(name,name)
+            if row.get("x-rust-name")!=rust or row.get("direction")!=direction:
                 raise ValueError("private notification identity/direction differs")
             if any(not isinstance(row.get(key),str) or not row[key] for key in ("sender","receiver","connection-state","description")):
                 raise ValueError("missing private notification peer/state description")
@@ -1181,6 +1209,7 @@ def check():
     check_supervisor_phases()
     check_supervisor_source_stdio_metadata()
     check_supervisor_handoff_metadata()
+    check_supervisor_handoff_roots()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()
     for name, record in common().get("x-rust-serde-records",{}).items():

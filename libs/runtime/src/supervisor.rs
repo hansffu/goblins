@@ -1,16 +1,18 @@
 //! Private supervisor vocabulary and descriptor codec, over `channel::Channel`.
 //! Raw JSON is opaque on this channel: only typed capability fields may use
 //! the transport's `$fd` marker. Scope framing and public host limits are unchanged.
-use crate::{
-    Command, Event, Fd, Handoff, HostOutcome, Recreate, Source, Stdio, TerminalId, TerminalStatus,
-};
+#[cfg(test)]
+use crate::Recreate;
+use crate::{Command, Event, Fd, Handoff, HostOutcome, Source, Stdio, TerminalId, TerminalStatus};
 use crate::{
     channel::{self, Descriptor, Frame},
     config::ManifestLease,
     lease::ResourceLease,
 };
 use goblins_protocol::contract::{self, Notification};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+#[cfg(test)]
+use serde::Deserialize;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use std::{
     collections::VecDeque,
@@ -479,7 +481,12 @@ macro_rules! command_codec {
             match command {
                 Command::Cancel(id) => { b.method="Command.Cancel"; b.value("id",id)?; }
                 Command::Stop => b.method="Command.Stop",
-                Command::Start(handoff) => { b.method="Command.Start"; let h=encode_handoff(handoff,b)?; b.value("handoff",&h)?; }
+                Command::Start(handoff) => {
+                    let handoff=encode_handoff_wire(handoff,b)?;
+                    // Preserve the original helper's serialization boundary.
+                    serde_json::to_value(&handoff).map_err(other)?;
+                    b.notification::<contract::supervisor_notifications::CommandStart>(contract::SupervisorCommandStartParams { handoff })?;
+                }
                 $(Command::$v { $($f),* } => { b.method=concat!("Command.", stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
             }
             Ok(())
@@ -526,16 +533,28 @@ macro_rules! event_codec {
             match event {
                 Event::Failed(error) => { b.method="Event.Failed"; b.value("error",error)?; }
                 Event::Manifest { sequence,lease,catalogue } => {
-                    b.method="Event.Manifest"; b.value("sequence",sequence)?; b.value("path",&lease.path)?; b.value("root",&lease.root())?;
-                    // Raw manifest names: opaque, so none reads as a descriptor.
-                    b.opaque("catalogue",catalogue)?;
+                    // Preserve path/root serialization before catalogue and owner.
+                    serde_json::to_value(&lease.path)?;
+                    let root=lease.root().map(std::path::Path::to_path_buf);
+                    serde_json::to_value(&root)?;
+                    // Configuration names remain opaque to descriptor scanning.
+                    let catalogue=serde_json::to_string(catalogue)?;
                     let owner=b.manifest.take().map(|fd| b.owned(fd)).transpose()?;
-                    b.value("owner",&owner)?; let transfer = b.transfer; b.value("transfer",&transfer)?;
+                    let transfer=b.transfer;
+                    b.notification::<contract::supervisor_notifications::EventManifest>(contract::SupervisorEventManifestParams {
+                        sequence:*sequence, path:lease.path.clone(), root, catalogue, owner, transfer,
+                    })?;
                 }
                 Event::Exported { member,result } => {
-                    b.method="Event.Exported"; b.value("member",member)?;
-                    let result=match result { Ok(h) => Ok(encode_handoff(h,b)?), Err(e)=>Err(e.clone()) };
-                    b.value("result",&result)?;
+                    let result=match result {
+                        Ok(h) => {
+                            let handoff=encode_handoff_wire(h,b)?;
+                            serde_json::to_value(&handoff).map_err(other)?;
+                            Ok(handoff)
+                        },
+                        Err(error)=>Err(error.clone()),
+                    };
+                    b.notification::<contract::supervisor_notifications::EventExported>(contract::SupervisorEventExportedParams { member:member.clone(),result })?;
                 }
                 $(Event::$v { $($f),* } => { b.method=concat!("Event.",stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
                 Event::InitLost => b.method="Event.InitLost",

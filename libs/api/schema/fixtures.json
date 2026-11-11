@@ -27281,9 +27281,7 @@
         "PreflightFailed"
       ],
       "consumer": "packages/daemon/src/supervised/oneshot.rs:Expected::allows",
-      "pending": {
-        "Event.Manifest": "C17"
-      }
+      "pending": {}
     },
     {
       "name": "maintenance-result",
@@ -27771,6 +27769,797 @@
       "phase": "maintenance-result",
       "method": "Unknown",
       "allowed": false
+    }
+  ],
+  "c17a_command_start_cases": [
+    {
+      "value": {
+        "handoff": {
+          "transfer": 1,
+          "count": 0,
+          "workspace": {
+            "$fd": 0
+          },
+          "working_directory": null,
+          "dev_shell": "null",
+          "docker": false,
+          "leases": [],
+          "more": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {},
+      "valid": false
+    },
+    {
+      "value": {
+        "handoff": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "handoff": {}
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "handoff": {
+          "transfer": 1,
+          "count": 0,
+          "workspace": {
+            "$fd": 0
+          },
+          "working_directory": null,
+          "dev_shell": {},
+          "docker": false,
+          "leases": [],
+          "more": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "handoff": {
+          "transfer": 1,
+          "count": 1.0,
+          "workspace": {
+            "$fd": 0
+          },
+          "working_directory": null,
+          "dev_shell": "null",
+          "docker": false,
+          "leases": [],
+          "more": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "handoff": {
+          "transfer": 1,
+          "count": 0,
+          "workspace": {
+            "$fd": 0
+          },
+          "working_directory": null,
+          "dev_shell": "null",
+          "docker": false,
+          "leases": [],
+          "more": false
+        },
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    }
+  ],
+  "c17a_handoff_outcome_cases": [
+    {
+      "value": {
+        "Ok": {
+          "transfer": 1,
+          "count": 0,
+          "workspace": {
+            "$fd": 0
+          },
+          "working_directory": null,
+          "dev_shell": "null",
+          "docker": false,
+          "leases": [],
+          "more": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Err": "failed\n\u96ea"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Err": ""
+      },
+      "valid": true
+    },
+    {
+      "value": null,
+      "valid": false
+    },
+    {
+      "value": {},
+      "valid": false
+    },
+    {
+      "value": {
+        "Ok": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Err": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Other": null
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Ok": {
+          "transfer": 1,
+          "count": 0,
+          "workspace": {
+            "$fd": 0
+          },
+          "working_directory": null,
+          "dev_shell": "null",
+          "docker": false,
+          "leases": [],
+          "more": false
+        },
+        "Err": "x"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "Ok": {
+          "transfer": 1,
+          "count": 0,
+          "workspace": {
+            "$fd": 0
+          },
+          "working_directory": null,
+          "dev_shell": "{",
+          "docker": false,
+          "leases": [],
+          "more": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "Ok": {}
+      },
+      "valid": false
+    }
+  ],
+  "c17a_event_exported_cases": [
+    {
+      "value": {
+        "member": "child",
+        "result": {
+          "Ok": {
+            "transfer": 1,
+            "count": 0,
+            "workspace": {
+              "$fd": 0
+            },
+            "working_directory": null,
+            "dev_shell": "null",
+            "docker": false,
+            "leases": [],
+            "more": false
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "member": "",
+        "result": {
+          "Ok": {
+            "transfer": 1,
+            "count": 0,
+            "workspace": {
+              "$fd": 0
+            },
+            "working_directory": null,
+            "dev_shell": "null",
+            "docker": false,
+            "leases": [],
+            "more": false
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "member": null,
+        "result": {
+          "Ok": {
+            "transfer": 1,
+            "count": 0,
+            "workspace": {
+              "$fd": 0
+            },
+            "working_directory": null,
+            "dev_shell": "null",
+            "docker": false,
+            "leases": [],
+            "more": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "result": {
+          "Ok": {
+            "transfer": 1,
+            "count": 0,
+            "workspace": {
+              "$fd": 0
+            },
+            "working_directory": null,
+            "dev_shell": "null",
+            "docker": false,
+            "leases": [],
+            "more": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "member": "child"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "member": "child",
+        "result": {
+          "Err": "failed"
+        }
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "member": "child",
+        "result": {
+          "Err": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "member": "child",
+        "result": {
+          "Ok": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "member": "child",
+        "result": {
+          "Ok": {},
+          "Err": "x"
+        }
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "member": "child",
+        "result": {
+          "Ok": {
+            "transfer": 1,
+            "count": 0,
+            "workspace": {
+              "$fd": 0
+            },
+            "working_directory": null,
+            "dev_shell": "null",
+            "docker": false,
+            "leases": [],
+            "more": false
+          }
+        },
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    }
+  ],
+  "c17a_event_manifest_cases": [
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sequence": 18446744073709551615,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sequence": 1.0,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 18446744073709551616,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": -1,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 0
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 18446744073709551615
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1.0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": true
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": null,
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": "/gc-root",
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": [],
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": {
+          "$fd": 0
+        },
+        "transfer": 1
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": {
+          "$fd": 1.0
+        },
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": [
+          0
+        ],
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "[{}]",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": {},
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": null,
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1,
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    },
+    {
+      "value": {
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "owner": null,
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "transfer": 1
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "sequence": 17,
+        "path": "relative/manifest",
+        "root": null,
+        "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+        "owner": null
+      },
+      "valid": false
+    }
+  ],
+  "c17a_notification_cases": [
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Start",
+        "params": {
+          "handoff": {
+            "transfer": 1,
+            "count": 0,
+            "workspace": {
+              "$fd": 0
+            },
+            "working_directory": null,
+            "dev_shell": "null",
+            "docker": false,
+            "leases": [],
+            "more": false
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Start",
+        "params": {
+          "handoff": {
+            "transfer": 1,
+            "count": 0,
+            "workspace": {
+              "$fd": 0
+            },
+            "working_directory": null,
+            "dev_shell": "null",
+            "docker": false,
+            "leases": [],
+            "more": false
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Start"
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Start",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Exported",
+        "params": {
+          "member": "child",
+          "result": {
+            "Err": "failed"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Exported",
+        "params": {
+          "member": "child",
+          "result": {
+            "Err": "failed"
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Exported"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Exported",
+        "params": []
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Manifest",
+        "params": {
+          "sequence": 17,
+          "path": "relative/manifest",
+          "root": null,
+          "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+          "owner": null,
+          "transfer": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Manifest",
+        "params": {
+          "sequence": 17,
+          "path": "relative/manifest",
+          "root": null,
+          "catalogue": "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{},\"launch_options\":{}}}}",
+          "owner": null,
+          "transfer": 1
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Manifest"
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Manifest",
+        "params": []
+      },
+      "valid": false
     }
   ]
 }

@@ -16,6 +16,75 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17a_root_contract_instances_and_retired_phase_dependency(self):
+        fixtures = contract.read("fixtures.json")
+        for key, name in [("c17a_command_start_cases", "SupervisorCommandStartParams"),
+                          ("c17a_event_exported_cases", "SupervisorEventExportedParams"),
+                          ("c17a_event_manifest_cases", "SupervisorEventManifestParams"),
+                          ("c17a_handoff_outcome_cases", "SupervisorHandoffOutcome")]:
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
+            for case in fixtures[key]:
+                with self.subTest(record=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        for case in fixtures["c17a_notification_cases"]:
+            with self.subTest(notification=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", case["direction"], case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", case["direction"], case["frame"])
+            opposite = "supervisor-to-daemon" if case["direction"] == "daemon-to-supervisor" else "daemon-to-supervisor"
+            self.assertFalse(contract.validate_notification("supervisor", opposite, case["frame"]))
+        doc = contract.document("supervisor")
+        phase = next(p for p in doc["x-phases"] if p["name"] == "manifest-result")
+        self.assertEqual(phase["pending-identities"], {})
+        self.assertEqual(phase["allowed"], ["Event.Manifest", "PreflightFailed"])
+        row = next(n for n in doc["x-notifications"] if n["name"] == "Event.Manifest")
+        self.assertEqual(row["x-rust-name"], "EventManifest")
+        self.assertEqual(row["direction"], phase["direction"])
+        self.assertEqual(row["x-params-schema"], {"$ref":"common.json#/definitions/SupervisorEventManifestParams"})
+        self.assertEqual(contract.resolve(row["x-params-schema"]), contract.common()["definitions"]["SupervisorEventManifestParams"])
+        # Catalogue is only a String here. Original typed inner parsing and all
+        # root/owner/count/adoption semantics stay at their runtime boundaries.
+
+    def test_c17a_root_and_outcome_metadata_consistency_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def mutated(name, label, change):
+            schema = copy.deepcopy(original)
+            change(schema["definitions"][name])
+            cases.append((label, schema))
+        mutated("SupervisorCommandStartParams", "Start handoff reference", lambda d: d["properties"]["handoff"].update({"$ref":"#/definitions/SupervisorSource"}))
+        mutated("SupervisorEventExportedParams", "Exported result reference", lambda d: d["properties"]["result"].update({"$ref":"#/definitions/SupervisorMaintenanceOutcome"}))
+        mutated("SupervisorEventExportedParams", "Exported member type", lambda d: d["properties"]["member"].update(type="integer"))
+        mutated("SupervisorHandoffOutcome", "Ok handoff reference", lambda d: d["oneOf"][0]["properties"]["Ok"].update({"$ref":"#/definitions/SupervisorDirectory"}))
+        mutated("SupervisorHandoffOutcome", "Err must be string", lambda d: d["oneOf"][1]["properties"]["Err"].update(type=["string","null"]))
+        mutated("SupervisorHandoffOutcome", "closed Ok branch", lambda d: d["oneOf"][0].update(additionalProperties=True))
+        mutated("SupervisorHandoffOutcome", "required Err tag", lambda d: d["oneOf"][1].update(required=[]))
+        mutated("SupervisorHandoffOutcome", "exclusive Result branches", lambda d: d.update(oneOf=d["oneOf"]+[copy.deepcopy(d["oneOf"][0])]))
+        mutated("SupervisorEventManifestParams", "manifest sequence type", lambda d: d["properties"]["sequence"].update({"$ref":"#/definitions/SupervisorPath"}))
+        mutated("SupervisorEventManifestParams", "manifest path type", lambda d: d["properties"]["path"].update({"$ref":"#/definitions/SupervisorSequence"}))
+        mutated("SupervisorEventManifestParams", "nullable root shape", lambda d: d["properties"]["root"]["anyOf"][0].update({"$ref":"#/definitions/SupervisorDescriptor"}))
+        mutated("SupervisorEventManifestParams", "nullable owner reference", lambda d: d["properties"]["owner"].update({"$ref":"#/definitions/SupervisorHandoffSlot"}))
+        mutated("SupervisorEventManifestParams", "opaque catalogue string", lambda d: d["properties"]["catalogue"].update(type="object"))
+        mutated("SupervisorEventManifestParams", "manifest transfer type", lambda d: d["properties"]["transfer"].update({"$ref":"#/definitions/SupervisorLeaseCount"}))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract, "common", return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+        for mutation in ["container name", "field order", "required nullable root", "required nullable owner"]:
+            schema = copy.deepcopy(original)
+            record = schema["x-rust-serde-records"]["SupervisorEventManifestParams"]
+            if mutation == "container name": record["name"] = "OtherManifestParams"
+            elif mutation == "field order": record["order"].reverse()
+            elif mutation == "required nullable root": record["required-nullable"].remove("root")
+            else: record["required-nullable"].remove("owner")
+            with self.subTest(mutation=mutation), patch.object(contract, "common", return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c16c_phase_manifest_matches_original_identities_and_pending_scope(self):
         fixtures = contract.read("fixtures.json")
         doc = contract.document("supervisor")
@@ -74,8 +143,8 @@ class ContractTests(unittest.TestCase):
         mutated("missing Setup pending", lambda d: d["x-phases"][0]["pending-identities"].pop("Setup"))
         mutated("wrong Setup chunk", lambda d: d["x-phases"][0]["pending-identities"]["Setup"].update(chunk="C17"))
         mutated("empty pending reason", lambda d: d["x-phases"][0]["pending-identities"]["Setup"].update(reason=""))
-        mutated("missing Event.Manifest pending", lambda d: d["x-phases"][3]["pending-identities"].pop("Event.Manifest"))
-        mutated("wrong Event.Manifest chunk", lambda d: d["x-phases"][3]["pending-identities"]["Event.Manifest"].update(chunk="C18"))
+        mutated("retired Event.Manifest pending reintroduced", lambda d: d["x-phases"][3]["pending-identities"].update({"Event.Manifest":{"chunk":"C17","reason":"retired payload fallback"}}))
+        mutated("retired Event.Manifest rebound to wrong chunk", lambda d: d["x-phases"][3]["pending-identities"].update({"Event.Manifest":{"chunk":"C18","reason":"wrong payload fallback"}}))
         mutated("generated identity marked pending", lambda d: d["x-phases"][0]["pending-identities"].update(Maintenance={"chunk":"C18","reason":"wrong fallback"}))
         mutated("pending identity outside allowed list", lambda d: d["x-phases"][1]["pending-identities"].update(Setup={"chunk":"C18","reason":"wrong scope"}))
         mutated("dispatch classifier outside entry", lambda d: d["x-phases"][1].update({"x-dispatch-variants":{"Maintenance":"Maintenance"}}))

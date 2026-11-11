@@ -11094,6 +11094,101 @@
         "more"
       ],
       "additionalProperties": false
+    },
+    "SupervisorHandoffOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Ok": {
+              "$ref": "#/definitions/SupervisorHandoff"
+            }
+          },
+          "required": [
+            "Ok"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Err": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Err"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SupervisorCommandStartParams": {
+      "type": "object",
+      "properties": {
+        "handoff": {
+          "$ref": "#/definitions/SupervisorHandoff"
+        }
+      },
+      "required": [
+        "handoff"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventExportedParams": {
+      "type": "object",
+      "properties": {
+        "member": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/SupervisorHandoffOutcome"
+        }
+      },
+      "required": [
+        "member",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventManifestParams": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "path": {
+          "$ref": "#/definitions/SupervisorPath"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SupervisorPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "catalogue": {
+          "type": "string"
+        },
+        "owner": {
+          "$ref": "#/definitions/SupervisorOptionalDescriptor"
+        },
+        "transfer": {
+          "$ref": "#/definitions/SupervisorSequence"
+        }
+      },
+      "required": [
+        "sequence",
+        "path",
+        "root",
+        "catalogue",
+        "owner",
+        "transfer"
+      ],
+      "additionalProperties": false
     }
   },
   "x-api-version": 1,
@@ -13745,6 +13840,21 @@
         "legacy_listener",
         "handoff"
       ]
+    },
+    "SupervisorEventManifestParams": {
+      "name": "SupervisorEventManifestParams",
+      "order": [
+        "sequence",
+        "path",
+        "root",
+        "catalogue",
+        "owner",
+        "transfer"
+      ],
+      "required-nullable": [
+        "root",
+        "owner"
+      ]
     }
   },
   "x-communications-payloads": [
@@ -14218,7 +14328,9 @@
     "MaintenanceOperation": "Schema-driven tagged enum generation retains named variants/field order/optional-null emission and original Serde diagnostics; Typify replacements reference this generated enum.",
     "Descriptor": "Schema-driven explicit record generation retains the original Descriptor Rust name, public index usize field, $fd rename, Copy/Clone/Debug and exact Serde diagnostics, including standalone positional [index]. channel::references still requires exact object markers; standalone compatibility does not bypass transport scanning.",
     "Recreate and Worktree": "Generated wire-only Recreate and Worktree project explicitly to/from the original runtime domain records. Recreate ignores additive fields and defaults absent worktree; Worktree stays closed. No domain validation, paths, resource policy or history writer is moved.",
-    "Handoff dev_shell": "The WireHandoff dev_shell field is an opaque serialized JSON String, not traversable JSON: serde_json::to_string/from_str of the existing runtime DevShell retains arbitrary lock-file JSON without exposing its $fd-looking keys to channel descriptor scanning. Inner domain decoding, including exact UnexpectedEof/error behavior, remains with the existing runtime decoder; its implementation is not a new transport."
+    "Handoff dev_shell": "The WireHandoff dev_shell field is an opaque serialized JSON String, not traversable JSON: serde_json::to_string/from_str of the existing runtime DevShell retains arbitrary lock-file JSON without exposing its $fd-looking keys to channel descriptor scanning. Inner domain decoding, including exact UnexpectedEof/error behavior, remains with the existing runtime decoder; its implementation is not a new transport.",
+    "Manifest catalogue": "The Event.Manifest catalogue is an opaque JSON String using serde_json::to_string/from_str of the original typed config::Catalogue. Arbitrary manifest/configuration names may resemble descriptor markers; string opacity keeps channel scanning from interpreting them as capabilities. Catalogue parsing remains before owner descriptor extraction and maps errors through the original InvalidData helper. This transport slot does not replace manifest/domain validation.",
+    "Root handoff decoding": "Command.Start and Event.Exported retain raw Value / Result<Value,String> extraction until root unknown-field rejection, then use the generated WireHandoff decoder at the original overlap/count/ownership point. Current producers use generated complete typed parameter records and standard Result<WireHandoff,String>."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",

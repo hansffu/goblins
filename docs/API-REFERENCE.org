@@ -12727,6 +12727,130 @@ Positional parameters:
 }
 #+end_src
 
+** Notification =Command.Start=
+
+Give an accepted member its handoff. Root handoff extraction and unknown-field rejection precede nested decoding; overlap/count/descriptor checks and final adoption are unchanged.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: existing accepted runtime/member handoff.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "handoff": {
+      "$ref": "#/definitions/SupervisorHandoff"
+    }
+  },
+  "required": [
+    "handoff"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Exported=
+
+Return a member handoff or an error. Decode member then standard Result<Value,String>, reject unknown root fields, and only then decode an Ok handoff. Err has no descriptor ownership or adoption.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational response to Command.Export on an established supervisor connection.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "member": {
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/definitions/SupervisorHandoffOutcome"
+    }
+  },
+  "required": [
+    "member",
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.Manifest=
+
+Publish a manifest lease and opaque catalogue JSON string. Decode sequence/path/root/catalogue before owner capability, then transfer and unknown fields; reject zero transfer before lease adoption. Root/owner consistency and lock identity remain the original ManifestLease validation. Even unrooted manifests require typed adoption.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: existing operational result or preflight manifest result.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "sequence": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "path": {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    "root": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "catalogue": {
+      "type": "string"
+    },
+    "owner": {
+      "$ref": "#/definitions/SupervisorOptionalDescriptor"
+    },
+    "transfer": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "sequence",
+    "path",
+    "root",
+    "catalogue",
+    "owner",
+    "transfer"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * supervisor actor method phases
 
 These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.
@@ -12788,12 +12912,7 @@ These gates inspect method identity before logical decoding. Pending identities 
       "Event.Manifest",
       "PreflightFailed"
     ],
-    "pending-identities": {
-      "Event.Manifest": {
-        "chunk": "C17",
-        "reason": "Only its existing one-shot result method identity is bound here; descriptor-bearing Event.Manifest payload generation belongs to C17."
-      }
-    },
+    "pending-identities": {},
     "consumer": "packages/daemon/src/supervised/oneshot.rs:Expected::allows",
     "description": "Only one single-frame manifest or operation failure may reach one-shot result decoding. Preserve raw descriptor disposal on wrong-direction rejection and all later result/ACK/EOF/reap validation."
   },
@@ -12809,6 +12928,73 @@ These gates inspect method identity before logical decoding. Pending identities 
     "description": "Only the single-frame maintenance result reaches logical decoding. Existing fixed post-result deadline, EOF and successful reap requirements remain unchanged."
   }
 ]
+#+end_src
+
+* supervisor remaining notification chunks
+
+These existing messages remain assigned to later migration slices; their payloads are not claimed as generated yet.
+
+#+begin_src json
+{
+  "C17b-process-terminals": [
+    "Command.Attach",
+    "Command.Detach",
+    "Command.Resize",
+    "Command.Spawn",
+    "Command.Signal",
+    "Command.CancelProcess",
+    "Command.KillAll",
+    "Command.TerminalCall",
+    "Command.TerminalCancel",
+    "Event.Spawned",
+    "Event.Terminal",
+    "Event.TerminalResult",
+    "Event.SpawnFailed",
+    "Event.Exited"
+  ],
+  "C17c-approvals-devshell": [
+    "Command.Cancel",
+    "Command.Preview",
+    "Command.Decide",
+    "Command.Refresh",
+    "Command.Run",
+    "Command.Diff",
+    "Event.Preview",
+    "Event.Progress",
+    "Event.Refresh",
+    "Event.Call",
+    "Event.DevShell",
+    "Event.Granted"
+  ],
+  "C17d-lifecycle-host-jobs": [
+    "Command.ScopeFailed",
+    "Command.ScopeMembership",
+    "Command.Export",
+    "Command.PrepareHostJob",
+    "Command.RunHostJob",
+    "Command.CancelHostJob",
+    "Command.Stop",
+    "Event.ScopeFailed",
+    "Event.ScopeNeeded",
+    "Event.Started",
+    "Event.Mode",
+    "Event.HostJobPrepared",
+    "Event.HostJobFailed",
+    "Event.HostJobFinished",
+    "Event.Stopped",
+    "Event.Failed",
+    "Event.InitLost",
+    "Event.PayloadExited"
+  ],
+  "C17e-relay-logging": [
+    "Command.RecordEvent",
+    "Command.SandboxSend",
+    "Command.SandboxClose",
+    "Event.SandboxOpened",
+    "Event.SandboxCall",
+    "Event.SandboxClosed"
+  ]
+}
 #+end_src
 
 * Generated Serde reader details
@@ -13127,6 +13313,21 @@ Original Serde container names, field order, required nullable sequence slots an
       "legacy_listener",
       "handoff"
     ]
+  },
+  "SupervisorEventManifestParams": {
+    "name": "SupervisorEventManifestParams",
+    "order": [
+      "sequence",
+      "path",
+      "root",
+      "catalogue",
+      "owner",
+      "transfer"
+    ],
+    "required-nullable": [
+      "root",
+      "owner"
+    ]
   }
 }
 #+end_src
@@ -13140,6 +13341,8 @@ Original Serde container names, field order, required nullable sequence slots an
 - =Descriptor= :: Schema-driven explicit record generation retains the original Descriptor Rust name, public index usize field, $fd rename, Copy/Clone/Debug and exact Serde diagnostics, including standalone positional [index]. channel::references still requires exact object markers; standalone compatibility does not bypass transport scanning.
 - =Recreate and Worktree= :: Generated wire-only Recreate and Worktree project explicitly to/from the original runtime domain records. Recreate ignores additive fields and defaults absent worktree; Worktree stays closed. No domain validation, paths, resource policy or history writer is moved.
 - =Handoff dev_shell= :: The WireHandoff dev_shell field is an opaque serialized JSON String, not traversable JSON: serde_json::to_string/from_str of the existing runtime DevShell retains arbitrary lock-file JSON without exposing its $fd-looking keys to channel descriptor scanning. Inner domain decoding, including exact UnexpectedEof/error behavior, remains with the existing runtime decoder; its implementation is not a new transport.
+- =Manifest catalogue= :: The Event.Manifest catalogue is an opaque JSON String using serde_json::to_string/from_str of the original typed config::Catalogue. Arbitrary manifest/configuration names may resemble descriptor markers; string opacity keeps channel scanning from interpreting them as capabilities. Catalogue parsing remains before owner descriptor extraction and maps errors through the original InvalidData helper. This transport slot does not replace manifest/domain validation.
+- =Root handoff decoding= :: Command.Start and Event.Exported retain raw Value / Result<Value,String> extraction until root unknown-field rejection, then use the generated WireHandoff decoder at the original overlap/count/ownership point. Current producers use generated complete typed parameter records and standard Result<WireHandoff,String>.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -26091,6 +26294,121 @@ Original Serde container names, field order, required nullable sequence slots an
     "transfer",
     "leases",
     "more"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorHandoffOutcome=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "Ok": {
+          "$ref": "#/definitions/SupervisorHandoff"
+        }
+      },
+      "required": [
+        "Ok"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "Err": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Err"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
+#+end_src
+
+** =SupervisorCommandStartParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "handoff": {
+      "$ref": "#/definitions/SupervisorHandoff"
+    }
+  },
+  "required": [
+    "handoff"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventExportedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "member": {
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/definitions/SupervisorHandoffOutcome"
+    }
+  },
+  "required": [
+    "member",
+    "result"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventManifestParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "sequence": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "path": {
+      "$ref": "#/definitions/SupervisorPath"
+    },
+    "root": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "catalogue": {
+      "type": "string"
+    },
+    "owner": {
+      "$ref": "#/definitions/SupervisorOptionalDescriptor"
+    },
+    "transfer": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "sequence",
+    "path",
+    "root",
+    "catalogue",
+    "owner",
+    "transfer"
   ],
   "additionalProperties": false
 }

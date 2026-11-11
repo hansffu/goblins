@@ -3069,3 +3069,337 @@ fn c16b2_continuation_counts_overlap_and_cleanup_keep_exact_precedence() {
     drop(received);
     assert!(!root.join("r0").exists());
 }
+fn c17a_unrooted() -> Message {
+    Message::Event(Event::Manifest {
+        sequence: u64::MAX,
+        lease: ManifestLease::adopt("relative/manifest".into(), None),
+        catalogue: fd_named_catalogue(),
+    })
+}
+#[test]
+fn c17a_manifest_and_export_failure_pin_exact_envelopes_and_opaque_transport() {
+    let _no_forks = unix::no_forks();
+    let catalogue = "{\"goblins\":{\"$fd\":{\"description\":\"\",\"args\":[],\"scope_args\":{\"$fd\":[]},\"launch_options\":{}}}}";
+    for rooted in [false, true] {
+        let root = unix::temp_directory().unwrap();
+        let mut encoder = Encoder { next: u64::MAX - 1 };
+        let mut prepared = encoder
+            .prepare(if rooted {
+                manifest(&root)
+            } else {
+                c17a_unrooted()
+            })
+            .unwrap();
+        assert!(prepared.needs_adoption());
+        assert_eq!(prepared.transfer(), u64::MAX);
+        assert_eq!(prepared.frames.len(), 1);
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert_eq!(
+            frame.value,
+            json!({"jsonrpc":"2.0","method":"Event.Manifest","params":{
+            "sequence":if rooted {17} else {u64::MAX},"path":if rooted {root.join("manifest.json")} else {PathBuf::from("relative/manifest")},
+            "root":if rooted {Some(root.join("gc-root"))} else {None},"catalogue":catalogue,
+            "owner":if rooted {json!({"$fd":0})} else {json!(null)},"transfer":u64::MAX}})
+        );
+        assert_eq!(frame.fds.len(), usize::from(rooted));
+        let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut sender = channel::Channel::new(left).unwrap();
+        let mut receiver = channel::Channel::new(right).unwrap();
+        sender.queue(&frame.value, &mut frame.fds).unwrap();
+        sender.flush().unwrap();
+        assert!(!sender.wants_write());
+        let received = Decoder::default()
+            .receive_channel(&mut receiver)
+            .unwrap()
+            .unwrap();
+        assert_eq!(received.adopted, Some(u64::MAX));
+        let Message::Event(Event::Manifest {
+            sequence,
+            lease,
+            catalogue,
+        }) = &received.message
+        else {
+            unreachable!()
+        };
+        assert_eq!(*sequence, if rooted { 17 } else { u64::MAX });
+        assert_eq!(catalogue, &fd_named_catalogue());
+        assert_eq!(
+            lease.path,
+            if rooted {
+                root.join("manifest.json")
+            } else {
+                PathBuf::from("relative/manifest")
+            }
+        );
+        assert_eq!(lease.root().is_some(), rooted);
+        prepared.adopted(u64::MAX).unwrap();
+        if rooted {
+            assert!(root.join("gc-root").exists());
+        }
+        drop(received);
+        assert!(!root.join("gc-root").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    let mut prepared = Encoder::default()
+        .prepare(Message::Event(Event::Exported {
+            member: "".into(),
+            result: Err("failed\n雪".into()),
+        }))
+        .unwrap();
+    assert_eq!(
+        prepared.frames[0].value,
+        json!({"jsonrpc":"2.0","method":"Event.Exported","params":{"member":"","result":{"Err":"failed\n雪"}}})
+    );
+    assert!(prepared.frames[0].fds.is_empty());
+    assert!(!prepared.needs_adoption());
+    let received = decode(&mut prepared, &mut Decoder::default());
+    assert!(received.adopted.is_none());
+    assert!(
+        matches!(received.message,Message::Event(Event::Exported {member,result:Err(error)}) if member.is_empty() && error=="failed\n雪")
+    );
+}
+
+#[test]
+fn c17a_root_params_missing_unknown_and_type_errors_keep_original_order() {
+    let root = unix::temp_directory().unwrap();
+    let cases = vec![
+        (c16b2_start(&root, 0), vec!["handoff"]),
+        (
+            Encoder::default()
+                .prepare(Message::Event(Event::Exported {
+                    member: "child".into(),
+                    result: Err("failed".into()),
+                }))
+                .unwrap(),
+            vec!["member", "result"],
+        ),
+        (
+            Encoder::default().prepare(c17a_unrooted()).unwrap(),
+            vec!["sequence", "path", "root", "catalogue", "owner", "transfer"],
+        ),
+    ];
+    for (mut prepared, fields) in cases {
+        let original = prepared.frames.pop_front().unwrap();
+        for field in fields {
+            let mut value = original.value.clone();
+            value["params"].as_object_mut().unwrap().remove(field);
+            c16a_error(
+                Frame {
+                    value,
+                    fds: original
+                        .fds
+                        .iter()
+                        .map(|fd| fd.try_clone().unwrap())
+                        .collect(),
+                },
+                &format!("missing control field {field}"),
+            );
+        }
+        let mut value = original.value.clone();
+        value["params"]["extra"] = json!(true);
+        c16a_error(
+            Frame {
+                value,
+                fds: original.fds,
+            },
+            "unexpected control field",
+        );
+    }
+    let mut frame = c16b2_start(&root, 0).frames.pop_front().unwrap();
+    frame.value["params"]["handoff"] = json!(null);
+    frame.value["params"]["extra"] = json!(true);
+    c16a_error(frame, "unexpected control field");
+    let mut frame = c16b2_start(&root, 0).frames.pop_front().unwrap();
+    frame.value["params"]["handoff"] = json!(null);
+    let expected = serde_json::from_value::<c16b2_original::WireHandoff>(json!(null))
+        .err()
+        .unwrap()
+        .to_string();
+    c16a_error(frame, &expected);
+    for value in [
+        json!(null),
+        json!({}),
+        json!({"Err":null}),
+        json!({"Other":null}),
+        json!({"Ok":{},"Err":"x"}),
+    ] {
+        let mut frame = c16a_frame(Message::Event(Event::Exported {
+            member: "child".into(),
+            result: Err("x".into()),
+        }));
+        frame.value["params"]["result"] = value.clone();
+        let expected = serde_json::from_value::<Result<Value, String>>(value)
+            .err()
+            .unwrap()
+            .to_string();
+        c16a_error(frame, &expected);
+    }
+    let mut frame = c16a_frame(Message::Event(Event::Exported {
+        member: "child".into(),
+        result: Err("x".into()),
+    }));
+    frame.value["params"]["member"] = json!(null);
+    frame.value["params"]["result"] = json!(null);
+    c16a_error(
+        frame,
+        &serde_json::from_value::<String>(json!(null))
+            .unwrap_err()
+            .to_string(),
+    );
+    let mut frame = c16a_frame(Message::Event(Event::Exported {
+        member: "child".into(),
+        result: Err("x".into()),
+    }));
+    frame.value["params"]["result"] = json!({"Ok":null});
+    frame.value["params"]["extra"] = json!(true);
+    c16a_error(frame, "unexpected control field");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn c17a_manifest_scalar_and_inner_catalogue_decoding_preserve_exact_errors_and_legacy_forms() {
+    for (field, value, expected) in [
+        (
+            "sequence",
+            json!(1.0),
+            serde_json::from_value::<u64>(json!(1.0))
+                .unwrap_err()
+                .to_string(),
+        ),
+        (
+            "sequence",
+            json!(-1),
+            serde_json::from_value::<u64>(json!(-1))
+                .unwrap_err()
+                .to_string(),
+        ),
+        (
+            "path",
+            json!(null),
+            serde_json::from_value::<PathBuf>(json!(null))
+                .unwrap_err()
+                .to_string(),
+        ),
+        (
+            "root",
+            json!([]),
+            serde_json::from_value::<Option<PathBuf>>(json!([]))
+                .unwrap_err()
+                .to_string(),
+        ),
+        (
+            "catalogue",
+            json!({}),
+            serde_json::from_value::<String>(json!({}))
+                .unwrap_err()
+                .to_string(),
+        ),
+        (
+            "owner",
+            json!({"$fd":1.0}),
+            serde_json::from_value::<Option<c16a2_original::Descriptor>>(json!({"$fd":1.0}))
+                .unwrap_err()
+                .to_string(),
+        ),
+        (
+            "transfer",
+            json!(1.0),
+            serde_json::from_value::<u64>(json!(1.0))
+                .unwrap_err()
+                .to_string(),
+        ),
+    ] {
+        let mut frame = c16a_frame(c17a_unrooted());
+        frame.value["params"][field] = value;
+        c16a_error(frame, &expected);
+    }
+    for opaque in [
+        "{",
+        "null",
+        "[]",
+        "{}",
+        "{\"goblins\":null}",
+        "{\"goblins\":{},\"extra\":true}",
+        "{\"goblins\":{}}",
+        "[{}]",
+    ] {
+        let expected = serde_json::from_str::<crate::config::Catalogue>(opaque);
+        let mut frame = c16a_frame(c17a_unrooted());
+        frame.value["params"]["catalogue"] = json!(opaque);
+        match expected {
+            Err(error) => c16a_error(frame, &error.to_string()),
+            Ok(expected) => {
+                let received = Decoder::default().receive(frame).unwrap().unwrap();
+                let Message::Event(Event::Manifest { catalogue, .. }) = received.message else {
+                    unreachable!()
+                };
+                assert_eq!(catalogue, expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn c17a_manifest_owner_root_transfer_and_catalogue_error_precedence_closes_raw_fds() {
+    let _no_forks = unix::no_forks();
+    for fault in 0..5 {
+        let (reader, writer) = unix::pipe().unwrap();
+        let mut reader = fs::File::from(reader);
+        let mut frame = c16a_frame(c17a_unrooted());
+        frame.fds.push(writer);
+        frame.value["params"]["owner"] = json!({"$fd":0});
+        let expected = match fault {
+            0 => "manifest root ownership descriptor missing or unexpected".into(),
+            1 => {
+                frame.value["params"]["transfer"] = json!(0);
+                "invalid ownership transfer id".into()
+            }
+            2 => {
+                frame.value["params"]["transfer"] = json!(0);
+                frame.value["params"]["extra"] = json!(true);
+                "unexpected control field".into()
+            }
+            3 => {
+                frame.value["params"]["owner"] = json!({"$fd":99});
+                frame.value["params"]["transfer"] = json!(1.0);
+                "invalid or duplicate descriptor reference".into()
+            }
+            4 => {
+                frame.value["params"]["owner"] = json!({"$fd":99});
+                frame.value["params"]["catalogue"] = json!("{");
+                serde_json::from_str::<crate::config::Catalogue>("{")
+                    .unwrap_err()
+                    .to_string()
+            }
+            _ => unreachable!(),
+        };
+        c16a_error(frame, &expected);
+        assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    }
+    let mut frame = c16a_frame(c17a_unrooted());
+    frame.value["params"]["root"] = json!("/root-without-owner");
+    c16a_error(
+        frame,
+        "manifest root ownership descriptor missing or unexpected",
+    );
+    for wrong_root in [false, true] {
+        let root = unix::temp_directory().unwrap();
+        let unrelated = root.join("unrelated-root");
+        fs::write(&unrelated, "keep").unwrap();
+        fs::write(root.join("unrelated-root.ownership"), "").unwrap();
+        let mut prepared = Encoder::default().prepare(manifest(&root)).unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        if wrong_root {
+            frame.value["params"]["root"] = json!(unrelated);
+        } else {
+            frame.fds[0] = fs::File::open("/dev/null").unwrap().into();
+        }
+        c16a_error(frame, "invalid manifest ownership descriptor");
+        assert!(root.join("gc-root").exists());
+        drop(prepared);
+        assert!(!root.join("gc-root").exists());
+        assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep");
+        fs::remove_dir_all(root).unwrap();
+    }
+}

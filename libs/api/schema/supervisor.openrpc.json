@@ -319,9 +319,126 @@
       "sender": "transfer-sending peer",
       "receiver": "transfer-adopting peer",
       "connection-state": "after a handoff header with more=true, until declared count is satisfied"
+    },
+    {
+      "name": "Command.Start",
+      "x-rust-name": "CommandStart",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Give an accepted member its handoff. Root handoff extraction and unknown-field rejection precede nested decoding; overlap/count/descriptor checks and final adoption are unchanged.",
+      "params": [
+        {
+          "name": "handoff",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandStartParams/properties/handoff"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandStartParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "existing accepted runtime/member handoff"
+    },
+    {
+      "name": "Event.Exported",
+      "x-rust-name": "EventExported",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Return a member handoff or an error. Decode member then standard Result<Value,String>, reject unknown root fields, and only then decode an Ok handoff. Err has no descriptor ownership or adoption.",
+      "params": [
+        {
+          "name": "member",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventExportedParams/properties/member"
+          }
+        },
+        {
+          "name": "result",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventExportedParams/properties/result"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventExportedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational response to Command.Export on an established supervisor connection"
+    },
+    {
+      "name": "Event.Manifest",
+      "x-rust-name": "EventManifest",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Publish a manifest lease and opaque catalogue JSON string. Decode sequence/path/root/catalogue before owner capability, then transfer and unknown fields; reject zero transfer before lease adoption. Root/owner consistency and lock identity remain the original ManifestLease validation. Even unrooted manifests require typed adoption.",
+      "params": [
+        {
+          "name": "sequence",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventManifestParams/properties/sequence"
+          }
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventManifestParams/properties/path"
+          }
+        },
+        {
+          "name": "root",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventManifestParams/properties/root"
+          }
+        },
+        {
+          "name": "catalogue",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventManifestParams/properties/catalogue"
+          }
+        },
+        {
+          "name": "owner",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventManifestParams/properties/owner"
+          }
+        },
+        {
+          "name": "transfer",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventManifestParams/properties/transfer"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventManifestParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "existing operational result or preflight manifest result"
     }
   ],
-  "x-contract-chunk": "C16c",
+  "x-contract-chunk": "C17a",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -331,7 +448,7 @@
     "decoding": "Original Params take/finish order; raw envelope and owned descriptors remain handwritten."
   },
   "x-pending": [
-    "C17 Command.* and Event.* payloads (including phase-only Event.Manifest identity)",
+    "C17 remaining Command.* and Event.* families, excluding Start/Exported/Manifest",
     "C18 scope Setup payload (entry phase identity only)"
   ],
   "x-phases": [
@@ -390,12 +507,7 @@
         "Event.Manifest",
         "PreflightFailed"
       ],
-      "pending-identities": {
-        "Event.Manifest": {
-          "chunk": "C17",
-          "reason": "Only its existing one-shot result method identity is bound here; descriptor-bearing Event.Manifest payload generation belongs to C17."
-        }
-      },
+      "pending-identities": {},
       "consumer": "packages/daemon/src/supervised/oneshot.rs:Expected::allows",
       "description": "Only one single-frame manifest or operation failure may reach one-shot result decoding. Preserve raw descriptor disposal on wrong-direction rejection and all later result/ACK/EOF/reap validation."
     },
@@ -410,5 +522,65 @@
       "consumer": "packages/daemon/src/supervised/oneshot.rs:Expected::allows",
       "description": "Only the single-frame maintenance result reaches logical decoding. Existing fixed post-result deadline, EOF and successful reap requirements remain unchanged."
     }
-  ]
+  ],
+  "x-pending-notifications": {
+    "C17b-process-terminals": [
+      "Command.Attach",
+      "Command.Detach",
+      "Command.Resize",
+      "Command.Spawn",
+      "Command.Signal",
+      "Command.CancelProcess",
+      "Command.KillAll",
+      "Command.TerminalCall",
+      "Command.TerminalCancel",
+      "Event.Spawned",
+      "Event.Terminal",
+      "Event.TerminalResult",
+      "Event.SpawnFailed",
+      "Event.Exited"
+    ],
+    "C17c-approvals-devshell": [
+      "Command.Cancel",
+      "Command.Preview",
+      "Command.Decide",
+      "Command.Refresh",
+      "Command.Run",
+      "Command.Diff",
+      "Event.Preview",
+      "Event.Progress",
+      "Event.Refresh",
+      "Event.Call",
+      "Event.DevShell",
+      "Event.Granted"
+    ],
+    "C17d-lifecycle-host-jobs": [
+      "Command.ScopeFailed",
+      "Command.ScopeMembership",
+      "Command.Export",
+      "Command.PrepareHostJob",
+      "Command.RunHostJob",
+      "Command.CancelHostJob",
+      "Command.Stop",
+      "Event.ScopeFailed",
+      "Event.ScopeNeeded",
+      "Event.Started",
+      "Event.Mode",
+      "Event.HostJobPrepared",
+      "Event.HostJobFailed",
+      "Event.HostJobFinished",
+      "Event.Stopped",
+      "Event.Failed",
+      "Event.InitLost",
+      "Event.PayloadExited"
+    ],
+    "C17e-relay-logging": [
+      "Command.RecordEvent",
+      "Command.SandboxSend",
+      "Command.SandboxClose",
+      "Event.SandboxOpened",
+      "Event.SandboxCall",
+      "Event.SandboxClosed"
+    ]
+  }
 }

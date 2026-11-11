@@ -104,6 +104,7 @@ pub(super) fn encode_source_wire(source: &Source, b: &mut Builder) -> io::Result
     };
     Ok(wire)
 }
+#[cfg(test)]
 pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Value> {
     // Preserve the original Source producer's json! failure boundary.
     Ok(json!(encode_source_wire(source, b)?))
@@ -218,9 +219,7 @@ pub(super) fn encode_handoff_wire(h: &Handoff, b: &mut Builder) -> io::Result<Wi
     }
     Ok(header)
 }
-pub(super) fn encode_handoff(h: &Handoff, b: &mut Builder) -> io::Result<Value> {
-    serde_json::to_value(encode_handoff_wire(h, b)?).map_err(other)
-}
+
 fn decode_leases(leases: Vec<WireLease>, d: &mut Descriptors) -> io::Result<Vec<ResourceLease>> {
     // Adopt each batch immediately. Partial transfers retain real cleanup
     // guards, rather than naked descriptors that forget directory ownership.
@@ -460,12 +459,12 @@ impl Decoder {
                     }
                 }
             }
-            "Command.Start" => {
+            name if name == contract::supervisor_notifications::CommandStart::NAME => {
                 let h = p.take("handoff")?;
                 p.finish()?;
                 self.handoff(Target::StartCommand, h, &mut d, bytes)?
             }
-            "Event.Exported" => {
+            name if name == contract::supervisor_notifications::EventExported::NAME => {
                 let member = p.take("member")?;
                 let result = p.take::<Result<Value, String>>("result")?;
                 p.finish()?;
@@ -530,28 +529,35 @@ impl Decoder {
                     })
                 }
             }
-            "Event.Manifest" => {
+            name if name == contract::supervisor_notifications::EventManifest::NAME => {
                 let sequence = p.take("sequence")?;
                 let path = p.take("path")?;
                 let root = p.take("root")?;
-                let catalogue = p.opaque("catalogue")?;
-                let owner = p
-                    .take::<Option<Descriptor>>("owner")?
-                    .map(|fd| d.take(fd))
-                    .transpose()?;
-                let transfer = p.take::<u64>("transfer")?;
+                let catalogue_wire: String = p.take("catalogue")?;
+                let catalogue = serde_json::from_str(&catalogue_wire).map_err(other)?;
+                let owner = p.take::<Option<Descriptor>>("owner")?;
+                let owner_fd = owner.map(|fd| d.take(fd)).transpose()?;
+                let wire = contract::SupervisorEventManifestParams {
+                    sequence,
+                    path,
+                    root,
+                    catalogue: catalogue_wire,
+                    owner,
+                    transfer: p.take("transfer")?,
+                };
                 p.finish()?;
-                if transfer == 0 {
+                if wire.transfer == 0 {
                     return Err(invalid("invalid ownership transfer id"));
                 }
-                let lease = ManifestLease::from_transfer(path, root, owner).map_err(other)?;
+                let lease =
+                    ManifestLease::from_transfer(wire.path, wire.root, owner_fd).map_err(other)?;
                 Some(Received {
                     message: Message::Event(Event::Manifest {
-                        sequence,
+                        sequence: wire.sequence,
                         lease,
                         catalogue,
                     }),
-                    adopted: Some(transfer),
+                    adopted: Some(wire.transfer),
                 })
             }
             name if name == contract::supervisor_notifications::Maintenance::NAME => {
