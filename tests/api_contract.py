@@ -1051,7 +1051,7 @@ def check():
                 raise ValueError(f"positional schema differs from method parameter order: {entry['name']}")
             if entry.get("x-null-params-as-empty") and entry.get("paramStructure") != "by-name": raise ValueError("invalid nullable-object contract")
             direct=entry.get("x-direct-serde-params",False)
-            expected_direct=endpoint=="host" and entry["name"] in ("history.list","history.prune","state.subscribe","state.unsubscribe")
+            expected_direct=endpoint=="host" and entry["name"] in ("history.list","history.prune","state.subscribe","state.unsubscribe","sessions.resize")
             if type(direct) is not bool or direct!=expected_direct:raise ValueError("direct Serde parameter strategy differs")
             if direct and (entry.get("paramStructure")!="either" or entry.get("x-null-params-as-empty") or entry.get("x-nested-positional-params") or entry.get("x-client-param-normalization")):raise ValueError("direct Serde cannot normalize parameters")
 

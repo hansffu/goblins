@@ -413,7 +413,7 @@
     },
     {
       "name": "sessions.resize",
-      "description": "Resize by exact session id; dimensions are 1..1000 and a handler client must be attached.",
+      "description": "Resize by exact session id; dimensions are 1..1000 and a handler client must be attached. Parameter decoding preserves the original Resize record name, session/rows/cols field order and Serde diagnostics before dimension validation or session lookup.",
       "paramStructure": "either",
       "params": [
         {
@@ -468,7 +468,8 @@
       "x-positional-schema": {
         "$ref": "common.json#/x-positional-schemas/HostSessionsResizePositional"
       },
-      "x-rust-name": "SessionsResize"
+      "x-rust-name": "SessionsResize",
+      "x-direct-serde-params": true
     },
     {
       "name": "sessions.exec",

@@ -1460,7 +1460,7 @@ Method errors: -32004, -32009, -32010. Common envelope/connection errors also ap
 
 ** =sessions.resize=
 
-Resize by exact session id; dimensions are 1..1000 and a handler client must be attached.
+Resize by exact session id; dimensions are 1..1000 and a handler client must be attached. Parameter decoding preserves the original Resize record name, session/rows/cols field order and Serde diagnostics before dimension validation or session lookup.
 
 Named parameters:
 
@@ -12657,6 +12657,14 @@ Original Serde container names, field order, required nullable sequence slots an
       "method",
       "subscription",
       "sequence"
+    ]
+  },
+  "SessionResizeParams": {
+    "name": "Resize",
+    "order": [
+      "session",
+      "rows",
+      "cols"
     ]
   }
 }

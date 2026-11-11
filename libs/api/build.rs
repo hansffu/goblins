@@ -172,6 +172,7 @@ fn main() {
         "HistoryPruneParams",
         "StateUnsubscribeParams",
         "StateMessagingHealth",
+        "SessionResizeParams",
     ] {
         settings.with_patch(
             name,

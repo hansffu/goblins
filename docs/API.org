@@ -181,7 +181,7 @@ Detaches the current terminal consumer; the goblin keeps running. For a goblin w
 
 *** =sessions.resize=
 
-Resizes the session's PTY, or for a goblin with =onAttach= the attached client's PTY (=-32009= when none is attached).
+Resizes the session's PTY, or for a goblin with =onAttach= the attached client's PTY (=-32009= when none is attached). Parameters decode directly as the original =Resize= record, in =session=, =rows=, =cols= order, preserving Serde errors for malformed objects and positional arrays. Decoding precedes dimension validation (1–1000), which precedes session lookup; invalid dimensions therefore do not depend on whether the session exists.
 
 - Input :: ={"session", "rows", "cols"}= or =[session, rows, cols]= (=session= is an exact session ID; rows and cols 1–1000)
 - Output :: ={"accepted": true}=

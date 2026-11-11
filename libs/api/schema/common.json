@@ -12696,6 +12696,14 @@
         "subscription",
         "sequence"
       ]
+    },
+    "SessionResizeParams": {
+      "name": "Resize",
+      "order": [
+        "session",
+        "rows",
+        "cols"
+      ]
     }
   },
   "x-communications-payloads": [

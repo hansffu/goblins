@@ -10098,4 +10098,140 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
+
+    #[test]
+    fn c15b_resize_dispatch_matches_original_struct_and_validation_order() {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Resize {
+            session: String,
+            rows: u16,
+            cols: u16,
+        }
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        let cases = vec![
+            Value::Null,
+            json!(false),
+            json!(17),
+            json!("s"),
+            json!({}),
+            json!({"session":"absent"}),
+            json!({"session":"absent","rows":24}),
+            json!({"session":"absent","rows":24,"cols":80,"unknown":1}),
+            json!([]),
+            json!(["absent"]),
+            json!(["absent", 24]),
+            json!(["absent", 24, 80, 0]),
+            json!(["absent", true, "bad", 0]),
+            json!([17, true, "bad"]),
+            json!(["absent", true, "bad"]),
+            json!({"session":17,"rows":true,"cols":"bad"}),
+            json!({"session":"absent","rows":true,"cols":"bad"}),
+            json!(["absent", -1, 80]),
+            json!(["absent", 1.0, 80]),
+            json!(["absent", 65536, 80]),
+            json!(["absent", null, 80]),
+            json!([null, 24, 80]),
+            json!(["absent", 0, 80]),
+            json!(["absent", 1001, 80]),
+            json!(["absent", 65535, 80]),
+            json!(["absent", 24, 0]),
+            json!(["absent", 24, 1001]),
+            json!(["absent", 1, 1000]),
+            json!({"session":"absent","rows":1000,"cols":1}),
+        ];
+        let mut differences = vec![];
+        for value in cases {
+            // Exact original direct-Serde diagnostics include Resize's name,
+            // original field visit order, unknown fields and lack of defaults.
+            let expected = match serde_json::from_value::<Resize>(value.clone()) {
+                Err(error) => {
+                    json!({"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":error.to_string()}})
+                }
+                Ok(p) if !(1..=1000).contains(&p.rows) || !(1..=1000).contains(&p.cols) => {
+                    json!({"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid dimensions"}})
+                }
+                Ok(_) => {
+                    json!({"jsonrpc":"2.0","id":1,"error":{"code":-32004,"message":"record absent or no longer retained"}})
+                }
+            };
+            let actual = dispatch(
+                &mut d,
+                &mut c,
+                "sessions.resize",
+                value.clone(),
+                Some(json!(1)),
+            );
+            if actual != expected {
+                differences.push((value, expected, actual));
+            }
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+        assert!(
+            differences.is_empty(),
+            "Resize original-versus-actual differences: {differences:#?}"
+        );
+    }
+
+    #[test]
+    fn c15b_resize_success_keeps_acceptance_and_forwards_original_dimensions() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        session_with_results_id(&mut d, "resize-target", vec![]);
+        let (runtime, _events, commands) = goblins_runtime::Fake::new();
+        let active = d.sessions.get_mut("resize-target").unwrap();
+        active.runtime = Some(Box::new(runtime));
+        active.pending = None;
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        for (params, rows, cols) in [
+            (
+                json!({"session":"resize-target","rows":1,"cols":1000}),
+                1,
+                1000,
+            ),
+            (json!(["resize-target", 1000, 1]), 1000, 1),
+        ] {
+            assert_eq!(
+                dispatch(&mut d, &mut c, "sessions.resize", params, Some(json!(9))),
+                json!({"jsonrpc":"2.0","id":9,"result":{"accepted":true}})
+            );
+            let sent = commands.lock().unwrap().pop_front().unwrap();
+            match sent {
+                Command::Resize {
+                    terminal: TerminalId::Main,
+                    rows: actual_rows,
+                    cols: actual_cols,
+                } => {
+                    assert_eq!((actual_rows, actual_cols), (rows, cols));
+                }
+                other => panic!("unexpected runtime command: {other:?}"),
+            }
+            assert!(commands.lock().unwrap().is_empty());
+        }
+        assert_eq!(
+            dispatch(
+                &mut d,
+                &mut c,
+                "sessions.resize",
+                json!(["resize-target", 0, 80]),
+                Some(json!(10))
+            ),
+            json!({"jsonrpc":"2.0","id":10,"error":{"code":-32602,"message":"invalid dimensions"}})
+        );
+        assert!(
+            commands.lock().unwrap().is_empty(),
+            "invalid dimensions never reach runtime"
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
 }
