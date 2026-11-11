@@ -2332,6 +2332,90 @@
       },
       "x-client-wire-result-schema": {},
       "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "messages.get",
+      "x-rust-name": "MessagesGet",
+      "description": "Read only as the authenticated host caller. messages.get accepts any string ID structurally, then performs the existing visibility lookup (host sees all; a goblin sees messages it sent or received); malformed IDs remain absent/unavailable rather than becoming an earlier syntax error. inbox.status selects only the caller inbox and unfinished operations. Closed named params, original positional forms and null refusal retain their existing decoding and readiness order. Status remains readable after audit failure and includes the failure flags. Existing frame limit is 64 KiB.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "message",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/MailboxGetParams/properties/message"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxMessage"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid read parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxGetParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/IgnoredResult"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "ignore-successful-body"
+    },
+    {
+      "name": "inbox.status",
+      "x-rust-name": "InboxStatus",
+      "description": "Read only as the authenticated host caller. messages.get accepts any string ID structurally, then performs the existing visibility lookup (host sees all; a goblin sees messages it sent or received); malformed IDs remain absent/unavailable rather than becoming an earlier syntax error. inbox.status selects only the caller inbox and unfinished operations. Closed named params, original positional forms and null refusal retain their existing decoding and readiness order. Status remains readable after audit failure and includes the failure flags. Existing frame limit is 64 KiB.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/InboxStatusRecord"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid read parameters"
+        },
+        {
+          "code": -32004,
+          "message": "Record absent or unavailable"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxStatusParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/InboxStatusReply"
+      }
     }
   ],
   "x-notifications": [

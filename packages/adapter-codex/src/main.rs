@@ -128,13 +128,10 @@ fn daemon_connect() -> Result<UnixStream> {
     )?;
     Ok(s)
 }
-fn daemon(method: &str, value: Value) -> Result<Value> {
-    Ok(rpc::exchange(
-        &mut daemon_connect()?,
-        json!(1),
-        method,
-        value,
-    )?)
+/// Validate the RPC boundary before adapting to the persisted ledger's JSON.
+fn inbox_status() -> Result<Value> {
+    let status = daemon_typed::<contract::sandbox::InboxStatus>(contract::MailboxStatusParams {})?;
+    Ok(serde_json::to_value(status)?)
 }
 fn daemon_typed<M: contract::Method>(params: M::Params) -> Result<M::Result> {
     Ok(contract::exchange::<M>(
@@ -869,7 +866,7 @@ fn run(dir: &Path, socket: &Path, thread: Option<&str>, bypass: bool) -> Result<
             }
             s.bind(&bound)?;
             report = activity(&s.status);
-            let inbox = daemon("inbox.status", json!({}))?;
+            let inbox = inbox_status()?;
             if inbox["audit_failed"] != false {
                 return Err("inbox audit unavailable; delivery suspended".into());
             }

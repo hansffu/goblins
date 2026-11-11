@@ -7560,6 +7560,189 @@
         "claim_generation"
       ],
       "additionalProperties": true
+    },
+    "MailboxGetParams": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "InboxHead": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "InboxOperation": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "kind",
+        "subject",
+        "state"
+      ],
+      "additionalProperties": true,
+      "description": "Unfinished caller operation; current states pending/running. The private owning session is never serialized. Future descriptive strings remain readable."
+    },
+    "InboxStatusRecord": {
+      "type": "object",
+      "properties": {
+        "queued": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InboxHead"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "audit_failed": {
+          "type": "boolean"
+        },
+        "raid_audit_failed": {
+          "type": "boolean"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InboxOperation"
+          }
+        }
+      },
+      "required": [
+        "queued",
+        "claim",
+        "head",
+        "revision",
+        "audit_failed",
+        "raid_audit_failed",
+        "operations"
+      ],
+      "additionalProperties": true
+    },
+    "InboxStatusReply": {
+      "type": "object",
+      "properties": {
+        "queued": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InboxHead"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "audit_failed": {
+          "type": "boolean"
+        },
+        "raid_audit_failed": {
+          "type": "boolean",
+          "default": false
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/InboxOperation"
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "queued",
+        "claim",
+        "head",
+        "revision",
+        "audit_failed"
+      ],
+      "additionalProperties": true,
+      "description": "Require all five original inbox fields so malformed/missing data cannot become an empty inbox. Additive raid_audit_failed/operations may be absent on older daemons, defaulting to false/empty. Wrong scalar/container types, float counters, tuple arity and u64 overflow are errors."
+    },
+    "MailboxStatusParams": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
     }
   },
   "x-api-version": 1,
@@ -9856,6 +10039,12 @@
         "owner"
       ],
       "name": "RaidNotice"
+    },
+    "MailboxGetParams": {
+      "name": "Get",
+      "order": [
+        "message"
+      ]
     }
   }
 }

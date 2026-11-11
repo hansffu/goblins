@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{io, os::unix::net::UnixStream};
 
+/// The existing positional inbox head; Typify replacements require a named path.
+pub type InboxHead = (String, u64);
+
+/// Named empty mailbox params retain the original exposed Empty diagnostics.
+pub mod mailbox_status {
+    #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Empty {}
+}
+pub use mailbox_status::Empty as MailboxStatusParams;
+
 /// Closed empty parameter objects need a struct, rather than a generated map.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -199,7 +210,9 @@ pub fn decode_notification<N: Notification>(call: rpc::Call) -> serde_json::Resu
 }
 
 mod generated {
-    use super::{EmptyParams, HostJob, IgnoredResult, PermissionRequestResult};
+    use super::{
+        EmptyParams, HostJob, IgnoredResult, MailboxStatusParams, PermissionRequestResult,
+    };
     include!(concat!(env!("OUT_DIR"), "/contract.rs"));
 }
 pub use generated::*;

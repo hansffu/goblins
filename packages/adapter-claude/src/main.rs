@@ -93,13 +93,10 @@ fn daemon_connect() -> Result<UnixStream> {
     )?;
     Ok(s)
 }
-fn daemon(method: &str, value: Value) -> Result<Value> {
-    Ok(rpc::exchange(
-        &mut daemon_connect()?,
-        json!(1),
-        method,
-        value,
-    )?)
+/// Validate the RPC boundary before adapting to the persisted ledger's JSON.
+fn inbox_status() -> Result<Value> {
+    let status = daemon_typed::<contract::sandbox::InboxStatus>(contract::MailboxStatusParams {})?;
+    Ok(serde_json::to_value(status)?)
 }
 fn daemon_typed<M: contract::Method>(params: M::Params) -> Result<M::Result> {
     Ok(contract::exchange::<M>(
@@ -122,11 +119,10 @@ fn within<T: Send + 'static>(
         Err(_) => Err(format!("no answer within {timeout:?}").into()),
     }
 }
-fn bounded(timeout: Duration, method: &'static str, value: Value) -> Result<Value> {
-    within(timeout, move || {
-        daemon(method, value).map_err(|e| e.to_string())
-    })
+fn bounded_inbox_status(timeout: Duration) -> Result<Value> {
+    within(timeout, || inbox_status().map_err(|e| e.to_string()))
 }
+
 /// Hooks and the monitor are separate processes: they change the ledger
 /// only under this lock, waiting for it at most `wait`.
 fn lock(dir: &Path, wait: Duration) -> Result<File> {
@@ -184,7 +180,7 @@ fn start(dir: &Path) -> Result<String> {
 fn hook(dir: &Path, input: &Hook, monitor: bool) -> Result<Value> {
     let event = input.hook_event_name.as_str();
     let inbox = match event {
-        "Stop" => Some(bounded(HOOK_CALL, "inbox.status", json!({}))?),
+        "Stop" => Some(bounded_inbox_status(HOOK_CALL)?),
         _ => None,
     };
     let continuation = locked(dir, HOOK_LOCK, |ledger| {
@@ -279,7 +275,7 @@ fn watch(dir: &Path) -> Result<()> {
         if heartbeat {
             reported = tick;
         }
-        let inbox = daemon("inbox.status", json!({}));
+        let inbox = inbox_status();
         let (poll, activity) = poll(dir, &run, inbox, heartbeat)?;
         if let Some(state) = activity {
             report(dir, &run, state)?;

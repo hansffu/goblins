@@ -86,14 +86,7 @@ pub struct Service {
     worker: Option<thread::JoinHandle<()>>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Get {
-    message: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Empty {}
+use goblins_protocol::contract::{self, Method};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct List {
@@ -291,10 +284,11 @@ impl<L: Log> State<L> {
             return None;
         };
         let result = match method.as_str() {
-            "messages.get" => {
-                parse::<Get>(params).and_then(|p| mailbox.get(&actor, &p.message).map(|m| json!(m)))
+            contract::host::MessagesGet::NAME => parse::<contract::MailboxGetParams>(params)
+                .and_then(|p| mailbox.get(&actor, &p.message).map(|m| json!(m))),
+            contract::host::InboxStatus::NAME => {
+                parse::<contract::MailboxStatusParams>(params).map(|_| mailbox.status(&actor))
             }
-            "inbox.status" => parse::<Empty>(params).map(|_| mailbox.status(&actor)),
             "communications.list" if actor == "host" => {
                 parse::<List>(params).and_then(|p| page(journal.events(), known, p))
             }

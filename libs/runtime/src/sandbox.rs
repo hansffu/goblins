@@ -41,10 +41,10 @@ pub fn messaging(method: &str) -> bool {
     matches!(
         method,
         contract::sandbox::MessagesSend::NAME
-            | "messages.get"
+            | contract::sandbox::MessagesGet::NAME
             | contract::sandbox::MessagesReply::NAME
             | contract::sandbox::InboxNext::NAME
-            | "inbox.status"
+            | contract::sandbox::InboxStatus::NAME
             | contract::sandbox::InboxComplete::NAME
             | contract::sandbox::InboxRequeue::NAME
     )

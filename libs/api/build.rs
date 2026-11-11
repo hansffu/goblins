@@ -166,6 +166,7 @@ fn main() {
         "MailboxMessage",
         "MailboxOperation",
         "MailboxRaidNotice",
+        "MailboxGetParams",
     ] {
         settings.with_patch(
             name,
@@ -179,6 +180,12 @@ fn main() {
                 ),
         );
     }
+    settings.with_replacement("InboxHead", "crate::contract::InboxHead", [].into_iter());
+    settings.with_replacement(
+        "MailboxStatusParams",
+        "crate::contract::MailboxStatusParams",
+        [].into_iter(),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while

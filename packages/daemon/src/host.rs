@@ -282,6 +282,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adapter_status_boundary_accepts_native_fixture_and_rejects_missing_revision() {
+        use std::io::Write;
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        let valid = fixtures["native_inbox_status"].clone();
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove("revision");
+        let _no_forks = goblins_unix::no_forks();
+        std::thread::scope(|scope| {
+            let (mut client, mut peer) = UnixStream::pair().unwrap();
+            client.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            let server = scope.spawn(move || {
+                for result in [valid, missing] {
+                    let call = rpc::read(&mut peer).unwrap();
+                    assert_eq!(call["method"], "inbox.status");
+                    assert_eq!(call["params"], json!({}));
+                    peer.write_all(&rpc::encode(&rpc::result(call["id"].clone(), result)).unwrap())
+                        .unwrap();
+                }
+            });
+            assert!(
+                contract::exchange::<contract::sandbox::InboxStatus>(
+                    &mut client,
+                    json!(1),
+                    contract::MailboxStatusParams {}
+                )
+                .is_ok()
+            );
+            assert!(
+                contract::exchange::<contract::sandbox::InboxStatus>(
+                    &mut client,
+                    json!(2),
+                    contract::MailboxStatusParams {}
+                )
+                .is_err()
+            );
+            server.join().unwrap();
+        });
+    }
+    #[test]
     fn raid_owner_profiles_send_exact_shown_payloads_and_ignore_legacy_successes() {
         use std::io::Write;
         let fixtures: Value =

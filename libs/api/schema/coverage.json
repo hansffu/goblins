@@ -1,15 +1,5 @@
 {
   "pending": {
-    "C12": {
-      "host": [
-        "messages.get",
-        "inbox.status"
-      ],
-      "sandbox": [
-        "messages.get",
-        "inbox.status"
-      ]
-    },
     "C13": {
       "host": [
         "communications.list"

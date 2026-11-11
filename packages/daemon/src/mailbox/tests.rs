@@ -1101,3 +1101,39 @@ fn generated_mutation_result_producers_match_original_wire_expressions() {
         .claim_generation = u64::MAX;
     check(&f, "c", "inbox.next", json!({"key":"fetch-maximum"}));
 }
+
+#[test]
+fn generated_inbox_status_matches_original_producer_and_hides_operation_owner() {
+    fn old(m: &Mailbox, actor: &str) -> Value {
+        let inbox = || {
+            m.messages
+                .iter()
+                .filter(|message| message.recipient == actor)
+        };
+        json!({"queued":inbox().filter(|m|m.state==State::Queued).count(),"claim":inbox().find(|m|m.state==State::Claimed).map(|m|&m.id),"head":inbox().find(|m|matches!(m.state,State::Queued|State::Claimed)).map(|m|json!([m.id,m.claim_generation])),"revision":m.sequence,"audit_failed":m.audit_failed,"raid_audit_failed":m.raid_audit_failed,"operations":m.operations.values().filter(|o|o.session==actor).collect::<Vec<_>>()})
+    }
+    let mut f = Fixture::new();
+    f.mailbox.operations.insert(
+        "op".into(),
+        Outstanding {
+            session: "c".into(),
+            request: "op".into(),
+            kind: "package".into(),
+            subject: "hello".into(),
+            state: "pending",
+        },
+    );
+    f.send("host", "scout", "send", "hello");
+    for stage in 0..3 {
+        if stage == 1 {
+            f.next("c", "fetch");
+        }
+        if stage == 2 {
+            f.mailbox.audit_failed = true;
+            f.mailbox.raid_audit_failed = true;
+        }
+        for actor in ["host", "c", "x"] {
+            assert_eq!(f.mailbox.status(actor), old(&f.mailbox, actor));
+        }
+    }
+}

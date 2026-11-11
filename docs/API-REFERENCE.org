@@ -5680,6 +5680,334 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =messages.get=
+
+Read only as the authenticated host caller. messages.get accepts any string ID structurally, then performs the existing visibility lookup (host sees all; a goblin sees messages it sent or received); malformed IDs remain absent/unavailable rather than becoming an earlier syntax error. inbox.status selects only the caller inbox and unfinished operations. Closed named params, original positional forms and null refusal retain their existing decoding and readiness order. Status remains readable after audit failure and includes the failure flags. Existing frame limit is 64 KiB.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "message"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "conversation": {
+      "type": "string"
+    },
+    "sender": {
+      "type": "string"
+    },
+    "recipient": {
+      "type": "string"
+    },
+    "sender_name": {
+      "type": "string"
+    },
+    "recipient_name": {
+      "type": "string"
+    },
+    "in_reply_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "body": {
+      "type": "string"
+    },
+    "created_sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "created_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "state": {
+      "$ref": "#/definitions/MailboxState"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxOperation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxRaidNotice"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "conversation",
+    "sender",
+    "recipient",
+    "sender_name",
+    "recipient_name",
+    "in_reply_to",
+    "body",
+    "created_sequence",
+    "created_at",
+    "state",
+    "claim_generation",
+    "failure"
+  ],
+  "additionalProperties": true,
+  "description": "Current producer emits every first thirteen field, including nullable in_reply_to/failure, and omits absent operation/raid notices. created_at is UTC Unix milliseconds; created_sequence is authoritative. Authenticated routing supplies sender/recipient. Legacy reader retains sender_path/recipient_path aliases and original positional order; no semantic validation moves into the DTO."
+}
+#+end_src
+
+Method errors: -32602, -32004. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =inbox.status=
+
+Read only as the authenticated host caller. messages.get accepts any string ID structurally, then performs the existing visibility lookup (host sees all; a goblin sees messages it sent or received); malformed IDs remain absent/unavailable rather than becoming an earlier syntax error. inbox.status selects only the caller inbox and unfinished operations. Closed named params, original positional forms and null refusal retain their existing decoding and readiness order. Status remains readable after audit failure and includes the failure flags. Existing frame limit is 64 KiB.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "queued": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "claim": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "head": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InboxHead"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "audit_failed": {
+      "type": "boolean"
+    },
+    "raid_audit_failed": {
+      "type": "boolean"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/InboxOperation"
+      }
+    }
+  },
+  "required": [
+    "queued",
+    "claim",
+    "head",
+    "revision",
+    "audit_failed",
+    "raid_audit_failed",
+    "operations"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004. Common envelope/connection errors also apply.
+
+Compatible API-1 client reply (additive information may be absent):
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "queued": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "claim": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "head": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InboxHead"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "audit_failed": {
+      "type": "boolean"
+    },
+    "raid_audit_failed": {
+      "type": "boolean",
+      "default": false
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/InboxOperation"
+      },
+      "default": []
+    }
+  },
+  "required": [
+    "queued",
+    "claim",
+    "head",
+    "revision",
+    "audit_failed"
+  ],
+  "additionalProperties": true,
+  "description": "Require all five original inbox fields so malformed/missing data cannot become an empty inbox. Additive raid_audit_failed/operations may be absent on older daemons, defaulting to false/empty. Wrong scalar/container types, float counters, tuple arity and u64 overflow are errors."
+}
+#+end_src
+
 ** Notification =exec.signal=
 
 exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.
@@ -10702,6 +11030,334 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =messages.get=
+
+Read only as the authenticated sandbox caller. messages.get accepts any string ID structurally, then performs the existing visibility lookup (host sees all; a goblin sees messages it sent or received); malformed IDs remain absent/unavailable rather than becoming an earlier syntax error. inbox.status selects only the caller inbox and unfinished operations. Closed named params, original positional forms and null refusal retain their existing decoding and readiness order. Status remains readable after audit failure and includes the failure flags. Existing frame limit is 64 KiB.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "message"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "conversation": {
+      "type": "string"
+    },
+    "sender": {
+      "type": "string"
+    },
+    "recipient": {
+      "type": "string"
+    },
+    "sender_name": {
+      "type": "string"
+    },
+    "recipient_name": {
+      "type": "string"
+    },
+    "in_reply_to": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "body": {
+      "type": "string"
+    },
+    "created_sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "created_at": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "state": {
+      "$ref": "#/definitions/MailboxState"
+    },
+    "claim_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxOperation"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxRaidNotice"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "conversation",
+    "sender",
+    "recipient",
+    "sender_name",
+    "recipient_name",
+    "in_reply_to",
+    "body",
+    "created_sequence",
+    "created_at",
+    "state",
+    "claim_generation",
+    "failure"
+  ],
+  "additionalProperties": true,
+  "description": "Current producer emits every first thirteen field, including nullable in_reply_to/failure, and omits absent operation/raid notices. created_at is UTC Unix milliseconds; created_sequence is authoritative. Authenticated routing supplies sender/recipient. Legacy reader retains sender_path/recipient_path aliases and original positional order; no semantic validation moves into the DTO."
+}
+#+end_src
+
+Method errors: -32602, -32004. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =ignore-successful-body= adapter: Ignore the successful body, including non-objects; retain the original validated JSON for printing. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =inbox.status=
+
+Read only as the authenticated sandbox caller. messages.get accepts any string ID structurally, then performs the existing visibility lookup (host sees all; a goblin sees messages it sent or received); malformed IDs remain absent/unavailable rather than becoming an earlier syntax error. inbox.status selects only the caller inbox and unfinished operations. Closed named params, original positional forms and null refusal retain their existing decoding and readiness order. Status remains readable after audit failure and includes the failure flags. Existing frame limit is 64 KiB.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "queued": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "claim": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "head": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InboxHead"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "audit_failed": {
+      "type": "boolean"
+    },
+    "raid_audit_failed": {
+      "type": "boolean"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/InboxOperation"
+      }
+    }
+  },
+  "required": [
+    "queued",
+    "claim",
+    "head",
+    "revision",
+    "audit_failed",
+    "raid_audit_failed",
+    "operations"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32004. Common envelope/connection errors also apply.
+
+Compatible API-1 client reply (additive information may be absent):
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "queued": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "claim": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "head": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InboxHead"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "audit_failed": {
+      "type": "boolean"
+    },
+    "raid_audit_failed": {
+      "type": "boolean",
+      "default": false
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/InboxOperation"
+      },
+      "default": []
+    }
+  },
+  "required": [
+    "queued",
+    "claim",
+    "head",
+    "revision",
+    "audit_failed"
+  ],
+  "additionalProperties": true,
+  "description": "Require all five original inbox fields so malformed/missing data cannot become an empty inbox. Additive raid_audit_failed/operations may be absent on older daemons, defaulting to false/empty. Wrong scalar/container types, float counters, tuple arity and u64 overflow are errors."
+}
+#+end_src
+
 ** Notification =host.submitted=
 
 For attached permissions.request host-command work, the daemon sends this notification after the request is registered and before its terminal result. It identifies the sandbox output file. Detached submissions return pending acceptance and do not emit this notification. The host CLI legacy reader classifies by method only, even for nonstandard envelopes, and independently reads a string params.request or an empty string fallback. Preserve that behavior separately from the canonical closed producer params.
@@ -11032,6 +11688,12 @@ Original Serde container names, field order, required nullable sequence slots an
       "owner"
     ],
     "name": "RaidNotice"
+  },
+  "MailboxGetParams": {
+    "name": "Get",
+    "order": [
+      "message"
+    ]
   }
 }
 #+end_src
@@ -19932,6 +20594,219 @@ Original Serde container names, field order, required nullable sequence slots an
 }
 #+end_src
 
+** =MailboxGetParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "message"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =InboxHead=
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "type": "string"
+    },
+    {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    }
+  ],
+  "minItems": 2,
+  "maxItems": 2
+}
+#+end_src
+
+** =InboxOperation=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request",
+    "kind",
+    "subject",
+    "state"
+  ],
+  "additionalProperties": true,
+  "description": "Unfinished caller operation; current states pending/running. The private owning session is never serialized. Future descriptive strings remain readable."
+}
+#+end_src
+
+** =InboxStatusRecord=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "queued": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "claim": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "head": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InboxHead"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "audit_failed": {
+      "type": "boolean"
+    },
+    "raid_audit_failed": {
+      "type": "boolean"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/InboxOperation"
+      }
+    }
+  },
+  "required": [
+    "queued",
+    "claim",
+    "head",
+    "revision",
+    "audit_failed",
+    "raid_audit_failed",
+    "operations"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =InboxStatusReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "queued": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "claim": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "head": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InboxHead"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "audit_failed": {
+      "type": "boolean"
+    },
+    "raid_audit_failed": {
+      "type": "boolean",
+      "default": false
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/InboxOperation"
+      },
+      "default": []
+    }
+  },
+  "required": [
+    "queued",
+    "claim",
+    "head",
+    "revision",
+    "audit_failed"
+  ],
+  "additionalProperties": true,
+  "description": "Require all five original inbox fields so malformed/missing data cannot become an empty inbox. Additive raid_audit_failed/operations may be absent on older daemons, defaulting to false/empty. Wrong scalar/container types, float counters, tuple arity and u64 overflow are errors."
+}
+#+end_src
+
+** =MailboxStatusParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -20034,3 +20909,4 @@ Original Serde container names, field order, required nullable sequence slots an
 - =raid-membership-generated-domain-wrapper= :: Local RaidMembership is a transparent wrapper around generated SessionRaid data with its former Eq/PartialEq traits. A named legacy decoder maps original [id,name,role,owner,paused?] order/minimum four and old named missing nullable/paused defaults through SessionRaidReply before constructing SessionRaid. This preserves direct and nested legacy deserialization while removing C02 field-by-field copies; mutable raid ownership still lives in the domain.
 - =mailbox-serde-records= :: Generated message, notice and mutation DTOs retain schema-declared original Rust struct names with schema-name aliases for exposed malformed-request diagnostics and original field order for direct Serde sequence readers; nullable fields without old Serde defaults keep their positional requirement and serialized nulls. Message reader aliases sender_path and recipient_path remain accepted while current producers emit sender_name/recipient_name. The generator edits the Rust syntax tree, checks every field/order/alias and preserves all unrelated generated code. Semantic byte limits, identifiers, claims, routing, idempotency and authority stay in the existing mutation/state machine.
 - =mailbox-result-constraints= :: Only MailboxNextResult and MailboxCompleteResult allOf constraints are removed from the temporary generator input; canonical schemas retain coherent null/non-null claim pairs, claimed message state, matching generations via x-equal-fields, and completed state. Existing producers select matching message/generation values and completed state, with independent producer wire-equivalence tests. CLI successful bodies still use IgnoredResult/raw JSON rather than imposing a new legacy refusal. Draft 7 cross-instance-value equality is declared through x-equal-fields and checked by the repository contract validator. Read-side typed projections, adapter inbox handling and unfinished-operation/health records remain C12b.
+- =mailbox-status-readers= :: InboxStatusReply requires all five original core fields so incomplete replies become read errors instead of quiet/empty inboxes. Additive raid_audit_failed/operations default false/empty for older peers. Adapters validate typed RPC replies then adapt them to their existing persisted JSON ledger format; ledger storage/lifecycle stays domain-owned. InboxHead is a named (String,u64) alias because Typify replacement paths cannot be tuple expressions. MailboxStatusParams uses a named empty Empty struct, as closed empty maps otherwise change exposed original Serde diagnostics.

@@ -297,7 +297,7 @@ requires_openai_auth=false
         self.states = queue.Queue()
         self.attached_since = None
         self.status_held, self.reported_since = False, None
-        self.inbox = {'queued': 0, 'claim': None, 'head': None, 'audit_failed': False}
+        self.inbox = json.loads((Path(__file__).resolve().parents[1] / 'libs/api/schema/fixtures.json').read_text())['native_inbox_status'].copy()
         def serve():
             while True:
                 try: peer, _ = listener.accept()
@@ -521,7 +521,7 @@ requires_openai_auth=false
         terminal.call('turn/start', {'threadId': home, 'input': [{'type': 'text', 'text': 'long task'}]})
         terminal.event('turn/started', lambda p: p['threadId'] == home)
         self.bound(runtime, home)
-        self.inbox = {'queued': 1, 'claim': None, 'head': ['m', 0], 'audit_failed': False}
+        self.inbox = {'queued': 1, 'claim': None, 'head': ['m', 0], 'revision': 1, 'audit_failed': False}
         deadline = time.monotonic() + 10
         while not self.observer.call('thread/queue/list', {'threadId': home})['data']:
             self.assertLess(time.monotonic(), deadline, 'no reminder queued')
@@ -536,7 +536,7 @@ requires_openai_auth=false
         reminder = terminal.event('item/started', lambda p: p['threadId'] == home and p['item'].get('type') == 'userMessage' and p['item'].get('clientId'))
         self.assertEqual(reminder['item']['content'][0]['text'], 'Check your Goblins inbox and process the next item.')
         terminal.event('turn/completed', lambda p: p['threadId'] == home)
-        self.inbox = {'queued': 0, 'claim': None, 'head': None, 'audit_failed': False}
+        self.inbox = {'queued': 0, 'claim': None, 'head': None, 'revision': 2, 'audit_failed': False}
         self.stays(runtime, other)
         # Rebinding by hand.
         subprocess.run([str(self.adapter), '--runtime-dir', str(runtime), 'bind', home], check=True, stdout=subprocess.DEVNULL)

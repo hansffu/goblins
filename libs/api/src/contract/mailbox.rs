@@ -450,6 +450,62 @@ mod tests {
         }
     }
     #[test]
+    fn inbox_status_requires_core_fields_and_preserves_additive_legacy_defaults() {
+        for case in fixtures()["inbox_status_cases"].as_array().unwrap() {
+            let result = decode_reply::<sandbox::InboxStatus>(case["value"].clone());
+            assert_eq!(result.is_ok(), case["valid"].as_bool().unwrap(), "{case}");
+            if let Ok(result) = result {
+                assert_eq!(result.queued, case["value"]["queued"].as_u64().unwrap());
+            }
+        }
+    }
+    #[test]
+    fn read_parameters_retain_original_serde_diagnostics_and_empty_id_lookup() {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Get {
+            message: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Empty {}
+        for value in [
+            serde_json::json!({"message":""}),
+            serde_json::json!(["m"]),
+            Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(["m", 7]),
+            serde_json::json!({"message":7}),
+            serde_json::json!({"message":"m","sender":"host"}),
+        ] {
+            let old = serde_json::from_value::<Get>(value.clone());
+            let new = serde_json::from_value::<MailboxGetParams>(value);
+            if let (Ok(old), Ok(new)) = (&old, &new) {
+                assert_eq!(old.message, new.message);
+            }
+            assert_eq!(old.is_ok(), new.is_ok());
+            assert_eq!(
+                old.err().map(|e| e.to_string()),
+                new.err().map(|e| e.to_string())
+            );
+        }
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!([]),
+            Value::Null,
+            serde_json::json!([1]),
+            serde_json::json!({"session":"other"}),
+        ] {
+            let old = serde_json::from_value::<Empty>(value.clone());
+            let new = serde_json::from_value::<MailboxStatusParams>(value);
+            assert_eq!(old.is_ok(), new.is_ok());
+            assert_eq!(
+                old.err().map(|e| e.to_string()),
+                new.err().map(|e| e.to_string())
+            );
+        }
+    }
+    #[test]
     fn generated_cli_send_preserves_original_absent_conversation_and_success_body_policy() {
         assert_eq!(
             crate::messages::send_request("k".into(), "alpha".into(), "hello".into()).unwrap(),

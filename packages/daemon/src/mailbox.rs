@@ -592,14 +592,28 @@ impl Mailbox {
 
     pub fn status(&self, actor: &str) -> Value {
         let inbox = || self.messages.iter().filter(|m| m.recipient == actor);
-        json!({
-            "queued":inbox().filter(|m| m.state == State::Queued).count(),
-            "claim":inbox().find(|m| m.state == State::Claimed).map(|m| &m.id),
-            "head":inbox().find(|m|matches!(m.state,State::Queued|State::Claimed)).map(|m|json!([m.id,m.claim_generation])),
-            "revision":self.sequence,
-            "audit_failed":self.audit_failed,
-            "raid_audit_failed":self.raid_audit_failed,
-            "operations":self.operations.values().filter(|o| o.session == actor).collect::<Vec<_>>(),
+        json!(contract::InboxStatusRecord {
+            queued: inbox().filter(|m| m.state == State::Queued).count() as u64,
+            claim: inbox()
+                .find(|m| m.state == State::Claimed)
+                .map(|m| m.id.clone()),
+            head: inbox()
+                .find(|m| matches!(m.state, State::Queued | State::Claimed))
+                .map(|m| (m.id.clone(), m.claim_generation)),
+            revision: self.sequence,
+            audit_failed: self.audit_failed,
+            raid_audit_failed: self.raid_audit_failed,
+            operations: self
+                .operations
+                .values()
+                .filter(|o| o.session == actor)
+                .map(|o| contract::InboxOperation {
+                    request: o.request.clone(),
+                    kind: o.kind.clone(),
+                    subject: o.subject.clone(),
+                    state: o.state.to_owned()
+                })
+                .collect(),
         })
     }
 

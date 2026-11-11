@@ -113,6 +113,7 @@
           pkgs.nix
           pkgs.nixfmt
           pkgs.jq
+          pkgs.nodejs
           pkgs.bashInteractive
           pkgs.fish
           pkgs.zsh

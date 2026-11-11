@@ -740,9 +740,8 @@ impl InboxCommand {
     pub fn request(self) -> std::io::Result<(&'static str, serde_json::Value)> {
         use goblins_protocol::contract::{self, Method};
         use goblins_protocol::messages::{Claim, Next, Requeue, operation_key};
-        use serde_json::json;
         Ok(match self {
-            Self::Status => ("inbox.status", json!({})),
+            Self::Status => (contract::sandbox::InboxStatus::NAME, serde_json::to_value(contract::MailboxStatusParams {})?),
             Self::Next { key } => (
                 contract::sandbox::InboxNext::NAME,
                 serde_json::to_value(Next {

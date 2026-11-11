@@ -19363,5 +19363,357 @@
       },
       "valid": false
     }
-  ]
+  ],
+  "inbox_status": {
+    "queued": 0,
+    "claim": null,
+    "head": null,
+    "revision": 0,
+    "audit_failed": false,
+    "raid_audit_failed": false,
+    "operations": []
+  },
+  "inbox_status_cases": [
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "queued": 1,
+        "claim": null,
+        "head": [
+          "m",
+          0
+        ],
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": "m",
+        "head": [
+          "m",
+          2
+        ],
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": [
+          {
+            "request": "r",
+            "kind": "terminal",
+            "subject": "build",
+            "state": "running"
+          }
+        ]
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "claim": null,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "revision": 0,
+        "audit_failed": false
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": null,
+        "audit_failed": false
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": null,
+        "revision": 0
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 1.0,
+        "claim": null,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 18446744073709551616,
+        "claim": null,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": 7,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": [
+          "m"
+        ],
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": [
+          "m",
+          1,
+          2
+        ],
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": [
+          "m",
+          1.0
+        ],
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": [
+          "m",
+          18446744073709551616
+        ],
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": null,
+        "revision": 0,
+        "audit_failed": null,
+        "raid_audit_failed": false,
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": false,
+        "operations": {}
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "queued": 0,
+        "claim": null,
+        "head": null,
+        "revision": 0,
+        "audit_failed": false,
+        "raid_audit_failed": "false",
+        "operations": []
+      },
+      "valid": false
+    },
+    {
+      "value": null,
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    },
+    {
+      "value": {},
+      "valid": false
+    },
+    {
+      "value": "empty",
+      "valid": false
+    }
+  ],
+  "claude_message_boundary": [
+    {
+      "raw": {
+        "id": "i-m1",
+        "conversation": "i-c1",
+        "sender": "host",
+        "recipient": "a",
+        "sender_name": "host",
+        "recipient_name": "alpha",
+        "in_reply_to": null,
+        "body": "hello\n\ud83d\udc1f",
+        "created_sequence": 1,
+        "created_at": 9,
+        "state": "queued",
+        "claim_generation": 0,
+        "failure": null
+      },
+      "view": {
+        "id": "i-m1",
+        "sender": "host",
+        "senderName": "host",
+        "inReplyTo": null,
+        "body": "hello\n\ud83d\udc1f",
+        "createdAt": 9,
+        "state": "queued",
+        "operation": null,
+        "raid": null
+      }
+    },
+    {
+      "raw": {
+        "id": "partial",
+        "sender": 7,
+        "body": false,
+        "created_at": "12",
+        "in_reply_to": 4,
+        "operation": {
+          "kind": true,
+          "message": 9
+        },
+        "raid": {
+          "name": false
+        },
+        "extension": {
+          "kept": true
+        }
+      },
+      "view": {
+        "id": "partial",
+        "sender": "7",
+        "senderName": "7",
+        "inReplyTo": null,
+        "body": "false",
+        "createdAt": 12,
+        "state": "",
+        "operation": {
+          "kind": "true",
+          "subject": "",
+          "status": "",
+          "message": null
+        },
+        "raid": {
+          "name": "false",
+          "event": ""
+        }
+      }
+    },
+    {
+      "raw": {},
+      "view": null
+    },
+    {
+      "raw": null,
+      "view": null
+    },
+    {
+      "raw": [
+        "future"
+      ],
+      "view": null
+    }
+  ],
+  "native_inbox_status": {
+    "queued": 0,
+    "claim": null,
+    "head": null,
+    "revision": 0,
+    "audit_failed": false
+  }
 }

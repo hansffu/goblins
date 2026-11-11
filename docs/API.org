@@ -423,7 +423,7 @@ Replies to and completes a claimed message.
 
 *** =inbox.status=
 
-Summarizes the caller's inbox.
+Summarizes the caller's inbox. Generated status readers require queued, claim, head, revision and audit_failed; missing/malformed core fields are read errors, never an empty inbox. Older daemons may omit additive raid_audit_failed and operations, which default to false and an empty list. Counters retain strict u64 JSON integer representation, and head is null or exactly [message ID, generation].
 
 - Input :: ={}=
 - Output :: ={"queued", "claim", "head", "revision", "audit_failed", "raid_audit_failed", "operations"}=. =claim= is the claimed message ID or null; =head= is =[message ID, claim_generation]= of the first unresolved message or null; =operations= lists the caller's unfinished operations as ={"request", "kind", "subject", "state"}= with =state= =pending= (awaiting a decision) or =running= (approved, executing).
