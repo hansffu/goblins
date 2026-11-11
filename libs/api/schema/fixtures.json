@@ -8727,5 +8727,269 @@
       "valid": false,
       "compatible": false
     }
+  ],
+  "devshell_app_parameter_cases": [
+    {
+      "method": "devshell.lock",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "devshell.lock",
+      "params": [],
+      "valid": true
+    },
+    {
+      "method": "devshell.lock",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "devshell.lock",
+      "params": {
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": "default"
+      },
+      "valid": true
+    },
+    {
+      "method": "flake.run",
+      "params": [
+        "a_+'-"
+      ],
+      "valid": true
+    },
+    {
+      "method": "flake.run",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": ""
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": "../app"
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": "\u00e9"
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": "ok",
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": [
+        "default",
+        1
+      ],
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "valid": true
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": "hello\n"
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": "hello\u0000"
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": null
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "params": {
+        "app": 1.0
+      },
+      "valid": false
+    }
+  ],
+  "devshell_app_result_cases": [
+    {
+      "method": "devshell.lock",
+      "result": {
+        "path": "/p/flake.lock",
+        "lock": {
+          "nodes": {}
+        },
+        "generation": 1
+      },
+      "valid": true
+    },
+    {
+      "method": "devshell.lock",
+      "result": {
+        "path": "/p/flake.lock",
+        "lock": null,
+        "generation": 1
+      },
+      "valid": true
+    },
+    {
+      "method": "devshell.lock",
+      "result": {
+        "path": "/p/flake.lock",
+        "generation": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "devshell.lock",
+      "result": {
+        "path": 1,
+        "lock": {},
+        "generation": -1
+      },
+      "valid": false
+    },
+    {
+      "method": "devshell.lock",
+      "result": null,
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "result": {
+        "program": "/nix/store/pkg/bin/app",
+        "generation": 1
+      },
+      "valid": true
+    },
+    {
+      "method": "flake.run",
+      "result": {
+        "program": 7
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "result": {},
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "result": [],
+      "valid": false
+    },
+    {
+      "method": "devshell.lock",
+      "result": {
+        "path": "/p/flake.lock",
+        "lock": {},
+        "generation": 0
+      },
+      "valid": true
+    },
+    {
+      "method": "devshell.lock",
+      "result": {
+        "path": "/p/flake.lock",
+        "lock": {},
+        "generation": 4294967295
+      },
+      "valid": true
+    },
+    {
+      "method": "devshell.lock",
+      "result": {
+        "path": "/p/flake.lock",
+        "lock": {},
+        "generation": 4294967296
+      },
+      "valid": false
+    },
+    {
+      "method": "devshell.lock",
+      "result": {
+        "path": "/p/flake.lock",
+        "lock": {},
+        "generation": -1
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "result": {
+        "program": "/nix/store/pkg/bin/app",
+        "generation": 0
+      },
+      "valid": true
+    },
+    {
+      "method": "flake.run",
+      "result": {
+        "program": "/nix/store/pkg/bin/app",
+        "generation": 4294967295
+      },
+      "valid": true
+    },
+    {
+      "method": "flake.run",
+      "result": {
+        "program": "/nix/store/pkg/bin/app",
+        "generation": 4294967296
+      },
+      "valid": false
+    },
+    {
+      "method": "flake.run",
+      "result": {
+        "program": "/nix/store/pkg/bin/app",
+        "generation": -1
+      },
+      "valid": false
+    }
   ]
 }

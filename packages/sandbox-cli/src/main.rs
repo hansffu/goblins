@@ -338,16 +338,16 @@ fn request_permission(params: serde_json::Value) -> Result<i32, String> {
 /// Write the sandbox's trusted lock into the workspace unless it is already
 /// there. Returns whether the file changed.
 fn write_trusted_lock() -> Result<(bool, u64), String> {
-    let trusted = call("devshell.lock", json!({}))?;
-    let path = std::path::PathBuf::from(trusted["path"].as_str().ok_or("missing lock path")?);
-    let generation = trusted["generation"].as_u64().unwrap_or(0);
+    let trusted = call_typed::<contract::sandbox::DevShellLock>(contract::EmptyParams {})?;
+    let path = std::path::PathBuf::from(trusted.path.as_deref().ok_or("missing lock path")?);
+    let generation = trusted.generation;
     let current = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
-    if current.as_ref() == Some(&trusted["lock"]) {
+    if current.as_ref() == Some(&trusted.lock) {
         return Ok((false, generation));
     }
-    let mut text = serde_json::to_string_pretty(&trusted["lock"]).map_err(|e| e.to_string())?;
+    let mut text = serde_json::to_string_pretty(&trusted.lock).map_err(|e| e.to_string())?;
     text.push('\n');
     let staged = path.with_file_name(".flake.lock.goblins");
     std::fs::write(&staged, text).map_err(|e| format!("cannot write {}: {e}", staged.display()))?;
@@ -433,8 +433,8 @@ fn app_name(installable: Option<&str>) -> Result<String, String> {
     let installable = installable.unwrap_or(".");
     let (flake, app) = installable.split_once('#').unwrap_or((installable, ""));
     if !flake.is_empty() {
-        let trusted = call("devshell.lock", json!({}))?;
-        let lock = std::path::Path::new(trusted["path"].as_str().ok_or("missing lock path")?);
+        let trusted = call_typed::<contract::sandbox::DevShellLock>(contract::EmptyParams {})?;
+        let lock = std::path::Path::new(trusted.path.as_deref().ok_or("missing lock path")?);
         let resolve = |p: &std::path::Path| std::fs::canonicalize(p).ok();
         if flake.contains(':')
             || resolve(std::path::Path::new(flake)).is_none()
@@ -450,8 +450,8 @@ fn app_name(installable: Option<&str>) -> Result<String, String> {
 }
 /// A program path the daemon returned: an existing file in the store, with
 /// no `..` or other indirection in the path itself.
-fn store_program(value: &serde_json::Value) -> Result<std::path::PathBuf, String> {
-    let program = std::path::PathBuf::from(value.as_str().ok_or("missing program")?);
+fn store_program(value: Option<&str>) -> Result<std::path::PathBuf, String> {
+    let program = std::path::PathBuf::from(value.ok_or("missing program")?);
     let valid = program.starts_with("/nix/store/")
         && program
             .components()
@@ -496,6 +496,23 @@ fn waiting_call(
             .to_string()));
     }
     Ok(Ok(reply["result"].clone()))
+}
+/// Patient exchange bound to the generated method and normalized reply DTO.
+fn waiting_call_typed<M: contract::Method>(
+    feature: &str,
+    params: M::Params,
+) -> Result<Result<M::Result, String>, String> {
+    let result = waiting_call(
+        feature,
+        M::NAME,
+        contract::params_value::<M>(params).map_err(|e| e.to_string())?,
+    )?;
+    match result {
+        Ok(value) => Ok(Ok(
+            <M::Result as contract::Response>::decode(value).map_err(|e| e.to_string())?
+        )),
+        Err(message) => Ok(Err(message)),
+    }
 }
 /// `goblin editor open`: ask the host editor to open sandbox files, by
 /// default waiting until it is done with all of them.
@@ -591,14 +608,17 @@ fn targets(list: &contract::RunTargetListReply) -> String {
 }
 fn flake_run(installable: Option<&str>, args: Vec<String>) -> Result<i32, String> {
     let app = app_name(installable)?;
-    let result = match waiting_call("flake-run", "flake.run", json!({"app":app}))? {
+    let result = match waiting_call_typed::<contract::sandbox::FlakeRun>(
+        "flake-run",
+        contract::FlakeRunParams { app },
+    )? {
         Ok(result) => result,
         Err(message) => {
             eprintln!("goblins: {message}");
             return Ok(1);
         }
     };
-    let program = store_program(&result["program"])?;
+    let program = store_program(result.program.as_deref())?;
     use std::os::unix::process::CommandExt;
     let error = std::process::Command::new(&program).args(args).exec();
     Err(format!("cannot execute {}: {error}", program.display()))

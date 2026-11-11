@@ -5,7 +5,7 @@ use goblins_jsonrpc::{self as rpc, Decoder};
 use goblins_protocol::contract::{self, Method};
 use goblins_protocol::{
     Request,
-    rpc::{DevShellDiffParams, FlakeRunParams, PermissionParams},
+    rpc::{DevShellDiffParams, PermissionParams},
 };
 use goblins_runtime::Identity;
 use goblins_runtime::Source;
@@ -2438,8 +2438,8 @@ impl Controller {
                     options: record.options.clone(),
                 }))
             }
-            "devshell.lock" => {
-                let _: Empty = params(value)?;
+            contract::sandbox::DevShellLock::NAME => {
+                let _ = contract_params::<contract::sandbox::DevShellLock>(value)?;
                 let a = &self.sessions[scope];
                 let (Some(policy), Some(dev)) = (
                     a.policy.as_ref().and_then(|p| p.dev_shell.as_ref()),
@@ -2450,10 +2450,11 @@ impl Controller {
                         "this sandbox was not started with a dev shell".to_string(),
                     ));
                 };
-                Ok(
-                    json!({"path":policy.path.join("flake.lock"),"lock":dev.lock,
-                    "generation":dev.generation}),
-                )
+                Ok(json!(contract::DevShellLockResult {
+                    path: policy.path.join("flake.lock"),
+                    lock: dev.lock.clone(),
+                    generation: dev.generation,
+                }))
             }
             // A raid owner sees and stops only the members created in its
             // raid, while it owns it. No goblin attaches to another's terminal.
@@ -3034,10 +3035,13 @@ impl Controller {
                             call.params,
                         );
                     }
-                    if matches!(call.method.as_str(), "flake.run" | "devshell.diff") {
+                    if matches!(
+                        call.method.as_str(),
+                        contract::sandbox::FlakeRun::NAME | "devshell.diff"
+                    ) {
                         let serial = self.number();
-                        let command = if call.method == "flake.run" {
-                            let p: FlakeRunParams = params(call.params)?;
+                        let command = if call.method == contract::sandbox::FlakeRun::NAME {
+                            let p = contract_params::<contract::sandbox::FlakeRun>(call.params)?;
                             // The trusted generation's own source and lock grant
                             // no new trust, so nothing is asked of the host.
                             Command::Run { serial, app: p.app }

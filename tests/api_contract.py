@@ -8,12 +8,15 @@ from pathlib import Path
 from jsonschema import Draft7Validator, ValidationError, validators
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT7
+from referencing.exceptions import Unresolvable
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
+    "devshell-lock-fields": "Read string path or absent, unsigned u64 generation or zero, arbitrary lock JSON or null.",
+    "flake-run-fields": "Read string program or absent; other fields are ignored.",
     "exec-field-fallback": "Read code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields.",
     "terminal-create-fields": "Read a string id independently; all other input becomes an absent id, preserving the CLI's ? fallback.",
     "terminal-list-display": "Iterate terminals only when it is an array. Each item independently retains string identity/display fields, boolean attached and JSON-rendered rows/cols (missing means null).",
@@ -26,6 +29,10 @@ NORMALIZATIONS = {
 def normalize_reply(profile, result):
     fields = result if isinstance(result, dict) else {}
     text = lambda name: fields.get(name) if isinstance(fields.get(name), str) else None
+    if profile == "flake-run-fields": return dict(program=text("program"))
+    if profile == "devshell-lock-fields":
+        generation=fields.get("generation")
+        return dict(path=text("path"), lock=fields.get("lock"), generation=generation if type(generation) is int and 0 <= generation < 2**64 else 0)
     if profile == "exec-field-fallback":
         normalized = {name: (value if type(value) is int and -(2**63) <= value < 2**63 else None) for name in ("code", "signal") for value in [fields.get(name)]}
         return dict(normalized, message=text("message"))
@@ -402,7 +409,29 @@ def check_coverage(registry=None, sources=None):
         raise ValueError("refusal behavior coverage differs")
 
 
+def check_references(documents=None):
+    """Resolve every nested reference from its actual containing document.
+
+    This check never injects definitions into OpenRPC documents or retrieves
+    network resources. It is separate from standalone fixture validation.
+    """
+    if documents is None:
+        documents={"common.json":common(), **{f"{endpoint}.openrpc.json":document(endpoint) for endpoint in ENDPOINTS}}
+    base="https://goblins.invalid/api/"
+    registry=Registry().with_resources((base+name,Resource.from_contents(contents,default_specification=DRAFT7)) for name,contents in documents.items())
+    def visit(value,resolver,location):
+        if isinstance(value,dict):
+            if "$ref" in value:
+                try:resolver.lookup(value["$ref"])
+                except Unresolvable as error:raise ValueError(f"dangling reference at {location}: {value['$ref']}") from error
+            for key,child in value.items():visit(child,resolver,location+"/"+key)
+        elif isinstance(value,list):
+            for index,child in enumerate(value):visit(child,resolver,location+"/"+str(index))
+    for name,contents in documents.items():visit(contents,registry.resolver(base+name),name)
+
+
 def check():
+    check_references()
     registry = Registry()
     for uri, path in (("https://meta.json-schema.tools/", "vendor/json-schema-tools.json"), ("https://meta.json-schema.tools", "vendor/json-schema-tools.json")):
         registry = registry.with_resource(uri, Resource.from_contents(read(path), default_specification=DRAFT7))
@@ -459,7 +488,7 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != {}:
                     raise ValueError("unknown client result normalization")
             if "x-request-constraints" in entry:

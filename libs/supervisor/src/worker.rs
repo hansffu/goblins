@@ -415,7 +415,10 @@ impl Worker {
                             let result = session
                                 .run_app(&app, &cancel)
                                 .map(|(program, generation)| {
-                                    serde_json::json!({"program":program,"generation":generation})
+                                    serde_json::json!(goblins_protocol::contract::FlakeRunResult {
+                                        program,
+                                        generation,
+                                    })
                                 })
                                 .map_err(|e| e.to_string());
                             if results.send(Event::Call { serial, result }).is_err() {

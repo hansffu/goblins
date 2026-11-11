@@ -56,6 +56,8 @@ fn main() {
     settings.with_replacement("TerminalLines", "usize", [].into_iter());
     settings.with_replacement("TerminalTimeout", "u64", [].into_iter());
     settings.with_replacement("TerminalKeys", "std::vec::Vec<String>", [].into_iter());
+    settings.with_replacement("DevShellGeneration", "u32", [].into_iter());
+    settings.with_replacement("FlakeAppName", "std::string::String", [].into_iter());
     settings.with_replacement("AttachVersion", "u64", [].into_iter());
     settings.with_replacement("AttachDimension", "u16", [].into_iter());
     for name in ["LaunchOptions", "HostLaunchOptions"] {
@@ -90,6 +92,8 @@ fn main() {
         "TerminalReadReply".to_string(),
         "TerminalWaitReply".to_string(),
         "AttachResult".to_string(),
+        "FlakeRunReply".to_string(),
+        "DevShellLockReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(

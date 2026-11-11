@@ -873,6 +873,85 @@
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/MemberTerminalWaitParams"
       }
+    },
+    {
+      "name": "devshell.lock",
+      "description": "Read this sandbox\u2019s current trusted dev shell lock without evaluation or mutation. The existing empty-struct decoder accepts {} and []; null is refused. A dev shell is required.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/DevShellLockResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters or missing dev shell"
+        },
+        {
+          "code": -32009,
+          "message": "Conflicting operation or evaluation/build failure"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-rust-name": "DevShellLock",
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/DevShellLockReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "devshell-lock-fields"
+    },
+    {
+      "name": "flake.run",
+      "description": "Build an app from this sandbox\u2019s trusted dev shell generation, mount its closure, and return its program. No new trust or approval is granted. App attributes are bounded ASCII names. Evaluation is bounded by the daemon; disconnect cancels work. The client has no response timeout and runs only an existing normalized store file. Trailing input is refused before parameter/policy validation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "app",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/FlakeRunParams/properties/app"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/FlakeRunResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid parameters or missing dev shell"
+        },
+        {
+          "code": -32009,
+          "message": "Conflicting operation or evaluation/build failure"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/FlakeRunParams"
+      },
+      "x-rust-name": "FlakeRun",
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/FlakeRunParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/FlakeRunReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "flake-run-fields"
     }
   ],
   "x-notifications": [],

@@ -4244,6 +4244,106 @@
         "attached"
       ],
       "additionalProperties": true
+    },
+    "FlakeAppName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_+'-]+$(?![\\s\\S])",
+      "description": "ASCII app attribute; existing FlakeRunParams::validate enforces byte bounds after decoding."
+    },
+    "FlakeRunParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "$ref": "#/definitions/FlakeAppName"
+        }
+      },
+      "required": [
+        "app"
+      ],
+      "additionalProperties": false
+    },
+    "FlakeRunResult": {
+      "type": "object",
+      "properties": {
+        "program": {
+          "$ref": "#/definitions/HostPath"
+        },
+        "generation": {
+          "$ref": "#/definitions/DevShellGeneration"
+        }
+      },
+      "required": [
+        "program",
+        "generation"
+      ],
+      "additionalProperties": true
+    },
+    "FlakeRunReply": {
+      "type": "object",
+      "properties": {
+        "program": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "program"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellLockResult": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$ref": "#/definitions/HostPath"
+        },
+        "lock": {
+          "description": "Opaque parsed flake.lock contents; no schema imposed on Nix-owned data."
+        },
+        "generation": {
+          "$ref": "#/definitions/DevShellGeneration"
+        }
+      },
+      "required": [
+        "path",
+        "lock",
+        "generation"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellLockReply": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lock": {},
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        }
+      },
+      "required": [
+        "path",
+        "lock",
+        "generation"
+      ],
+      "additionalProperties": true
+    },
+    "DevShellGeneration": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "x-json-integer": true
     }
   },
   "x-api-version": 1,
@@ -4979,6 +5079,16 @@
           "items": {
             "type": "string"
           }
+        }
+      ],
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "FlakeRunParams": {
+      "type": "array",
+      "items": [
+        {
+          "$ref": "#/definitions/FlakeAppName"
         }
       ],
       "minItems": 1,

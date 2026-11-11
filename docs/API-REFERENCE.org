@@ -5357,6 +5357,179 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =devshell.lock=
+
+Read this sandbox’s current trusted dev shell lock without evaluation or mutation. The existing empty-struct decoder accepts {} and []; null is refused. A dev shell is required.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "$ref": "#/definitions/HostPath"
+    },
+    "lock": {
+      "description": "Opaque parsed flake.lock contents; no schema imposed on Nix-owned data."
+    },
+    "generation": {
+      "$ref": "#/definitions/DevShellGeneration"
+    }
+  },
+  "required": [
+    "path",
+    "lock",
+    "generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =devshell-lock-fields= adapter: Read string path or absent, unsigned u64 generation or zero, arbitrary lock JSON or null. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lock": {},
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "path",
+    "lock",
+    "generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =flake.run=
+
+Build an app from this sandbox’s trusted dev shell generation, mount its closure, and return its program. No new trust or approval is granted. App attributes are bounded ASCII names. Evaluation is bounded by the daemon; disconnect cancels work. The client has no response timeout and runs only an existing normalized store file. Trailing input is refused before parameter/policy validation.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "app": {
+      "$ref": "#/definitions/FlakeAppName"
+    }
+  },
+  "required": [
+    "app"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "$ref": "#/definitions/FlakeAppName"
+    }
+  ],
+  "minItems": 1,
+  "maxItems": 1
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "program": {
+      "$ref": "#/definitions/HostPath"
+    },
+    "generation": {
+      "$ref": "#/definitions/DevShellGeneration"
+    }
+  },
+  "required": [
+    "program",
+    "generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =flake-run-fields= adapter: Read string program or absent; other fields are ignored. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "program": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "program"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
 * attach
 
 ** Notification =attach.hello=
@@ -10501,6 +10674,141 @@ Errors: -32009.
 }
 #+end_src
 
+** =FlakeAppName=
+
+#+begin_src json
+{
+  "type": "string",
+  "minLength": 1,
+  "maxLength": 256,
+  "pattern": "^[A-Za-z0-9_+'-]+$(?![\\s\\S])",
+  "description": "ASCII app attribute; existing FlakeRunParams::validate enforces byte bounds after decoding."
+}
+#+end_src
+
+** =FlakeRunParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "app": {
+      "$ref": "#/definitions/FlakeAppName"
+    }
+  },
+  "required": [
+    "app"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =FlakeRunResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "program": {
+      "$ref": "#/definitions/HostPath"
+    },
+    "generation": {
+      "$ref": "#/definitions/DevShellGeneration"
+    }
+  },
+  "required": [
+    "program",
+    "generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =FlakeRunReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "program": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "program"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellLockResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "$ref": "#/definitions/HostPath"
+    },
+    "lock": {
+      "description": "Opaque parsed flake.lock contents; no schema imposed on Nix-owned data."
+    },
+    "generation": {
+      "$ref": "#/definitions/DevShellGeneration"
+    }
+  },
+  "required": [
+    "path",
+    "lock",
+    "generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellLockReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lock": {},
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true
+    }
+  },
+  "required": [
+    "path",
+    "lock",
+    "generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =DevShellGeneration=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 0,
+  "maximum": 4294967295,
+  "x-json-integer": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -10576,3 +10884,6 @@ Errors: -32009.
 - =attach-validation= :: AttachVersion maps to u64 and AttachDimension to u16. Existing hello version/nonzero checks retain unsupported-version versus invalid-parameter diagnostics. Named-terminal 1..500 sizing remains after existing state/policy checks. Generated notification decoders retain positional hello order; waiting producers are named only.
 - =attach-waiting-compatibility= :: The existing Rust client classifies a waiting frame by method=attach.waiting alone, without tightening its envelope or missing-item types; a nonempty params.missing array triggers Starting once, and other values mean no missing names. This named compatibility normalization produces AttachWaitingReply. Final frames retain strict existing JSON-RPC envelope/correlation checks for id 0, accept any otherwise-valid error code and require attached=true; result additions are ignored. Each waiting frame renews only the next frame first-byte deadline. STOP interrupts the wait; resize signals do not end it. Emacs invokes this host CLI and has no separate attach JSON parser.
 - =attach-runtime-id= :: The generic runtime Terminal::attach keeps its caller-supplied id and byte-queue API. Public modern/legacy entrypoints pass the fixed 0 id; generated completion payload DTOs are used without rewriting private nonzero-id support. Public completion consumers and refusal constructors bind to generated exchange metadata.
+- =flake-app-validation= :: FlakeAppName maps to String. Existing FlakeRunParams::validate retains ASCII syntax, byte bounds, policy order and diagnostics after generated structural decoding. Domain evaluation, mount authority and cancellation remain handwritten.
+- =devshell-client-normalization= :: Current lock/run producers are precise. API-1 clients independently read string path/program; absent or malformed values preserve missing lock path/missing program diagnostics. Lock generation uses as_u64 with fallback 0, lock contents remain arbitrary JSON with missing treated as null. Named normalization profiles retain these behaviors even for non-object wire results. flake.run keeps its feature gate and no response deadline; the existing store_program validator still checks normalized /nix/store paths and file existence.
+- =devshell-generation= :: DevShellGeneration maps to u32, retaining the full existing runtime range. Launch starts at 1; refresh uses unchecked u32 addition, which can wrap to zero in release builds. The contract does not add overflow checks or change runtime behavior.

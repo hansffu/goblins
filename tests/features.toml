@@ -65,7 +65,7 @@ paths = ["libs/supervisor/src/docker.rs", "libs/supervisor/src/docker/*", "libs/
 
 [features.devshell]
 description = "Nix access, devshell launch/refresh/diff and flake execution"
-python = ["test_nix", "test_devshell", "test_run_targets.RunTargetTests.test_member_shares_the_owners_dev_shell_generation"]
+python = ["test_nix", "test_devshell", "test_api_contract.HistoricalClientTests.test_sandbox_trusted_lock_and_flake_cli_preserve_contracts_and_fallbacks", "test_run_targets.RunTargetTests.test_member_shares_the_owners_dev_shell_generation"]
 checks = ["rust"]
 paths = ["libs/supervisor/src/devshell.rs", "libs/supervisor/src/evaluator.rs", "packages/sandbox-cli/src/preview.rs", "skills/goblins-devshell/*", "skills/goblins-nix/*", "skills/goblins-packages/*"]
 

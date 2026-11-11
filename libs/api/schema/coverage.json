@@ -2,9 +2,7 @@
   "pending": {
     "C07": {
       "sandbox": [
-        "devshell.lock",
-        "devshell.diff",
-        "flake.run"
+        "devshell.diff"
       ]
     },
     "C08": {

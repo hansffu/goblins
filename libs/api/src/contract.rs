@@ -136,6 +136,30 @@ pub trait Response: DeserializeOwned {
     }
 }
 
+impl Response for FlakeRunReply {
+    const SCHEMA: &'static str = "FlakeRunReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            program: value
+                .get("program")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+    }
+}
+
+impl Response for DevShellLockReply {
+    const SCHEMA: &'static str = "DevShellLockReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        serde_json::from_value(serde_json::json!({
+            "path": value.get("path").and_then(Value::as_str),
+            "lock": value.get("lock").unwrap_or(&Value::Null),
+            "generation": value.get("generation").and_then(Value::as_u64).unwrap_or(0),
+        }))
+        .map_err(io::Error::other)
+    }
+}
+
 impl Response for AttachResult {
     const SCHEMA: &'static str = "AttachResult";
     fn decode(value: Value) -> io::Result<Self> {
@@ -569,6 +593,74 @@ pub fn initialize(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn devshell_app_requests_match_original_decoders_and_validators() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OldRun {
+            app: String,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OldEmpty {}
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+        for case in fixtures["devshell_app_parameter_cases"].as_array().unwrap() {
+            let value = case["params"].clone();
+            if case["method"] == "flake.run" {
+                let old = serde_json::from_value::<OldRun>(value.clone());
+                let new = super::decode_params::<super::sandbox::FlakeRun>(value);
+                assert_eq!(old.is_ok(), new.is_ok(), "{case}");
+                if let (Ok(old), Ok(new)) = (old, new) {
+                    assert_eq!(old.app, new.app);
+                    let valid = (1..=256).contains(&old.app.len())
+                        && old
+                            .app
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"_-+'".contains(&b));
+                    assert_eq!(new.validate(), valid, "{case}");
+                    assert_eq!(valid, case["valid"].as_bool().unwrap());
+                }
+            } else {
+                assert_eq!(
+                    serde_json::from_value::<OldEmpty>(value.clone()).is_ok(),
+                    super::decode_params::<super::sandbox::DevShellLock>(value).is_ok(),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn devshell_app_replies_retain_independent_legacy_fallbacks() {
+        use super::{DevShellLockReply, FlakeRunReply, Response};
+        use serde_json::{Value, json};
+        for value in [
+            Value::Null,
+            json!([]),
+            json!({}),
+            json!({"path":1,"program":true,"generation":-1}),
+            json!({"path":"/p/flake.lock","lock":["opaque"],"generation":u64::MAX,"program":"/nix/store/p/bin/app"}),
+            json!({"generation":1.0}),
+        ] {
+            let lock = DevShellLockReply::decode(value.clone()).unwrap();
+            assert_eq!(
+                lock.path.as_deref(),
+                value.get("path").and_then(Value::as_str)
+            );
+            assert_eq!(lock.lock, value.get("lock").unwrap_or(&Value::Null).clone());
+            assert_eq!(
+                lock.generation,
+                value.get("generation").and_then(Value::as_u64).unwrap_or(0)
+            );
+            let run = FlakeRunReply::decode(value.clone()).unwrap();
+            assert_eq!(
+                run.program.as_deref(),
+                value.get("program").and_then(Value::as_str)
+            );
+        }
+    }
+
     use super::*;
     use serde_json::json;
 

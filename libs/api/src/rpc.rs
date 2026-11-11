@@ -123,11 +123,7 @@ impl PermissionParams {
     }
 }
 /// `flake.run`: an app of the sandbox's dev shell flake, `default` for none.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FlakeRunParams {
-    pub app: String,
-}
+pub use crate::contract::FlakeRunParams;
 impl FlakeRunParams {
     pub fn validate(&self) -> bool {
         (1..=256).contains(&self.app.len())

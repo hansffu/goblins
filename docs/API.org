@@ -497,7 +497,9 @@ As on the host endpoint, limited to the caller's own host commands.
 *** =devshell.lock=
 
 - Input :: ={}=
-- Output :: ={"path", "lock", "generation"}=: the current =flake.lock= path, its contents and the dev shell generation.
+- Output :: ={"path", "lock", "generation"}=: the current =flake.lock= path, its opaque parsed JSON contents and the dev shell generation (a u32, starting at 1). All three fields are required; result additions are allowed.
+
+The empty request accepts ={}= and the retained positional =[]= form; null and unknown fields are refused. The caller must have a dev shell. Existing clients read a string path or report =missing lock path=, read generation as an unsigned u64 or use zero, and treat absent lock data as null. These compatibility rules do not weaken the current producer contract.
 
 *** =devshell.diff=
 
@@ -511,7 +513,9 @@ Previews what a refresh would change, without requesting it.
 Builds an app of the dev shell's flake for the caller to execute.
 
 - Input :: ={"app"}=: 1–256 of =[A-Za-z0-9_+'-]=; =default= for the default app.
-- Output :: ={"program", "generation"}=
+- Output :: ={"program", "generation"}=: the store program path and a u32 generation (starting at 1), both required; result additions are allowed.
+
+The retained positional request is =[app]=; null and unknown fields are refused. The =flake-run= feature is required. Trailing input is refused before app validation and policy checks. Work uses only the trusted generation and grants no new trust; evaluation/build failure returns =-32009=. Disconnect cancels pending work, while the CLI has no response timeout. Before execution, the CLI checks that =program= is an existing file under =/nix/store/= with only normal path components and at least a store item plus a nested path. Legacy readers independently accept only a string program (otherwise =missing program=), ignore generation and result additions, and preserve the same path check.
 
 ** Editor
 

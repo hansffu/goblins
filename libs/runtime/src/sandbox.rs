@@ -2,7 +2,7 @@
 use crate::policy::{Capabilities, Operation, Refusal};
 use goblins_jsonrpc::Call;
 use goblins_protocol::contract::{self, Method};
-use goblins_protocol::rpc::{DevShellDiffParams, FlakeRunParams, PermissionParams};
+use goblins_protocol::rpc::{DevShellDiffParams, PermissionParams};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -111,7 +111,7 @@ pub fn check(
     if !matches!(
         method,
         "permissions.request"
-            | "flake.run"
+            | contract::sandbox::FlakeRun::NAME
             | "devshell.diff"
             | "sessions.detach"
             | "sessions.attach"
@@ -125,7 +125,7 @@ pub fn check(
             | "sessions.start"
             | "sessions.stop"
             | "targets.list"
-            | "devshell.lock"
+            | contract::sandbox::DevShellLock::NAME
             | "raids.create"
             | "raids.leave"
             | "raids.members"
@@ -151,7 +151,10 @@ pub fn check(
     if trailing
         && matches!(
             method,
-            "permissions.request" | "flake.run" | "devshell.diff" | "editor.open"
+            "permissions.request"
+                | contract::sandbox::FlakeRun::NAME
+                | "devshell.diff"
+                | "editor.open"
         )
     {
         return Err(Refusal::Policy {
@@ -180,8 +183,9 @@ pub fn check(
                 _ => unreachable!("validated permission kind"),
             })
         }
-        "flake.run" => {
-            let p: FlakeRunParams = parse(&call.params)?;
+        contract::sandbox::FlakeRun::NAME => {
+            let p = contract::decode_params::<contract::sandbox::FlakeRun>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
             if !p.validate() {
                 return Err(invalid("invalid app name"));
             }
@@ -304,11 +308,16 @@ pub fn check(
             let Role { role: _role } = parse(&call.params)?;
             None
         }
-        _ => {
-            let _: Empty = parse(&call.params)?;
-            if method == "devshell.lock" && capabilities.policy.dev_shell.is_none() {
+        contract::sandbox::DevShellLock::NAME => {
+            let _ = contract::decode_params::<contract::sandbox::DevShellLock>(call.params.clone())
+                .map_err(|e| invalid(e.to_string()))?;
+            if capabilities.policy.dev_shell.is_none() {
                 return Err(invalid("this sandbox was not started with a dev shell"));
             }
+            None
+        }
+        _ => {
+            let _: Empty = parse(&call.params)?;
             None
         }
     };
@@ -346,6 +355,71 @@ mod tests {
         p
     }
     #[test]
+    fn generated_devshell_requests_preserve_gate_checks_and_precedence() {
+        let mut policy = policy();
+        let support = Support::linux();
+        for params in [json!({}), json!([])] {
+            let c = call(contract::sandbox::DevShellLock::NAME, params);
+            assert_eq!(
+                check(
+                    &Capabilities {
+                        policy: &policy,
+                        support: &support
+                    },
+                    &c,
+                    100,
+                    true,
+                    false,
+                    false
+                ),
+                Ok(())
+            );
+        }
+        policy.dev_shell = None;
+        for (method, params, trailing, code, message) in [
+            (
+                contract::sandbox::FlakeRun::NAME,
+                json!({"app":"../bad"}),
+                true,
+                -32600,
+                "unexpected trailing input",
+            ),
+            (
+                contract::sandbox::FlakeRun::NAME,
+                json!({"app":"../bad"}),
+                false,
+                -32602,
+                "invalid app name",
+            ),
+            (
+                contract::sandbox::DevShellLock::NAME,
+                json!({}),
+                false,
+                -32602,
+                "this sandbox was not started with a dev shell",
+            ),
+        ] {
+            assert_eq!(
+                check(
+                    &Capabilities {
+                        policy: &policy,
+                        support: &support
+                    },
+                    &call(method, params),
+                    100,
+                    true,
+                    false,
+                    trailing
+                ),
+                Err(Refusal::Policy {
+                    code,
+                    message: message.into()
+                })
+            );
+        }
+    }
+
+    #[test]
     fn every_operation_is_checked_before_a_call_can_reach_daemon_state() {
         let rows = [
             (
@@ -368,7 +442,11 @@ mod tests {
                 json!({"kind":"host-command","reason":"t","host":{"argv":["true"],"cwd":"/work"}}),
                 Feature::HostJobs,
             ),
-            ("flake.run", json!({"app":"hello"}), Feature::FlakeApps),
+            (
+                contract::sandbox::FlakeRun::NAME,
+                json!({"app":"hello"}),
+                Feature::FlakeApps,
+            ),
             ("devshell.diff", json!({}), Feature::DevShells),
         ];
         for (method, params, feature) in rows {

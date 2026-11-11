@@ -15,6 +15,34 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_nested_references_resolve_from_actual_documents(self):
+        documents={"common.json":copy.deepcopy(contract.common()),**{f"{endpoint}.openrpc.json":copy.deepcopy(contract.document(endpoint)) for endpoint in contract.ENDPOINTS}}
+        contract.check_references(documents)
+        entry=next(m for m in documents["sandbox.openrpc.json"]["methods"] if m["name"]=="flake.run")
+        # Standalone fixture validation injects shared definitions, so it
+        # cannot establish the reference scope of the OpenRPC document.
+        entry["x-positional-schema"]={"type":"array","items":[{"$ref":"#/definitions/FlakeAppName"}]}
+        self.assertTrue(contract.schema_validator(entry["x-positional-schema"]).is_valid(["default"]))
+        with self.assertRaisesRegex(ValueError,"dangling reference.*sandbox.openrpc.json"):contract.check_references(documents)
+        entry["x-positional-schema"]={"type":"array","items":[{"$ref":"common.json#/definitions/MissingAppName"}]}
+        with self.assertRaisesRegex(ValueError,"dangling reference.*MissingAppName"):contract.check_references(documents)
+        entry["x-positional-schema"]={"$ref":"common.json#/x-positional-schemas/FlakeRunParams"}
+        documents["common.json"]["x-positional-schemas"]["FlakeRunParams"]["items"][0]={"$ref":"#/definitions/MissingAppName"}
+        with self.assertRaisesRegex(ValueError,"dangling reference.*common.json"):contract.check_references(documents)
+
+    def test_devshell_lock_and_flake_app_contract_corpora(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["devshell_app_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params("sandbox",case["method"],case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params("sandbox",case["method"],case["params"])
+        for case in fixtures["devshell_app_result_cases"]:
+            reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+            self.assertTrue(contract.validate_reply("sandbox",case["method"],reply,compatibility=True))
+            if case["valid"]:self.assertTrue(contract.validate_reply("sandbox",case["method"],reply))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply("sandbox",case["method"],reply)
+
     def test_attachment_notification_and_completion_contract_corpora(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["attach_hello_parameter_cases"]:
@@ -271,7 +299,7 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "host coverage"):
             contract.check_coverage(sources=changed)
         changed = dict(sources)
-        before = '"permissions.request"\n            | "flake.run"'
+        before = '"permissions.request"\n            | contract::sandbox::FlakeRun::NAME'
         changed["gate"] = sources["gate"].replace(before, '"sandbox.new" | ' + before, 1)
         self.assertNotEqual(changed["gate"], sources["gate"])
         with self.assertRaisesRegex(ValueError, "gate/controller disagree"):
@@ -730,6 +758,37 @@ class HistoricalClientTests(unittest.TestCase):
                     self.assertEqual(calls[0]["params"]["configuration"],str(manifest))
                     self.assertEqual(calls[0]["params"].get("recreate"),None if command=="run" else "record-id")
                     self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
+
+    def test_sandbox_trusted_lock_and_flake_cli_preserve_contracts_and_fallbacks(self):
+        import shutil
+        with tempfile.TemporaryDirectory(prefix="gc-lock-") as root:
+            path=Path(root)/"flake.lock"
+            for result,generation,lock in [
+                (dict(path=str(path),generation=3,lock={"nodes":{}}),3,{"nodes":{}}),
+                (dict(path=str(path),generation="bad"),0,None),
+                (dict(path=str(path),generation=2**64-1,lock=["opaque"]),2**64-1,["opaque"]),
+            ]:
+                cli,call=self.sandbox_fake_cli(["devshell","restore-lock"],result)
+                self.assertEqual(cli.returncode,0,cli.stderr)
+                self.assertEqual(call["method"],"devshell.lock");self.assertEqual(call["params"],{})
+                self.assertIn(f"generation {generation}",cli.stdout)
+                self.assertEqual(json.loads(path.read_text()),lock)
+            for result in (None,[],dict(path=7)):
+                cli,call=self.sandbox_fake_cli(["devshell","restore-lock"],result)
+                self.assertNotEqual(cli.returncode,0);self.assertIn("missing lock path",cli.stderr)
+        with tempfile.TemporaryDirectory(prefix="gc-flake-") as root:
+            other=Path(root)/"other";other.mkdir()
+            cli,call=self.sandbox_fake_cli(["flake","run",str(other)+"#hello"],dict(path=str(Path(root)/"flake.lock"),lock={},generation=1))
+            self.assertEqual(call["method"],"devshell.lock")
+            self.assertNotEqual(cli.returncode,0);self.assertIn("serves only this sandbox's dev shell flake",cli.stderr)
+        for result,diagnostic in [(None,"missing program"),({},"missing program"),(dict(program=1),"missing program"),(dict(program="/tmp/not-a-store-program"),"invalid program")]:
+            cli,call=self.sandbox_fake_cli(["flake","run","#hello"],result,features=("flake-run",))
+            self.assertEqual(call["method"],"flake.run");self.assertEqual(call["params"],dict(app="hello"))
+            self.assertNotEqual(cli.returncode,0);self.assertIn(diagnostic,cli.stderr)
+        program=shutil.which("true")
+        self.assertTrue(program.startswith("/nix/store/"),program)
+        cli,call=self.sandbox_fake_cli(["flake","run","#"],dict(program=program,generation="ignored",extension=True),features=("flake-run",))
+        self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(call["params"],dict(app="default"))
 
     def sandbox_fake_cli(self, arguments, result, cwd=None, features=()):
         import errno
