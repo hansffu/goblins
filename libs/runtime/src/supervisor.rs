@@ -1,9 +1,9 @@
 //! Private supervisor vocabulary and descriptor codec, over `channel::Channel`.
 //! Raw JSON is opaque on this channel: only typed capability fields may use
 //! the transport's `$fd` marker. Scope framing and public host limits are unchanged.
+use crate::{Command, Event, Fd, Handoff, HostOutcome, Source, Stdio};
 #[cfg(test)]
-use crate::Recreate;
-use crate::{Command, Event, Fd, Handoff, HostOutcome, Source, Stdio, TerminalId, TerminalStatus};
+use crate::{Recreate, TerminalId, TerminalStatus};
 use crate::{
     channel::{self, Descriptor, Frame},
     config::ManifestLease,
@@ -443,7 +443,6 @@ impl Descriptors {
 macro_rules! put {
     ($b:ident, plain, $name:expr, $v:expr) => { $b.value($name, $v) };
     ($b:ident, opaque, $name:expr, $v:expr) => { $b.opaque($name, $v) };
-    ($b:ident, fd, $name:expr, $v:expr) => {{ let fd = $b.fd($v)?; $b.value($name, &fd) }};
     ($b:ident, membership, $name:expr, $v:expr) => {{ let value: Result<Descriptor,String> = match $v { Ok(fd) => Ok($b.fd(fd)?), Err(error) => Err(error.clone()) }; $b.value($name, &value) }};
     ($b:ident, preview, $name:expr, $v:expr) => { $b.value($name, &encode_preview($v)) };
     ($b:ident, call, $name:expr, $v:expr) => { $b.opaque($name, &json!({"jsonrpc":$v.jsonrpc,"id":$v.id,"method":$v.method,"params":$v.params})) };
@@ -454,9 +453,6 @@ macro_rules! get {
     };
     ($p:ident, $d:ident, opaque, $name:expr, $ty:ty) => {
         $p.opaque::<$ty>($name)?
-    };
-    ($p:ident, $d:ident, fd, $name:expr, $ty:ty) => {
-        Fd::from($d.take($p.take($name)?)?)
     };
     ($p:ident, $d:ident, membership, $name:expr, $ty:ty) => {
         match $p.take::<Result<Descriptor, String>>($name)? {
@@ -490,6 +486,16 @@ macro_rules! command_codec {
                 Command::Signal { id,signal } => b.notification::<contract::supervisor_notifications::CommandSignal>(contract::SupervisorCommandSignalParams { id:*id,signal:*signal })?,
                 Command::CancelProcess { id,everything } => b.notification::<contract::supervisor_notifications::CommandCancelProcess>(contract::SupervisorCommandCancelProcessParams { id:*id,everything:*everything })?,
                 Command::KillAll => b.notification::<contract::supervisor_notifications::CommandKillAll>(contract::SupervisorEmptyParams {})?,
+                Command::Attach { terminal,stream,rows,cols } => {
+                    // Keep terminal serialization before stream duplication.
+                    serde_json::to_value(terminal)?;
+                    let stream=b.fd(stream)?;
+                    b.notification::<contract::supervisor_notifications::CommandAttach>(contract::SupervisorCommandAttachParams { terminal:*terminal,stream,rows:*rows,cols:*cols })?;
+                }
+                Command::Detach { terminal } => b.notification::<contract::supervisor_notifications::CommandDetach>(contract::SupervisorCommandDetachParams { terminal:*terminal })?,
+                Command::Resize { terminal,rows,cols } => b.notification::<contract::supervisor_notifications::CommandResize>(contract::SupervisorCommandResizeParams { terminal:*terminal,rows:*rows,cols:*cols })?,
+                Command::TerminalCall { request,terminal,call } => b.notification::<contract::supervisor_notifications::CommandTerminalCall>(contract::SupervisorCommandTerminalCallParams { request:*request,terminal:*terminal,call:call.clone() })?,
+                Command::TerminalCancel { request } => b.notification::<contract::supervisor_notifications::CommandTerminalCancel>(contract::SupervisorCommandTerminalCancelParams { request:*request })?,
                 $(Command::$v { $($f),* } => { b.method=concat!("Command.", stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
             }
             Ok(())
@@ -515,6 +521,30 @@ macro_rules! command_codec {
                     Command::CancelProcess { id:wire.id,everything:wire.everything }
                 },
                 name if name==contract::supervisor_notifications::CommandKillAll::NAME => Command::KillAll,
+                name if name==contract::supervisor_notifications::CommandAttach::NAME => {
+                    let terminal=p.take("terminal")?;
+                    let descriptor=p.take("stream")?;
+                    // Consume the capability before reading dimensions, as before.
+                    let stream=d.take(descriptor)?.into();
+                    let wire=contract::SupervisorCommandAttachParams { terminal,stream:descriptor,rows:p.take("rows")?,cols:p.take("cols")? };
+                    Command::Attach { terminal:wire.terminal,stream,rows:wire.rows,cols:wire.cols }
+                },
+                name if name==contract::supervisor_notifications::CommandDetach::NAME => {
+                    let wire=contract::SupervisorCommandDetachParams { terminal:p.take("terminal")? };
+                    Command::Detach { terminal:wire.terminal }
+                },
+                name if name==contract::supervisor_notifications::CommandResize::NAME => {
+                    let wire=contract::SupervisorCommandResizeParams { terminal:p.take("terminal")?,rows:p.take("rows")?,cols:p.take("cols")? };
+                    Command::Resize { terminal:wire.terminal,rows:wire.rows,cols:wire.cols }
+                },
+                name if name==contract::supervisor_notifications::CommandTerminalCall::NAME => {
+                    let wire=contract::SupervisorCommandTerminalCallParams { request:p.take("request")?,terminal:p.take("terminal")?,call:p.take("call")? };
+                    Command::TerminalCall { request:wire.request,terminal:wire.terminal,call:wire.call }
+                },
+                name if name==contract::supervisor_notifications::CommandTerminalCancel::NAME => {
+                    let wire=contract::SupervisorCommandTerminalCancelParams { request:p.take("request")? };
+                    Command::TerminalCancel { request:wire.request }
+                },
                 $(concat!("Command.",stringify!($v)) => Command::$v { $($f:get!(p,d,$kind,stringify!($f),$ty)),* }),*,
                 _ => return Err(invalid("unknown supervisor command")),
             };
@@ -524,9 +554,6 @@ macro_rules! command_codec {
 }
 command_codec! {
     RecordEvent { event:String=>plain, fields:Value=>opaque },
-    Attach { terminal:TerminalId=>plain, stream:Fd=>fd, rows:u16=>plain, cols:u16=>plain },
-    Detach { terminal:TerminalId=>plain },
-    Resize { terminal:TerminalId=>plain, rows:u16=>plain, cols:u16=>plain },
     SandboxSend { connection:u64=>plain, message:Value=>opaque },
     SandboxClose { connection:u64=>plain },
     ScopeFailed {},
@@ -536,8 +563,6 @@ command_codec! {
     Refresh { approval:u64=>plain, changes:crate::devshell::Changes=>plain },
     Run { serial:u64=>plain, app:String=>plain },
     Diff { serial:u64=>plain, changes:crate::devshell::Changes=>plain },
-    TerminalCall { request:u64=>plain, terminal:u64=>plain, call:crate::terminal::Call=>plain },
-    TerminalCancel { request:u64=>plain },
     Export { member:String=>plain },
     PrepareHostJob { request:String=>plain, cwd:PathBuf=>plain },
     RunHostJob { request:String=>plain, argv:Vec<String> =>plain, env:Vec<(String,String)> =>plain, timeout:Option<u64> =>plain },
@@ -575,6 +600,11 @@ macro_rules! event_codec {
                 Event::Spawned { id,pid } => b.notification::<contract::supervisor_notifications::EventSpawned>(contract::SupervisorEventSpawnedParams { id:*id,pid:*pid })?,
                 Event::SpawnFailed { id,code,message } => b.notification::<contract::supervisor_notifications::EventSpawnFailed>(contract::SupervisorEventSpawnFailedParams { id:*id,code:*code,message:message.clone() })?,
                 Event::Exited { id,code,signal } => b.notification::<contract::supervisor_notifications::EventExited>(contract::SupervisorEventExitedParams { id:*id,code:*code,signal:*signal })?,
+                Event::Terminal { terminal,status,error } => b.notification::<contract::supervisor_notifications::EventTerminal>(contract::SupervisorEventTerminalParams { terminal:*terminal,status:*status,error:error.clone() })?,
+                Event::TerminalResult { request,result } => {
+                    let result=serde_json::to_string(result)?;
+                    b.notification::<contract::supervisor_notifications::EventTerminalResult>(contract::SupervisorEventTerminalResultParams { request:*request,result })?;
+                },
                 $(Event::$v { $($f),* } => { b.method=concat!("Event.",stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
                 Event::InitLost => b.method="Event.InitLost",
                 Event::PayloadExited => b.method="Event.PayloadExited",
@@ -598,6 +628,16 @@ macro_rules! event_codec {
                     let wire=contract::SupervisorEventExitedParams { id:p.take("id")?,code:p.take("code")?,signal:p.take("signal")? };
                     Event::Exited { id:wire.id,code:wire.code,signal:wire.signal }
                 },
+                name if name==contract::supervisor_notifications::EventTerminal::NAME => {
+                    let wire=contract::SupervisorEventTerminalParams { terminal:p.take("terminal")?,status:p.take("status")?,error:p.take("error")? };
+                    Event::Terminal { terminal:wire.terminal,status:wire.status,error:wire.error }
+                },
+                name if name==contract::supervisor_notifications::EventTerminalResult::NAME => {
+                    let wire=contract::SupervisorEventTerminalResultParams { request:p.take("request")?,result:p.take("result")? };
+                    // Opaque inner JSON still parses before unknown-root rejection.
+                    let result=serde_json::from_str(&wire.result).map_err(other)?;
+                    Event::TerminalResult { request:wire.request,result }
+                },
                 $(concat!("Event.",stringify!($v))=>Event::$v { $($f:get!(p,_d,$kind,stringify!($f),$ty)),* }),*,
                 _=>return Err(invalid("unknown supervisor event")),
             };
@@ -616,8 +656,6 @@ event_codec! {
     Call { serial:u64=>plain, result:Result<Value,String> =>opaque },
     DevShell { summary:crate::policy::DevShellSummary=>opaque },
     Granted { reply:goblins_protocol::Reply=>plain, detail:Option<String> =>plain, output:Option<PathBuf> =>plain },
-    Terminal { terminal:TerminalId=>plain, status:TerminalStatus=>plain, error:Option<String> =>plain },
-    TerminalResult { request:u64=>plain, result:Result<Value,String> =>opaque },
     SandboxOpened { connection:u64=>plain },
     SandboxCall { connection:u64=>plain, call:goblins_jsonrpc::Call=>call },
     SandboxClosed { connection:u64=>plain },

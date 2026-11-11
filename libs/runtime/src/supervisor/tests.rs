@@ -3837,3 +3837,587 @@ fn c17b1_spawn_fd_indexes_sender_lifetime_and_rejection_order_are_preserved() {
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
     }
 }
+mod c17b2_original {
+    use super::*;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+    pub enum TerminalId {
+        Main,
+        Process(u64),
+    }
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct TerminalStatus {
+        pub eof: bool,
+        pub complete: bool,
+        pub interrupted: bool,
+        pub attached: bool,
+        pub detached: bool,
+        pub connected: bool,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Source {
+        Visible,
+        Recent,
+    }
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Condition {
+        Match(String),
+        Regex(String),
+        Exit,
+    }
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Call {
+        Read {
+            source: Source,
+            lines: Option<usize>,
+        },
+        Send {
+            text: Option<String>,
+            keys: Vec<String>,
+        },
+        Wait {
+            condition: Condition,
+            timeout: u64,
+            lines: Option<usize>,
+        },
+    }
+}
+fn c17b2_compare_serde<
+    A: Serialize + DeserializeOwned + std::fmt::Debug,
+    O: Serialize + DeserializeOwned + std::fmt::Debug,
+>(
+    cases: &[&str],
+) {
+    for input in cases {
+        let old = serde_json::from_str::<O>(input)
+            .map(|v| (format!("{v:?}"), serde_json::to_string(&v).unwrap()))
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_str::<A>(input)
+            .map(|v| (format!("{v:?}"), serde_json::to_string(&v).unwrap()))
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, old, "raw {input}");
+        let v: Value = serde_json::from_str(input).unwrap();
+        let old = serde_json::from_value::<O>(v.clone())
+            .map(|v| (format!("{v:?}"), serde_json::to_value(&v).unwrap()))
+            .map_err(|e| e.to_string());
+        let actual = serde_json::from_value::<A>(v)
+            .map(|v| (format!("{v:?}"), serde_json::to_value(&v).unwrap()))
+            .map_err(|e| e.to_string());
+        assert_eq!(actual, old, "Value {input}");
+    }
+}
+#[test]
+fn c17b2_nested_terminal_metadata_original_serde_forms_names_traits_and_defaults() {
+    fn copy<T: Copy + Clone + std::fmt::Debug + Eq>() {}
+    fn clone_eq<T: Clone + std::fmt::Debug + Eq>() {}
+    fn ordered<T: Ord>() {}
+    fn default<T: Default>() {}
+    copy::<TerminalId>();
+    ordered::<TerminalId>();
+    copy::<TerminalStatus>();
+    default::<TerminalStatus>();
+    copy::<crate::terminal::Source>();
+    clone_eq::<crate::terminal::Condition>();
+    clone_eq::<crate::terminal::Call>();
+    let mut ids = [
+        TerminalId::Process(u64::MAX),
+        TerminalId::Main,
+        TerminalId::Process(0),
+    ];
+    ids.sort();
+    assert_eq!(
+        ids,
+        [
+            TerminalId::Main,
+            TerminalId::Process(0),
+            TerminalId::Process(u64::MAX)
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(TerminalStatus::default()).unwrap(),
+        json!({"eof":false,"complete":false,"interrupted":false,"attached":false,"detached":false,"connected":false})
+    );
+    c17b2_compare_serde::<TerminalId, c17b2_original::TerminalId>(&[
+        "\"Main\"",
+        "{\"Main\":null}",
+        "{\"Process\":0}",
+        "{\"Process\":18446744073709551615}",
+        "{\"Process\":1.0}",
+        "{\"Process\":-1}",
+        "{\"Process\":18446744073709551616}",
+        "{\"Process\":null}",
+        "{\"Process\":[1]}",
+        "{\"Main\":{}}",
+        "\"Process\"",
+        "\"main\"",
+        "{}",
+        "[]",
+        "null",
+    ]);
+    c17b2_compare_serde::<crate::terminal::Source, c17b2_original::Source>(&[
+        "\"Visible\"",
+        "\"Recent\"",
+        "{\"Visible\":null}",
+        "{\"Recent\":null}",
+        "{\"Recent\":{}}",
+        "\"visible\"",
+        "{\"Visible\":null,\"Recent\":null}",
+        "[]",
+        "null",
+    ]);
+    c17b2_compare_serde::<crate::terminal::Condition, c17b2_original::Condition>(&[
+        "{\"Match\":\"\"}",
+        "{\"Match\":\"雪\\n\"}",
+        "{\"Regex\":\"[\"}",
+        "\"Exit\"",
+        "{\"Exit\":null}",
+        "{\"Match\":null}",
+        "{\"Regex\":[]}",
+        "\"Match\"",
+        "{\"Exit\":{}}",
+        "{\"Match\":\"a\",\"Regex\":\"b\"}",
+        "\"exit\"",
+        "null",
+        "[]",
+    ]);
+    c17b2_compare_serde::<crate::terminal::Call, c17b2_original::Call>(&[
+        "{\"Read\":{\"source\":\"Visible\"}}",
+        "{\"Read\":{\"source\":{\"Recent\":null},\"lines\":null,\"extra\":true}}",
+        "{\"Read\":{\"source\":\"Visible\",\"lines\":18446744073709551615}}",
+        "{\"Read\":[\"Visible\",null]}",
+        "{\"Read\":[\"Visible\"]}",
+        "{\"Read\":{}}",
+        "{\"Read\":{\"source\":\"Visible\",\"lines\":1.0}}",
+        "{\"Read\":{\"source\":\"Visible\",\"lines\":-1}}",
+        "{\"Read\":{\"source\":\"Visible\",\"lines\":18446744073709551616}}",
+        "{\"Read\":{\"source\":\"Visible\",\"lines\":1,\"lines\":2}}",
+        "{\"Send\":{\"keys\":[]}}",
+        "{\"Send\":{\"text\":null,\"keys\":[],\"extra\":true}}",
+        "{\"Send\":[null,[]]}",
+        "{\"Send\":{\"text\":\"x\"}}",
+        "{\"Send\":{\"keys\":null}}",
+        "{\"Wait\":{\"condition\":\"Exit\",\"timeout\":0}}",
+        "{\"Wait\":{\"condition\":{\"Regex\":\"[\"},\"timeout\":18446744073709551615,\"lines\":0,\"extra\":[]}}",
+        "{\"Wait\":[\"Exit\",1,null]}",
+        "{\"Wait\":[\"Exit\",1]}",
+        "{\"Wait\":{\"condition\":\"Exit\",\"timeout\":1.0}}",
+        "{\"Wait\":{\"condition\":\"Exit\"}}",
+        "{\"Wait\":{\"timeout\":1}}",
+        "{\"Wait\":null}",
+        "\"Read\"",
+        "[]",
+        "null",
+    ]);
+    let good = "{\"eof\":false,\"complete\":true,\"interrupted\":false,\"attached\":true,\"detached\":false,\"connected\":true}";
+    c17b2_compare_serde::<TerminalStatus, c17b2_original::TerminalStatus>(&[
+        good,
+        "[false,true,false,true,false,true]",
+        "[false,true,false,true,false]",
+        "[false,true,false,true,false,true,false]",
+        "{}",
+        "null",
+        "{\"eof\":false,\"complete\":true,\"interrupted\":false,\"attached\":true,\"detached\":false,\"connected\":true,\"extra\":true}",
+        "{\"eof\":false,\"complete\":true,\"interrupted\":false,\"attached\":true,\"detached\":false,\"connected\":true,\"eof\":true}",
+    ]);
+    let value: Value = serde_json::from_str(good).unwrap();
+    for field in [
+        "eof",
+        "complete",
+        "interrupted",
+        "attached",
+        "detached",
+        "connected",
+    ] {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        for v in [missing, {
+            let mut v = value.clone();
+            v[field] = json!(null);
+            v
+        }] {
+            let old = serde_json::from_value::<c17b2_original::TerminalStatus>(v.clone())
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                serde_json::from_value::<TerminalStatus>(v)
+                    .unwrap_err()
+                    .to_string(),
+                old
+            );
+        }
+    }
+}
+
+fn c17b2_frame_cases() -> Vec<(Message, &'static str, Value, Vec<&'static str>)> {
+    vec![
+        (
+            Message::Command(Command::Attach {
+                terminal: TerminalId::Main,
+                stream: null(),
+                rows: 0,
+                cols: u16::MAX,
+            }),
+            "Command.Attach",
+            json!({"terminal":"Main","stream":{"$fd":0},"rows":0,"cols":65535}),
+            vec!["terminal", "stream", "rows", "cols"],
+        ),
+        (
+            Message::Command(Command::Detach {
+                terminal: TerminalId::Process(u64::MAX),
+            }),
+            "Command.Detach",
+            json!({"terminal":{"Process":u64::MAX}}),
+            vec!["terminal"],
+        ),
+        (
+            Message::Command(Command::Resize {
+                terminal: TerminalId::Main,
+                rows: u16::MAX,
+                cols: 0,
+            }),
+            "Command.Resize",
+            json!({"terminal":"Main","rows":65535,"cols":0}),
+            vec!["terminal", "rows", "cols"],
+        ),
+        (
+            Message::Command(Command::TerminalCall {
+                request: u64::MAX,
+                terminal: u64::MAX,
+                call: crate::terminal::Call::Wait {
+                    condition: crate::terminal::Condition::Regex("[".into()),
+                    timeout: u64::MAX,
+                    lines: Some(0),
+                },
+            }),
+            "Command.TerminalCall",
+            json!({"request":u64::MAX,"terminal":u64::MAX,"call":{"Wait":{"condition":{"Regex":"["},"timeout":u64::MAX,"lines":0}}}),
+            vec!["request", "terminal", "call"],
+        ),
+        (
+            Message::Command(Command::TerminalCancel { request: 0 }),
+            "Command.TerminalCancel",
+            json!({"request":0}),
+            vec!["request"],
+        ),
+        (
+            Message::Event(Event::Terminal {
+                terminal: TerminalId::Process(0),
+                status: TerminalStatus {
+                    eof: true,
+                    complete: false,
+                    interrupted: true,
+                    attached: false,
+                    detached: true,
+                    connected: false,
+                },
+                error: None,
+            }),
+            "Event.Terminal",
+            json!({"terminal":{"Process":0},"status":{"eof":true,"complete":false,"interrupted":true,"attached":false,"detached":true,"connected":false},"error":null}),
+            vec!["terminal", "status", "error"],
+        ),
+        (
+            Message::Event(Event::TerminalResult {
+                request: u64::MAX,
+                result: Ok(json!({"$fd":0,"nested":[true,null,"雪\n"]})),
+            }),
+            "Event.TerminalResult",
+            json!({"request":u64::MAX,"result":"{\"Ok\":{\"$fd\":0,\"nested\":[true,null,\"雪\\n\"]}}"}),
+            vec!["request", "result"],
+        ),
+    ]
+}
+#[test]
+fn c17b2_seven_producer_frames_required_fields_and_nullable_error_are_exact() {
+    for (message, method, params, fields) in c17b2_frame_cases() {
+        let mut prepared = Encoder::default().prepare(message).unwrap();
+        assert!(!prepared.needs_adoption());
+        assert_eq!(prepared.frames.len(), 1);
+        let original = prepared.frames.pop_front().unwrap();
+        assert_eq!(original.fds.len(), usize::from(method == "Command.Attach"));
+        assert_eq!(
+            original.value,
+            json!({"jsonrpc":"2.0","method":method,"params":params})
+        );
+        for field in &fields {
+            let mut value = original.value.clone();
+            value["params"].as_object_mut().unwrap().remove(*field);
+            c16a_error(
+                Frame {
+                    value,
+                    fds: original
+                        .fds
+                        .iter()
+                        .map(|fd| fd.try_clone().unwrap())
+                        .collect(),
+                },
+                &format!("missing control field {field}"),
+            );
+        }
+        let mut value = original.value.clone();
+        value["params"] = json!({});
+        c16a_error(
+            Frame {
+                value,
+                fds: original
+                    .fds
+                    .iter()
+                    .map(|fd| fd.try_clone().unwrap())
+                    .collect(),
+            },
+            &format!("missing control field {}", fields[0]),
+        );
+        let mut value = original.value.clone();
+        value["params"]["extra"] = json!(true);
+        c16a_error(
+            Frame {
+                value,
+                fds: original
+                    .fds
+                    .iter()
+                    .map(|fd| fd.try_clone().unwrap())
+                    .collect(),
+            },
+            "unexpected control field",
+        );
+        let mut value = original.value.clone();
+        value["params"] = json!([]);
+        c16a_error(
+            Frame {
+                value,
+                fds: original
+                    .fds
+                    .iter()
+                    .map(|fd| fd.try_clone().unwrap())
+                    .collect(),
+            },
+            "expected control object",
+        );
+        let expected = original.value.clone();
+        let received = Decoder::default().receive(original).unwrap().unwrap();
+        assert!(received.adopted.is_none());
+        assert_eq!(
+            Encoder::default().prepare(received.message).unwrap().frames[0].value,
+            expected
+        );
+    }
+    roundtrip(Message::Event(Event::Terminal {
+        terminal: TerminalId::Main,
+        status: TerminalStatus::default(),
+        error: Some("failed\n雪".into()),
+    }));
+}
+
+#[test]
+fn c17b2_scalar_and_nested_terminal_errors_keep_original_field_order() {
+    fn old<T: DeserializeOwned>(v: Value) -> String {
+        serde_json::from_value::<T>(v).err().unwrap().to_string()
+    }
+    let mut frame = c16a_frame(Message::Command(Command::Resize {
+        terminal: TerminalId::Main,
+        rows: 1,
+        cols: 1,
+    }));
+    frame.value["params"]["rows"] = json!(1.0);
+    frame.value["params"]["cols"] = json!(-1);
+    c16a_error(frame, &old::<u16>(json!(1.0)));
+    for value in [json!(-1), json!(65536), json!(1.0), json!(null)] {
+        let mut frame = c16a_frame(Message::Command(Command::Resize {
+            terminal: TerminalId::Main,
+            rows: 1,
+            cols: 1,
+        }));
+        frame.value["params"]["cols"] = value.clone();
+        c16a_error(frame, &old::<u16>(value));
+    }
+    for (field, value, expected) in [
+        ("request", json!(1.0), old::<u64>(json!(1.0))),
+        ("terminal", json!(-1), old::<u64>(json!(-1))),
+        (
+            "call",
+            json!({"Read":{}}),
+            old::<c17b2_original::Call>(json!({"Read":{}})),
+        ),
+    ] {
+        let mut frame = c16a_frame(Message::Command(Command::TerminalCall {
+            request: 0,
+            terminal: 0,
+            call: crate::terminal::Call::Read {
+                source: crate::terminal::Source::Visible,
+                lines: None,
+            },
+        }));
+        frame.value["params"][field] = value;
+        frame.value["params"]["extra"] = json!(true);
+        c16a_error(frame, &expected);
+    }
+    let mut frame = c16a_frame(Message::Event(Event::Terminal {
+        terminal: TerminalId::Main,
+        status: TerminalStatus::default(),
+        error: None,
+    }));
+    frame.value["params"]["status"] = json!({});
+    frame.value["params"]["error"] = json!(1);
+    c16a_error(frame, &old::<c17b2_original::TerminalStatus>(json!({})));
+    let mut frame = c16a_frame(Message::Event(Event::Terminal {
+        terminal: TerminalId::Main,
+        status: TerminalStatus::default(),
+        error: None,
+    }));
+    frame.value["params"]["error"] = json!(1);
+    c16a_error(frame, &old::<Option<String>>(json!(1)));
+}
+
+#[test]
+fn c17b2_terminal_result_opaque_json_and_extraction_order_preserve_original() {
+    for result in [
+        Ok(json!(null)),
+        Ok(json!(false)),
+        Ok(json!(-1)),
+        Ok(json!(1.5)),
+        Ok(json!("雪\n")),
+        Ok(json!([1, true, null])),
+        Ok(json!({"$fd":0,"nested":{"$fd":999}})),
+        Err("failed\n雪".into()),
+    ] {
+        let mut prepared = Encoder::default()
+            .prepare(Message::Event(Event::TerminalResult {
+                request: u64::MAX,
+                result: result.clone(),
+            }))
+            .unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert!(frame.value["params"]["result"].is_string());
+        assert!(frame.fds.is_empty());
+        let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut sender = channel::Channel::new(left).unwrap();
+        let mut receiver = channel::Channel::new(right).unwrap();
+        sender.queue(&frame.value, &mut frame.fds).unwrap();
+        sender.flush().unwrap();
+        assert!(!sender.wants_write());
+        let received = Decoder::default()
+            .receive_channel(&mut receiver)
+            .unwrap()
+            .unwrap();
+        assert!(received.adopted.is_none());
+        assert!(
+            matches!(received.message,Message::Event(Event::TerminalResult {request:u64::MAX,result:actual}) if actual==result)
+        );
+    }
+    for encoded in [
+        "{",
+        "null",
+        "{}",
+        "{\"Err\":null}",
+        "{\"Other\":null}",
+        "{\"Ok\":null,\"Err\":\"x\"}",
+    ] {
+        let expected = serde_json::from_str::<Result<Value, String>>(encoded)
+            .unwrap_err()
+            .to_string();
+        let mut frame = c16a_frame(Message::Event(Event::TerminalResult {
+            request: 1,
+            result: Ok(json!(null)),
+        }));
+        frame.value["params"]["result"] = json!(encoded);
+        frame.value["params"]["extra"] = json!(true);
+        c16a_error(frame, &expected);
+    }
+    let mut frame = c16a_frame(Message::Event(Event::TerminalResult {
+        request: 1,
+        result: Ok(json!(null)),
+    }));
+    frame.value["params"]["result"] = json!({"Ok":null});
+    c16a_error(
+        frame,
+        &serde_json::from_value::<String>(json!({"Ok":null}))
+            .unwrap_err()
+            .to_string(),
+    );
+    let mut frame = c16a_frame(Message::Event(Event::TerminalResult {
+        request: 1,
+        result: Ok(json!(null)),
+    }));
+    frame.value["params"]["request"] = json!(1.0);
+    frame.value["params"]["result"] = json!("{");
+    c16a_error(
+        frame,
+        &serde_json::from_value::<u64>(json!(1.0))
+            .unwrap_err()
+            .to_string(),
+    );
+}
+
+#[test]
+fn c17b2_attach_capability_lifetimes_and_rejection_order_are_preserved() {
+    let _no_forks = unix::no_forks();
+    for fault in 0..6 {
+        let (reader, writer) = unix::pipe().unwrap();
+        let mut reader = fs::File::from(reader);
+        let mut prepared = Encoder::default()
+            .prepare(Message::Command(Command::Attach {
+                terminal: TerminalId::Main,
+                stream: writer.into(),
+                rows: 24,
+                cols: 80,
+            }))
+            .unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        assert_eq!(frame.fds.len(), 1);
+        assert_eq!(frame.value["params"]["stream"], json!({"$fd":0}));
+        assert!(!prepared.needs_adoption());
+        if fault == 0 {
+            let (left, right) = std::os::unix::net::UnixStream::pair().unwrap();
+            let mut sender = channel::Channel::new(left).unwrap();
+            let mut receiver = channel::Channel::new(right).unwrap();
+            sender.queue(&frame.value, &mut frame.fds).unwrap();
+            sender.flush().unwrap();
+            assert!(!sender.wants_write());
+            let received = Decoder::default()
+                .receive_channel(&mut receiver)
+                .unwrap()
+                .unwrap();
+            assert!(received.adopted.is_none());
+            drop(prepared);
+            assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+            drop(received);
+        } else {
+            frame.value["params"]["extra"] = json!(true);
+            let expected = match fault {
+                1 => {
+                    let value = json!({"Process":1.0});
+                    frame.value["params"]["terminal"] = value.clone();
+                    frame.value["params"]["stream"] = json!({"$fd":99});
+                    serde_json::from_value::<c17b2_original::TerminalId>(value)
+                        .unwrap_err()
+                        .to_string()
+                }
+                2 => {
+                    frame.value["params"]["stream"] = json!({"$fd":99});
+                    frame.value["params"]["rows"] = json!(1.0);
+                    "invalid or duplicate descriptor reference".into()
+                }
+                3 => {
+                    frame.value["params"]["rows"] = json!(1.0);
+                    serde_json::from_value::<u16>(json!(1.0))
+                        .unwrap_err()
+                        .to_string()
+                }
+                4 => {
+                    frame.value["params"]["stream"] = json!({});
+                    serde_json::from_value::<c16a2_original::Descriptor>(json!({}))
+                        .unwrap_err()
+                        .to_string()
+                }
+                5 => "unexpected control field".into(),
+                _ => unreachable!(),
+            };
+            // Typed-frame failures are separate from the Channel's earlier
+            // framing/index validation; ownership assertions apply to both.
+            c16a_error(frame, &expected);
+            assert!(!unix::readable(reader.as_raw_fd(), 0).unwrap());
+            drop(prepared);
+        }
+        assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    }
+}

@@ -187,23 +187,11 @@ pub enum Stdio {
 }
 
 /// A runtime-owned terminal, distinct from frontend-provided exec descriptors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum TerminalId {
-    Main,
-    Process(u64),
-}
+pub use goblins_protocol::contract::TerminalId;
 
 /// A descriptor-free snapshot. `connected` includes a half-closed frontend
 /// still holding its outcome, while `attached` excludes a detached stream.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TerminalStatus {
-    pub eof: bool,
-    pub complete: bool,
-    pub interrupted: bool,
-    pub attached: bool,
-    pub detached: bool,
-    pub connected: bool,
-}
+pub use goblins_protocol::contract::TerminalStatus;
 
 /// What a spawned process is for.
 pub use goblins_protocol::contract::SpawnKind;

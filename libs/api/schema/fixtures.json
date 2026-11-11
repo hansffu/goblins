@@ -30095,5 +30095,929 @@
       },
       "valid": false
     }
+  ],
+  "c17b2_terminal_schema_cases": {
+    "SupervisorTerminalId": [
+      {
+        "value": "Main",
+        "valid": true
+      },
+      {
+        "value": {
+          "Process": 0
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Process": 18446744073709551615
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Main": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Process": -1
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Process": 1.0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Process": 18446744073709551616
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Other": 0
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          "Main"
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorTerminalStatus": [
+      {
+        "value": {
+          "eof": false,
+          "complete": false,
+          "interrupted": false,
+          "attached": false,
+          "detached": false,
+          "connected": false
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "eof": false,
+          "complete": false,
+          "interrupted": false,
+          "attached": false,
+          "detached": false,
+          "connected": false,
+          "future": 1
+        },
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": {
+          "eof": null,
+          "complete": false,
+          "interrupted": false,
+          "attached": false,
+          "detached": false,
+          "connected": false
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "eof": false,
+          "complete": false,
+          "interrupted": false,
+          "attached": false,
+          "detached": false
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorTerminalSource": [
+      {
+        "value": "Visible",
+        "valid": true
+      },
+      {
+        "value": "Recent",
+        "valid": true
+      },
+      {
+        "value": {
+          "Visible": null
+        },
+        "valid": false
+      },
+      {
+        "value": "Other",
+        "valid": false
+      },
+      {
+        "value": 0,
+        "valid": false
+      }
+    ],
+    "SupervisorTerminalCondition": [
+      {
+        "value": {
+          "Match": ""
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Regex": "["
+        },
+        "valid": true
+      },
+      {
+        "value": "Exit",
+        "valid": true
+      },
+      {
+        "value": {
+          "Exit": null
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Regex": 0
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Match": "a",
+          "Regex": "b"
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          "Match",
+          "a"
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorTerminalCall": [
+      {
+        "value": {
+          "Read": {
+            "source": "Visible"
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Read": {
+            "source": "Recent",
+            "lines": null,
+            "future": true
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Read": {
+            "source": "Visible",
+            "lines": 18446744073709551615
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Send": {
+            "keys": []
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Send": {
+            "text": null,
+            "keys": [
+              "invalid-key"
+            ],
+            "future": 0
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Wait": {
+            "condition": {
+              "Regex": "["
+            },
+            "timeout": 18446744073709551615,
+            "lines": 0
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Wait": {
+            "condition": {
+              "Match": ""
+            },
+            "timeout": 0
+          }
+        },
+        "valid": true
+      },
+      {
+        "value": {
+          "Read": {}
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Read": {
+            "source": "Visible",
+            "lines": -1
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Send": {
+            "text": "a"
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Send": {
+            "keys": [
+              1
+            ]
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Wait": {
+            "condition": "Exit"
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Wait": {
+            "timeout": 1
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Wait": {
+            "condition": "Exit",
+            "timeout": 1.0
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Wait": {
+            "condition": "Exit",
+            "timeout": 18446744073709551616
+          }
+        },
+        "valid": false
+      },
+      {
+        "value": {
+          "Read": {
+            "source": "Visible"
+          },
+          "extra": 0
+        },
+        "valid": false
+      },
+      {
+        "value": [
+          "Read",
+          "Visible",
+          null
+        ],
+        "valid": false
+      }
+    ],
+    "SupervisorTerminalResult": [
+      {
+        "value": "not JSON",
+        "valid": true
+      },
+      {
+        "value": "{\"Ok\":{\"fd\":0}}",
+        "valid": true
+      },
+      {
+        "value": "{\"Err\":\"failed\"}",
+        "valid": true
+      },
+      {
+        "value": "null",
+        "valid": true
+      },
+      {
+        "value": {},
+        "valid": false
+      },
+      {
+        "value": null,
+        "valid": false
+      },
+      {
+        "value": 42,
+        "valid": false
+      }
+    ]
+  },
+  "c17b2_notification_cases": [
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Attach",
+        "params": {
+          "terminal": "Main",
+          "stream": {"$fd": 0},
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Attach",
+        "params": {
+          "stream": {"$fd": 0},
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Attach",
+        "params": {
+          "terminal": "Main",
+          "rows": 0,
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Attach",
+        "params": {
+          "terminal": "Main",
+          "stream": {"$fd": 0},
+          "cols": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Attach",
+        "params": {
+          "terminal": "Main",
+          "stream": {"$fd": 0},
+          "rows": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Attach",
+        "params": {
+          "terminal": "Main",
+          "stream": {"$fd": 0},
+          "rows": 0,
+          "cols": 65535,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Attach",
+        "params": {
+          "terminal": "Main",
+          "stream": {"$fd": 0},
+          "rows": 0,
+          "cols": 65535
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Detach",
+        "params": {
+          "terminal": {
+            "Process": 18446744073709551615
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Detach",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Detach",
+        "params": {
+          "terminal": {
+            "Process": 18446744073709551615
+          },
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Detach",
+        "params": {
+          "terminal": {
+            "Process": 18446744073709551615
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Resize",
+        "params": {
+          "terminal": "Main",
+          "rows": 65535,
+          "cols": 0
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Resize",
+        "params": {
+          "rows": 65535,
+          "cols": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Resize",
+        "params": {
+          "terminal": "Main",
+          "cols": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Resize",
+        "params": {
+          "terminal": "Main",
+          "rows": 65535
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Resize",
+        "params": {
+          "terminal": "Main",
+          "rows": 65535,
+          "cols": 0,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.Resize",
+        "params": {
+          "terminal": "Main",
+          "rows": 65535,
+          "cols": 0
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCall",
+        "params": {
+          "request": 18446744073709551615,
+          "terminal": 0,
+          "call": {
+            "Wait": {
+              "condition": {
+                "Regex": "["
+              },
+              "timeout": 18446744073709551615
+            }
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCall",
+        "params": {
+          "terminal": 0,
+          "call": {
+            "Wait": {
+              "condition": {
+                "Regex": "["
+              },
+              "timeout": 18446744073709551615
+            }
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCall",
+        "params": {
+          "request": 18446744073709551615,
+          "call": {
+            "Wait": {
+              "condition": {
+                "Regex": "["
+              },
+              "timeout": 18446744073709551615
+            }
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCall",
+        "params": {
+          "request": 18446744073709551615,
+          "terminal": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCall",
+        "params": {
+          "request": 18446744073709551615,
+          "terminal": 0,
+          "call": {
+            "Wait": {
+              "condition": {
+                "Regex": "["
+              },
+              "timeout": 18446744073709551615
+            }
+          },
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCall",
+        "params": {
+          "request": 18446744073709551615,
+          "terminal": 0,
+          "call": {
+            "Wait": {
+              "condition": {
+                "Regex": "["
+              },
+              "timeout": 18446744073709551615
+            }
+          }
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCancel",
+        "params": {
+          "request": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCancel",
+        "params": {}
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCancel",
+        "params": {
+          "request": 18446744073709551615,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Command.TerminalCancel",
+        "params": {
+          "request": 18446744073709551615
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Terminal",
+        "params": {
+          "terminal": "Main",
+          "status": {
+            "eof": false,
+            "complete": false,
+            "interrupted": false,
+            "attached": false,
+            "detached": false,
+            "connected": false
+          },
+          "error": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Terminal",
+        "params": {
+          "status": {
+            "eof": false,
+            "complete": false,
+            "interrupted": false,
+            "attached": false,
+            "detached": false,
+            "connected": false
+          },
+          "error": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Terminal",
+        "params": {
+          "terminal": "Main",
+          "error": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Terminal",
+        "params": {
+          "terminal": "Main",
+          "status": {
+            "eof": false,
+            "complete": false,
+            "interrupted": false,
+            "attached": false,
+            "detached": false,
+            "connected": false
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Terminal",
+        "params": {
+          "terminal": "Main",
+          "status": {
+            "eof": false,
+            "complete": false,
+            "interrupted": false,
+            "attached": false,
+            "detached": false,
+            "connected": false
+          },
+          "error": null,
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Terminal",
+        "params": {
+          "terminal": "Main",
+          "status": {
+            "eof": false,
+            "complete": false,
+            "interrupted": false,
+            "attached": false,
+            "detached": false,
+            "connected": false
+          },
+          "error": null
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.TerminalResult",
+        "params": {
+          "request": 18446744073709551615,
+          "result": "not JSON"
+        }
+      },
+      "valid": true
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.TerminalResult",
+        "params": {
+          "result": "not JSON"
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.TerminalResult",
+        "params": {
+          "request": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.TerminalResult",
+        "params": {
+          "request": 18446744073709551615,
+          "result": "not JSON",
+          "extra": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "direction": "supervisor-to-daemon",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.TerminalResult",
+        "params": {
+          "request": 18446744073709551615,
+          "result": "not JSON"
+        },
+        "id": 1
+      },
+      "valid": false
+    }
   ]
 }

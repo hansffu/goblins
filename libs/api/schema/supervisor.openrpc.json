@@ -687,9 +687,254 @@
       "sender": "supervisor",
       "receiver": "daemon",
       "connection-state": "operational process result"
+    },
+    {
+      "name": "Command.Attach",
+      "x-rust-name": "CommandAttach",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Duplicate and transfer one frontend stream descriptor after terminal metadata and before dimensions. Preserve terminal/descriptor/rows/cols extraction order and full u16 wire ranges; no adoption.",
+      "params": [
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandAttachParams/properties/terminal"
+          }
+        },
+        {
+          "name": "stream",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandAttachParams/properties/stream"
+          }
+        },
+        {
+          "name": "rows",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandAttachParams/properties/rows"
+          }
+        },
+        {
+          "name": "cols",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandAttachParams/properties/cols"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandAttachParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational attachment/terminal command"
+    },
+    {
+      "name": "Command.Detach",
+      "x-rust-name": "CommandDetach",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Detach the specified runtime terminal; preserve existing policy and terminal lookup.",
+      "params": [
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandDetachParams/properties/terminal"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandDetachParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational attachment/terminal command"
+    },
+    {
+      "name": "Command.Resize",
+      "x-rust-name": "CommandResize",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Carry a terminal identity and full native u16 dimensions; semantic size validation remains with existing terminal operations.",
+      "params": [
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandResizeParams/properties/terminal"
+          }
+        },
+        {
+          "name": "rows",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandResizeParams/properties/rows"
+          }
+        },
+        {
+          "name": "cols",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandResizeParams/properties/cols"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandResizeParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational attachment/terminal command"
+    },
+    {
+      "name": "Command.TerminalCall",
+      "x-rust-name": "CommandTerminalCall",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Carry the original externally tagged terminal Call without early semantic validation. Request and process-terminal IDs retain u64 wire range.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandTerminalCallParams/properties/request"
+          }
+        },
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandTerminalCallParams/properties/terminal"
+          }
+        },
+        {
+          "name": "call",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandTerminalCallParams/properties/call"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandTerminalCallParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational attachment/terminal command"
+    },
+    {
+      "name": "Command.TerminalCancel",
+      "x-rust-name": "CommandTerminalCancel",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Cancel an outstanding terminal request by its original u64 request ID.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandTerminalCancelParams/properties/request"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandTerminalCancelParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational attachment/terminal command"
+    },
+    {
+      "name": "Event.Terminal",
+      "x-rust-name": "EventTerminal",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Terminal snapshot with six original status flags and a required nullable error string. Status fields remain structurally open and all six flags are required.",
+      "params": [
+        {
+          "name": "terminal",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventTerminalParams/properties/terminal"
+          }
+        },
+        {
+          "name": "status",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventTerminalParams/properties/status"
+          }
+        },
+        {
+          "name": "error",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventTerminalParams/properties/error"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventTerminalParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational terminal event"
+    },
+    {
+      "name": "Event.TerminalResult",
+      "x-rust-name": "EventTerminalResult",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Terminal result remains an opaque String encoding standard Result<Value,String>. Parse request then inner JSON before unknown-root rejection; arbitrary inner JSON is descriptor-free data.",
+      "params": [
+        {
+          "name": "request",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventTerminalResultParams/properties/request"
+          }
+        },
+        {
+          "name": "result",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventTerminalResultParams/properties/result"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventTerminalResultParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational terminal event"
     }
   ],
-  "x-contract-chunk": "C17b1",
+  "x-contract-chunk": "C17b2",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -775,15 +1020,6 @@
     }
   ],
   "x-pending-notifications": {
-    "C17b2-attachments-terminals": [
-      "Command.Attach",
-      "Command.Detach",
-      "Command.Resize",
-      "Command.TerminalCall",
-      "Command.TerminalCancel",
-      "Event.Terminal",
-      "Event.TerminalResult"
-    ],
     "C17c-approvals-devshell": [
       "Command.Cancel",
       "Command.Preview",

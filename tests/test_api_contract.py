@@ -16,6 +16,112 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c17b2_terminal_public_descriptions_reject_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        for name in ["SupervisorTerminalId", "SupervisorTerminalStatus", "SupervisorTerminalCall"]:
+            self.assertTrue(original["definitions"][name]["description"])
+            for mutation in ["removed", "changed"]:
+                schema = copy.deepcopy(original)
+                definition = schema["definitions"][name]
+                if mutation == "removed":
+                    del definition["description"]
+                else:
+                    definition["description"] = "Changed public terminal contract explanation."
+                with self.subTest(schema=name, description=mutation), patch.object(contract, "common", return_value=schema):
+                    with self.assertRaises(ValueError):
+                        contract.check()
+
+    def test_c17b2_terminal_instances_notifications_and_opaque_result(self):
+        fixtures = contract.read("fixtures.json")
+        for name, cases in fixtures["c17b2_terminal_schema_cases"].items():
+            validator = contract.schema_validator({"$ref":"common.json#/definitions/" + name})
+            for case in cases:
+                with self.subTest(schema=name, case=case):
+                    self.assertEqual(validator.is_valid(case["value"]), case["valid"])
+        for case in fixtures["c17b2_notification_cases"]:
+            with self.subTest(notification=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_notification("supervisor", case["direction"], case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_notification("supervisor", case["direction"], case["frame"])
+            opposite = "supervisor-to-daemon" if case["direction"] == "daemon-to-supervisor" else "daemon-to-supervisor"
+            self.assertFalse(contract.validate_notification("supervisor", opposite, case["frame"]))
+        # This validates explicit inner JSON values, never decodes the outer String.
+        inner = contract.schema_validator(contract.common()["definitions"]["SupervisorTerminalResult"]["x-json-content-schema"])
+        for value in [{"Ok":None},{"Ok":{"fd":0}},{"Ok":[1,True]},{"Err":"failed"}]:
+            self.assertTrue(inner.is_valid(value))
+        for value in [None,{"Err":0},{"Ok":0,"Err":"failed"},{"Other":0}]:
+            self.assertFalse(inner.is_valid(value))
+        doc = contract.document("supervisor")
+        pending = [name for group in doc["x-pending-notifications"].values() for name in group]
+        self.assertEqual(len(pending), 36)
+        completed = {case["frame"]["method"] for case in fixtures["c17b2_notification_cases"]}
+        self.assertEqual(len(completed), 7)
+        self.assertFalse(completed & set(pending))
+        self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
+
+    def test_c17b2_terminal_codegen_metadata_rejects_drift(self):
+        from unittest.mock import patch
+        contract.check()
+        original = contract.common()
+        cases = []
+        def changed(label, change):
+            schema = copy.deepcopy(original)
+            change(schema)
+            cases.append((label, schema))
+        def definition(s, name): return s["definitions"]["Supervisor" + name]
+        def call(s, index, name): return definition(s,"TerminalCall")["oneOf"][index]["properties"][name]
+        for name in ["TerminalId","TerminalSource","TerminalCondition","TerminalCall"]:
+            changed(name + " registry", lambda s,name=name: s["x-rust-external-enums"].remove("Supervisor"+name))
+            changed(name + " original name", lambda s,name=name: definition(s,name).update({"x-rust-name":"Wrong"}))
+            changed(name + " original traits", lambda s,name=name: definition(s,name)["x-rust-derives"].remove("Eq"))
+        changed("Status registry", lambda s: s["x-rust-explicit-records"].remove("SupervisorTerminalStatus"))
+        for name in ["TerminalSource","TerminalCondition","TerminalCall"]:
+            changed(name + " module", lambda s,name=name: definition(s,name).update({"x-rust-module":"wrong"}))
+        changed("Id ordering", lambda s: definition(s,"TerminalId")["x-rust-derives"].remove("Ord"))
+        changed("Id newtype native", lambda s: definition(s,"TerminalId")["x-rust-variants"][1].update({"x-rust-type":"usize"}))
+        changed("Id newtype pointer", lambda s: definition(s,"TerminalId")["x-rust-variants"][1].update({"schema-ref":"#/definitions/SupervisorSequence"}))
+        changed("Id newtype kind", lambda s: definition(s,"TerminalId")["x-rust-variants"][1].update(kind="unit"))
+        changed("Condition newtype type", lambda s: definition(s,"TerminalCondition")["x-rust-variants"][0].update({"x-rust-type":"u64"}))
+        changed("Condition explanation", lambda s: definition(s,"TerminalCondition")["x-rust-variants"][1].update(description="Wrong units"))
+        changed("Status Default", lambda s: definition(s,"TerminalStatus")["x-rust-derives"].remove("Default"))
+        changed("Status name", lambda s: definition(s,"TerminalStatus").update({"x-rust-name":"Wrong"}))
+        changed("Status order", lambda s: definition(s,"TerminalStatus")["x-rust-field-order"].reverse())
+        changed("Status missing required bool", lambda s: definition(s,"TerminalStatus")["required"].remove("connected"))
+        changed("Status open", lambda s: definition(s,"TerminalStatus").update(additionalProperties=False))
+        changed("Status wire bool", lambda s: definition(s,"TerminalStatus")["properties"]["eof"].update(type="integer"))
+        changed("Status native bool", lambda s: definition(s,"TerminalStatus")["properties"]["eof"].update({"x-rust-type":"u64"}))
+        changed("Status field name", lambda s: definition(s,"TerminalStatus")["properties"]["eof"].update({"x-rust-field-name":"other"}))
+        changed("Status constructor default is not serde default", lambda s: definition(s,"TerminalStatus")["properties"]["eof"].update({"x-rust-default":True}))
+        for index,name in enumerate(["Read","Send","Wait"]):
+            changed(name + " payload pointer", lambda s,index=index: definition(s,"TerminalCall")["x-rust-variants"][index].update({"schema-ref":"#/definitions/SupervisorSequence"}))
+            changed(name + " field order", lambda s,index=index,name=name: call(s,index,name)["x-rust-field-order"].reverse())
+            changed(name + " open payload", lambda s,index=index,name=name: call(s,index,name).update(additionalProperties=False))
+            changed(name + " required", lambda s,index=index,name=name: call(s,index,name)["required"].pop())
+        for index,name,field in [(0,"Read","lines"),(1,"Send","text"),(2,"Wait","lines")]:
+            changed(name + " no serde default", lambda s,index=index,name=name,field=field: call(s,index,name)["properties"][field].update({"x-rust-default":True}))
+        changed("Read source native", lambda s: call(s,0,"Read")["properties"]["source"].update({"x-rust-type":"Condition"}))
+        changed("Wait timeout unit", lambda s: call(s,2,"Wait")["properties"]["timeout"].update(description="Seconds."))
+        changed("Wait timeout native", lambda s: call(s,2,"Wait")["properties"]["timeout"].update({"x-rust-type":"usize"}))
+        changed("Read optional index", lambda s: call(s,0,"Read")["properties"]["lines"]["anyOf"][0].update({"$ref":"#/definitions/SupervisorDimension"}))
+        for name in ["Dimension","DescriptorIndex"]:
+            changed(name + " minimum", lambda s,name=name: definition(s,name).update(minimum=1))
+            changed(name + " maximum", lambda s,name=name: definition(s,name).update(maximum=500))
+            changed(name + " integer representation", lambda s,name=name: definition(s,name).pop("x-json-integer"))
+        changed("Result opaque String", lambda s: definition(s,"TerminalResult").update(type="object"))
+        changed("Result inner Err String", lambda s: definition(s,"TerminalResult")["x-json-content-schema"]["oneOf"][1]["properties"]["Err"].update(type="integer"))
+        changed("Event error nullable required", lambda s: s["x-rust-serde-records"]["SupervisorEventTerminalParams"]["required-nullable"].remove("error"))
+        changed("Event extraction order", lambda s: s["x-rust-serde-records"]["SupervisorEventTerminalParams"]["order"].reverse())
+        for root,field,wrong in [("CommandAttachParams","terminal","Sequence"),("CommandAttachParams","stream","Sequence"),("CommandResizeParams","rows","Sequence"),("CommandTerminalCallParams","terminal","TerminalId"),("CommandTerminalCallParams","call","TerminalCondition"),("EventTerminalParams","status","TerminalId"),("EventTerminalParams","error","Sequence"),("EventTerminalResultParams","result","Sequence")]:
+            changed(root + "." + field, lambda s,root=root,field=field,wrong=wrong: definition(s,root)["properties"][field].update({"$ref":"#/definitions/Supervisor"+wrong}))
+        for label, schema in cases:
+            with self.subTest(mutation=label), patch.object(contract,"common",return_value=schema):
+                with self.assertRaises(ValueError):
+                    contract.check()
+
     def test_c17b1_process_instances_and_notification_directions(self):
         fixtures = contract.read("fixtures.json")
         kind = contract.schema_validator({"$ref":"common.json#/definitions/SupervisorSpawnKind"})
@@ -90,22 +196,23 @@ class ContractTests(unittest.TestCase):
         doc = original("supervisor")
         pending = doc["x-pending-notifications"]
         names = [name for group in pending.values() for name in group]
-        self.assertEqual(len(names), 43)
-        self.assertEqual(len(set(names)), 43)
+        self.assertEqual(len(names), 36)
+        self.assertEqual(len(set(names)), 36)
         completed = {r["method"] for r in contract.read("fixtures.json")["c17b1_process_roots"]}
+        completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17b2_notification_cases"]}
         declared = {r["name"] for r in doc["x-notifications"]}
         self.assertTrue(completed <= declared)
         self.assertFalse(set(names) & declared)
-        self.assertEqual(set(pending), {"C17b2-attachments-terminals","C17c-approvals-devshell","C17d-lifecycle-host-jobs","C17e-relay-logging"})
+        self.assertEqual(set(pending), {"C17c-approvals-devshell","C17d-lifecycle-host-jobs","C17e-relay-logging"})
         for mutation in ["completed method pending", "missing pending method", "duplicate pending method", "unknown pending method", "wrong pending family"]:
             changed = copy.deepcopy(doc)
             registry = changed["x-pending-notifications"]
-            group = registry["C17b2-attachments-terminals"]
+            group = registry["C17c-approvals-devshell"]
             if mutation == "completed method pending": group.append("Command.Spawn")
             elif mutation == "missing pending method": group.pop()
             elif mutation == "duplicate pending method": group.append(group[0])
             elif mutation == "unknown pending method": group.append("Command.Unknown")
-            else: registry["C17c-approvals-devshell"].append(group.pop())
+            else: registry["C17d-lifecycle-host-jobs"].append(group.pop())
             with self.subTest(mutation=mutation), patch.object(contract, "document", side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
                 with self.assertRaises(ValueError):
                     contract.check()

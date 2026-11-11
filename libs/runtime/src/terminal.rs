@@ -1,6 +1,6 @@
 //! What the daemon and a goblin's supervisor agree on for terminals the
 //! supervisor emulates: limits, the calls made on one, and key encoding.
-use serde::{Deserialize, Serialize};
+pub use goblins_protocol::contract::terminal_metadata::{Call, Condition, Source};
 
 /// Terminals per goblin.
 pub const MAX_TERMINALS: usize = 16;
@@ -54,41 +54,6 @@ pub fn is_id(text: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Source {
-    Visible,
-    Recent,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Condition {
-    /// A literal substring.
-    Match(String),
-    /// A Rust regular expression.
-    Regex(String),
-    /// The terminal's program exits.
-    Exit,
-}
-
-/// A call on one terminal, answered with `Event::TerminalResult`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Call {
-    Read {
-        source: Source,
-        lines: Option<usize>,
-    },
-    Send {
-        text: Option<String>,
-        keys: Vec<String>,
-    },
-    Wait {
-        condition: Condition,
-        /// Milliseconds.
-        timeout: u64,
-        lines: Option<usize>,
-    },
-}
-
 /// Compile a `wait` regex with a size limit, or say why it cannot be used.
 pub fn compile(pattern: &str) -> Result<regex::Regex, String> {
     regex::RegexBuilder::new(pattern)
@@ -137,9 +102,7 @@ pub fn validate(call: &Call) -> Result<(), String> {
 
 fn lines_ok(lines: Option<usize>) -> Result<(), String> {
     match lines {
-        Some(n) if !(1..=MAX_LINES).contains(&n) => {
-            Err(format!("lines must be 1 to {MAX_LINES}"))
-        }
+        Some(n) if !(1..=MAX_LINES).contains(&n) => Err(format!("lines must be 1 to {MAX_LINES}")),
         _ => Ok(()),
     }
 }
@@ -208,7 +171,6 @@ pub fn key_bytes(name: &str, application: bool) -> Option<Vec<u8>> {
     };
     Some(fixed.to_vec())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1147,7 +1147,7 @@ def check_supervisor_process_metadata():
     ]
     for variant, description in zip(expected["SupervisorSpawnKind"]["x-rust-variants"], variant_docs):
         variant["description"] = description
-    if schema.get("x-rust-external-enums")!=["SupervisorSpawnKind"]:
+    if schema.get("x-rust-external-enums")!=["SupervisorSpawnKind","SupervisorTerminalId","SupervisorTerminalSource","SupervisorTerminalCondition","SupervisorTerminalCall"]:
         raise ValueError("private external enum registry differs")
     for name,value in expected.items():
         if {k:v for k,v in defs[name].items() if k!="description"}!=value:
@@ -1155,6 +1155,71 @@ def check_supervisor_process_metadata():
     for name,nullable in [("SupervisorCommandSpawnParams",["argv","cwd"]),("SupervisorEventSpawnFailedParams",["code"]),("SupervisorEventExitedParams",["code","signal"])]:
         if schema["x-rust-serde-records"].get(name)!={"name":name,"order":list(expected[name]["properties"]),"required-nullable":nullable}:
             raise ValueError("private process generated serde slots differ")
+
+
+def check_supervisor_terminal_metadata():
+    """Bind original terminal wire schemas to their generated Serde metadata."""
+    schema=common();defs=schema["definitions"]
+    def ref(name):return {"$ref":"#/definitions/Supervisor"+name}
+    def obj(props,closed=True,required=None):
+        return {"type":"object","properties":props,"required":list(props) if required is None else required,"additionalProperties":not closed}
+    def opt(value):return {"anyOf":[value,{"type":"null"}]}
+    def native(value,rust,description=None):
+        value={**value,"x-rust-type":rust}
+        if description is not None:value["description"]=description
+        return value
+    traits=["Clone","Copy","Debug","PartialEq","Eq","Serialize","Deserialize"]
+    def enum(rust,branches,variants,derives,module=None):
+        value={"oneOf":branches,"x-rust-name":rust,"x-rust-derives":derives,"x-rust-variants":variants}
+        if module is not None:value["x-rust-module"]=module
+        return value
+    status=obj({name:{**native({"type":"boolean"},"bool"),"x-rust-field-name":name} for name in ["eof","complete","interrupted","attached","detached","connected"]},False)
+    status.update({"x-rust-name":"TerminalStatus","x-rust-derives":["Clone","Copy","Debug","Default","PartialEq","Eq","Serialize","Deserialize"],"x-rust-field-order":list(status["properties"])})
+    condition_variants=[
+        {"name":"Match","kind":"newtype","schema-ref":"#/definitions/SupervisorTerminalCondition/oneOf/0/properties/Match","x-rust-type":"String","description":"A literal substring."},
+        {"name":"Regex","kind":"newtype","schema-ref":"#/definitions/SupervisorTerminalCondition/oneOf/1/properties/Regex","x-rust-type":"String","description":"A Rust regular expression."},
+        {"name":"Exit","kind":"unit","description":"The terminal's program exits."},
+    ]
+    call_branches=[];call_variants=[]
+    for index,(name,props,required) in enumerate([
+        ("Read",{"source":native(ref("TerminalSource"),"Source"),"lines":native(opt(ref("DescriptorIndex")),"Option<usize>")},["source"]),
+        ("Send",{"text":native(opt({"type":"string"}),"Option<String>"),"keys":native({"type":"array","items":{"type":"string"}},"Vec<String>")},["keys"]),
+        ("Wait",{"condition":native(ref("TerminalCondition"),"Condition"),"timeout":native(ref("Sequence"),"u64","Milliseconds."),"lines":native(opt(ref("DescriptorIndex")),"Option<usize>")},["condition","timeout"]),
+    ]):
+        payload=obj(props,False,required);payload["x-rust-field-order"]=list(props)
+        call_branches.append(obj({name:payload}))
+        call_variants.append({"name":name,"kind":"struct","schema-ref":f"#/definitions/SupervisorTerminalCall/oneOf/{index}/properties/{name}"})
+    expected={
+        "Dimension":{"type":"integer","minimum":0,"maximum":65535,"x-json-integer":True},
+        "DescriptorIndex":{"type":"integer","minimum":0,"maximum":2**64-1,"x-json-integer":True},
+        "OptionalString":opt({"type":"string"}),
+        "TerminalId":enum("TerminalId",[{"type":"string","enum":["Main"]},obj({"Process":ref("Sequence")})],[{"name":"Main","kind":"unit"},{"name":"Process","kind":"newtype","schema-ref":"#/definitions/SupervisorTerminalId/oneOf/1/properties/Process","x-rust-type":"u64"}],traits[:5]+["PartialOrd","Ord"]+traits[5:]),
+        "TerminalStatus":status,
+        "TerminalSource":enum("Source",[{"type":"string","enum":["Visible","Recent"]}],[{"name":"Visible","kind":"unit"},{"name":"Recent","kind":"unit"}],traits,"terminal_metadata"),
+        "TerminalCondition":enum("Condition",[obj({"Match":{"type":"string"}}),obj({"Regex":{"type":"string"}}),{"type":"string","enum":["Exit"]}],condition_variants,[t for t in traits if t!="Copy"],"terminal_metadata"),
+        "TerminalCall":enum("Call",call_branches,call_variants,[t for t in traits if t!="Copy"],"terminal_metadata"),
+        "TerminalResult":{"type":"string","x-json-content-schema":{"oneOf":[obj({"Ok":{}}),obj({"Err":{"type":"string"}})]}},
+        "CommandAttachParams":obj({"terminal":ref("TerminalId"),"stream":ref("Descriptor"),"rows":ref("Dimension"),"cols":ref("Dimension")}),
+        "CommandDetachParams":obj({"terminal":ref("TerminalId")}),
+        "CommandResizeParams":obj({"terminal":ref("TerminalId"),"rows":ref("Dimension"),"cols":ref("Dimension")}),
+        "CommandTerminalCallParams":obj({"request":ref("Sequence"),"terminal":ref("Sequence"),"call":ref("TerminalCall")}),
+        "CommandTerminalCancelParams":obj({"request":ref("Sequence")}),
+        "EventTerminalParams":obj({"terminal":ref("TerminalId"),"status":ref("TerminalStatus"),"error":ref("OptionalString")}),
+        "EventTerminalResultParams":obj({"request":ref("Sequence"),"result":ref("TerminalResult")}),
+    }
+    for name,value in expected.items():
+        if {key:value for key,value in defs["Supervisor"+name].items() if key!="description"}!=value:
+            raise ValueError("private terminal schema/Rust metadata differs: "+name)
+    public_docs={
+        "TerminalId":"A runtime-owned terminal, distinct from frontend-provided exec descriptors.",
+        "TerminalStatus":"A descriptor-free snapshot. connected includes a half-closed frontend still holding its outcome, while attached excludes a detached stream.",
+        "TerminalCall":"A call on one terminal, answered with Event::TerminalResult.",
+    }
+    for name,description in public_docs.items():
+        if defs["Supervisor"+name].get("description")!=description:
+            raise ValueError("private terminal public Rust documentation differs: "+name)
+    if schema["x-rust-serde-records"].get("SupervisorEventTerminalParams")!={"name":"SupervisorEventTerminalParams","order":["terminal","status","error"],"required-nullable":["error"]}:
+        raise ValueError("private terminal event serde slots differ")
 
 
 def check_supervisor_pending_inventory():
@@ -1194,6 +1259,13 @@ def check_private_contracts():
         "Event.Spawned":("supervisor-to-daemon","SupervisorEventSpawnedParams",["id","pid"]),
         "Event.SpawnFailed":("supervisor-to-daemon","SupervisorEventSpawnFailedParams",["id","code","message"]),
         "Event.Exited":("supervisor-to-daemon","SupervisorEventExitedParams",["id","code","signal"]),
+        'Command.Attach':('daemon-to-supervisor','SupervisorCommandAttachParams',['terminal', 'stream', 'rows', 'cols']),
+        'Command.Detach':('daemon-to-supervisor','SupervisorCommandDetachParams',['terminal']),
+        'Command.Resize':('daemon-to-supervisor','SupervisorCommandResizeParams',['terminal', 'rows', 'cols']),
+        'Command.TerminalCall':('daemon-to-supervisor','SupervisorCommandTerminalCallParams',['request', 'terminal', 'call']),
+        'Command.TerminalCancel':('daemon-to-supervisor','SupervisorCommandTerminalCancelParams',['request']),
+        'Event.Terminal':('supervisor-to-daemon','SupervisorEventTerminalParams',['terminal', 'status', 'error']),
+        'Event.TerminalResult':('supervisor-to-daemon','SupervisorEventTerminalResultParams',['request', 'result']),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
@@ -1205,7 +1277,7 @@ def check_private_contracts():
         if len(names)!=len(set(names)):raise ValueError("duplicate private Rust notification marker")
         for row in rows:
             name=row["name"];direction,record,order=catalog[name]
-            rust={"Command.Start":"CommandStart","Event.Exported":"EventExported","Event.Manifest":"EventManifest","Command.Spawn":"CommandSpawn","Command.Signal":"CommandSignal","Command.CancelProcess":"CommandCancelProcess","Command.KillAll":"CommandKillAll","Event.Spawned":"EventSpawned","Event.SpawnFailed":"EventSpawnFailed","Event.Exited":"EventExited"}.get(name,name)
+            rust=name.replace(".","")
             if row.get("x-rust-name")!=rust or row.get("direction")!=direction:
                 raise ValueError("private notification identity/direction differs")
             if any(not isinstance(row.get(key),str) or not row[key] for key in ("sender","receiver","connection-state","description")):
@@ -1219,7 +1291,7 @@ def check_private_contracts():
             params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff"]:
+    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus"]:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}
@@ -1271,6 +1343,7 @@ def check():
     check_supervisor_handoff_metadata()
     check_supervisor_handoff_roots()
     check_supervisor_process_metadata()
+    check_supervisor_terminal_metadata()
     check_supervisor_pending_inventory()
     check_generated_reader_hooks_and_identities()
     check_communication_readers_and_producers()

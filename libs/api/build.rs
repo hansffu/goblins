@@ -285,15 +285,17 @@ fn main() {
     );
     for name in common["x-rust-external-enums"].as_array().unwrap() {
         let name = name.as_str().unwrap();
-        settings.with_replacement(
-            name,
-            format!(
-                "crate::contract::{}",
-                common["definitions"][name]["x-rust-name"].as_str().unwrap()
-            ),
-            [].into_iter(),
-        );
+        let schema = &common["definitions"][name];
+        let rust = schema["x-rust-name"].as_str().unwrap();
+        let path = match schema["x-rust-module"].as_str() {
+            Some(module) => format!("crate::contract::{module}::{rust}"),
+            None => format!("crate::contract::{rust}"),
+        };
+        settings.with_replacement(name, path, [].into_iter());
     }
+    settings.with_replacement("SupervisorDimension", "u16", [].into_iter());
+    settings.with_replacement("SupervisorOptionalString", "Option<String>", [].into_iter());
+    settings.with_replacement("SupervisorTerminalResult", "String", [].into_iter());
     settings.with_replacement("SupervisorI32", "i32", [].into_iter());
     settings.with_replacement("SupervisorOptionalI32", "Option<i32>", [].into_iter());
     settings.with_replacement(
@@ -469,6 +471,9 @@ fn main() {
         } else {
             ""
         };
+        if let Some(description) = schema["description"].as_str() {
+            output.push_str(&format!("#[doc = {description:?}]"));
+        }
         output.push_str(&format!(
             "#[derive({derives})] {closed} pub struct {rust} {{"
         ));
@@ -487,6 +492,8 @@ fn main() {
     }
     // Default external-tag Serde enums retain their original public variants
     // and payload permissiveness; canonical branch metadata supplies fields.
+    let mut external_modules: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     for name in common["x-rust-external-enums"].as_array().unwrap() {
         let name = name.as_str().unwrap();
         let schema = &common["definitions"][name];
@@ -502,14 +509,22 @@ fn main() {
             })
             .collect::<Vec<_>>()
             .join(",");
-        output.push_str(&format!("#[derive({derives})] pub enum {rust} {{"));
+        let mut enum_output = String::new();
+        if let Some(description) = schema["description"].as_str() {
+            enum_output.push_str(&format!("#[doc = {description:?}]"));
+        }
+        enum_output.push_str(&format!("#[derive({derives})] pub enum {rust} {{"));
         for variant in schema["x-rust-variants"].as_array().unwrap() {
             let name = variant["name"].as_str().unwrap();
             if let Some(description) = variant["description"].as_str() {
-                output.push_str(&format!("#[doc = {description:?}]"));
+                enum_output.push_str(&format!("#[doc = {description:?}]"));
             }
             match variant["kind"].as_str().unwrap() {
-                "unit" => output.push_str(&format!("{name},")),
+                "unit" => enum_output.push_str(&format!("{name},")),
+                "newtype" => {
+                    let ty = variant["x-rust-type"].as_str().unwrap();
+                    enum_output.push_str(&format!("{name}({ty}),"));
+                }
                 "struct" => {
                     let payload = common
                         .pointer(
@@ -520,24 +535,41 @@ fn main() {
                                 .unwrap(),
                         )
                         .unwrap();
-                    output.push_str(&format!("{name} {{"));
+                    enum_output.push_str(&format!("{name} {{"));
                     for field in payload["x-rust-field-order"].as_array().unwrap() {
                         let field = field.as_str().unwrap();
                         let ty = payload["properties"][field]["x-rust-type"]
                             .as_str()
                             .unwrap();
-                        if payload["properties"][field]["x-rust-default"] == true {
-                            output.push_str("#[serde(default)]");
+                        if let Some(description) =
+                            payload["properties"][field]["description"].as_str()
+                        {
+                            enum_output.push_str(&format!("#[doc = {description:?}]"));
                         }
-                        output.push_str(&format!("{field}: {ty},"));
+                        if payload["properties"][field]["x-rust-default"] == true {
+                            enum_output.push_str("#[serde(default)]");
+                        }
+                        enum_output.push_str(&format!("{field}: {ty},"));
                     }
-                    output.push_str("},");
+                    enum_output.push_str("},");
                 }
                 _ => panic!("unsupported external wire variant"),
             }
         }
-        output.push_str("}\n");
-        output.push_str(&format!("pub type {name} = {rust};\n"));
+        enum_output.push_str("}\n");
+        if let Some(module) = schema["x-rust-module"].as_str() {
+            external_modules
+                .entry(module.to_owned())
+                .or_default()
+                .push_str(&enum_output);
+            output.push_str(&format!("pub type {name} = {module}::{rust};\n"));
+        } else {
+            output.push_str(&enum_output);
+            output.push_str(&format!("pub type {name} = {rust};\n"));
+        }
+    }
+    for (module, content) in external_modules {
+        output.push_str(&format!("pub mod {module} {{ {content} }}\n"));
     }
     // Generate the original internally tagged enum directly from its canonical
     // branches. This preserves Serde variant names, optional-null emission and

@@ -11435,6 +11435,537 @@
         "signal"
       ],
       "additionalProperties": false
+    },
+    "SupervisorDimension": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "x-json-integer": true
+    },
+    "SupervisorOptionalString": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "SupervisorTerminalId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "Main"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Process": {
+              "$ref": "#/definitions/SupervisorSequence"
+            }
+          },
+          "required": [
+            "Process"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "x-rust-name": "TerminalId",
+      "x-rust-derives": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "PartialOrd",
+        "Ord",
+        "Serialize",
+        "Deserialize"
+      ],
+      "x-rust-variants": [
+        {
+          "name": "Main",
+          "kind": "unit"
+        },
+        {
+          "name": "Process",
+          "kind": "newtype",
+          "schema-ref": "#/definitions/SupervisorTerminalId/oneOf/1/properties/Process",
+          "x-rust-type": "u64"
+        }
+      ],
+      "description": "A runtime-owned terminal, distinct from frontend-provided exec descriptors."
+    },
+    "SupervisorTerminalStatus": {
+      "type": "object",
+      "properties": {
+        "eof": {
+          "type": "boolean",
+          "x-rust-type": "bool",
+          "x-rust-field-name": "eof"
+        },
+        "complete": {
+          "type": "boolean",
+          "x-rust-type": "bool",
+          "x-rust-field-name": "complete"
+        },
+        "interrupted": {
+          "type": "boolean",
+          "x-rust-type": "bool",
+          "x-rust-field-name": "interrupted"
+        },
+        "attached": {
+          "type": "boolean",
+          "x-rust-type": "bool",
+          "x-rust-field-name": "attached"
+        },
+        "detached": {
+          "type": "boolean",
+          "x-rust-type": "bool",
+          "x-rust-field-name": "detached"
+        },
+        "connected": {
+          "type": "boolean",
+          "x-rust-type": "bool",
+          "x-rust-field-name": "connected"
+        }
+      },
+      "required": [
+        "eof",
+        "complete",
+        "interrupted",
+        "attached",
+        "detached",
+        "connected"
+      ],
+      "additionalProperties": true,
+      "x-rust-name": "TerminalStatus",
+      "x-rust-derives": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "Default",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "x-rust-field-order": [
+        "eof",
+        "complete",
+        "interrupted",
+        "attached",
+        "detached",
+        "connected"
+      ],
+      "description": "A descriptor-free snapshot. connected includes a half-closed frontend still holding its outcome, while attached excludes a detached stream."
+    },
+    "SupervisorTerminalSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "Visible",
+            "Recent"
+          ]
+        }
+      ],
+      "x-rust-name": "Source",
+      "x-rust-derives": [
+        "Clone",
+        "Copy",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "x-rust-variants": [
+        {
+          "name": "Visible",
+          "kind": "unit"
+        },
+        {
+          "name": "Recent",
+          "kind": "unit"
+        }
+      ],
+      "x-rust-module": "terminal_metadata"
+    },
+    "SupervisorTerminalCondition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Match": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Match"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Regex": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "Regex"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "string",
+          "enum": [
+            "Exit"
+          ]
+        }
+      ],
+      "x-rust-name": "Condition",
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "x-rust-variants": [
+        {
+          "name": "Match",
+          "kind": "newtype",
+          "schema-ref": "#/definitions/SupervisorTerminalCondition/oneOf/0/properties/Match",
+          "x-rust-type": "String",
+          "description": "A literal substring."
+        },
+        {
+          "name": "Regex",
+          "kind": "newtype",
+          "schema-ref": "#/definitions/SupervisorTerminalCondition/oneOf/1/properties/Regex",
+          "x-rust-type": "String",
+          "description": "A Rust regular expression."
+        },
+        {
+          "name": "Exit",
+          "kind": "unit",
+          "description": "The terminal's program exits."
+        }
+      ],
+      "x-rust-module": "terminal_metadata"
+    },
+    "SupervisorTerminalCall": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Read": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "$ref": "#/definitions/SupervisorTerminalSource",
+                  "x-rust-type": "Source"
+                },
+                "lines": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/SupervisorDescriptorIndex"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "x-rust-type": "Option<usize>"
+                }
+              },
+              "required": [
+                "source"
+              ],
+              "additionalProperties": true,
+              "x-rust-field-order": [
+                "source",
+                "lines"
+              ]
+            }
+          },
+          "required": [
+            "Read"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Send": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "x-rust-type": "Option<String>"
+                },
+                "keys": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "x-rust-type": "Vec<String>"
+                }
+              },
+              "required": [
+                "keys"
+              ],
+              "additionalProperties": true,
+              "x-rust-field-order": [
+                "text",
+                "keys"
+              ]
+            }
+          },
+          "required": [
+            "Send"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Wait": {
+              "type": "object",
+              "properties": {
+                "condition": {
+                  "$ref": "#/definitions/SupervisorTerminalCondition",
+                  "x-rust-type": "Condition"
+                },
+                "timeout": {
+                  "$ref": "#/definitions/SupervisorSequence",
+                  "x-rust-type": "u64",
+                  "description": "Milliseconds."
+                },
+                "lines": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/SupervisorDescriptorIndex"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "x-rust-type": "Option<usize>"
+                }
+              },
+              "required": [
+                "condition",
+                "timeout"
+              ],
+              "additionalProperties": true,
+              "x-rust-field-order": [
+                "condition",
+                "timeout",
+                "lines"
+              ]
+            }
+          },
+          "required": [
+            "Wait"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "x-rust-name": "Call",
+      "x-rust-derives": [
+        "Clone",
+        "Debug",
+        "PartialEq",
+        "Eq",
+        "Serialize",
+        "Deserialize"
+      ],
+      "x-rust-variants": [
+        {
+          "name": "Read",
+          "kind": "struct",
+          "schema-ref": "#/definitions/SupervisorTerminalCall/oneOf/0/properties/Read"
+        },
+        {
+          "name": "Send",
+          "kind": "struct",
+          "schema-ref": "#/definitions/SupervisorTerminalCall/oneOf/1/properties/Send"
+        },
+        {
+          "name": "Wait",
+          "kind": "struct",
+          "schema-ref": "#/definitions/SupervisorTerminalCall/oneOf/2/properties/Wait"
+        }
+      ],
+      "x-rust-module": "terminal_metadata",
+      "description": "A call on one terminal, answered with Event::TerminalResult."
+    },
+    "SupervisorTerminalResult": {
+      "type": "string",
+      "description": "Opaque serde_json encoding of standard Result<serde_json::Value,String>, retaining arbitrary JSON values. Descriptor-looking keys inside the string are data. Malformed inner JSON is rejected at the original field extraction point.",
+      "x-json-content-schema": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "Ok": {}
+            },
+            "required": [
+              "Ok"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "Err": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Err"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "SupervisorCommandAttachParams": {
+      "type": "object",
+      "properties": {
+        "terminal": {
+          "$ref": "#/definitions/SupervisorTerminalId"
+        },
+        "stream": {
+          "$ref": "#/definitions/SupervisorDescriptor"
+        },
+        "rows": {
+          "$ref": "#/definitions/SupervisorDimension"
+        },
+        "cols": {
+          "$ref": "#/definitions/SupervisorDimension"
+        }
+      },
+      "required": [
+        "terminal",
+        "stream",
+        "rows",
+        "cols"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandDetachParams": {
+      "type": "object",
+      "properties": {
+        "terminal": {
+          "$ref": "#/definitions/SupervisorTerminalId"
+        }
+      },
+      "required": [
+        "terminal"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandResizeParams": {
+      "type": "object",
+      "properties": {
+        "terminal": {
+          "$ref": "#/definitions/SupervisorTerminalId"
+        },
+        "rows": {
+          "$ref": "#/definitions/SupervisorDimension"
+        },
+        "cols": {
+          "$ref": "#/definitions/SupervisorDimension"
+        }
+      },
+      "required": [
+        "terminal",
+        "rows",
+        "cols"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandTerminalCallParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "terminal": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "call": {
+          "$ref": "#/definitions/SupervisorTerminalCall"
+        }
+      },
+      "required": [
+        "request",
+        "terminal",
+        "call"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorCommandTerminalCancelParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/definitions/SupervisorSequence"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventTerminalParams": {
+      "type": "object",
+      "properties": {
+        "terminal": {
+          "$ref": "#/definitions/SupervisorTerminalId"
+        },
+        "status": {
+          "$ref": "#/definitions/SupervisorTerminalStatus"
+        },
+        "error": {
+          "$ref": "#/definitions/SupervisorOptionalString"
+        }
+      },
+      "required": [
+        "terminal",
+        "status",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "SupervisorEventTerminalResultParams": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/definitions/SupervisorSequence"
+        },
+        "result": {
+          "$ref": "#/definitions/SupervisorTerminalResult"
+        }
+      },
+      "required": [
+        "request",
+        "result"
+      ],
+      "additionalProperties": false
     }
   },
   "x-api-version": 1,
@@ -14139,6 +14670,17 @@
         "code",
         "signal"
       ]
+    },
+    "SupervisorEventTerminalParams": {
+      "name": "SupervisorEventTerminalParams",
+      "order": [
+        "terminal",
+        "status",
+        "error"
+      ],
+      "required-nullable": [
+        "error"
+      ]
     }
   },
   "x-communications-payloads": [
@@ -14616,7 +15158,9 @@
     "Manifest catalogue": "The Event.Manifest catalogue is an opaque JSON String using serde_json::to_string/from_str of the original typed config::Catalogue. Arbitrary manifest/configuration names may resemble descriptor markers; string opacity keeps channel scanning from interpreting them as capabilities. Catalogue parsing remains before owner descriptor extraction and maps errors through the original InvalidData helper. This transport slot does not replace manifest/domain validation.",
     "Root handoff decoding": "Command.Start and Event.Exported retain raw Value / Result<Value,String> extraction until root unknown-field rejection, then use the generated WireHandoff decoder at the original overlap/count/ownership point. Current producers use generated complete typed parameter records and standard Result<WireHandoff,String>.",
     "SpawnKind": "Generated external-tag enum retains the original SpawnKind name, Copy/Clone/Debug/Eq, default Serde unit/struct representation, open Terminal payload and absent/null exit_report behavior. The runtime reexports this metadata type; policy matches are unchanged. Canonical named producer schemas are separate from original Serde unit-map/sequence reader compatibility.",
-    "Process records": "Process metadata retains full original u64/i32 structural ranges, required nullable argv/cwd/code/signal slots, environment string tuples and generated WireStdio. Descriptor duplication/consumption remains at the original stdio field point; process/signal policy and execution stay handwritten and are not narrowed by these schemas."
+    "Process records": "Process metadata retains full original u64/i32 structural ranges, required nullable argv/cwd/code/signal slots, environment string tuples and generated WireStdio. Descriptor duplication/consumption remains at the original stdio field point; process/signal policy and execution stay handwritten and are not narrowed by these schemas.",
+    "Terminal metadata": "Generated TerminalId/TerminalStatus and terminal_metadata::{Source,Condition,Call} preserve original Rust names, traits, defaults, open struct payloads, optional emission and legacy Serde forms. Nested module avoids the existing JSON-RPC Call name. Wire numeric ranges stay native; terminal semantic limits/regex checks remain at their existing call sites.",
+    "Terminal result": "The root record result remains a String containing standard Result<Value,String>. Its x-json-content-schema documents inner canonical values; actual inner parsing and errors stay at the original opaque field extraction point. Arbitrary JSON and descriptor-looking inner data stay opaque."
   },
   "x-rust-explicit-records": [
     "SupervisorDescriptor",
@@ -14624,9 +15168,14 @@
     "SupervisorWorktree",
     "SupervisorDirectory",
     "SupervisorLease",
-    "SupervisorHandoff"
+    "SupervisorHandoff",
+    "SupervisorTerminalStatus"
   ],
   "x-rust-external-enums": [
-    "SupervisorSpawnKind"
+    "SupervisorSpawnKind",
+    "SupervisorTerminalId",
+    "SupervisorTerminalSource",
+    "SupervisorTerminalCondition",
+    "SupervisorTerminalCall"
   ]
 }
