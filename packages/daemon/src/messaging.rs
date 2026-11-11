@@ -228,10 +228,11 @@ impl<L: Log> State<L> {
             .map(|s| s.id.clone())
             .collect();
         for (id, session) in directory.iter().filter(|(id, _)| !known.contains_key(*id)) {
-            let _ = mailbox.record(
+            let _ = mailbox.record_typed::<contract::communication_events::SessionStarted>(
                 id,
-                "session.started",
-                json!({"agent_name":session.agent_name}),
+                contract::CommSessionStartedData {
+                    agent_name: session.agent_name.clone(),
+                },
                 now(),
                 journal,
             );
@@ -250,10 +251,9 @@ impl<L: Log> State<L> {
         mailbox.record_operations(operations, directory, now(), journal);
         for id in stopped {
             let reason = directory.get(&id).and_then(|s| s.stop_reason.clone());
-            let _ = mailbox.record(
+            let _ = mailbox.record_typed::<contract::communication_events::SessionExited>(
                 &id,
-                "session.exited",
-                json!({"reason":reason}),
+                contract::CommSessionExitedData { reason },
                 now(),
                 journal,
             );
@@ -277,9 +277,9 @@ impl<L: Log> State<L> {
             contract::host::InboxStatus::NAME => {
                 parse::<contract::MailboxStatusParams>(params).map(|_| mailbox.status(&actor))
             }
-            contract::host::CommunicationsList::NAME if actor == "host" => {
-                parse::<List>(params).and_then(|p| page(journal.events(), known, p)).map(|p|json!(p))
-            }
+            contract::host::CommunicationsList::NAME if actor == "host" => parse::<List>(params)
+                .and_then(|p| page(journal.events(), known, p))
+                .map(|p| json!(p)),
             _ => Mutation::parse(&method, params)
                 .map_err(|e| (-32602, e))
                 .and_then(|command| mailbox.execute(&actor, command, &directory, now(), journal)),
@@ -917,4 +917,59 @@ mod tests {
             assert_eq!(kinds, expected, "{session}");
         }
     }
+
+    #[test]
+    fn c13b2_session_events_preserve_names_nullable_reasons_and_removed_sessions() {
+        for reason in [
+            None,
+            Some(""),
+            Some("stopped by owner chief (a)"),
+            Some("héllo\0\n"),
+        ] {
+            for removed in [false, true] {
+                let mut w = state();
+                let mut initial = directory();
+                initial.get_mut("b").unwrap().agent_name = "scout é\0\n".into();
+                let sync = |directory| Work::Sync {
+                    directory,
+                    raids: vec![],
+                    operations: vec![],
+                };
+                w.handle(sync(initial.clone()));
+                assert_eq!(w.journal.events.len(), 3);
+                for (event, (id, session)) in w.journal.events.iter().zip(initial.iter()) {
+                    assert_eq!(
+                        serde_json::to_value(event).unwrap(),
+                        json!({
+                            "instance":INSTANCE,"sequence":if id=="a" {1} else if id=="b" {2} else {3},
+                            "timestamp":event.timestamp,"kind":"session.started","actor":id,
+                            "sessions":[id],"data":{"agent_name":session.agent_name}})
+                    );
+                }
+                w.handle(sync(initial.clone()));
+                assert_eq!(w.journal.events.len(), 3);
+                let mut stopped = initial;
+                if removed {
+                    stopped.remove("b");
+                } else {
+                    let session = stopped.get_mut("b").unwrap();
+                    session.running = false;
+                    session.stop_reason = reason.map(str::to_owned);
+                }
+                w.handle(sync(stopped.clone()));
+                assert_eq!(w.journal.events.len(), 4);
+                let exited = &w.journal.events[3];
+                assert_eq!(
+                    serde_json::to_value(exited).unwrap(),
+                    json!({
+                        "instance":INSTANCE,"sequence":4,"timestamp":exited.timestamp,
+                        "kind":"session.exited","actor":"b","sessions":["b"],
+                        "data":{"reason":if removed {None} else {reason}}})
+                );
+                w.handle(sync(stopped));
+                assert_eq!(w.journal.events.len(), 4);
+            }
+        }
+    }
+
 }

@@ -20154,6 +20154,1375 @@
         }
       },
       "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send_2",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "raid",
+          "raid": "r"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "max",
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 18446744073709551615
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "inbox.empty",
+      "data": {
+        "key": "next",
+        "method": "inbox.next",
+        "change": {}
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": "i-m0",
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.completed",
+      "data": {
+        "key": "complete",
+        "method": "inbox.complete",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "again\ud83d\udc1f"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "operation.retried",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "message": "i-m1"
+      },
+      "valid": true
+    },
+    {
+      "kind": "operation.retried",
+      "data": {
+        "key": "complete",
+        "method": "inbox.complete",
+        "message": null
+      },
+      "valid": true
+    },
+    {
+      "kind": "recipient.stopped",
+      "data": {
+        "recipient": "s",
+        "messages": [
+          "i-m1",
+          "i-m2"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "kind": "session.started",
+      "data": {
+        "agent_name": "scout\u0000\ud83d\udc1f"
+      },
+      "valid": true
+    },
+    {
+      "kind": "session.exited",
+      "data": {
+        "reason": null
+      },
+      "valid": true
+    },
+    {
+      "kind": "session.exited",
+      "data": {
+        "reason": ""
+      },
+      "valid": true
+    },
+    {
+      "kind": "session.exited",
+      "data": {
+        "reason": "stopped\u0000\ud83d\udc1f"
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send"
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "raid",
+          "raid": "r"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send_2",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "raid",
+          "raid": "r"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send_2",
+        "method": "messages.send"
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "method": "inbox.next"
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "max",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "max",
+        "method": "inbox.next"
+      },
+      "valid": false
+    },
+    {
+      "kind": "inbox.empty",
+      "data": {
+        "method": "inbox.next",
+        "change": {}
+      },
+      "valid": false
+    },
+    {
+      "kind": "inbox.empty",
+      "data": {
+        "key": "next",
+        "change": {}
+      },
+      "valid": false
+    },
+    {
+      "kind": "inbox.empty",
+      "data": {
+        "key": "next",
+        "method": "inbox.next"
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply"
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.completed",
+      "data": {
+        "method": "inbox.complete",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.completed",
+      "data": {
+        "key": "complete",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.completed",
+      "data": {
+        "key": "complete",
+        "method": "inbox.complete"
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "again\ud83d\udc1f"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "again\ud83d\udc1f"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue"
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.retried",
+      "data": {
+        "method": "messages.send",
+        "message": "i-m1"
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.retried",
+      "data": {
+        "key": "send",
+        "message": "i-m1"
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.retried",
+      "data": {
+        "key": "send",
+        "method": "messages.send"
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.retried",
+      "data": {
+        "method": "inbox.complete",
+        "message": null
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.retried",
+      "data": {
+        "key": "complete",
+        "message": null
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.retried",
+      "data": {
+        "key": "complete",
+        "method": "inbox.complete"
+      },
+      "valid": false
+    },
+    {
+      "kind": "recipient.stopped",
+      "data": {
+        "messages": [
+          "i-m1",
+          "i-m2"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "kind": "recipient.stopped",
+      "data": {
+        "recipient": "s"
+      },
+      "valid": false
+    },
+    {
+      "kind": "session.started",
+      "data": {},
+      "valid": false
+    },
+    {
+      "kind": "session.exited",
+      "data": {},
+      "valid": false
+    },
+    {
+      "kind": "session.exited",
+      "data": {},
+      "valid": false
+    },
+    {
+      "kind": "session.exited",
+      "data": {},
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "inbox.requeue",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send_2",
+        "method": "inbox.requeue",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "raid",
+          "raid": "r"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "max",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 18446744073709551615
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "inbox.requeue",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.completed",
+      "data": {
+        "key": "complete",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "messages.send",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "again\ud83d\udc1f"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": -1
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 18446744073709551616
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 1.0
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "next",
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.claimed",
+      "data": {
+        "key": "x",
+        "method": "inbox.next",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "x",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "future",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "recipient.stopped",
+      "data": {
+        "recipient": "s",
+        "messages": []
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "claimed",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "completed",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 1,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": "failed"
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": "i-m0",
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "claimed",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": "i-m0",
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "completed",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": "i-m0",
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 1,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": "i-m0",
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": "failed"
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "raid",
+          "raid": "r"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": "r"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "raid",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.accepted",
+      "data": {
+        "key": "send",
+        "method": "messages.send",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": "i-m0",
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "route": "host",
+          "raid": null
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": null,
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": "i-m-other",
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.replied",
+      "data": {
+        "key": "reply",
+        "method": "messages.reply",
+        "change": {
+          "message": {
+            "id": "i-m1",
+            "conversation": "i-c1",
+            "sender": "host",
+            "recipient": "s",
+            "sender_name": "host",
+            "recipient_name": "scout",
+            "in_reply_to": "i-m0",
+            "body": "hello\n\ud83d\udc1f",
+            "created_sequence": 1,
+            "created_at": 9,
+            "state": "queued",
+            "claim_generation": 0,
+            "failure": null
+          },
+          "completed": "i-m0"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": ""
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "a"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9a"
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f"
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "message.requeued",
+      "data": {
+        "key": "requeue",
+        "method": "inbox.requeue",
+        "change": {
+          "message": "i-m1",
+          "claim_generation": 2,
+          "reason": "\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1f\ud83d\udc1fa"
+        }
+      },
+      "valid": false
     }
   ]
 }

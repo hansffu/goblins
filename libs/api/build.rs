@@ -192,6 +192,20 @@ fn main() {
     for name in ["CommRaidLeaveReason", "CommRaidDissolveReason"] {
         settings.with_replacement(name, "String", [].into_iter());
     }
+    for name in [
+        "CommMutationMethod",
+        "CommMessageRoute",
+        "CommMessageAcceptedMethod",
+        "CommMessageClaimedMethod",
+        "CommInboxEmptyMethod",
+        "CommMessageRepliedMethod",
+        "CommMessageCompletedMethod",
+        "CommMessageRequeuedMethod",
+    ] {
+        settings.with_replacement(name, "String", [].into_iter());
+    }
+    settings.with_replacement("CommClaimGeneration", "u64", [].into_iter());
+    settings.with_replacement("CommRequeueReason", "String", [].into_iter());
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -229,6 +243,8 @@ fn main() {
         "CommunicationsEvent",
         "CommRaidNoticeData",
         "CommOperationCompletedData",
+        "CommMessageAcceptedChange",
+        "CommMessageRepliedChange",
     ] {
         assert_eq!(
             generation_schema["definitions"][name]["x-generator-omit"],

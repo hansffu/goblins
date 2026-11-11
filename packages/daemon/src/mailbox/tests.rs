@@ -1222,3 +1222,283 @@ fn raid_notice_audit_payload_matches_original_delivery_and_compact_fallbacks() {
         assert_eq!(f.audit.raid_notice_attempts.len(), count);
     }
 }
+
+// Baseline expectations deliberately use the original wire expressions, not
+// generated C13b2 payloads, so they can run unchanged on both implementations.
+fn c13b2_expect_event(f: &Fixture, kind: &str, actor: &str, sessions: &[&str], data: Value) {
+    let event = f.audit.events.last().unwrap();
+    let expected = json!({"instance":INSTANCE,"sequence":f.audit.events.len(),
+        "timestamp":1000,"kind":kind,"actor":actor,"sessions":sessions,"data":data});
+    assert_eq!(serde_json::to_value(event).unwrap(), expected);
+    assert_eq!(
+        serde_json::to_string(&serde_json::to_value(event).unwrap()).unwrap(),
+        serde_json::to_string(&expected).unwrap()
+    );
+}
+
+#[test]
+fn c13b2_mutation_events_preserve_original_payloads_and_retries() {
+    for (sender, to, route, raid) in [
+        ("p", "scout", "raid", json!("base")),
+        ("host", "scout", "host", Value::Null),
+    ] {
+        let mut f = Fixture::new();
+        let sent = f.send(sender, to, "send", "héllo\0\n");
+        let original_message = json!({"id":format!("{INSTANCE}-m1"),
+            "conversation":format!("{INSTANCE}-c1"),"sender":sender,"recipient":"c",
+            "sender_name":if sender=="host" {"host"} else {"chief"},"recipient_name":"scout",
+            "in_reply_to":null,"body":"héllo\0\n","created_sequence":1,"created_at":1000,
+            "state":"queued","claim_generation":0,"failure":null});
+        assert_eq!(sent, original_message);
+        c13b2_expect_event(
+            &f,
+            "message.accepted",
+            sender,
+            &[sender, "c"],
+            json!({"key":"send","method":"messages.send","change":{"message":original_message,"route":route,"raid":raid}}),
+        );
+        assert_eq!(f.send(sender, to, "send", "héllo\0\n"), sent);
+        c13b2_expect_event(
+            &f,
+            "operation.retried",
+            sender,
+            &[sender, "c"],
+            json!({"key":"send","method":"messages.send","message":sent["id"]}),
+        );
+
+        let claim = f.next("c", "next");
+        c13b2_expect_event(
+            &f,
+            "message.claimed",
+            "c",
+            &[sender, "c"],
+            json!({"key":"next","method":"inbox.next","change":{"message":sent["id"],"claim_generation":1}}),
+        );
+        assert_eq!(f.next("c", "next"), claim);
+        c13b2_expect_event(
+            &f,
+            "operation.retried",
+            "c",
+            &[sender, "c"],
+            json!({"key":"next","method":"inbox.next","message":sent["id"]}),
+        );
+        // A different key returns the current claim without advancing generation.
+        assert_eq!(f.next("c", "same-claim"), claim);
+        c13b2_expect_event(
+            &f,
+            "message.claimed",
+            "c",
+            &[sender, "c"],
+            json!({"key":"same-claim","method":"inbox.next","change":{"message":sent["id"],"claim_generation":1}}),
+        );
+
+        let requeue = json!({"key":"requeue","message":sent["id"],"claim_generation":1,"reason":"later\0\né"});
+        let requeued = f.call("c", "inbox.requeue", requeue.clone()).unwrap();
+        c13b2_expect_event(
+            &f,
+            "message.requeued",
+            "c",
+            &[sender, "c"],
+            json!({"key":"requeue","method":"inbox.requeue","change":{"message":sent["id"],"claim_generation":2,"reason":"later\0\né"}}),
+        );
+        assert_eq!(f.call("c", "inbox.requeue", requeue).unwrap(), requeued);
+        // The original retry projection looks for nested message.id; a string
+        // result message therefore deliberately becomes null, with actor scope.
+        c13b2_expect_event(
+            &f,
+            "operation.retried",
+            "c",
+            &["c"],
+            json!({"key":"requeue","method":"inbox.requeue","message":null}),
+        );
+        let claim = f.next("c", "again")["message"].clone();
+        assert_eq!(claim["claim_generation"], 2);
+        c13b2_expect_event(
+            &f,
+            "message.claimed",
+            "c",
+            &[sender, "c"],
+            json!({"key":"again","method":"inbox.next","change":{"message":sent["id"],"claim_generation":2}}),
+        );
+        let replied = f.reply("c", &claim, "reply").unwrap();
+        let mut expected_reply = original_message.clone();
+        let sequence = f.audit.events.len();
+        expected_reply["id"] = json!(format!("{INSTANCE}-m{sequence}"));
+        expected_reply["sender"] = json!("c");
+        expected_reply["recipient"] = json!(sender);
+        expected_reply["sender_name"] = json!("scout");
+        expected_reply["recipient_name"] = original_message["sender_name"].clone();
+        expected_reply["in_reply_to"] = sent["id"].clone();
+        expected_reply["body"] = json!("answer");
+        expected_reply["created_sequence"] = json!(sequence);
+        assert_eq!(replied["reply"], expected_reply);
+        c13b2_expect_event(
+            &f,
+            "message.replied",
+            "c",
+            &[sender, "c", "c", sender],
+            json!({"key":"reply","method":"messages.reply","change":{"message":expected_reply,"completed":sent["id"]}}),
+        );
+        assert_eq!(f.reply("c", &claim, "reply").unwrap(), replied);
+        c13b2_expect_event(
+            &f,
+            "operation.retried",
+            "c",
+            &["c", sender],
+            json!({"key":"reply","method":"messages.reply","message":replied["reply"]["id"]}),
+        );
+        let response = f.next(sender, "response")["message"].clone();
+        let completed = f.complete(sender, &response, "complete").unwrap();
+        c13b2_expect_event(
+            &f,
+            "message.completed",
+            sender,
+            &["c", sender],
+            json!({"key":"complete","method":"inbox.complete","change":{"message":response["id"],"claim_generation":1}}),
+        );
+        assert_eq!(
+            f.complete(sender, &response, "complete").unwrap(),
+            completed
+        );
+        c13b2_expect_event(
+            &f,
+            "operation.retried",
+            sender,
+            &[sender],
+            json!({"key":"complete","method":"inbox.complete","message":null}),
+        );
+        let empty = f.next(sender, "empty");
+        assert_eq!(empty, json!({"message":null,"claim_generation":null}));
+        c13b2_expect_event(
+            &f,
+            "inbox.empty",
+            sender,
+            &[],
+            json!({"key":"empty","method":"inbox.next","change":{}}),
+        );
+        assert_eq!(f.next(sender, "empty"), empty);
+        c13b2_expect_event(
+            &f,
+            "operation.retried",
+            sender,
+            &[sender],
+            json!({"key":"empty","method":"inbox.next","message":null}),
+        );
+    }
+}
+
+#[test]
+fn c13b2_recipient_stop_preserves_ids_sessions_and_unresolved_selection() {
+    let mut f = Fixture::new();
+    let first = f.send("p", "c", "one", "claimed");
+    f.next("c", "claim");
+    let second = f.send("host", "c", "two", "queued");
+    let done = f.send("p", "c", "three", "complete");
+    let current = f.next("c", "existing")["message"].clone();
+    f.complete("c", &current, "finish-first").unwrap();
+    let claim = f.next("c", "claim-second")["message"].clone();
+    f.complete("c", &claim, "finish-second").unwrap();
+    let claim = f.next("c", "claim-third")["message"].clone();
+    f.complete("c", &claim, "finish-third").unwrap();
+    let queued = f.send("p", "c", "four", "pending");
+    let claimed = f.next("c", "claim-four")["message"].clone();
+    let pending = f.send("host", "c", "five", "pending");
+    let other = f.send("host", "g", "other", "unaffected");
+    f.mailbox.stop_recipient("c", 1000, &mut f.audit).unwrap();
+    c13b2_expect_event(
+        &f,
+        "recipient.stopped",
+        "host",
+        &["p", "c", "host", "c"],
+        json!({"recipient":"c","messages":[queued["id"],pending["id"]]}),
+    );
+    for message in [&queued, &pending] {
+        let actual = serde_json::to_value(
+            f.mailbox
+                .get("host", message["id"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let mut expected = if message == &queued {
+            claimed.clone()
+        } else {
+            message.clone()
+        };
+        expected["state"] = json!("failed");
+        expected["failure"] = json!("recipient stopped");
+        assert_eq!(actual, expected);
+    }
+    for message in [&first, &second, &done] {
+        assert_eq!(
+            f.mailbox
+                .get("host", message["id"].as_str().unwrap())
+                .unwrap()
+                .state,
+            State::Completed
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(
+            f.mailbox
+                .get("host", other["id"].as_str().unwrap())
+                .unwrap()
+        )
+        .unwrap(),
+        other
+    );
+    let count = f.audit.events.len();
+    f.mailbox.stop_recipient("c", 1000, &mut f.audit).unwrap();
+    f.mailbox
+        .stop_recipient("absent", 1000, &mut f.audit)
+        .unwrap();
+    assert_eq!(f.audit.events.len(), count);
+}
+
+#[test]
+fn c13b2_claim_event_preserves_max_generation_and_rejected_mutations_publish_nothing() {
+    let mut f = Fixture::new();
+    let sent = f.send("p", "c", "one", "body");
+    f.mailbox.messages[0].claim_generation = u64::MAX;
+    let claim = f.next("c", "max")["message"].clone();
+    c13b2_expect_event(
+        &f,
+        "message.claimed",
+        "c",
+        &["p", "c"],
+        json!({"key":"max","method":"inbox.next","change":{"message":sent["id"],"claim_generation":u64::MAX}}),
+    );
+    let count = f.audit.events.len();
+    assert_eq!(
+        f.call(
+            "c",
+            "inbox.requeue",
+            json!({"key":"overflow","message":sent["id"],
+        "claim_generation":u64::MAX,"reason":"later"})
+        )
+        .unwrap_err(),
+        capacity()
+    );
+    assert_eq!(
+        f.complete("g", &claim, "wrong-actor").unwrap_err(),
+        absent()
+    );
+    // Losing the route after claiming prevents a reply but permits completion.
+    f.mailbox.raids.remove("p");
+    assert_eq!(f.reply("c", &claim, "lost-route").unwrap_err().0, -32009);
+    assert_eq!(f.audit.events.len(), count);
+    assert_eq!(
+        f.mailbox
+            .get("host", sent["id"].as_str().unwrap())
+            .unwrap()
+            .state,
+        State::Claimed
+    );
+    f.complete("c", &claim, "done").unwrap();
+    c13b2_expect_event(
+        &f,
+        "message.completed",
+        "c",
+        &["p", "c"],
+        json!({"key":"done","method":"inbox.complete","change":{"message":sent["id"],"claim_generation":u64::MAX}}),
+    );
+}

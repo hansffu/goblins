@@ -140,8 +140,7 @@ struct Outstanding {
 struct Change {
     messages: Vec<Message>,
     result: Value,
-    kind: &'static str,
-    data: Value,
+    payload: contract::CommunicationPayload,
 }
 
 impl Mailbox {
@@ -668,10 +667,20 @@ impl Mailbox {
             let result = receipt.result.clone();
             // A previously committed receipt remains recoverable even when
             // audit IO has failed. No mailbox transition is repeated.
-            let _ = self.record(
+            let message = result
+                .get("id")
+                .or_else(|| result.get("reply").and_then(|m| m.get("id")))
+                .or_else(|| result.get("message").and_then(|m| m.get("id")))
+                .or_else(|| result.get("completed"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let _ = self.record_typed::<contract::communication_events::OperationRetried>(
                 actor,
-                "operation.retried",
-                json!({"key":command.key(),"method":command.method(),"message":result.get("id").or_else(||result.get("reply").and_then(|m|m.get("id"))).or_else(||result.get("message").and_then(|m|m.get("id"))).or_else(||result.get("completed"))}),
+                contract::CommOperationRetriedData {
+                    key: command.key().into(),
+                    method: command.method().into(),
+                    message,
+                },
                 now,
                 audit,
             );
@@ -692,18 +701,19 @@ impl Mailbox {
             }
         };
         let reserved = self.check_capacity(&change.messages)?;
+        let (kind, data) = change.payload.into_parts();
         let event = Event {
             instance: self.instance.clone(),
             sequence,
             timestamp: now,
-            kind: change.kind.into(),
+            kind: kind.into(),
             actor: actor.into(),
             sessions: change
                 .messages
                 .iter()
                 .flat_map(|m| [m.sender.clone(), m.recipient.clone()])
                 .collect(),
-            data: json!({"key":command.key(),"method":command.method(),"change":change.data}),
+            data,
         };
         if let Err(error) = audit.append(&event, reserved * 2048) {
             return Err(self.audit_error(error));
@@ -765,9 +775,18 @@ impl Mailbox {
                 // A raid route is one only logged membership authorized.
                 Ok(Change {
                     result: json!(message),
-                    data: json!({"message":message,"route":if raid.is_some() {"raid"} else {"host"},"raid":raid}),
+                    payload: contract::CommunicationPayload::new::<
+                        contract::communication_events::MessageAccepted,
+                    >(contract::CommMessageAcceptedData {
+                        key: command.key().into(),
+                        method: command.method().into(),
+                        change: contract::CommMessageAcceptedChange {
+                            message: message.clone(),
+                            route: if raid.is_some() { "raid" } else { "host" }.into(),
+                            raid: raid.map(str::to_owned),
+                        },
+                    }),
                     messages: vec![message],
-                    kind: "message.accepted",
                 })
             }
             Mutation::Next(_) => {
@@ -791,9 +810,17 @@ impl Mailbox {
                             message: Some(message.clone()),
                             claim_generation: Some(message.claim_generation)
                         }),
-                        data: json!({"message":message.id,"claim_generation":message.claim_generation}),
+                        payload: contract::CommunicationPayload::new::<
+                            contract::communication_events::MessageClaimed,
+                        >(contract::CommMessageClaimedData {
+                            key: command.key().into(),
+                            method: command.method().into(),
+                            change: contract::CommMessageClaimedChange {
+                                message: message.id.clone(),
+                                claim_generation: message.claim_generation,
+                            },
+                        }),
                         messages: vec![message],
-                        kind: "message.claimed",
                     })
                 } else {
                     Ok(Change {
@@ -802,8 +829,14 @@ impl Mailbox {
                             message: None,
                             claim_generation: None
                         }),
-                        kind: "inbox.empty",
-                        data: json!({}),
+
+                        payload: contract::CommunicationPayload::new::<
+                            contract::communication_events::InboxEmpty,
+                        >(contract::CommInboxEmptyData {
+                            key: command.key().into(),
+                            method: command.method().into(),
+                            change: contract::CommInboxEmptyChange(Default::default()),
+                        }),
                     })
                 }
             }
@@ -854,9 +887,17 @@ impl Mailbox {
                         reply: reply.clone(),
                         completed: original.id.clone()
                     }),
-                    data: json!({"message":reply,"completed":original.id}),
+                    payload: contract::CommunicationPayload::new::<
+                        contract::communication_events::MessageReplied,
+                    >(contract::CommMessageRepliedData {
+                        key: command.key().into(),
+                        method: command.method().into(),
+                        change: contract::CommMessageRepliedChange {
+                            message: reply.clone(),
+                            completed: original.id.clone(),
+                        },
+                    }),
                     messages: vec![original, reply],
-                    kind: "message.replied",
                 })
             }
             Mutation::Complete(p) => {
@@ -867,9 +908,17 @@ impl Mailbox {
                         message: message.id.clone(),
                         state: message.state
                     }),
-                    data: json!({"message":message.id,"claim_generation":message.claim_generation}),
+                    payload: contract::CommunicationPayload::new::<
+                        contract::communication_events::MessageCompleted,
+                    >(contract::CommMessageCompletedData {
+                        key: command.key().into(),
+                        method: command.method().into(),
+                        change: contract::CommMessageCompletedChange {
+                            message: message.id.clone(),
+                            claim_generation: message.claim_generation,
+                        },
+                    }),
                     messages: vec![message],
-                    kind: "message.completed",
                 })
             }
             Mutation::Requeue(p) => {
@@ -892,9 +941,18 @@ impl Mailbox {
                         message: message.id.clone(),
                         claim_generation: message.claim_generation
                     }),
-                    data: json!({"message":message.id,"claim_generation":message.claim_generation,"reason":p.reason}),
+                    payload: contract::CommunicationPayload::new::<
+                        contract::communication_events::MessageRequeued,
+                    >(contract::CommMessageRequeuedData {
+                        key: command.key().into(),
+                        method: command.method().into(),
+                        change: contract::CommMessageRequeuedChange {
+                            message: message.id.clone(),
+                            claim_generation: message.claim_generation,
+                            reason: p.reason.clone(),
+                        },
+                    }),
                     messages: vec![message],
-                    kind: "message.requeued",
                 })
             }
         }
@@ -1042,17 +1100,24 @@ impl Mailbox {
             message.state = State::Failed;
             message.failure = Some("recipient stopped".into());
         }
+        let (kind, data) = contract::CommunicationPayload::new::<
+            contract::communication_events::RecipientStopped,
+        >(contract::CommRecipientStoppedData {
+            recipient: recipient.into(),
+            messages: messages.iter().map(|m| m.id.clone()).collect(),
+        })
+        .into_parts();
         let event = Event {
             instance: self.instance.clone(),
             sequence,
             timestamp: now,
-            kind: "recipient.stopped".into(),
+            kind: kind.into(),
             actor: "host".into(),
             sessions: messages
                 .iter()
                 .flat_map(|m| [m.sender.clone(), m.recipient.clone()])
                 .collect(),
-            data: json!({"recipient":recipient,"messages":messages.iter().map(|m| &m.id).collect::<Vec<_>>() }),
+            data,
         };
         let reserved: usize = self
             .messages

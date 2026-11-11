@@ -8054,6 +8054,196 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "message.accepted"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommMessageAcceptedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "message.claimed"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommMessageClaimedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "inbox.empty"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommInboxEmptyData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "message.replied"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommMessageRepliedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "message.completed"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommMessageCompletedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "message.requeued"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommMessageRequeuedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "operation.retried"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommOperationRetriedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "recipient.stopped"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRecipientStoppedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "session.started"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommSessionStartedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "session.exited"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommSessionExitedData"
+              }
+            }
+          }
         }
       ],
       "x-generator-omit": [
@@ -8684,6 +8874,462 @@
         "status"
       ],
       "additionalProperties": true
+    },
+    "CommMutationMethod": {
+      "type": "string",
+      "enum": [
+        "messages.send",
+        "inbox.next",
+        "messages.reply",
+        "inbox.complete",
+        "inbox.requeue"
+      ]
+    },
+    "CommMessageRoute": {
+      "type": "string",
+      "enum": [
+        "host",
+        "raid"
+      ]
+    },
+    "CommMessageAcceptedChange": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/definitions/MailboxMessage"
+        },
+        "route": {
+          "$ref": "#/definitions/CommMessageRoute"
+        },
+        "raid": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "message",
+        "route",
+        "raid"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "route": {
+                  "const": "host"
+                },
+                "raid": {
+                  "type": "null"
+                }
+              }
+            },
+            {
+              "properties": {
+                "route": {
+                  "const": "raid"
+                },
+                "raid": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "message": {
+              "properties": {
+                "state": {
+                  "const": "queued"
+                },
+                "claim_generation": {
+                  "const": 0
+                },
+                "failure": {
+                  "type": "null"
+                },
+                "in_reply_to": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "state",
+                "claim_generation",
+                "failure",
+                "in_reply_to"
+              ]
+            }
+          }
+        }
+      ],
+      "x-generator-omit": [
+        "allOf"
+      ]
+    },
+    "CommMessageAcceptedMethod": {
+      "type": "string",
+      "enum": [
+        "messages.send"
+      ]
+    },
+    "CommMessageAcceptedData": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "method": {
+          "$ref": "#/definitions/CommMessageAcceptedMethod"
+        },
+        "change": {
+          "$ref": "#/definitions/CommMessageAcceptedChange"
+        }
+      },
+      "required": [
+        "key",
+        "method",
+        "change"
+      ],
+      "additionalProperties": true
+    },
+    "CommMessageClaimedChange": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "claim_generation": {
+          "$ref": "#/definitions/CommClaimGeneration"
+        }
+      },
+      "required": [
+        "message",
+        "claim_generation"
+      ],
+      "additionalProperties": true
+    },
+    "CommMessageClaimedMethod": {
+      "type": "string",
+      "enum": [
+        "inbox.next"
+      ]
+    },
+    "CommMessageClaimedData": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "method": {
+          "$ref": "#/definitions/CommMessageClaimedMethod"
+        },
+        "change": {
+          "$ref": "#/definitions/CommMessageClaimedChange"
+        }
+      },
+      "required": [
+        "key",
+        "method",
+        "change"
+      ],
+      "additionalProperties": true
+    },
+    "CommInboxEmptyChange": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": true
+    },
+    "CommInboxEmptyMethod": {
+      "type": "string",
+      "enum": [
+        "inbox.next"
+      ]
+    },
+    "CommInboxEmptyData": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "method": {
+          "$ref": "#/definitions/CommInboxEmptyMethod"
+        },
+        "change": {
+          "$ref": "#/definitions/CommInboxEmptyChange"
+        }
+      },
+      "required": [
+        "key",
+        "method",
+        "change"
+      ],
+      "additionalProperties": true
+    },
+    "CommMessageRepliedChange": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/definitions/MailboxMessage"
+        },
+        "completed": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "completed"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "properties": {
+            "message": {
+              "properties": {
+                "state": {
+                  "const": "queued"
+                },
+                "claim_generation": {
+                  "const": 0
+                },
+                "failure": {
+                  "type": "null"
+                },
+                "in_reply_to": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "claim_generation",
+                "failure",
+                "in_reply_to"
+              ]
+            }
+          }
+        },
+        {
+          "x-equal-fields": [
+            "/message/in_reply_to",
+            "/completed"
+          ]
+        }
+      ],
+      "x-generator-omit": [
+        "allOf"
+      ]
+    },
+    "CommMessageRepliedMethod": {
+      "type": "string",
+      "enum": [
+        "messages.reply"
+      ]
+    },
+    "CommMessageRepliedData": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "method": {
+          "$ref": "#/definitions/CommMessageRepliedMethod"
+        },
+        "change": {
+          "$ref": "#/definitions/CommMessageRepliedChange"
+        }
+      },
+      "required": [
+        "key",
+        "method",
+        "change"
+      ],
+      "additionalProperties": true
+    },
+    "CommMessageCompletedChange": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "claim_generation": {
+          "$ref": "#/definitions/CommClaimGeneration"
+        }
+      },
+      "required": [
+        "message",
+        "claim_generation"
+      ],
+      "additionalProperties": true
+    },
+    "CommMessageCompletedMethod": {
+      "type": "string",
+      "enum": [
+        "inbox.complete"
+      ]
+    },
+    "CommMessageCompletedData": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "method": {
+          "$ref": "#/definitions/CommMessageCompletedMethod"
+        },
+        "change": {
+          "$ref": "#/definitions/CommMessageCompletedChange"
+        }
+      },
+      "required": [
+        "key",
+        "method",
+        "change"
+      ],
+      "additionalProperties": true
+    },
+    "CommMessageRequeuedChange": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "claim_generation": {
+          "$ref": "#/definitions/CommClaimGeneration"
+        },
+        "reason": {
+          "$ref": "#/definitions/CommRequeueReason"
+        }
+      },
+      "required": [
+        "message",
+        "claim_generation",
+        "reason"
+      ],
+      "additionalProperties": true
+    },
+    "CommMessageRequeuedMethod": {
+      "type": "string",
+      "enum": [
+        "inbox.requeue"
+      ]
+    },
+    "CommMessageRequeuedData": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "method": {
+          "$ref": "#/definitions/CommMessageRequeuedMethod"
+        },
+        "change": {
+          "$ref": "#/definitions/CommMessageRequeuedChange"
+        }
+      },
+      "required": [
+        "key",
+        "method",
+        "change"
+      ],
+      "additionalProperties": true
+    },
+    "CommOperationRetriedData": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "method": {
+          "$ref": "#/definitions/CommMutationMethod"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "method",
+        "message"
+      ],
+      "additionalProperties": true
+    },
+    "CommRecipientStoppedData": {
+      "type": "object",
+      "properties": {
+        "recipient": {
+          "type": "string"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "recipient",
+        "messages"
+      ],
+      "additionalProperties": true
+    },
+    "CommSessionStartedData": {
+      "type": "object",
+      "properties": {
+        "agent_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_name"
+      ],
+      "additionalProperties": true
+    },
+    "CommSessionExitedData": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": true
+    },
+    "CommClaimGeneration": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "CommRequeueReason": {
+      "type": "string",
+      "minLength": 1,
+      "x-max-bytes": 512
     }
   },
   "x-api-version": 1,
@@ -11052,10 +11698,40 @@
         "sessions",
         "data"
       ]
+    },
+    "CommMessageAcceptedChange": {
+      "name": "CommMessageAcceptedChange",
+      "order": [
+        "message",
+        "route",
+        "raid"
+      ],
+      "required-nullable": [
+        "raid"
+      ]
+    },
+    "CommOperationRetriedData": {
+      "name": "CommOperationRetriedData",
+      "order": [
+        "key",
+        "method",
+        "message"
+      ],
+      "required-nullable": [
+        "message"
+      ]
+    },
+    "CommSessionExitedData": {
+      "name": "CommSessionExitedData",
+      "order": [
+        "reason"
+      ],
+      "required-nullable": [
+        "reason"
+      ]
     }
   },
   "x-migration-pending": {
-    "C13b2": "Mutation/session/retry/recipient event payloads and producer bindings.",
     "C13b3": "Compatible known-payload readers, retained-log/offline and Emacs consumers, producer coverage closure."
   },
   "x-communications-payloads": [
@@ -11141,6 +11817,76 @@
       "x-rust-name": "OperationDuplicate",
       "schema": {
         "$ref": "#/definitions/CommOperationDuplicateData"
+      }
+    },
+    {
+      "kind": "message.accepted",
+      "x-rust-name": "MessageAccepted",
+      "schema": {
+        "$ref": "#/definitions/CommMessageAcceptedData"
+      }
+    },
+    {
+      "kind": "message.claimed",
+      "x-rust-name": "MessageClaimed",
+      "schema": {
+        "$ref": "#/definitions/CommMessageClaimedData"
+      }
+    },
+    {
+      "kind": "inbox.empty",
+      "x-rust-name": "InboxEmpty",
+      "schema": {
+        "$ref": "#/definitions/CommInboxEmptyData"
+      }
+    },
+    {
+      "kind": "message.replied",
+      "x-rust-name": "MessageReplied",
+      "schema": {
+        "$ref": "#/definitions/CommMessageRepliedData"
+      }
+    },
+    {
+      "kind": "message.completed",
+      "x-rust-name": "MessageCompleted",
+      "schema": {
+        "$ref": "#/definitions/CommMessageCompletedData"
+      }
+    },
+    {
+      "kind": "message.requeued",
+      "x-rust-name": "MessageRequeued",
+      "schema": {
+        "$ref": "#/definitions/CommMessageRequeuedData"
+      }
+    },
+    {
+      "kind": "operation.retried",
+      "x-rust-name": "OperationRetried",
+      "schema": {
+        "$ref": "#/definitions/CommOperationRetriedData"
+      }
+    },
+    {
+      "kind": "recipient.stopped",
+      "x-rust-name": "RecipientStopped",
+      "schema": {
+        "$ref": "#/definitions/CommRecipientStoppedData"
+      }
+    },
+    {
+      "kind": "session.started",
+      "x-rust-name": "SessionStarted",
+      "schema": {
+        "$ref": "#/definitions/CommSessionStartedData"
+      }
+    },
+    {
+      "kind": "session.exited",
+      "x-rust-name": "SessionExited",
+      "schema": {
+        "$ref": "#/definitions/CommSessionExitedData"
       }
     }
   ]

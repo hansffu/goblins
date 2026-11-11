@@ -11963,6 +11963,37 @@ Original Serde container names, field order, required nullable sequence slots an
       "sessions",
       "data"
     ]
+  },
+  "CommMessageAcceptedChange": {
+    "name": "CommMessageAcceptedChange",
+    "order": [
+      "message",
+      "route",
+      "raid"
+    ],
+    "required-nullable": [
+      "raid"
+    ]
+  },
+  "CommOperationRetriedData": {
+    "name": "CommOperationRetriedData",
+    "order": [
+      "key",
+      "method",
+      "message"
+    ],
+    "required-nullable": [
+      "message"
+    ]
+  },
+  "CommSessionExitedData": {
+    "name": "CommSessionExitedData",
+    "order": [
+      "reason"
+    ],
+    "required-nullable": [
+      "reason"
+    ]
   }
 }
 #+end_src
@@ -21399,6 +21430,196 @@ Original Serde container names, field order, required nullable sequence slots an
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "message.accepted"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommMessageAcceptedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "message.claimed"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommMessageClaimedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "inbox.empty"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommInboxEmptyData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "message.replied"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommMessageRepliedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "message.completed"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommMessageCompletedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "message.requeued"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommMessageRequeuedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "operation.retried"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommOperationRetriedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "recipient.stopped"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRecipientStoppedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "session.started"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommSessionStartedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "session.exited"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommSessionExitedData"
+          }
+        }
+      }
     }
   ],
   "x-generator-omit": [
@@ -22122,6 +22343,592 @@ Original Serde container names, field order, required nullable sequence slots an
 }
 #+end_src
 
+** =CommMutationMethod=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "messages.send",
+    "inbox.next",
+    "messages.reply",
+    "inbox.complete",
+    "inbox.requeue"
+  ]
+}
+#+end_src
+
+** =CommMessageRoute=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "host",
+    "raid"
+  ]
+}
+#+end_src
+
+** =CommMessageAcceptedChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "$ref": "#/definitions/MailboxMessage"
+    },
+    "route": {
+      "$ref": "#/definitions/CommMessageRoute"
+    },
+    "raid": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "message",
+    "route",
+    "raid"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "route": {
+              "const": "host"
+            },
+            "raid": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "route": {
+              "const": "raid"
+            },
+            "raid": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "properties": {
+        "message": {
+          "properties": {
+            "state": {
+              "const": "queued"
+            },
+            "claim_generation": {
+              "const": 0
+            },
+            "failure": {
+              "type": "null"
+            },
+            "in_reply_to": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "state",
+            "claim_generation",
+            "failure",
+            "in_reply_to"
+          ]
+        }
+      }
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+** =CommMessageAcceptedMethod=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "messages.send"
+  ]
+}
+#+end_src
+
+** =CommMessageAcceptedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "method": {
+      "$ref": "#/definitions/CommMessageAcceptedMethod"
+    },
+    "change": {
+      "$ref": "#/definitions/CommMessageAcceptedChange"
+    }
+  },
+  "required": [
+    "key",
+    "method",
+    "change"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommMessageClaimedChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "$ref": "#/definitions/CommClaimGeneration"
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommMessageClaimedMethod=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "inbox.next"
+  ]
+}
+#+end_src
+
+** =CommMessageClaimedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "method": {
+      "$ref": "#/definitions/CommMessageClaimedMethod"
+    },
+    "change": {
+      "$ref": "#/definitions/CommMessageClaimedChange"
+    }
+  },
+  "required": [
+    "key",
+    "method",
+    "change"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommInboxEmptyChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommInboxEmptyMethod=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "inbox.next"
+  ]
+}
+#+end_src
+
+** =CommInboxEmptyData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "method": {
+      "$ref": "#/definitions/CommInboxEmptyMethod"
+    },
+    "change": {
+      "$ref": "#/definitions/CommInboxEmptyChange"
+    }
+  },
+  "required": [
+    "key",
+    "method",
+    "change"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommMessageRepliedChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "$ref": "#/definitions/MailboxMessage"
+    },
+    "completed": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "message",
+    "completed"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "properties": {
+        "message": {
+          "properties": {
+            "state": {
+              "const": "queued"
+            },
+            "claim_generation": {
+              "const": 0
+            },
+            "failure": {
+              "type": "null"
+            },
+            "in_reply_to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "claim_generation",
+            "failure",
+            "in_reply_to"
+          ]
+        }
+      }
+    },
+    {
+      "x-equal-fields": [
+        "/message/in_reply_to",
+        "/completed"
+      ]
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+** =CommMessageRepliedMethod=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "messages.reply"
+  ]
+}
+#+end_src
+
+** =CommMessageRepliedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "method": {
+      "$ref": "#/definitions/CommMessageRepliedMethod"
+    },
+    "change": {
+      "$ref": "#/definitions/CommMessageRepliedChange"
+    }
+  },
+  "required": [
+    "key",
+    "method",
+    "change"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommMessageCompletedChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "$ref": "#/definitions/CommClaimGeneration"
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommMessageCompletedMethod=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "inbox.complete"
+  ]
+}
+#+end_src
+
+** =CommMessageCompletedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "method": {
+      "$ref": "#/definitions/CommMessageCompletedMethod"
+    },
+    "change": {
+      "$ref": "#/definitions/CommMessageCompletedChange"
+    }
+  },
+  "required": [
+    "key",
+    "method",
+    "change"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommMessageRequeuedChange=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string"
+    },
+    "claim_generation": {
+      "$ref": "#/definitions/CommClaimGeneration"
+    },
+    "reason": {
+      "$ref": "#/definitions/CommRequeueReason"
+    }
+  },
+  "required": [
+    "message",
+    "claim_generation",
+    "reason"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommMessageRequeuedMethod=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "inbox.requeue"
+  ]
+}
+#+end_src
+
+** =CommMessageRequeuedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "method": {
+      "$ref": "#/definitions/CommMessageRequeuedMethod"
+    },
+    "change": {
+      "$ref": "#/definitions/CommMessageRequeuedChange"
+    }
+  },
+  "required": [
+    "key",
+    "method",
+    "change"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommOperationRetriedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "#/definitions/OperationKey"
+    },
+    "method": {
+      "$ref": "#/definitions/CommMutationMethod"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "key",
+    "method",
+    "message"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommRecipientStoppedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "recipient": {
+      "type": "string"
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "recipient",
+    "messages"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommSessionStartedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "agent_name": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "agent_name"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommSessionExitedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "reason"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommClaimGeneration=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 1,
+  "maximum": 18446744073709551615,
+  "format": "uint64",
+  "x-json-integer": true
+}
+#+end_src
+
+** =CommRequeueReason=
+
+#+begin_src json
+{
+  "type": "string",
+  "minLength": 1,
+  "x-max-bytes": 512
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -22227,4 +23034,4 @@ Original Serde container names, field order, required nullable sequence slots an
 - =mailbox-status-readers= :: InboxStatusReply requires all five original core fields so incomplete replies become read errors instead of quiet/empty inboxes. Additive raid_audit_failed/operations default false/empty for older peers. Adapters validate typed RPC replies then adapt them to their existing persisted JSON ledger format; ledger storage/lifecycle stays domain-owned. InboxHead is a named (String,u64) alias because Typify replacement paths cannot be tuple expressions. MailboxStatusParams uses a named empty Empty struct, as closed empty maps otherwise change exposed original Serde diagnostics.
 - =communications-envelope-stage= :: C13a generates the existing event envelope and exact Serde name/order; kind/data remain String/Value until C13b introduces producer payload pairing and compatible retained-log consumers. CommunicationsLimit maps to usize, retaining the old decoder. Request emit-defaults removes only serialization omission, preserving after=0/limit=100 read defaults; session retains its original required positional nullable slot. The CLI outbound profile emits after/session and omits limit exactly as before.
 - =communications-page-reader= :: The CLI page reader normalizes fields independently: events only as array of raw JSON values, cursor/latest only as u64, session only as string. Missing/malformed values remain absent so the caller retains original event printing and page/cursor/sequence error order; successful legacy bodies gain no new early refusal. The canonical producer result stays strict. C13b owns event-data consumers.
-- =communications-typed-payloads= :: Generated CommunicationKind markers bind each known kind to its DTO; CommunicationPayload keeps its fields private and exposes only a paired kind/data result. Raid and operation domain enums retain authority and map into these DTOs; public stored envelopes remain compatible String/Value readers. Canonical kind/data and delivered/undelivered/correlation constraints stay in JSON schema; only CommunicationsEvent, CommRaidNoticeData and CommOperationCompletedData allOf clauses are omitted from the generator clone because Typify cannot express conditionals/cross-field relations. Existing producer branches and independent original-wire comparisons enforce runtime construction. Other event families and consumers remain C13b2/C13b3.
+- =communications-typed-payloads= :: Generated CommunicationKind markers bind each known kind to its DTO; CommunicationPayload keeps its fields private and exposes only a paired kind/data result. Raid and operation domain enums retain authority and map into these DTOs; public stored envelopes remain compatible String/Value readers. Canonical kind/data and delivered/undelivered/correlation constraints stay in JSON schema; only CommunicationsEvent, CommRaidNoticeData, CommOperationCompletedData, CommMessageAcceptedChange and CommMessageRepliedChange allOf clauses are omitted from the generator clone because Typify cannot express conditionals/cross-field relations. Existing producer branches and independent original-wire comparisons enforce runtime construction. Mutation markers bind their method-specific wrapper and generated change DTO; retry IDs are projected from internally generated cached results, retaining null when no ID exists. Session and recipient producers use generated bindings too. Compatible retained-log/offline and Emacs readers remain C13b3. Canonical accepted/replied schemas preserve newly created message state/zero generation/null failure, accepted host/null versus raid/string correlation and null in_reply_to, and replied in_reply_to/completed equality. Requeue reason remains nonempty with a 512-byte UTF-8 limit; generated String replacements leave the existing Mutation validator authoritative.
