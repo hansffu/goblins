@@ -284,7 +284,7 @@ mod tests {
     fn communications_profile_preserves_requests_and_independent_page_fallbacks() {
         use std::io::Write;
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let pages = fixtures["communications_page_cases"]
             .as_array()
             .unwrap()
@@ -342,7 +342,7 @@ mod tests {
     fn adapter_status_boundary_accepts_native_fixture_and_rejects_missing_revision() {
         use std::io::Write;
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let valid = fixtures["native_inbox_status"].clone();
         let mut missing = valid.clone();
         missing.as_object_mut().unwrap().remove("revision");
@@ -383,7 +383,7 @@ mod tests {
     fn raid_owner_profiles_send_exact_shown_payloads_and_ignore_legacy_successes() {
         use std::io::Write;
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let cases = fixtures["raid_owner_requests"].as_array().unwrap().clone();
         let _no_forks = goblins_unix::no_forks();
         std::thread::scope(|scope| {
@@ -630,7 +630,7 @@ mod tests {
         use std::io::Write;
         let _no_forks = goblins_unix::no_forks();
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let cases = fixtures["permission_decision_result_cases"]
             .as_array()
             .unwrap()

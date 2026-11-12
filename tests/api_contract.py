@@ -148,7 +148,8 @@ def normalize_reply(profile, result):
 
 
 def read(name):
-    return json.loads((SCHEMA / name).read_text())
+    directory = ROOT / "libs/api/tests" if name == "fixtures.json" else SCHEMA
+    return json.loads((directory / name).read_text())
 
 
 def byte_limit(validator, maximum, instance, schema):

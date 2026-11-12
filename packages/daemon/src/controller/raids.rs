@@ -734,7 +734,7 @@ mod preview_tests {
     #[test]
     fn raid_membership_wrapper_preserves_original_wire_forms() {
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../../libs/api/schema/fixtures.json"))
+            serde_json::from_str(include_str!("../../../../libs/api/tests/fixtures.json"))
                 .unwrap();
         for case in fixtures["session_raid_cases"].as_array().unwrap() {
             let result = serde_json::from_value::<RaidMembership>(case["result"].clone());

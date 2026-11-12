@@ -183,7 +183,7 @@ mod tests {
             }
         }
         let fixture: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let notice: contract::MailboxMessage =
             serde_json::from_value(fixture["mailbox_message"].clone()).unwrap();
         for (kind, change) in cases {

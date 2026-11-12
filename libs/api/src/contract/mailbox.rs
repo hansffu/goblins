@@ -4,7 +4,7 @@ mod tests {
     use super::super::*;
     use crate::messages::MAX_BODY;
     fn fixtures() -> Value {
-        serde_json::from_str(include_str!("../../schema/fixtures.json")).unwrap()
+        serde_json::from_str(include_str!("../../tests/fixtures.json")).unwrap()
     }
     #[allow(dead_code)]
     mod original {

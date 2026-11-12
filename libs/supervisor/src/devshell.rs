@@ -1403,7 +1403,7 @@ mod tests {
     #[test]
     fn generated_preview_retains_complete_wire_projection_and_truncation() {
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../api/tests/fixtures.json")).unwrap();
         let current = DevShell {
             reference: "/p".into(),
             path: "/p".into(),

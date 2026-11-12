@@ -4345,7 +4345,7 @@ mod tests {
     #[test]
     fn snapshot_raid_bridge_matches_original_record_deserialization() {
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         for case in fixtures["raid_record_cases"].as_array().unwrap() {
             let old = serde_json::from_value::<RaidRecord>(case["result"].clone());
             let snapshot = serde_json::from_value::<Snapshot>(
@@ -4504,7 +4504,7 @@ mod tests {
     fn permission_read_contracts_preserve_filters_records_and_missing_lookup() {
         let _no_forks = unix::no_forks();
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let expected = fixtures["permission_records"].clone();
         let mut daemon = daemon();
         let path = daemon.state.clone();
@@ -4603,7 +4603,7 @@ mod tests {
     #[test]
     fn snapshot_permission_bridge_matches_original_record_decoding() {
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         for case in fixtures["permission_record_cases"].as_array().unwrap() {
             let old = serde_json::from_value::<PermissionRecord>(case["result"].clone());
             let snapshot = serde_json::from_value::<Snapshot>(
@@ -4621,7 +4621,7 @@ mod tests {
         let mut daemon = daemon();
         let path = daemon.state.clone();
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         for expected in fixtures["permission_forwarded_results"].as_array().unwrap() {
             let status = expected["status"].as_str().unwrap();
             let (mut connection, _peer) = connection(Role::Sandbox("absent".into()));
@@ -5651,7 +5651,7 @@ mod tests {
     #[test]
     fn generated_session_projections_preserve_visibility_and_snapshot_compatibility() {
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let record: SessionRecord =
             serde_json::from_value(fixtures["host_session"].clone()).unwrap();
         assert_eq!(
@@ -6458,7 +6458,7 @@ mod tests {
     #[test]
     fn exec_command_validation_matches_the_contract_corpus() {
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         for case in fixtures["exec_parameter_cases"].as_array().unwrap() {
             if case["method"] != "sessions.exec" {
                 continue;
@@ -9886,7 +9886,7 @@ mod tests {
     #[test]
     fn c15_snapshot_wire_defaults_and_errors_match_original_reader() {
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let minimal = json!({"instance":"i","sessions":[],"permissions":[]});
         c15_compare_snapshot(minimal.clone());
         let full = json!({"instance":"i","sessions":[fixtures["host_session"]],"permissions":[fixtures["permission_record_cases"][0]["result"]],

@@ -45,7 +45,7 @@ impl Response for PermissionListReply {
 mod tests {
     use super::*;
     fn fixtures() -> Value {
-        serde_json::from_str(include_str!("../../schema/fixtures.json")).unwrap()
+        serde_json::from_str(include_str!("../../tests/fixtures.json")).unwrap()
     }
     #[derive(Deserialize, Serialize)]
     struct OldRecord {

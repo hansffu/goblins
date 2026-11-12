@@ -1246,7 +1246,7 @@ mod tests {
                     &rpc::encode(&rpc::result(
                         init["id"].clone(),
                         serde_json::from_str::<Value>(include_str!(
-                            "../../../libs/api/schema/fixtures.json"
+                            "../../../libs/api/tests/fixtures.json"
                         ))
                         .unwrap()["sandbox_initialize"]
                             .clone(),

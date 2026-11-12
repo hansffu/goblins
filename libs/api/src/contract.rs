@@ -1091,7 +1091,7 @@ mod tests {
             host: Option<OldHost>,
         }
         let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
         for case in fixtures["permission_request_parameter_cases"]
             .as_array()
             .unwrap()
@@ -1129,7 +1129,7 @@ mod tests {
             message: Option<String>,
         }
         let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
         for case in fixtures["permission_request_result_cases"]
             .as_array()
             .unwrap()
@@ -1205,7 +1205,7 @@ mod tests {
             approved: bool,
         }
         let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
         for case in fixtures["permission_decision_parameter_cases"]
             .as_array()
             .unwrap()
@@ -1235,7 +1235,7 @@ mod tests {
         #[serde(deny_unknown_fields)]
         struct OldEmpty {}
         let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
         for case in fixtures["devshell_app_parameter_cases"].as_array().unwrap() {
             let value = case["params"].clone();
             if case["method"] == "flake.run" {
@@ -1296,7 +1296,7 @@ mod tests {
     use serde_json::json;
 
     fn fixtures() -> Value {
-        serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap()
+        serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap()
     }
 
     #[test]
@@ -2243,7 +2243,7 @@ mod c16c_phase_artifact_tests {
     #[test]
     fn c16c_generated_phase_predicates_match_frozen_method_cases() {
         let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
         for case in fixtures["c16c_phase_method_cases"].as_array().unwrap() {
             let method = case["method"].as_str().unwrap();
             let actual = match case["phase"].as_str().unwrap() {
@@ -2260,7 +2260,7 @@ mod c16c_phase_artifact_tests {
     #[test]
     fn c16c_generated_entry_classifier_matches_dispatch_variants_without_actor_startup() {
         let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
         for case in fixtures["c16c_phase_method_cases"]
             .as_array()
             .unwrap()

@@ -866,7 +866,7 @@ fn terminal_list_keeps_retained_ids_and_releases_agent_name_selectors() {
 #[test]
 fn generated_io_contract_corpus_keeps_runtime_validation_and_refusal_behavior() {
     let _no_forks = unix::no_forks();
-    let fixtures: Value = serde_json::from_str(include_str!("../../../../../libs/api/schema/fixtures.json")).unwrap();
+    let fixtures: Value = serde_json::from_str(include_str!("../../../../../libs/api/tests/fixtures.json")).unwrap();
     for case in fixtures["terminal_io_parameter_cases"].as_array().unwrap() {
         let (mut d, _events, received) = goblin();
         create(&mut d, &received, json!({"session":"a"}));

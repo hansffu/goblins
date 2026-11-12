@@ -231,7 +231,7 @@ mod tests {
         let listener = UnixListener::bind(root.0.join("host.sock")).unwrap();
         listener.set_nonblocking(true).unwrap();
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         std::thread::scope(|scope| {
             let server = scope.spawn(move || {
                 assert!(

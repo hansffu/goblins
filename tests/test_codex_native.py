@@ -297,7 +297,7 @@ requires_openai_auth=false
         self.states = queue.Queue()
         self.attached_since = None
         self.status_held, self.reported_since = False, None
-        self.inbox = json.loads((Path(__file__).resolve().parents[1] / 'libs/api/schema/fixtures.json').read_text())['native_inbox_status'].copy()
+        self.inbox = json.loads((Path(__file__).resolve().parents[1] / 'libs/api/tests/fixtures.json').read_text())['native_inbox_status'].copy()
         def serve():
             while True:
                 try: peer, _ = listener.accept()
@@ -305,7 +305,7 @@ requires_openai_auth=false
                 with peer:
                     try:
                         init = receive(peer)
-                        fixture = json.loads((Path(__file__).resolve().parents[1] / 'libs/api/schema/fixtures.json').read_text())['sandbox_initialize']
+                        fixture = json.loads((Path(__file__).resolve().parents[1] / 'libs/api/tests/fixtures.json').read_text())['sandbox_initialize']
                         peer.sendall(frame({'jsonrpc':'2.0','id':init['id'],'result':fixture}))
                         call = receive(peer)
                         if call['method'] == 'sessions.set-variables':

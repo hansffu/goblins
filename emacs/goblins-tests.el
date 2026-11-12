@@ -8,7 +8,7 @@
 (require 'goblins-terminal)
 
 (ert-deftest goblins-initialize-contract-fixture ()
-  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+  (let* ((file (expand-file-name "../libs/api/tests/fixtures.json"
                                  (file-name-directory (file-truename (locate-library "goblins")))))
          (fixtures (with-temp-buffer
                      (insert-file-contents file)
@@ -33,7 +33,7 @@
       (should-not (goblins--initialize-valid-p broken)))))
 
 (ert-deftest goblins-session-contract-fixtures ()
-  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+  (let* ((file (expand-file-name "../libs/api/tests/fixtures.json"
                                  (file-name-directory (file-truename (locate-library "goblins")))))
          (fixtures (with-temp-buffer
                      (insert-file-contents file)
@@ -124,7 +124,7 @@
     (should-not (string-match-p "Try a live grant" (buffer-string)))))
 
 (ert-deftest goblins-permission-decision-contract-fixture ()
-  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+  (let* ((file (expand-file-name "../libs/api/tests/fixtures.json"
                                  (file-name-directory (file-truename (locate-library "goblins")))))
          (fixtures (with-temp-buffer
                      (insert-file-contents file)
@@ -208,7 +208,7 @@
     found))
 
 (ert-deftest goblins-devshell-generated-preview-contract-fixture ()
-  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+  (let* ((file (expand-file-name "../libs/api/tests/fixtures.json"
                                  (file-name-directory (file-truename (locate-library "goblins")))))
          (fixtures (with-temp-buffer
                      (insert-file-contents file)
@@ -2735,7 +2735,7 @@ project's root, a directory inside it and a directory in no project."
         (should-error (goblins--decide-record record t) :type 'user-error)))))
 
 (ert-deftest goblins-raid-owner-generated-contract-fixtures ()
-  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+  (let* ((file (expand-file-name "../libs/api/tests/fixtures.json"
                                  (file-name-directory (file-truename (locate-library "goblins")))))
          (fixtures (with-temp-buffer
                      (insert-file-contents file)
@@ -5958,7 +5958,7 @@ m2, and m3, which failed when beta stopped."
 
 (ert-deftest goblins-communications-page-contract-and-stale-replies ()
   (require 'goblins-messages)
-  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+  (let* ((file (expand-file-name "../libs/api/tests/fixtures.json"
                                  (file-name-directory (file-truename (locate-library "goblins")))))
          (fixtures (with-temp-buffer (insert-file-contents file)
                      (json-parse-buffer :object-type 'plist :null-object nil)))

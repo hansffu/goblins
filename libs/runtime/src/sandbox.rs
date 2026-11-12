@@ -370,7 +370,7 @@ mod tests {
             support: &support,
         };
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../api/tests/fixtures.json")).unwrap();
         for case in fixtures["sandbox_raid_parameter_cases"].as_array().unwrap() {
             let c = call(case["method"].as_str().unwrap(), case["params"].clone());
             assert_eq!(

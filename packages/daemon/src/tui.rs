@@ -1313,7 +1313,7 @@ mod tests {
     #[test]
     fn devshell_legacy_numeric_and_nested_display_fallbacks_are_retained() {
         let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let v = contract::preview_reply(&fixtures["devshell_preview_legacy"][1]);
         let lines = devshell_summary(&v);
         let text = lines
@@ -1452,7 +1452,7 @@ mod tests {
     #[test]
     fn raid_owner_actions_preserve_shown_raw_guards_and_field_presence() {
         let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         for case in fixtures["raid_owner_requests"].as_array().unwrap() {
             let prompt:PermissionRecord=serde_json::from_value(serde_json::json!({"kind":"raid-owner","id":"p","session":"owner","agent_name":"owner","approval":"token","package":"crew","reason":"","state":"pending","preview":case["preview"]})).unwrap();
             let mut view = View::new();

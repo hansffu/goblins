@@ -53,7 +53,7 @@ pub fn host_submitted(frame: &Value) -> Option<HostSubmittedReply> {
 mod tests {
     use super::*;
     fn fixtures() -> Value {
-        serde_json::from_str(include_str!("../../schema/fixtures.json")).unwrap()
+        serde_json::from_str(include_str!("../../tests/fixtures.json")).unwrap()
     }
     #[test]
     fn job_request_decoders_match_old_structs_and_both_endpoints() {

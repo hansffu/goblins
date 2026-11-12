@@ -131,7 +131,7 @@ mod tests {
             lock: bool,
         }
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../tests/fixtures.json")).unwrap();
         for case in fixtures["devshell_diff_parameter_cases"]
             .as_array()
             .unwrap()
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn preview_projection_preserves_presence_and_independent_fields() {
         let fixtures: Value =
-            serde_json::from_str(include_str!("../../schema/fixtures.json")).unwrap();
+            serde_json::from_str(include_str!("../../tests/fixtures.json")).unwrap();
         let v =
             DevShellPreviewReply::decode(fixtures["devshell_preview_legacy"][1].clone()).unwrap();
         assert_eq!(v.reference, "");
