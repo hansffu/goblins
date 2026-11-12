@@ -2065,17 +2065,6 @@ class ContractTests(unittest.TestCase):
             else:
                 with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply("sandbox","editor.open",reply)
 
-    def test_editor_reference_distinguishes_wire_requests_from_normalized_dtos(self):
-        section=contract.reference().split("** =editor.open=",1)[1].split("\n** ",1)[0]
-        def block(label):return json.loads(section.split(label+"\n\n#+begin_src json\n",1)[1].split("\n#+end_src",1)[0])
-        wire=block("Named parameters:")
-        normalized=block("Normalized generated request DTO (after nested positional mapping):")
-        request=dict(files=[["/a"]],wait=True)
-        contract.schema_validator(wire).validate(request)
-        with self.assertRaises(ValidationError):contract.schema_validator(normalized).validate(request)
-        contract.schema_validator(normalized).validate(dict(files=[dict(path="/a")],wait=True))
-        self.assertNotEqual(wire,normalized)
-
     def test_nested_positional_metadata_must_match_wire_and_generated_records(self):
         entry=copy.deepcopy(contract.method("sandbox","editor.open"))
         params=contract.resolve(entry["x-params-schema"]);wire=copy.deepcopy(contract.resolve(entry["x-wire-params-schema"]))
@@ -2244,22 +2233,19 @@ class ContractTests(unittest.TestCase):
         contract.check()
         self.assertEqual(contract.ELISP_READERS.read_text(), contract.elisp_readers())
 
-    def test_api_reference_is_optional_and_emacs_freshness_is_required(self):
+    def test_emacs_generation_and_freshness_check(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as directory:
             readers = Path(directory) / "readers.el"
-            reference = Path(directory) / "generated" / "reference.org"
             readers.write_text(contract.elisp_readers())
-            with patch.object(contract, "ELISP_READERS", readers), patch.object(contract, "REFERENCE", reference), patch.object(contract, "check"), patch.object(sys, "argv", ["api_contract.py"]):
+            with patch.object(contract, "ELISP_READERS", readers), patch.object(contract, "check"), patch.object(sys, "argv", ["api_contract.py"]):
                 contract.main()
-                self.assertFalse(reference.exists())
                 readers.write_text("stale readers")
                 with self.assertRaisesRegex(SystemExit, "stale Emacs API readers"):
                     contract.main()
-                with patch.object(sys, "argv", ["api_contract.py", "--write"]), patch("builtins.print"):
+                with patch.object(sys, "argv", ["api_contract.py", "--write"]):
                     contract.main()
                 self.assertEqual(readers.read_text(), contract.elisp_readers())
-                self.assertEqual(reference.read_text(), contract.reference())
 
     def test_wire_fixtures_and_known_field_validation(self):
         fixtures = contract.read("fixtures.json")

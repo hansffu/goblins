@@ -26,7 +26,7 @@ Write documentation prose with one line per paragraph; preserve the structure of
 
 `docs/API.org` documents every JSON-RPC method, parameter, result, notification, error and record field. Update it in the same change as any RPC API change, and treat a missing update as a review defect.
 
-Machine-readable RPC contracts live in `libs/api/schema/`; use `docs/API.org` for behavior, ordering and ownership semantics. `just api-reference` optionally renders `target/API-REFERENCE.org`, which is ignored by Git, and refreshes the tracked Emacs readers. The contract tests enforce Emacs reader freshness; the optional reference is not required for validation.
+Machine-readable RPC contracts live in `libs/api/schema/`; use `docs/API.org` for behavior, ordering and ownership semantics. `just api-playground` serves the pinned upstream OpenRPC Playground locally. `just api-generate` refreshes tracked Emacs readers, whose freshness is enforced by the contract tests. Generated Rust types are built by Cargo; no generated API reference is maintained.
 
 ## Review
 

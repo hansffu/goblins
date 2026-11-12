@@ -128,6 +128,7 @@
         # Not in the dev shell: inside a goblin, `nix develop` would put this
         # host CLI ahead of the sandbox's own `goblin`.
         dev-goblins = devGoblins;
+        openrpc-playground = import ./nix/openrpc-playground.nix { inherit pkgs; };
       }
       // import ./tests/fixtures.nix {
         inherit pkgs sandbox;

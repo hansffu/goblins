@@ -18,9 +18,9 @@ The migration specifies the existing repository-owned JSON-RPC surfaces and uses
 | Handwritten typed-call and compatible-reader helpers | =libs/api/src/contract.rs= and its submodules |
 | Shared test examples | =libs/api/tests/fixtures.json= and its README; ordinary JSON, mostly successful and supported legacy cases |
 | Emacs record views and method identities | =emacs/goblins-api-generated.el=, generated from the shared schema and checked for freshness by the test gate |
-| Optional rendered reference | =just api-reference= writes ignored =target/API-REFERENCE.org= and refreshes the Emacs readers |
+| Local API browser | =just api-playground= serves pinned upstream UI assets and live OpenRPC documentation views |
 
-Agents should use the schemas for message shapes and =API.org= for behavioral rules. Do not maintain a checked-in copy of the generated reference. Generated Elisp provides lazy record views and accessors, not static type checking or eager whole-record validation.
+Agents should use the schemas for message shapes and =API.org= for behavioral rules. There is no generated API reference; use the local Playground to browse the contracts. =just api-generate= refreshes the tracked Emacs readers. Generated Elisp provides lazy record views and accessors, not static type checking or eager whole-record validation.
 
 * Boundary coverage
 
