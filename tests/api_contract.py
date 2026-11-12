@@ -1,4 +1,5 @@
 """Offline OpenRPC/schema checks and response validation for migrated methods."""
+import api_schema
 import argparse
 import copy
 from functools import lru_cache
@@ -194,12 +195,12 @@ Validator = validators.extend(Draft7Validator, {"x-max-bytes": byte_limit, "x-js
 
 @lru_cache
 def common():
-    return read("common.json")
+    return api_schema.expand_common(read("common.json"))
 
 
 @lru_cache
 def document(endpoint):
-    return read(f"{endpoint}.openrpc.json")
+    return api_schema.expand_document(read(f"{endpoint}.openrpc.json"), common())
 
 
 def resolve(schema):
@@ -738,7 +739,7 @@ def check_references(documents=None):
     network resources. It is separate from standalone fixture validation.
     """
     if documents is None:
-        documents={"common.json":common(), **{f"{endpoint}.openrpc.json":document(endpoint) for endpoint in ENDPOINTS + PRIVATE_ENDPOINTS}}
+        documents={name:read(name) for name in ["common.json", *[f"{endpoint}.openrpc.json" for endpoint in ENDPOINTS + PRIVATE_ENDPOINTS]]}
     base="https://goblins.invalid/api/"
     registry=Registry().with_resources((base+name,Resource.from_contents(contents,default_specification=DRAFT7)) for name,contents in documents.items())
     def visit(value,resolver,location):
@@ -1634,6 +1635,7 @@ def check():
     meta = read("vendor/openrpc-1.3.2.json")
     for endpoint in ENDPOINTS:
         doc = document(endpoint)
+        Draft7Validator(meta, registry=registry).validate(read(f"{endpoint}.openrpc.json"))
         Draft7Validator(meta, registry=registry).validate(doc)
         names = [m["name"] for m in doc["methods"]]
         if endpoint=="attach" and names:raise ValueError("attachment exchanges are not callable methods")

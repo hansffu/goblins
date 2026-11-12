@@ -6,58 +6,7 @@
   },
   "methods": [
     {
-      "name": "initialize",
-      "description": "Initialize once before other requests. Unsupported u32 versions return -32002; repeated initialization returns -32009 after parameter validation.",
-      "paramStructure": "either",
-      "params": [
-        {
-          "name": "api",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/InitializeParams/properties/api"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/InitializeResult"
-        }
-      },
-      "errors": [
-        {
-          "code": -32602,
-          "message": "Invalid parameters"
-        },
-        {
-          "code": -32002,
-          "message": "Unsupported API version"
-        },
-        {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
-        }
-      ],
-      "x-params-schema": {
-        "$ref": "common.json#/definitions/InitializeParams"
-      },
-      "x-rust-name": "Initialize",
-      "x-positional-schema": {
-        "type": "array",
-        "items": [
-          {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 4294967295,
-            "x-json-integer": true
-          }
-        ],
-        "minItems": 1,
-        "maxItems": 1
-      },
-      "x-client-result-schema": {
-        "$ref": "common.json#/definitions/InitializeReply"
-      }
+      "$ref": "common.json#/x-methods/Initialize"
     },
     {
       "name": "sessions.status",
@@ -72,8 +21,7 @@
       },
       "errors": [
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         }
       ],
       "x-params-schema": {
@@ -104,19 +52,14 @@
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/ServerStopResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/ServerStopResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         }
       ],
       "x-params-schema": {
@@ -148,16 +91,13 @@
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         },
         {
-          "code": -32010,
-          "message": "Resource limit or init unavailable"
+          "$ref": "common.json#/components/errors/ResourceLimitOrInitUnavailable"
         }
       ],
       "x-params-schema": {
@@ -189,12 +129,10 @@
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         }
       ],
       "x-params-schema": {
@@ -243,11 +181,7 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "session",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
-          }
+          "$ref": "common.json#/components/contentDescriptors/SessionSelectorParamsPropertiesSessionParameter"
         }
       ],
       "result": {
@@ -258,12 +192,10 @@
       },
       "errors": [
         {
-          "code": -32004,
-          "message": "Record absent or no longer retained"
+          "$ref": "common.json#/components/errors/RecordAbsentOrNoLongerRetained"
         },
         {
-          "code": -32009,
-          "message": "Stale or unauthorized operation"
+          "$ref": "common.json#/components/errors/StaleOrUnauthorizedOperation"
         }
       ],
       "x-params-schema": {
@@ -333,20 +265,16 @@
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent or no longer retained"
+          "$ref": "common.json#/components/errors/RecordAbsentOrNoLongerRetained"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         },
         {
-          "code": -32010,
-          "message": "Resource limit or unavailable runtime"
+          "$ref": "common.json#/components/errors/ResourceLimitOrUnavailableRuntime"
         }
       ],
       "x-params-schema": {
@@ -374,27 +302,18 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "session",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
-          }
+          "$ref": "common.json#/components/contentDescriptors/SessionSelectorParamsPropertiesSessionParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/ServerStopResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/ServerStopResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32004,
-          "message": "Record absent or no longer retained"
+          "$ref": "common.json#/components/errors/RecordAbsentOrNoLongerRetained"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         }
       ],
       "x-params-schema": {
@@ -411,23 +330,17 @@
       "paramStructure": "either",
       "params": [],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/ServerStopResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/ServerStopResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32600,
-          "message": "Unexpected trailing input"
+          "$ref": "common.json#/components/errors/UnexpectedTrailingInput"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         },
         {
-          "code": -32010,
-          "message": "Resource limit or unavailable runtime"
+          "$ref": "common.json#/components/errors/ResourceLimitOrUnavailableRuntime"
         }
       ],
       "x-params-schema": {
@@ -451,8 +364,7 @@
       },
       "errors": [
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         }
       ],
       "x-params-schema": {
@@ -522,27 +434,20 @@
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/SessionTerminal"
-        }
+        "$ref": "common.json#/components/contentDescriptors/SessionTerminalResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent"
+          "$ref": "common.json#/components/errors/RecordAbsent"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         },
         {
-          "code": -32010,
-          "message": "Resource limit or init unavailable"
+          "$ref": "common.json#/components/errors/ResourceLimitOrInitUnavailable"
         }
       ],
       "x-params-schema": {
@@ -568,23 +473,17 @@
       "paramStructure": "by-name",
       "params": [],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/TerminalListResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/TerminalListResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent"
+          "$ref": "common.json#/components/errors/RecordAbsent"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         }
       ],
       "x-params-schema": {
@@ -615,27 +514,20 @@
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/ServerStopResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/ServerStopResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent"
+          "$ref": "common.json#/components/errors/RecordAbsent"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         },
         {
-          "code": -32010,
-          "message": "Resource limit or init unavailable"
+          "$ref": "common.json#/components/errors/ResourceLimitOrInitUnavailable"
         }
       ],
       "x-params-schema": {
@@ -680,27 +572,20 @@
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/TerminalReadResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/TerminalReadResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent"
+          "$ref": "common.json#/components/errors/RecordAbsent"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         },
         {
-          "code": -32010,
-          "message": "Resource limit or init unavailable"
+          "$ref": "common.json#/components/errors/ResourceLimitOrInitUnavailable"
         }
       ],
       "x-params-schema": {
@@ -745,27 +630,20 @@
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/ServerStopResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/ServerStopResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent"
+          "$ref": "common.json#/components/errors/RecordAbsent"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         },
         {
-          "code": -32010,
-          "message": "Resource limit or init unavailable"
+          "$ref": "common.json#/components/errors/ResourceLimitOrInitUnavailable"
         }
       ],
       "x-params-schema": {
@@ -834,27 +712,20 @@
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/TerminalWaitResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/TerminalWaitResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent"
+          "$ref": "common.json#/components/errors/RecordAbsent"
         },
         {
-          "code": -32009,
-          "message": "Stale or conflicting operation"
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
         },
         {
-          "code": -32010,
-          "message": "Resource limit or init unavailable"
+          "$ref": "common.json#/components/errors/ResourceLimitOrInitUnavailable"
         }
       ],
       "x-params-schema": {
@@ -887,12 +758,10 @@
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters or missing dev shell"
+          "$ref": "common.json#/components/errors/InvalidParametersOrMissingDevShell"
         },
         {
-          "code": -32009,
-          "message": "Conflicting operation or evaluation/build failure"
+          "$ref": "common.json#/components/errors/ConflictingOperationOrEvaluationBuildFailure"
         }
       ],
       "x-params-schema": {
@@ -932,12 +801,10 @@
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters or missing dev shell"
+          "$ref": "common.json#/components/errors/InvalidParametersOrMissingDevShell"
         },
         {
-          "code": -32009,
-          "message": "Conflicting operation or evaluation/build failure"
+          "$ref": "common.json#/components/errors/ConflictingOperationOrEvaluationBuildFailure"
         }
       ],
       "x-params-schema": {
@@ -982,12 +849,10 @@
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid flake inputs"
+          "$ref": "common.json#/components/errors/InvalidFlakeInputs"
         },
         {
-          "code": -32009,
-          "message": "Conflicting operation or evaluation failure"
+          "$ref": "common.json#/components/errors/ConflictingOperationOrEvaluationFailure"
         }
       ],
       "x-params-schema": {
@@ -1039,16 +904,13 @@
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid files, paths or positions"
+          "$ref": "common.json#/components/errors/InvalidFilesPathsOrPositions"
         },
         {
-          "code": -32009,
-          "message": "Missing editor policy, spawn failure or stopped session"
+          "$ref": "common.json#/components/errors/MissingEditorPolicySpawnFailureOrStoppedSession"
         },
         {
-          "code": -32010,
-          "message": "Too many pending edits"
+          "$ref": "common.json#/components/errors/TooManyPendingEdits"
         }
       ],
       "x-params-schema": {
@@ -1138,24 +1000,19 @@
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid request, host name, path or size"
+          "$ref": "common.json#/components/errors/InvalidRequestHostNamePathOrSize"
         },
         {
-          "code": -32004,
-          "message": "Caller absent"
+          "$ref": "common.json#/components/errors/CallerAbsent"
         },
         {
-          "code": -32003,
-          "message": "Host command capacity exceeded"
+          "$ref": "common.json#/components/errors/HostCommandCapacityExceeded"
         },
         {
-          "code": -32009,
-          "message": "Policy, stale/liveness, grant or preparation conflict"
+          "$ref": "common.json#/components/errors/PolicyStaleLivenessGrantOrPreparationConflict"
         },
         {
-          "code": -32010,
-          "message": "Capacity exceeded"
+          "$ref": "common.json#/components/errors/CapacityExceeded"
         }
       ],
       "x-params-schema": {
@@ -1226,23 +1083,17 @@
       "paramStructure": "either",
       "params": [],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/HostJobList"
-        }
+        "$ref": "common.json#/components/contentDescriptors/HostJobListResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "No visible host command"
+          "$ref": "common.json#/components/errors/NoVisibleHostCommand"
         },
         {
-          "code": -32009,
-          "message": "Stale job, lifecycle conflict or finalized cancellation"
+          "$ref": "common.json#/components/errors/StaleJobLifecycleConflictOrFinalizedCancellation"
         }
       ],
       "x-params-schema": {
@@ -1267,31 +1118,21 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "request",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/HostJobParams/properties/request"
-          }
+          "$ref": "common.json#/components/contentDescriptors/HostJobParamsPropertiesRequestParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/HostJob"
-        }
+        "$ref": "common.json#/components/contentDescriptors/HostJobResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "No visible host command"
+          "$ref": "common.json#/components/errors/NoVisibleHostCommand"
         },
         {
-          "code": -32009,
-          "message": "Stale job, lifecycle conflict or finalized cancellation"
+          "$ref": "common.json#/components/errors/StaleJobLifecycleConflictOrFinalizedCancellation"
         }
       ],
       "x-params-schema": {
@@ -1320,31 +1161,21 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "request",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/HostJobParams/properties/request"
-          }
+          "$ref": "common.json#/components/contentDescriptors/HostJobParamsPropertiesRequestParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/HostJobCancelResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/HostJobCancelResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters"
+          "$ref": "common.json#/components/errors/InvalidParameters"
         },
         {
-          "code": -32004,
-          "message": "No visible host command"
+          "$ref": "common.json#/components/errors/NoVisibleHostCommand"
         },
         {
-          "code": -32009,
-          "message": "Stale job, lifecycle conflict or finalized cancellation"
+          "$ref": "common.json#/components/errors/StaleJobLifecycleConflictOrFinalizedCancellation"
         }
       ],
       "x-params-schema": {
@@ -1373,31 +1204,21 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "raid",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/RaidSelectorParams/properties/raid"
-          }
+          "$ref": "common.json#/components/contentDescriptors/RaidSelectorParamsPropertiesRaidParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/RaidRecord"
-        }
+        "$ref": "common.json#/components/contentDescriptors/RaidRecordResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters, raid name or role"
+          "$ref": "common.json#/components/errors/InvalidParametersRaidNameOrRole"
         },
         {
-          "code": -32009,
-          "message": "Not a member, existing membership or created-member conflict"
+          "$ref": "common.json#/components/errors/NotAMemberExistingMembershipOrCreatedMemberConflict"
         },
         {
-          "code": -32010,
-          "message": "Raid event capacity"
+          "$ref": "common.json#/components/errors/RaidEventCapacity"
         }
       ],
       "x-params-schema": {
@@ -1429,23 +1250,17 @@
       "paramStructure": "either",
       "params": [],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/RaidChangeResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/RaidChangeResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters, raid name or role"
+          "$ref": "common.json#/components/errors/InvalidParametersRaidNameOrRole"
         },
         {
-          "code": -32009,
-          "message": "Not a member, existing membership or created-member conflict"
+          "$ref": "common.json#/components/errors/NotAMemberExistingMembershipOrCreatedMemberConflict"
         },
         {
-          "code": -32010,
-          "message": "Raid event capacity"
+          "$ref": "common.json#/components/errors/RaidEventCapacity"
         }
       ],
       "x-params-schema": {
@@ -1470,23 +1285,17 @@
       "paramStructure": "either",
       "params": [],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/RaidRecord"
-        }
+        "$ref": "common.json#/components/contentDescriptors/RaidRecordResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters, raid name or role"
+          "$ref": "common.json#/components/errors/InvalidParametersRaidNameOrRole"
         },
         {
-          "code": -32009,
-          "message": "Not a member, existing membership or created-member conflict"
+          "$ref": "common.json#/components/errors/NotAMemberExistingMembershipOrCreatedMemberConflict"
         },
         {
-          "code": -32010,
-          "message": "Raid event capacity"
+          "$ref": "common.json#/components/errors/RaidEventCapacity"
         }
       ],
       "x-params-schema": {
@@ -1519,23 +1328,17 @@
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/RaidRecord"
-        }
+        "$ref": "common.json#/components/contentDescriptors/RaidRecordResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid parameters, raid name or role"
+          "$ref": "common.json#/components/errors/InvalidParametersRaidNameOrRole"
         },
         {
-          "code": -32009,
-          "message": "Not a member, existing membership or created-member conflict"
+          "$ref": "common.json#/components/errors/NotAMemberExistingMembershipOrCreatedMemberConflict"
         },
         {
-          "code": -32010,
-          "message": "Raid event capacity"
+          "$ref": "common.json#/components/errors/RaidEventCapacity"
         }
       ],
       "x-params-schema": {
@@ -1567,56 +1370,33 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "key",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxSendParams/properties/key"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxSendParamsPropertiesKeyParameter"
         },
         {
-          "name": "to",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxSendParams/properties/to"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxSendParamsPropertiesToParameter"
         },
         {
-          "name": "body",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxSendParams/properties/body"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxSendParamsPropertiesBodyParameter"
         },
         {
-          "name": "conversation",
-          "required": false,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxSendParams/properties/conversation"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxSendParamsPropertiesConversationParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/MailboxMessage"
-        }
+        "$ref": "common.json#/components/contentDescriptors/MailboxMessageResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid mutation parameters or semantic values"
+          "$ref": "common.json#/components/errors/InvalidMutationParametersOrSemanticValues"
         },
         {
-          "code": -32004,
-          "message": "Record absent or unavailable"
+          "$ref": "common.json#/components/errors/RecordAbsentOrUnavailable"
         },
         {
-          "code": -32009,
-          "message": "Stale/conflicting claim, refused routing or audit failure"
+          "$ref": "common.json#/components/errors/StaleConflictingClaimRefusedRoutingOrAuditFailure"
         },
         {
-          "code": -32010,
-          "message": "Mailbox/audit capacity reached"
+          "$ref": "common.json#/components/errors/MailboxAuditCapacityReached"
         }
       ],
       "x-params-schema": {
@@ -1667,56 +1447,33 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "key",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxReplyParams/properties/key"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxReplyParamsPropertiesKeyParameter"
         },
         {
-          "name": "message",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxReplyParams/properties/message"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxReplyParamsPropertiesMessageParameter"
         },
         {
-          "name": "claim_generation",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxReplyParams/properties/claim_generation"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxReplyParamsPropertiesClaim_GenerationParameter"
         },
         {
-          "name": "body",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxReplyParams/properties/body"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxReplyParamsPropertiesBodyParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/MailboxReplyResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/MailboxReplyResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid mutation parameters or semantic values"
+          "$ref": "common.json#/components/errors/InvalidMutationParametersOrSemanticValues"
         },
         {
-          "code": -32004,
-          "message": "Record absent or unavailable"
+          "$ref": "common.json#/components/errors/RecordAbsentOrUnavailable"
         },
         {
-          "code": -32009,
-          "message": "Stale/conflicting claim, refused routing or audit failure"
+          "$ref": "common.json#/components/errors/StaleConflictingClaimRefusedRoutingOrAuditFailure"
         },
         {
-          "code": -32010,
-          "message": "Mailbox/audit capacity reached"
+          "$ref": "common.json#/components/errors/MailboxAuditCapacityReached"
         }
       ],
       "x-params-schema": {
@@ -1761,35 +1518,24 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "key",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxNextParams/properties/key"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxNextParamsPropertiesKeyParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/MailboxNextResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/MailboxNextResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid mutation parameters or semantic values"
+          "$ref": "common.json#/components/errors/InvalidMutationParametersOrSemanticValues"
         },
         {
-          "code": -32004,
-          "message": "Record absent or unavailable"
+          "$ref": "common.json#/components/errors/RecordAbsentOrUnavailable"
         },
         {
-          "code": -32009,
-          "message": "Stale/conflicting claim, refused routing or audit failure"
+          "$ref": "common.json#/components/errors/StaleConflictingClaimRefusedRoutingOrAuditFailure"
         },
         {
-          "code": -32010,
-          "message": "Mailbox/audit capacity reached"
+          "$ref": "common.json#/components/errors/MailboxAuditCapacityReached"
         }
       ],
       "x-params-schema": {
@@ -1821,49 +1567,30 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "key",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxClaimParams/properties/key"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxClaimParamsPropertiesKeyParameter"
         },
         {
-          "name": "message",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxClaimParams/properties/message"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxClaimParamsPropertiesMessageParameter"
         },
         {
-          "name": "claim_generation",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxClaimParams/properties/claim_generation"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxClaimParamsPropertiesClaim_GenerationParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/MailboxCompleteResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/MailboxCompleteResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid mutation parameters or semantic values"
+          "$ref": "common.json#/components/errors/InvalidMutationParametersOrSemanticValues"
         },
         {
-          "code": -32004,
-          "message": "Record absent or unavailable"
+          "$ref": "common.json#/components/errors/RecordAbsentOrUnavailable"
         },
         {
-          "code": -32009,
-          "message": "Stale/conflicting claim, refused routing or audit failure"
+          "$ref": "common.json#/components/errors/StaleConflictingClaimRefusedRoutingOrAuditFailure"
         },
         {
-          "code": -32010,
-          "message": "Mailbox/audit capacity reached"
+          "$ref": "common.json#/components/errors/MailboxAuditCapacityReached"
         }
       ],
       "x-params-schema": {
@@ -1905,56 +1632,33 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "key",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxRequeueParams/properties/key"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxRequeueParamsPropertiesKeyParameter"
         },
         {
-          "name": "message",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxRequeueParams/properties/message"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxRequeueParamsPropertiesMessageParameter"
         },
         {
-          "name": "claim_generation",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxRequeueParams/properties/claim_generation"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxRequeueParamsPropertiesClaim_GenerationParameter"
         },
         {
-          "name": "reason",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxRequeueParams/properties/reason"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxRequeueParamsPropertiesReasonParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/MailboxRequeueResult"
-        }
+        "$ref": "common.json#/components/contentDescriptors/MailboxRequeueResultResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid mutation parameters or semantic values"
+          "$ref": "common.json#/components/errors/InvalidMutationParametersOrSemanticValues"
         },
         {
-          "code": -32004,
-          "message": "Record absent or unavailable"
+          "$ref": "common.json#/components/errors/RecordAbsentOrUnavailable"
         },
         {
-          "code": -32009,
-          "message": "Stale/conflicting claim, refused routing or audit failure"
+          "$ref": "common.json#/components/errors/StaleConflictingClaimRefusedRoutingOrAuditFailure"
         },
         {
-          "code": -32010,
-          "message": "Mailbox/audit capacity reached"
+          "$ref": "common.json#/components/errors/MailboxAuditCapacityReached"
         }
       ],
       "x-params-schema": {
@@ -1999,27 +1703,18 @@
       "paramStructure": "either",
       "params": [
         {
-          "name": "message",
-          "required": true,
-          "schema": {
-            "$ref": "common.json#/definitions/MailboxGetParams/properties/message"
-          }
+          "$ref": "common.json#/components/contentDescriptors/MailboxGetParamsPropertiesMessageParameter"
         }
       ],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/MailboxMessage"
-        }
+        "$ref": "common.json#/components/contentDescriptors/MailboxMessageResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid read parameters"
+          "$ref": "common.json#/components/errors/InvalidReadParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent or unavailable"
+          "$ref": "common.json#/components/errors/RecordAbsentOrUnavailable"
         }
       ],
       "x-params-schema": {
@@ -2048,19 +1743,14 @@
       "paramStructure": "either",
       "params": [],
       "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "common.json#/definitions/InboxStatusRecord"
-        }
+        "$ref": "common.json#/components/contentDescriptors/InboxStatusRecordResultDescriptor"
       },
       "errors": [
         {
-          "code": -32602,
-          "message": "Invalid read parameters"
+          "$ref": "common.json#/components/errors/InvalidReadParameters"
         },
         {
-          "code": -32004,
-          "message": "Record absent or unavailable"
+          "$ref": "common.json#/components/errors/RecordAbsentOrUnavailable"
         }
       ],
       "x-params-schema": {
@@ -2092,7 +1782,7 @@
           "name": "request",
           "required": true,
           "schema": {
-            "$ref": "common.json#/definitions/HostSubmittedParams/properties/request"
+            "$ref": "common.json#/definitions/HostJobParams/properties/request"
           }
         }
       ],

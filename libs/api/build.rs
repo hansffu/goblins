@@ -1,10 +1,13 @@
+#[path = "src/schema.rs"]
+mod schema;
 use serde_json::Value;
 use std::{env, fs, path::PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=schema");
-    let common: Value =
-        serde_json::from_str(&fs::read_to_string("schema/common.json").unwrap()).unwrap();
+    let common: Value = schema::expand_common(
+        serde_json::from_str(&fs::read_to_string("schema/common.json").unwrap()).unwrap());
+    println!("cargo:rerun-if-changed=src/schema.rs");
     let mut settings = typify::TypeSpaceSettings::default();
     settings.with_map_type("::std::collections::BTreeMap");
     settings.with_replacement(
@@ -790,10 +793,9 @@ fn main() {
         "scope",
         "guardian",
     ] {
-        let document: Value = serde_json::from_str(
+        let document: Value = schema::expand_document(serde_json::from_str(
             &fs::read_to_string(format!("schema/{endpoint}.openrpc.json")).unwrap(),
-        )
-        .unwrap();
+        ).unwrap(), &common);
         output.push_str(&format!(
             "pub mod {endpoint} {{ #[allow(unused_imports)] use super::*;\n"
         ));

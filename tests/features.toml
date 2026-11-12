@@ -128,7 +128,7 @@ paths = ["emacs/*.el", "emacs/icons/*", "tests/emacs-init.el"]
 description = "Test selection, scheduler, fixture ownership and routing checks"
 python = ["test_runner", "test_features", "test_dependencies", "test_rust_tests", "test_terminal_support", "test_process_discovery", "test_fake_codex", "test_api_contract.ContractTests", "test_api_playground"]
 checks = []
-paths = ["tests/api_playground.py", "nix/openrpc-playground.nix"]
+paths = ["tests/api_schema.py", "tests/api_playground.py", "nix/openrpc-playground.nix"]
 
 [features.packaging]
 description = "All Nix checks and packaged server/exec/root smoke tests"

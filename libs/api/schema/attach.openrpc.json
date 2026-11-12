@@ -101,8 +101,7 @@
       },
       "errors": [
         {
-          "code": -32009,
-          "message": "Attachment refused"
+          "$ref": "common.json#/components/errors/AttachmentRefused"
         }
       ],
       "x-client-error-policy": "any-valid-correlated-error"
@@ -122,8 +121,7 @@
       },
       "errors": [
         {
-          "code": -32009,
-          "message": "Attachment refused"
+          "$ref": "common.json#/components/errors/AttachmentRefused"
         }
       ],
       "x-client-error-policy": "any-valid-correlated-error",

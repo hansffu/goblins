@@ -5857,16 +5857,11 @@
       "additionalProperties": false
     },
     "PermissionGetParams": {
-      "type": "object",
-      "properties": {
-        "request": {
-          "type": "string"
+      "allOf": [
+        {
+          "$ref": "#/definitions/HostJobParams"
         }
-      },
-      "required": [
-        "request"
-      ],
-      "additionalProperties": false
+      ]
     },
     "PackageApprovalPreview": {
       "type": "object",
@@ -6568,16 +6563,11 @@
       "additionalProperties": true
     },
     "HostSubmittedParams": {
-      "type": "object",
-      "properties": {
-        "request": {
-          "type": "string"
+      "allOf": [
+        {
+          "$ref": "#/definitions/HostJobParams"
         }
-      },
-      "required": [
-        "request"
-      ],
-      "additionalProperties": false
+      ]
     },
     "HostSubmittedReply": {
       "type": "object",
@@ -7739,10 +7729,11 @@
       "description": "Require all five original inbox fields so malformed/missing data cannot become an empty inbox. Additive raid_audit_failed/operations may be absent on older daemons, defaulting to false/empty. Wrong scalar/container types, float counters, tuple arity and u64 overflow are errors."
     },
     "MailboxStatusParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ]
     },
     "CommunicationsLimit": {
       "type": "integer",
@@ -8690,39 +8681,11 @@
       "additionalProperties": true
     },
     "CommOperationCompletedCore": {
-      "type": "object",
-      "properties": {
-        "request": {
-          "type": "string"
-        },
-        "kind": {
-          "type": "string"
-        },
-        "subject": {
-          "type": "string"
-        },
-        "status": {
-          "type": "string"
-        },
-        "message": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
+      "allOf": [
+        {
+          "$ref": "#/definitions/MailboxOperation"
         }
-      },
-      "required": [
-        "request",
-        "kind",
-        "subject",
-        "status",
-        "message"
-      ],
-      "additionalProperties": true
+      ]
     },
     "CommOperationCompletedData": {
       "type": "object",
@@ -9996,28 +9959,11 @@
       "additionalProperties": true
     },
     "StateChangedParams": {
-      "type": "object",
-      "properties": {
-        "subscription": {
-          "type": "string"
-        },
-        "sequence": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 18446744073709551615,
-          "format": "uint64",
-          "x-json-integer": true
-        },
-        "snapshot": {
-          "$ref": "#/definitions/StateSnapshot"
+      "allOf": [
+        {
+          "$ref": "#/definitions/StateSubscribeResult"
         }
-      },
-      "required": [
-        "subscription",
-        "sequence",
-        "snapshot"
-      ],
-      "additionalProperties": true
+      ]
     },
     "StateChangedRead": {
       "type": "object",
@@ -10282,10 +10228,11 @@
       "additionalProperties": false
     },
     "SupervisorEmptyParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ]
     },
     "SupervisorDescriptorIndex": {
       "type": "integer",
@@ -12387,7 +12334,11 @@
       }
     },
     "SupervisorCallResult": {
-      "type": "string",
+      "allOf": [
+        {
+          "$ref": "#/definitions/SupervisorTerminalResult"
+        }
+      ],
       "description": "Opaque serde_json encoding of standard Result<Value,String>, retaining arbitrary JSON data.",
       "x-json-content-schema": {
         "oneOf": [
@@ -14184,10 +14135,11 @@
       ]
     },
     "ScopeStopParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "ScopeStopParams",
       "x-rust-module": "scope_metadata",
       "x-rust-field-order": [],
@@ -14198,10 +14150,11 @@
       ]
     },
     "ScopeStoppingParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "ScopeStoppingParams",
       "x-rust-module": "scope_metadata",
       "x-rust-field-order": [],
@@ -14372,10 +14325,11 @@
       ]
     },
     "ScopeRegisteredParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "ScopeRegisteredParams",
       "x-rust-module": "scope_metadata",
       "x-rust-field-order": [],
@@ -14467,10 +14421,11 @@
       ]
     },
     "ScopeDockerPendingParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "ScopeDockerPendingParams",
       "x-rust-module": "scope_metadata",
       "x-rust-field-order": [],
@@ -14505,10 +14460,11 @@
       ]
     },
     "ScopeDetachDockerParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "ScopeDetachDockerParams",
       "x-rust-module": "scope_metadata",
       "x-rust-field-order": [],
@@ -14519,10 +14475,11 @@
       ]
     },
     "ScopeDockerDetachedParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "ScopeDockerDetachedParams",
       "x-rust-module": "scope_metadata",
       "x-rust-field-order": [],
@@ -14533,10 +14490,11 @@
       ]
     },
     "ScopeLeaveParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "ScopeLeaveParams",
       "x-rust-module": "scope_metadata",
       "x-rust-field-order": [],
@@ -14547,10 +14505,11 @@
       ]
     },
     "ScopeLeftParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "ScopeLeftParams",
       "x-rust-module": "scope_metadata",
       "x-rust-field-order": [],
@@ -15082,24 +15041,11 @@
       ]
     },
     "GuardianLease": {
-      "type": "object",
-      "properties": {
-        "directory": {
-          "$ref": "#/definitions/SupervisorPath",
-          "x-rust-type": "::std::path::PathBuf",
-          "x-rust-field-name": "directory"
-        },
-        "lock": {
-          "$ref": "#/definitions/SupervisorDescriptor",
-          "x-rust-type": "crate::contract::Descriptor",
-          "x-rust-field-name": "lock"
+      "allOf": [
+        {
+          "$ref": "#/definitions/SupervisorLease"
         }
-      },
-      "required": [
-        "directory",
-        "lock"
       ],
-      "additionalProperties": false,
       "x-rust-name": "Lease",
       "x-rust-module": "guardian_metadata",
       "x-rust-field-order": [
@@ -15140,10 +15086,11 @@
       ]
     },
     "GuardianRetainedParams": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false,
+      "allOf": [
+        {
+          "$ref": "#/definitions/EmptyParams"
+        }
+      ],
       "x-rust-name": "GuardianRetainedParams",
       "x-rust-module": "guardian_metadata",
       "x-rust-field-order": [],
@@ -18534,5 +18481,508 @@
   "x-private-protocols": {
     "scope": "ScopeMessage",
     "guardian": "GuardianMessage"
+  },
+  "components": {
+    "errors": {
+      "InvalidParameters": {
+        "code": -32602,
+        "message": "Invalid parameters"
+      },
+      "UnsupportedApiVersion": {
+        "code": -32002,
+        "message": "Unsupported API version"
+      },
+      "StaleOrConflictingOperation": {
+        "code": -32009,
+        "message": "Stale or conflicting operation"
+      },
+      "ResourceLimitOrInitUnavailable": {
+        "code": -32010,
+        "message": "Resource limit or init unavailable"
+      },
+      "RecordAbsentOrNoLongerRetained": {
+        "code": -32004,
+        "message": "Record absent or no longer retained"
+      },
+      "StaleOrUnauthorizedOperation": {
+        "code": -32009,
+        "message": "Stale or unauthorized operation"
+      },
+      "ResourceLimitOrUnavailableRuntime": {
+        "code": -32010,
+        "message": "Resource limit or unavailable runtime"
+      },
+      "UnexpectedTrailingInput": {
+        "code": -32600,
+        "message": "Unexpected trailing input"
+      },
+      "RecordAbsent": {
+        "code": -32004,
+        "message": "Record absent"
+      },
+      "InvalidParametersOrMissingDevShell": {
+        "code": -32602,
+        "message": "Invalid parameters or missing dev shell"
+      },
+      "ConflictingOperationOrEvaluationBuildFailure": {
+        "code": -32009,
+        "message": "Conflicting operation or evaluation/build failure"
+      },
+      "InvalidFlakeInputs": {
+        "code": -32602,
+        "message": "Invalid flake inputs"
+      },
+      "ConflictingOperationOrEvaluationFailure": {
+        "code": -32009,
+        "message": "Conflicting operation or evaluation failure"
+      },
+      "InvalidFilesPathsOrPositions": {
+        "code": -32602,
+        "message": "Invalid files, paths or positions"
+      },
+      "MissingEditorPolicySpawnFailureOrStoppedSession": {
+        "code": -32009,
+        "message": "Missing editor policy, spawn failure or stopped session"
+      },
+      "TooManyPendingEdits": {
+        "code": -32010,
+        "message": "Too many pending edits"
+      },
+      "InvalidRequestHostNamePathOrSize": {
+        "code": -32602,
+        "message": "Invalid request, host name, path or size"
+      },
+      "CallerAbsent": {
+        "code": -32004,
+        "message": "Caller absent"
+      },
+      "HostCommandCapacityExceeded": {
+        "code": -32003,
+        "message": "Host command capacity exceeded"
+      },
+      "PolicyStaleLivenessGrantOrPreparationConflict": {
+        "code": -32009,
+        "message": "Policy, stale/liveness, grant or preparation conflict"
+      },
+      "CapacityExceeded": {
+        "code": -32010,
+        "message": "Capacity exceeded"
+      },
+      "NoVisibleHostCommand": {
+        "code": -32004,
+        "message": "No visible host command"
+      },
+      "StaleJobLifecycleConflictOrFinalizedCancellation": {
+        "code": -32009,
+        "message": "Stale job, lifecycle conflict or finalized cancellation"
+      },
+      "InvalidParametersRaidNameOrRole": {
+        "code": -32602,
+        "message": "Invalid parameters, raid name or role"
+      },
+      "NotAMemberExistingMembershipOrCreatedMemberConflict": {
+        "code": -32009,
+        "message": "Not a member, existing membership or created-member conflict"
+      },
+      "RaidEventCapacity": {
+        "code": -32010,
+        "message": "Raid event capacity"
+      },
+      "InvalidMutationParametersOrSemanticValues": {
+        "code": -32602,
+        "message": "Invalid mutation parameters or semantic values"
+      },
+      "RecordAbsentOrUnavailable": {
+        "code": -32004,
+        "message": "Record absent or unavailable"
+      },
+      "StaleConflictingClaimRefusedRoutingOrAuditFailure": {
+        "code": -32009,
+        "message": "Stale/conflicting claim, refused routing or audit failure"
+      },
+      "MailboxAuditCapacityReached": {
+        "code": -32010,
+        "message": "Mailbox/audit capacity reached"
+      },
+      "InvalidReadParameters": {
+        "code": -32602,
+        "message": "Invalid read parameters"
+      },
+      "InvalidParametersOrRaidOwnerRequest": {
+        "code": -32602,
+        "message": "Invalid parameters or raid-owner request"
+      },
+      "StaleDecisionWithdrawnRequesterOrUnfinishedDevShellPreview": {
+        "code": -32009,
+        "message": "Stale decision, withdrawn requester or unfinished dev shell preview"
+      },
+      "RuntimeCapacityExceeded": {
+        "code": -32010,
+        "message": "Runtime capacity exceeded"
+      },
+      "RequestAbsent": {
+        "code": -32004,
+        "message": "Request absent"
+      },
+      "InvalidParametersRaidNameRoleOrInviteList": {
+        "code": -32602,
+        "message": "Invalid parameters, raid name, role or invite list"
+      },
+      "RaidOrTargetAbsent": {
+        "code": -32004,
+        "message": "Raid or target absent"
+      },
+      "StaleRaidMembershipLivenessOrOwnershipConflict": {
+        "code": -32009,
+        "message": "Stale raid, membership, liveness or ownership conflict"
+      },
+      "InvalidParamsOrLimit": {
+        "code": -32602,
+        "message": "Invalid params or limit"
+      },
+      "SessionAbsent": {
+        "code": -32004,
+        "message": "Session absent"
+      },
+      "AmbiguousSessionOrSerializationFailure": {
+        "code": -32009,
+        "message": "Ambiguous session or serialization failure"
+      },
+      "InvalidParams": {
+        "code": -32602,
+        "message": "Invalid params"
+      },
+      "NoSessionHistory": {
+        "code": -32009,
+        "message": "No session history"
+      },
+      "InvalidParamsOrNoCriterion": {
+        "code": -32602,
+        "message": "Invalid params or no criterion"
+      },
+      "InvalidSubscriptionParams": {
+        "code": -32602,
+        "message": "Invalid subscription params"
+      },
+      "ConflictingSubscriptionOrStoppingServer": {
+        "code": -32009,
+        "message": "Conflicting subscription or stopping server"
+      },
+      "AttachmentRefused": {
+        "code": -32009,
+        "message": "Attachment refused"
+      }
+    },
+    "contentDescriptors": {
+      "InitializeParamsPropertiesApiParameter": {
+        "name": "api",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/InitializeParams/properties/api"
+        }
+      },
+      "InitializeResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/InitializeResult"
+        }
+      },
+      "ServerStopResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/ServerStopResult"
+        }
+      },
+      "SessionSelectorParamsPropertiesSessionParameter": {
+        "name": "session",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
+        }
+      },
+      "SessionTerminalResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/SessionTerminal"
+        }
+      },
+      "TerminalListResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/TerminalListResult"
+        }
+      },
+      "TerminalReadResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/TerminalReadResult"
+        }
+      },
+      "TerminalWaitResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/TerminalWaitResult"
+        }
+      },
+      "HostJobListResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJobList"
+        }
+      },
+      "HostJobParamsPropertiesRequestParameter": {
+        "name": "request",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/HostJobParams/properties/request"
+        }
+      },
+      "HostJobResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJob"
+        }
+      },
+      "HostJobCancelResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostJobCancelResult"
+        }
+      },
+      "RaidSelectorParamsPropertiesRaidParameter": {
+        "name": "raid",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/RaidSelectorParams/properties/raid"
+        }
+      },
+      "RaidRecordResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidRecord"
+        }
+      },
+      "RaidChangeResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/RaidChangeResult"
+        }
+      },
+      "MailboxSendParamsPropertiesKeyParameter": {
+        "name": "key",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxSendParams/properties/key"
+        }
+      },
+      "MailboxSendParamsPropertiesToParameter": {
+        "name": "to",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxSendParams/properties/to"
+        }
+      },
+      "MailboxSendParamsPropertiesBodyParameter": {
+        "name": "body",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxSendParams/properties/body"
+        }
+      },
+      "MailboxSendParamsPropertiesConversationParameter": {
+        "name": "conversation",
+        "required": false,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxSendParams/properties/conversation"
+        }
+      },
+      "MailboxMessageResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxMessage"
+        }
+      },
+      "MailboxReplyParamsPropertiesKeyParameter": {
+        "name": "key",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxReplyParams/properties/key"
+        }
+      },
+      "MailboxReplyParamsPropertiesMessageParameter": {
+        "name": "message",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxReplyParams/properties/message"
+        }
+      },
+      "MailboxReplyParamsPropertiesClaim_GenerationParameter": {
+        "name": "claim_generation",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxReplyParams/properties/claim_generation"
+        }
+      },
+      "MailboxReplyParamsPropertiesBodyParameter": {
+        "name": "body",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxReplyParams/properties/body"
+        }
+      },
+      "MailboxReplyResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxReplyResult"
+        }
+      },
+      "MailboxNextParamsPropertiesKeyParameter": {
+        "name": "key",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxNextParams/properties/key"
+        }
+      },
+      "MailboxNextResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxNextResult"
+        }
+      },
+      "MailboxClaimParamsPropertiesKeyParameter": {
+        "name": "key",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxClaimParams/properties/key"
+        }
+      },
+      "MailboxClaimParamsPropertiesMessageParameter": {
+        "name": "message",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxClaimParams/properties/message"
+        }
+      },
+      "MailboxClaimParamsPropertiesClaim_GenerationParameter": {
+        "name": "claim_generation",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxClaimParams/properties/claim_generation"
+        }
+      },
+      "MailboxCompleteResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxCompleteResult"
+        }
+      },
+      "MailboxRequeueParamsPropertiesKeyParameter": {
+        "name": "key",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxRequeueParams/properties/key"
+        }
+      },
+      "MailboxRequeueParamsPropertiesMessageParameter": {
+        "name": "message",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxRequeueParams/properties/message"
+        }
+      },
+      "MailboxRequeueParamsPropertiesClaim_GenerationParameter": {
+        "name": "claim_generation",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxRequeueParams/properties/claim_generation"
+        }
+      },
+      "MailboxRequeueParamsPropertiesReasonParameter": {
+        "name": "reason",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxRequeueParams/properties/reason"
+        }
+      },
+      "MailboxRequeueResultResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxRequeueResult"
+        }
+      },
+      "MailboxGetParamsPropertiesMessageParameter": {
+        "name": "message",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/MailboxGetParams/properties/message"
+        }
+      },
+      "InboxStatusRecordResultDescriptor": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/InboxStatusRecord"
+        }
+      },
+      "HostTerminalTargetParamsPropertiesSessionParameter": {
+        "name": "session",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/HostTerminalTargetParams/properties/session"
+        }
+      },
+      "HostTerminalTargetParamsPropertiesTerminalParameter": {
+        "name": "terminal",
+        "required": true,
+        "schema": {
+          "$ref": "common.json#/definitions/HostTerminalTargetParams/properties/terminal"
+        }
+      }
+    }
+  },
+  "x-methods": {
+    "Initialize": {
+      "name": "initialize",
+      "description": "Initialize once before other requests. Unsupported u32 versions return -32002; repeated initialization returns -32009 after parameter validation.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "$ref": "common.json#/components/contentDescriptors/InitializeParamsPropertiesApiParameter"
+        }
+      ],
+      "result": {
+        "$ref": "common.json#/components/contentDescriptors/InitializeResultResultDescriptor"
+      },
+      "errors": [
+        {
+          "$ref": "common.json#/components/errors/InvalidParameters"
+        },
+        {
+          "$ref": "common.json#/components/errors/UnsupportedApiVersion"
+        },
+        {
+          "$ref": "common.json#/components/errors/StaleOrConflictingOperation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/InitializeParams"
+      },
+      "x-rust-name": "Initialize",
+      "x-positional-schema": {
+        "type": "array",
+        "items": [
+          {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-json-integer": true
+          }
+        ],
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/InitializeReply"
+      }
+    }
   }
 }

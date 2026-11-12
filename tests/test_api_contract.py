@@ -16,6 +16,82 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_openrpc_inline_wire_baseline_for_shared_descriptors_and_errors(self):
+        fixtures = contract.read("fixtures.json")
+        for endpoint in ["host", "sandbox"]:
+            for name, params, result, schema, expected_params, errors in [
+                ("initialize", {"api":1}, fixtures[endpoint+"_initialize"], "InitializeResult",
+                 [{"name":"api","required":True,"schema":{"$ref":"common.json#/definitions/InitializeParams/properties/api"}}],
+                 [{"code":-32602,"message":"Invalid parameters"},{"code":-32002,"message":"Unsupported API version"},{"code":-32009,"message":"Stale or conflicting operation"}]),
+                ("host.status", {"request":"fixture-job-1"}, fixtures["host_job_active"], "HostJob",
+                 [{"name":"request","required":True,"schema":{"$ref":"common.json#/definitions/HostJobParams/properties/request"}}],
+                 [{"code":-32602,"message":"Invalid parameters"},{"code":-32004,"message":"No visible host command"},{"code":-32009,"message":"Stale job, lifecycle conflict or finalized cancellation"}]),
+            ]:
+                with self.subTest(endpoint=endpoint,method=name):
+                    row = next(row for row in contract.document(endpoint)["methods"] if row["name"] == name)
+                    self.assertEqual(row["params"], expected_params)
+                    self.assertEqual(row["result"], {"name":"result","schema":{"$ref":"common.json#/definitions/"+schema}})
+                    self.assertEqual(row["errors"], errors)
+                    self.assertTrue(contract.validate_params(endpoint,name,params))
+                    self.assertTrue(contract.validate_reply(endpoint,name,dict(jsonrpc="2.0",id=1,result=result)))
+
+    def test_openrpc_local_method_error_and_content_components_expand(self):
+        from unittest.mock import patch
+        original_read = contract.read
+        inline = copy.deepcopy(contract.document("host"))
+        expected = copy.deepcopy(next(row for row in inline["methods"] if row["name"] == "initialize"))
+        raw = copy.deepcopy(inline)
+        method = copy.deepcopy(expected)
+        components = raw.setdefault("components", {})
+        components.setdefault("contentDescriptors", {}).update(InitializeApi=method["params"][0], InitializeResult=method["result"])
+        components.setdefault("errors", {}).update({"InitializeError"+str(i):error for i,error in enumerate(method["errors"])})
+        method["params"] = [{"$ref":"#/components/contentDescriptors/InitializeApi"}]
+        method["result"] = {"$ref":"#/components/contentDescriptors/InitializeResult"}
+        method["errors"] = [{"$ref":"#/components/errors/InitializeError"+str(i)} for i in range(len(expected["errors"]))]
+        raw.setdefault("x-methods", {})["Initialize"] = method
+        index = next(i for i,row in enumerate(raw["methods"]) if row["name"] == "initialize")
+        raw["methods"][index] = {"$ref":"#/x-methods/Initialize"}
+        frozen = copy.deepcopy(raw)
+        with patch.object(contract,"read",side_effect=lambda name:copy.deepcopy(raw) if name=="host.openrpc.json" else original_read(name)):
+            expanded = contract.document.__wrapped__("host")
+        self.assertEqual(expanded["methods"][index], expected)
+        self.assertEqual(raw, frozen)
+        with patch.object(contract,"document",return_value=expanded):
+            self.assertTrue(contract.validate_params("host","initialize",{"api":1}))
+            self.assertTrue(contract.validate_reply("host","initialize",dict(jsonrpc="2.0",id=1,result=original_read("fixtures.json")["host_initialize"])))
+
+    def test_openrpc_common_components_expand_for_both_endpoints(self):
+        from unittest.mock import patch
+        original_read = contract.read
+        documents = {endpoint:copy.deepcopy(contract.document(endpoint)) for endpoint in ["host","sandbox"]}
+        expected = {endpoint:copy.deepcopy(next(row for row in doc["methods"] if row["name"]=="initialize")) for endpoint,doc in documents.items()}
+        shared = copy.deepcopy(contract.common())
+        method = copy.deepcopy(expected["host"])
+        components = shared.setdefault("components", {})
+        components.setdefault("contentDescriptors", {}).update(SharedApi=method["params"][0], SharedResult=method["result"])
+        components.setdefault("errors", {}).update({"SharedError"+str(i):error for i,error in enumerate(method["errors"])})
+        # References inside a shared method remain relative to common.json.
+        method["params"] = [{"$ref":"#/components/contentDescriptors/SharedApi"}]
+        method["result"] = {"$ref":"#/components/contentDescriptors/SharedResult"}
+        method["errors"] = [{"$ref":"#/components/errors/SharedError"+str(i)} for i in range(len(method["errors"]))]
+        shared.setdefault("x-methods", {})["SharedInitialize"] = method
+        indices = {}
+        for endpoint,doc in documents.items():
+            indices[endpoint] = next(i for i,row in enumerate(doc["methods"]) if row["name"]=="initialize")
+            doc["methods"][indices[endpoint]] = {"$ref":"common.json#/x-methods/SharedInitialize"}
+        files = {endpoint+".openrpc.json":doc for endpoint,doc in documents.items()}
+        files["common.json"] = shared
+        frozen = copy.deepcopy(files)
+        with patch.object(contract,"read",side_effect=lambda name:copy.deepcopy(files[name]) if name in files else original_read(name)), patch.object(contract,"common",return_value=shared):
+            expanded = {endpoint:contract.document.__wrapped__(endpoint) for endpoint in documents}
+        for endpoint,doc in expanded.items():
+            self.assertEqual(doc["methods"][indices[endpoint]], expected[endpoint])
+        self.assertEqual(files, frozen)
+        with patch.object(contract,"document",side_effect=lambda endpoint:expanded[endpoint]):
+            for endpoint in documents:
+                self.assertTrue(contract.validate_params(endpoint,"initialize",{"api":1}))
+                self.assertTrue(contract.validate_reply(endpoint,"initialize",dict(jsonrpc="2.0",id=1,result=original_read("fixtures.json")[endpoint+"_initialize"])))
+
     def test_history_list_accepts_a_new_record_without_variables(self):
         # Record::new starts with BTreeMap::new(); the public projection copies it.
         record = dict(version=3, id="new-record", configuration="shell", agent_name="fixture",

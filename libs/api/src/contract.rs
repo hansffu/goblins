@@ -658,7 +658,7 @@ impl Response for TerminalWaitReply {
 fn validate_result_shape(value: &Value, name: &str) -> io::Result<()> {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
     let common =
-        SCHEMA.get_or_init(|| serde_json::from_str(include_str!("../schema/common.json")).unwrap());
+        SCHEMA.get_or_init(|| crate::schema::expand_common(serde_json::from_str(include_str!("../schema/common.json")).unwrap()));
     fn check(value: &Value, schema: &Value, common: &Value) -> io::Result<()> {
         let bad = || io::Error::other("invalid result shape");
         if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {

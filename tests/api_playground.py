@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Serve the upstream OpenRPC Playground and live documentation views locally."""
+import api_schema
 import argparse
 import copy
 from functools import partial
@@ -17,8 +18,8 @@ def document(endpoint):
     """Adapt repository extensions for display; canonical contracts stay untouched."""
     if endpoint not in ENDPOINTS:
         raise ValueError("unknown protocol")
-    common = json.loads((SCHEMAS / "common.json").read_text())
-    doc = json.loads((SCHEMAS / f"{endpoint}.openrpc.json").read_text())
+    common = api_schema.expand_common(json.loads((SCHEMAS / "common.json").read_text()))
+    doc = api_schema.expand_document(json.loads((SCHEMAS / f"{endpoint}.openrpc.json").read_text()), common)
     schemas = {}
 
     def bundle(value):
