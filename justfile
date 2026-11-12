@@ -84,7 +84,8 @@ test-emacs:
       "${GOBLINS_TEST_EMACS:-emacs}" --batch -Q --init-directory="$home" \
       -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
 
-# Full packaging/Nix validation stays available separately from the edit loop.
+# Optional local schema rendering and tracked Emacs reader regeneration.
+# The reference is written to ignored target/API-REFERENCE.org.
 api-reference:
     python3 tests/api_contract.py --write
 

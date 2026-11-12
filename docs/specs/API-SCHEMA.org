@@ -32,7 +32,7 @@ flowchart LR
         Sandbox --> Common
     end
     Source -->|"build.rs, typify"| Types["Rust types and method lists<br/>in libs/api"]
-    Source -->|"just api-reference"| Reference["docs/API-REFERENCE.org"]
+    Source -->|"just api-reference"| Reference["Local API reference"]
     Source -->|"bundled schema"| Python["Python tests check<br/>every reply and notification"]
     Types --> Daemon["daemon handlers"]
     Types --> Clients["goblin CLI, host CLI, TUI,<br/>supervisor gate"]
@@ -55,7 +55,7 @@ flowchart LR
 ** 2.2 What is generated
 
 - *Rust types.* OpenRPC 1.3 embeds JSON Schema draft 7, which =typify= accepts. Bundling copies what an endpoint's document references from =common.json= into its =components= and rewrites the references, giving one self-contained OpenRPC document per endpoint. A small Python script does this for the meta-schema check, the reference generator and the Python checks; =build.rs= in =libs/api= does the same in Rust, and a test checks that both produce the same documents. =build.rs= then collects every method's parameters and result, each record and each notification into one draft-7 schema under =definitions=, and runs =typify= on it. Each method gets =…Params= and =…Result= types, each record and notification its own type, and each endpoint a list of its method names. The generated code goes to =OUT_DIR= and is never checked in, so it cannot go stale. Where a generated type would accept input today's code refuses, such as =null= for an optional field, =typify='s replacement setting substitutes the existing hand-written type for that schema, so behaviour does not change.
-- *The method reference.* =just api-reference= writes [[file:../API-REFERENCE.org][API-REFERENCE.org]] from the documents: every method, notification and record with its fields, limits and errors. A check fails when the committed file differs from a fresh run. API.org keeps the transport and general sections and links to the reference.
+- *The optional method reference.* =just api-reference= renders methods, notifications and records to =target/API-REFERENCE.org=. This is an ignored local artifact rather than a committed copy of the schemas. Agents should read the contracts in =libs/api/schema/= and the handwritten semantics in =API.org=. The same command refreshes the tracked Emacs readers, whose freshness is enforced by the contract tests.
 - *Python checks.* The tests' =RPC= client in =tests/daemon_support.py=, which talks to both the host socket and a goblin's =request.sock=, knows its endpoint from the =initialize= result and the method of each request ID. It validates each result against that endpoint's document for that method, each error's code against the method's listed errors, and each notification against the endpoint's =x-notifications=, with =jsonschema= plus the =x-max-bytes= check. The attach tests' handshake helper validates =attach.waiting= and the attach reply the same way. Tests that deliberately send malformed frames keep their own assertions, and their replies are checked only against the error table. Every Python test that goes through these helpers then also checks the contract.
 
 ** 2.3 What stays hand-written
@@ -74,8 +74,8 @@ Each phase is reviewed and gated as AGENTS.md requires. Every phase changes code
    - A check validates them against the OpenRPC meta-schema.
    - The Python client validates every reply and notification. Each mismatch it finds is resolved in this phase: the document is corrected where it was wrong, and where the code was wrong the mismatch is reported to the user before anything changes.
 2. *Generate the reference.*
-   - Add =just api-reference= and its staleness check, and move API.org's method and record sections into the generated [[file:../API-REFERENCE.org][API-REFERENCE.org]].
-   - Update the rule in =AGENTS.md=: an API change updates the documents and regenerates the reference in the same change, and a missing update is a review defect.
+   - Offer =just api-reference= as an optional local rendering in =target/API-REFERENCE.org=. Keep API.org's behavioral explanations and do not commit generated schema excerpts.
+   - API changes update the machine contracts and handwritten semantics together. Regenerate tracked Emacs readers when their contract metadata changes; the test gate checks freshness.
 3. *Generate the Rust types* in =libs/api=, with the method lists and the dispatch-coverage test. Nothing uses the types yet.
 4. *Use the types,* one method group per commit, each adding tests for absent, =null= and unknown parameters that pin today's answers: sessions, permissions, history, raids, host commands, messaging and state. Handlers take generated parameters and return generated results instead of building =json!= values, and the Rust clients use the same types. The existing tests and phase 1's checks keep behaviour unchanged.
 5. *Feed the supervisor's gate.* Once both plans have reached this point, the gate of the supervisor plan (its section 4.8) takes the sandbox method list and parameter types from =libs/api= instead of hand-written ones.

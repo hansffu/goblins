@@ -26,6 +26,8 @@ Write documentation prose with one line per paragraph; preserve the structure of
 
 `docs/API.org` documents every JSON-RPC method, parameter, result, notification, error and record field. Update it in the same change as any RPC API change, and treat a missing update as a review defect.
 
+Machine-readable RPC contracts live in `libs/api/schema/`; use `docs/API.org` for behavior, ordering and ownership semantics. `just api-reference` optionally renders `target/API-REFERENCE.org`, which is ignored by Git, and refreshes the tracked Emacs readers. The contract tests enforce Emacs reader freshness; the optional reference is not required for validation.
+
 ## Review
 
 Every change is reviewed by a goblin running a different model: Claude is reviewed by a `goblins-codex` goblin, and Codex by a `goblins-claude` goblin. Configuration keys differ between setups (for example `codex` and `claude`): run the other agent's key from the run targets `goblin status` lists, and identify members by the `CONFIGURATION` column of `goblin raid members`.

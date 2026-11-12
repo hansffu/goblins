@@ -2240,9 +2240,26 @@ class ContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"notification endpoint"):
                 contract.check_coverage()
 
-    def test_offline_meta_schema_and_reference_are_current(self):
+    def test_offline_meta_schema_and_emacs_readers_are_current(self):
         contract.check()
-        self.assertEqual(contract.REFERENCE.read_text(), contract.reference())
+        self.assertEqual(contract.ELISP_READERS.read_text(), contract.elisp_readers())
+
+    def test_api_reference_is_optional_and_emacs_freshness_is_required(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            readers = Path(directory) / "readers.el"
+            reference = Path(directory) / "generated" / "reference.org"
+            readers.write_text(contract.elisp_readers())
+            with patch.object(contract, "ELISP_READERS", readers), patch.object(contract, "REFERENCE", reference), patch.object(contract, "check"), patch.object(sys, "argv", ["api_contract.py"]):
+                contract.main()
+                self.assertFalse(reference.exists())
+                readers.write_text("stale readers")
+                with self.assertRaisesRegex(SystemExit, "stale Emacs API readers"):
+                    contract.main()
+                with patch.object(sys, "argv", ["api_contract.py", "--write"]), patch("builtins.print"):
+                    contract.main()
+                self.assertEqual(readers.read_text(), contract.elisp_readers())
+                self.assertEqual(reference.read_text(), contract.reference())
 
     def test_wire_fixtures_and_known_field_validation(self):
         fixtures = contract.read("fixtures.json")
