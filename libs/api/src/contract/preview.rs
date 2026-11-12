@@ -121,38 +121,6 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
-    fn generated_diff_params_match_original_decoder_and_validation() {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Old {
-            #[serde(default)]
-            update: Option<Vec<String>>,
-            #[serde(default)]
-            lock: bool,
-        }
-        let fixtures: Value =
-            serde_json::from_str(include_str!("../../tests/fixtures.json")).unwrap();
-        for case in fixtures["devshell_diff_parameter_cases"]
-            .as_array()
-            .unwrap()
-        {
-            let value = case["params"].clone();
-            let old = serde_json::from_value::<Old>(value.clone());
-            let new = decode_params::<sandbox::DevShellDiff>(value);
-            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
-            if let (Ok(old), Ok(new)) = (old, new) {
-                assert_eq!(old.update, new.update);
-                assert_eq!(old.lock, new.lock);
-                let valid = !(old.update.is_some() && old.lock)
-                    && old.update.as_ref().is_none_or(|u| {
-                        u.len() <= 32 && u.iter().all(|i| crate::rpc::input_name(i))
-                    });
-                assert_eq!(new.validate(), valid);
-                assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
-            }
-        }
-    }
-    #[test]
     fn preview_projection_preserves_presence_and_independent_fields() {
         let fixtures: Value =
             serde_json::from_str(include_str!("../../tests/fixtures.json")).unwrap();

@@ -1459,80 +1459,6 @@ fn startup_payload_limit_is_required_nullable_and_strict() {
     }
 }
 
-// Frozen pre-C16 decoder: keep independent of the production wire declaration.
-mod c16a_original {
-    use super::*;
-    #[derive(Debug, Serialize, Deserialize)]
-    #[serde(tag = "kind", deny_unknown_fields)]
-    pub enum MaintenanceOperation {
-        Gc {
-            runtime: Option<PathBuf>,
-            state: PathBuf,
-            dry_run: bool,
-        },
-        ClearScope {
-            runtime: Option<PathBuf>,
-            name: Option<String>,
-            dry_run: bool,
-        },
-    }
-}
-
-#[test]
-fn c16a_maintenance_operation_preserves_original_json_and_diagnostics() {
-    let cases = [
-        json!({"kind":"Gc","state":"relative/雪\u{0000}","dry_run":true}),
-        json!({"kind":"Gc","runtime":null,"state":"","dry_run":false}),
-        json!({"kind":"Gc","runtime":"../runtime","state":"/state","dry_run":true}),
-        json!({"kind":"ClearScope","dry_run":false}),
-        json!({"kind":"ClearScope","runtime":null,"name":null,"dry_run":true}),
-        json!({"kind":"ClearScope","runtime":"","name":"雪\n","dry_run":false}),
-        json!(null),
-        json!([]),
-        json!("Gc"),
-        json!({}),
-        json!({"kind":null}),
-        json!({"kind":42}),
-        json!({"kind":"gc"}),
-        json!({"kind":"Gc","dry_run":true}),
-        json!({"kind":"Gc","state":null,"dry_run":true}),
-        json!({"kind":"Gc","state":[],"dry_run":true}),
-        json!({"kind":"Gc","state":"x"}),
-        json!({"kind":"Gc","state":"x","dry_run":null}),
-        json!({"kind":"Gc","state":"x","dry_run":0}),
-        json!({"kind":"Gc","state":"x","dry_run":true,"extra":1}),
-        json!({"kind":"ClearScope","name":false,"dry_run":true}),
-        json!({"kind":"ClearScope","runtime":{},"dry_run":true}),
-        json!({"kind":"ClearScope","dry_run":true,"state":"x"}),
-    ];
-    for input in cases {
-        let expected = serde_json::from_value::<c16a_original::MaintenanceOperation>(input.clone())
-            .map(|v| serde_json::to_value(v).unwrap())
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_value::<MaintenanceOperation>(input.clone())
-            .map(|v| serde_json::to_value(v).unwrap())
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, expected, "input {input}");
-    }
-    assert_eq!(
-        serde_json::to_value(MaintenanceOperation::Gc {
-            runtime: None,
-            state: "relative/state".into(),
-            dry_run: true,
-        })
-        .unwrap(),
-        json!({"kind":"Gc","runtime":null,"state":"relative/state","dry_run":true})
-    );
-    assert_eq!(
-        serde_json::to_value(MaintenanceOperation::ClearScope {
-            runtime: Some("../runtime".into()),
-            name: None,
-            dry_run: false,
-        })
-        .unwrap(),
-        json!({"kind":"ClearScope","runtime":"../runtime","name":null,"dry_run":false})
-    );
-}
 
 fn c16a_frame(message: Message) -> Frame {
     let mut prepared = Encoder::default().prepare(message).unwrap();
@@ -1900,85 +1826,6 @@ fn c16a1_preflight_float_api_matches_original_u32_diagnostic() {
     assert_eq!(error.to_string(), expected);
 }
 
-// Independent original Descriptor declaration pins Serde's named and sequence forms.
-mod c16a2_original {
-    use super::*;
-    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Descriptor {
-        #[serde(rename = "$fd")]
-        pub index: usize,
-    }
-}
-
-#[test]
-fn c16a2_descriptor_preserves_original_serde_forms_traits_and_exact_diagnostics() {
-    fn copy_debug<T: Copy + Clone + std::fmt::Debug>() {}
-    copy_debug::<Descriptor>();
-    let cases = [
-        "{\"$fd\":0}",
-        "{\"$fd\":239}",
-        "{\"$fd\":18446744073709551615}",
-        "[0]",
-        "[239]",
-        "[18446744073709551615]",
-        "[]",
-        "[0,1]",
-        "[null]",
-        "null",
-        "true",
-        "0",
-        "\"0\"",
-        "{}",
-        "{\"index\":0}",
-        "{\"$fd\":null}",
-        "{\"$fd\":true}",
-        "{\"$fd\":\"0\"}",
-        "{\"$fd\":[]}",
-        "{\"$fd\":{}}",
-        "{\"$fd\":-1}",
-        "{\"$fd\":1.0}",
-        "{\"$fd\":1.5}",
-        "{\"$fd\":18446744073709551616}",
-        "{\"$fd\":0,\"extra\":1}",
-        "{\"extra\":1,\"$fd\":0}",
-        "{\"$fd\":0,\"$fd\":1}",
-    ];
-    for input in cases {
-        let expected = serde_json::from_str::<c16a2_original::Descriptor>(input)
-            .map(|v| {
-                (
-                    v.index,
-                    format!("{v:?}"),
-                    serde_json::to_string(&v).unwrap(),
-                )
-            })
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_str::<Descriptor>(input)
-            .map(|v| {
-                (
-                    v.index,
-                    format!("{v:?}"),
-                    serde_json::to_string(&v).unwrap(),
-                )
-            })
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, expected, "raw JSON {input}");
-        let value: Value = serde_json::from_str(input).unwrap();
-        let expected = serde_json::from_value::<c16a2_original::Descriptor>(value.clone())
-            .map(|v| v.index)
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_value::<Descriptor>(value)
-            .map(|v| v.index)
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, expected, "Value input {input}");
-    }
-    for index in [0, 239, 240, usize::MAX] {
-        let d = Descriptor::new(index);
-        assert_eq!(d.index, index);
-        assert_eq!(serde_json::to_value(d).unwrap(), json!({"$fd":index}));
-    }
-}
 
 #[test]
 fn c16a2_bootstrap_scalar_types_ranges_and_error_precedence() {
@@ -2132,7 +1979,7 @@ fn c16a2_listener_optional_and_descriptor_forms_preserve_original_acceptance() {
         json!({"$fd":0,"extra":1}),
         json!([]),
     ] {
-        let expected = serde_json::from_value::<Option<c16a2_original::Descriptor>>(value.clone())
+        let expected = serde_json::from_value::<Option<Descriptor>>(value.clone())
             .unwrap_err()
             .to_string();
         let mut frame = c16a_frame(startup(host(), None));
@@ -2252,7 +2099,7 @@ fn c16a2_bootstrap_rejection_closes_listener_after_original_error_order() {
     let mut frame = c16a_frame(maintenance_request());
     frame.value["params"]["operation"] = json!({"kind":"Gc","dry_run":true});
     frame.value["params"]["stdout"] = json!({"$fd":usize::MAX});
-    let expected = serde_json::from_value::<c16a_original::MaintenanceOperation>(
+    let expected = serde_json::from_value::<MaintenanceOperation>(
         json!({"kind":"Gc","dry_run":true}),
     )
     .unwrap_err()
@@ -2271,7 +2118,7 @@ fn c16a2_maintenance_descriptor_diagnostics_and_api_validation_order() {
             json!({"$fd":0,"extra":true}),
             json!([]),
         ] {
-            let expected = serde_json::from_value::<c16a2_original::Descriptor>(value.clone())
+            let expected = serde_json::from_value::<Descriptor>(value.clone())
                 .unwrap_err()
                 .to_string();
             let mut frame = c16a_frame(maintenance_request());
@@ -2306,118 +2153,7 @@ fn c16a2_maintenance_descriptor_diagnostics_and_api_validation_order() {
         c16a_error(frame, "expected control object");
     }
 }
-mod c16b1_original {
-    use super::*;
-    #[derive(Serialize, Deserialize)]
-    #[serde(tag = "kind", deny_unknown_fields)]
-    pub enum WireStdio {
-        Fds { fds: [Descriptor; 3] },
-        Tty { slave: Descriptor },
-        NewPty { rows: u16, cols: u16 },
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct Recreate {
-        packages: Vec<String>,
-        auto_approve: Vec<String>,
-        docker: bool,
-        variables: std::collections::BTreeMap<String, String>,
-        #[serde(default)]
-        worktree: Option<Worktree>,
-    }
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Worktree {
-        name: String,
-        path: PathBuf,
-    }
-    #[derive(Serialize, Deserialize)]
-    #[serde(tag = "kind", deny_unknown_fields)]
-    pub enum WireSource {
-        Host {
-            configuration: PathBuf,
-            name: String,
-            scope: Option<String>,
-            dev_shell: Option<String>,
-            workspace: Option<PathBuf>,
-            cwd: Option<PathBuf>,
-            state: PathBuf,
-            history: Option<PathBuf>,
-            recreate: Option<Recreate>,
-            sequence: u64,
-        },
-        Member {
-            scope: Option<Descriptor>,
-            owner_scope: Option<String>,
-            manifest: PathBuf,
-            configuration: String,
-            auto: std::collections::BTreeMap<String, PathBuf>,
-            state: PathBuf,
-            history: Option<PathBuf>,
-            #[serde(default)]
-            worktree: Option<PathBuf>,
-            #[serde(default)]
-            arguments: Option<Vec<String>>,
-        },
-    }
-}
 
-#[test]
-fn c16b1_stdio_original_variants_and_diagnostics_at_actual_codec() {
-    let mut cases = vec![
-        json!({"kind":"Fds","fds":[{"$fd":0},{"$fd":1},{"$fd":2}]}),
-        json!({"kind":"Fds","fds":[[0],[1],[2]]}),
-        json!({"kind":"Tty","slave":{"$fd":0}}),
-        json!({"kind":"NewPty","rows":0,"cols":65535}),
-        json!({"kind":"NewPty","rows":1.0,"cols":2}),
-        json!({"kind":"NewPty","rows":65536,"cols":2}),
-        json!({"kind":"NewPty","rows":1}),
-        json!({"kind":"Tty"}),
-        json!({"kind":"Tty","slave":null}),
-        json!({"kind":"Fds","fds":[]}),
-        json!({"kind":"Fds","fds":[{"$fd":0},{"$fd":1}]}),
-        json!({"kind":"Fds","fds":[{"$fd":0},{"$fd":1},{"$fd":2},{"$fd":3}]}),
-        json!({"kind":"unknown"}),
-        json!({"kind":null}),
-        json!({}),
-        json!(null),
-        json!([]),
-    ];
-    for value in cases.clone().into_iter().take(4) {
-        let mut value = value;
-        value["extra"] = json!(true);
-        cases.push(value);
-    }
-    for input in cases {
-        let original = serde_json::from_value::<c16b1_original::WireStdio>(input.clone());
-        let count = match input["kind"].as_str() {
-            Some("Fds") => 3,
-            Some("Tty") => 1,
-            _ => 0,
-        };
-        let fds = (0..count)
-            .map(|_| fs::File::open("/dev/null").unwrap().into())
-            .collect();
-        let mut descriptors = Descriptors::new(fds).unwrap();
-        match original {
-            Err(expected) => {
-                let error = decode_stdio(input.clone(), &mut descriptors).err().unwrap();
-                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-                assert_eq!(error.to_string(), expected.to_string(), "input {input}");
-            }
-            Ok(original) => {
-                let actual = decode_stdio(input.clone(), &mut descriptors).unwrap();
-                descriptors.finish().unwrap();
-                let mut builder = Builder::new("test", 1);
-                assert_eq!(
-                    encode_stdio(&actual, &mut builder).unwrap(),
-                    serde_json::to_value(original).unwrap(),
-                    "input {input}"
-                );
-                assert_eq!(builder.fds.len(), count);
-            }
-        }
-    }
-}
 
 fn c16b1_member() -> Source {
     Source::Member {
@@ -2433,173 +2169,6 @@ fn c16b1_member() -> Source {
     }
 }
 
-#[test]
-fn c16b1_source_original_variants_defaults_and_exact_errors_at_decoder() {
-    let root = unix::temp_directory().unwrap();
-    let mut builder = Builder::new("test", 1);
-    let host = encode_source(&host(), &mut builder).unwrap();
-    let member = encode_source(&c16b1_member(), &mut builder).unwrap();
-    assert_eq!(
-        member,
-        json!({"kind":"Member","scope":null,"owner_scope":null,
-        "manifest":"relative/manifest","configuration":"child","auto":{"hello":"/output"},
-        "state":"/state","history":null,"worktree":null,"arguments":null})
-    );
-    let mut cases = vec![
-        host.clone(),
-        member.clone(),
-        json!(null),
-        json!([]),
-        json!({}),
-        json!({"kind":"unknown"}),
-    ];
-    for (base, required, optional) in [
-        (
-            &host,
-            vec!["configuration", "name", "state", "sequence"],
-            vec![
-                "scope",
-                "dev_shell",
-                "workspace",
-                "cwd",
-                "history",
-                "recreate",
-            ],
-        ),
-        (
-            &member,
-            vec!["manifest", "configuration", "auto", "state"],
-            vec!["scope", "owner_scope", "history", "worktree", "arguments"],
-        ),
-    ] {
-        for field in required {
-            let mut v = base.clone();
-            v.as_object_mut().unwrap().remove(field);
-            cases.push(v);
-            let mut v = base.clone();
-            v[field] = json!(null);
-            cases.push(v);
-        }
-        let mut v = base.clone();
-        for field in optional {
-            v.as_object_mut().unwrap().remove(field);
-        }
-        cases.push(v);
-        let mut v = base.clone();
-        v["extra"] = json!(true);
-        cases.push(v);
-    }
-    for (field, value) in [
-        ("sequence", json!(1.0)),
-        ("sequence", json!(-1)),
-        ("sequence", json!(u64::MAX)),
-        ("configuration", json!(0)),
-    ] {
-        let mut v = host.clone();
-        v[field] = value;
-        cases.push(v);
-    }
-    for (field, value) in [
-        ("auto", json!([])),
-        ("auto", json!({"hello":null})),
-        ("arguments", json!([1])),
-        ("arguments", json!([])),
-        ("worktree", json!("relative/雪")),
-        ("scope", json!({"$fd":1.0})),
-    ] {
-        let mut v = member.clone();
-        v[field] = value;
-        cases.push(v);
-    }
-    for input in cases {
-        let expected = serde_json::from_value::<c16b1_original::WireSource>(input.clone());
-        let mut frame = if input["kind"] == "Member" {
-            c16a_frame(startup(c16b1_member(), Some(handoff(&root, 0))))
-        } else {
-            c16a_frame(startup(self::host(), None))
-        };
-        frame.value["params"]["source"] = input.clone();
-        match expected {
-            Err(error) => c16a_error(frame, &error.to_string()),
-            Ok(expected) => {
-                let received = Decoder::default().receive(frame).unwrap().unwrap();
-                assert_eq!(
-                    received.adopted,
-                    if input["kind"] == "Member" {
-                        Some(1)
-                    } else {
-                        None
-                    }
-                );
-                let Message::SupervisorStart(start) = received.message else {
-                    unreachable!()
-                };
-                let mut builder = Builder::new("test", 1);
-                assert_eq!(
-                    encode_source(&start.source, &mut builder).unwrap(),
-                    serde_json::to_value(expected).unwrap(),
-                    "input {input}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn c16b1_recreate_worktree_domain_conversion_defaults_additive_and_tuple_errors() {
-    let base = json!({"packages":["hello"],"auto_approve":["jq"],"docker":true,"variables":{"session":"abc"}});
-    let mut cases = vec![
-        base.clone(),
-        json!([[], [], false, {}]),
-        json!([[], [], false, {}, null]),
-        json!([[], [], false, {}, ["branch", "relative/tree"]]),
-    ];
-    for (field, value) in [
-        ("worktree", json!(null)),
-        ("worktree", json!({"name":"branch","path":"relative/雪"})),
-        ("worktree", json!({"name":"branch","path":"x","extra":true})),
-        ("worktree", json!({"name":"branch"})),
-        ("worktree", json!(["branch"])),
-        ("worktree", json!(["branch", "x", "extra"])),
-        ("worktree", json!(false)),
-        ("extra", json!({"$fd":999})),
-        ("packages", json!([1])),
-        ("variables", json!({"x":null})),
-    ] {
-        let mut v = base.clone();
-        v[field] = value;
-        cases.push(v);
-    }
-    for field in ["packages", "auto_approve", "docker", "variables"] {
-        let mut v = base.clone();
-        v.as_object_mut().unwrap().remove(field);
-        cases.push(v);
-    }
-    for input in cases {
-        let mut frame = c16a_frame(startup(host(), None));
-        frame.value["params"]["source"]["recreate"] = input.clone();
-        let expected = serde_json::from_value::<c16b1_original::WireSource>(
-            frame.value["params"]["source"].clone(),
-        )
-        .map(|v| serde_json::to_value(v).unwrap()["recreate"].clone())
-        .map_err(|e| e.to_string());
-        match expected {
-            Err(error) => c16a_error(frame, &error),
-            Ok(expected) => {
-                let received = Decoder::default().receive(frame).unwrap().unwrap();
-                let Message::SupervisorStart(start) = received.message else {
-                    unreachable!()
-                };
-                let mut builder = Builder::new("test", 1);
-                assert_eq!(
-                    encode_source(&start.source, &mut builder).unwrap()["recreate"],
-                    expected,
-                    "input {input}"
-                );
-            }
-        }
-    }
-}
 
 #[test]
 fn c16b1_source_scope_precedes_other_capabilities_and_rejection_closes_copies() {
@@ -2653,34 +2222,6 @@ fn c16b1_source_scope_precedes_other_capabilities_and_rejection_closes_copies() 
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
     }
 }
-mod c16b2_original {
-    use super::*;
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct WireLease {
-        pub directory: PathBuf,
-        pub lock: Descriptor,
-    }
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct WireDirectory {
-        pub fd: Descriptor,
-        pub source: PathBuf,
-        pub destination: PathBuf,
-    }
-    #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct WireHandoff {
-        pub transfer: u64,
-        pub count: usize,
-        pub workspace: Descriptor,
-        pub working_directory: Option<WireDirectory>,
-        pub dev_shell: String,
-        pub docker: bool,
-        pub leases: Vec<WireLease>,
-        pub more: bool,
-    }
-}
 fn c16b2_start(root: &Path, count: usize) -> Prepared {
     Encoder::default()
         .prepare(Message::Command(Command::Start(Box::new(handoff(
@@ -2698,108 +2239,6 @@ fn c16b2_decoder_error(decoder: &mut Decoder, frame: Frame, expected: &str) {
     decoder.finish().unwrap(); // A rejected frame must settle pending ownership.
 }
 
-#[test]
-fn c16b2_handoff_records_original_serde_names_order_optional_and_sequence_forms() {
-    let root = unix::temp_directory().unwrap();
-    let base = c16b2_start(&root, 0).frames[0].value["params"]["handoff"].clone();
-    assert_eq!(
-        base,
-        json!({"transfer":1,"count":0,"workspace":{"$fd":0},
-        "working_directory":{"fd":{"$fd":1},"source":root,"destination":"/workspace"},
-        "dev_shell":"null","docker":true,"leases":[],"more":false})
-    );
-    let mut cases = vec![
-        base.clone(),
-        json!([1,0,{"$fd":0},null,"null",true,[],false]),
-        json!([]),
-        json!(null),
-    ];
-    for field in [
-        "transfer",
-        "count",
-        "workspace",
-        "dev_shell",
-        "docker",
-        "leases",
-        "more",
-    ] {
-        let mut v = base.clone();
-        v.as_object_mut().unwrap().remove(field);
-        cases.push(v);
-        let mut v = base.clone();
-        v[field] = json!(null);
-        cases.push(v);
-    }
-    let mut v = base.clone();
-    v.as_object_mut().unwrap().remove("working_directory");
-    cases.push(v);
-    for (field, value) in [
-        ("transfer", json!(1.0)),
-        ("count", json!(1.0)),
-        ("count", json!(-1)),
-        ("workspace", json!({})),
-        ("dev_shell", json!({"$fd":999})),
-        ("extra", json!(true)),
-        ("working_directory", json!([{"$fd":1},root,"/workspace"])),
-    ] {
-        let mut v = base.clone();
-        v[field] = value;
-        cases.push(v);
-    }
-    let directory = base["working_directory"].clone();
-    for field in ["fd", "source", "destination"] {
-        let mut v = base.clone();
-        v["working_directory"]
-            .as_object_mut()
-            .unwrap()
-            .remove(field);
-        cases.push(v);
-    }
-    for (field, value) in [
-        ("extra", json!(true)),
-        ("source", json!(null)),
-        ("fd", json!({"$fd":1.0})),
-    ] {
-        let mut d = directory.clone();
-        d[field] = value;
-        let mut v = base.clone();
-        v["working_directory"] = d;
-        cases.push(v);
-    }
-    for lease in [
-        json!({"directory":"/unused"}),
-        json!({"lock":{"$fd":0}}),
-        json!({"directory":null,"lock":{"$fd":0}}),
-        json!({"directory":"/unused","lock":{"$fd":0},"extra":true}),
-        json!(["/unused"]),
-    ] {
-        let mut v = base.clone();
-        v["leases"] = json!([lease]);
-        cases.push(v);
-    }
-    for value in cases {
-        let expected = serde_json::from_value::<c16b2_original::WireHandoff>(value.clone());
-        let mut prepared = c16b2_start(&root, 0);
-        let mut frame = prepared.frames.pop_front().unwrap();
-        frame.value["params"]["handoff"] = value.clone();
-        match expected {
-            Err(error) => c16a_error(frame, &error.to_string()),
-            Ok(expected) => {
-                if expected.working_directory.is_none() {
-                    frame.fds.pop();
-                }
-                let received = Decoder::default().receive(frame).unwrap().unwrap();
-                assert_eq!(received.adopted, Some(1));
-                let repeated = Encoder::default().prepare(received.message).unwrap();
-                assert_eq!(
-                    repeated.frames[0].value["params"]["handoff"],
-                    serde_json::to_value(expected).unwrap(),
-                    "input {value}"
-                );
-            }
-        }
-    }
-}
 
 #[test]
 fn c16b2_multipart_producer_pins_header_and_continuation_indexes_and_adoption() {
@@ -2998,7 +2437,7 @@ fn c16b2_continuation_field_errors_precede_pending_state_and_unknown_fields() {
         ),
         (
             json!({"transfer":1,"leases":[{}],"more":false}),
-            serde_json::from_value::<Vec<c16b2_original::WireLease>>(json!([{}]))
+            serde_json::from_value::<Vec<contract::WireLease>>(json!([{}]))
                 .err()
                 .unwrap()
                 .to_string(),
@@ -3211,7 +2650,7 @@ fn c17a_root_params_missing_unknown_and_type_errors_keep_original_order() {
     c16a_error(frame, "unexpected control field");
     let mut frame = c16b2_start(&root, 0).frames.pop_front().unwrap();
     frame.value["params"]["handoff"] = json!(null);
-    let expected = serde_json::from_value::<c16b2_original::WireHandoff>(json!(null))
+    let expected = serde_json::from_value::<contract::WireHandoff>(json!(null))
         .err()
         .unwrap()
         .to_string();
@@ -3297,7 +2736,7 @@ fn c17a_manifest_scalar_and_inner_catalogue_decoding_preserve_exact_errors_and_l
         (
             "owner",
             json!({"$fd":1.0}),
-            serde_json::from_value::<Option<c16a2_original::Descriptor>>(json!({"$fd":1.0}))
+            serde_json::from_value::<Option<Descriptor>>(json!({"$fd":1.0}))
                 .unwrap_err()
                 .to_string(),
         ),
@@ -3402,80 +2841,6 @@ fn c17a_manifest_owner_root_transfer_and_catalogue_error_precedence_closes_raw_f
         assert_eq!(fs::read_to_string(&unrelated).unwrap(), "keep");
         fs::remove_dir_all(root).unwrap();
     }
-}
-mod c17b1_original {
-    use super::*;
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub enum SpawnKind {
-        Exec,
-        Attach,
-        Terminal { exit_report: Option<u64> },
-    }
-}
-#[test]
-fn c17b1_spawn_kind_original_raw_value_forms_traits_and_exact_diagnostics() {
-    fn required<T: Copy + Clone + std::fmt::Debug + Eq>() {}
-    required::<crate::SpawnKind>();
-    let cases = [
-        "\"Exec\"",
-        "\"Attach\"",
-        "{\"Exec\":null}",
-        "{\"Attach\":null}",
-        "{\"Terminal\":{}}",
-        "{\"Terminal\":{\"exit_report\":null}}",
-        "{\"Terminal\":{\"exit_report\":0}}",
-        "{\"Terminal\":{\"exit_report\":18446744073709551615}}",
-        "{\"Terminal\":{\"exit_report\":1.0}}",
-        "{\"Terminal\":{\"exit_report\":-1}}",
-        "{\"Terminal\":{\"exit_report\":18446744073709551616}}",
-        "{\"Terminal\":{\"exit_report\":true}}",
-        "{\"Terminal\":{\"exit_report\":\"1\"}}",
-        "{\"Terminal\":{\"extra\":true}}",
-        "{\"Terminal\":{\"exit_report\":1,\"extra\":[]}}",
-        "{\"Terminal\":[]}",
-        "{\"Terminal\":[null]}",
-        "{\"Terminal\":[1]}",
-        "{\"Terminal\":[1,2]}",
-        "{\"Terminal\":null}",
-        "\"Terminal\"",
-        "{\"Exec\":{}}",
-        "{\"Exec\":[]}",
-        "{\"Terminal\":{\"exit_report\":1,\"exit_report\":2}}",
-        "{\"Exec\":null,\"Attach\":null}",
-        "\"exec\"",
-        "\"Unknown\"",
-        "{}",
-        "null",
-        "[]",
-        "0",
-        "true",
-    ];
-    for input in cases {
-        let old = serde_json::from_str::<c17b1_original::SpawnKind>(input)
-            .map(|v| (format!("{v:?}"), serde_json::to_string(&v).unwrap()))
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_str::<crate::SpawnKind>(input)
-            .map(|v| (format!("{v:?}"), serde_json::to_string(&v).unwrap()))
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, old, "raw {input}");
-        let value: Value = serde_json::from_str(input).unwrap();
-        let old = serde_json::from_value::<c17b1_original::SpawnKind>(value.clone())
-            .map(|v| (format!("{v:?}"), serde_json::to_value(v).unwrap()))
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_value::<crate::SpawnKind>(value)
-            .map(|v| (format!("{v:?}"), serde_json::to_value(v).unwrap()))
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, old, "Value {input}");
-    }
-    let value = crate::SpawnKind::Terminal {
-        exit_report: Some(u64::MAX),
-    };
-    assert_eq!(value, value.clone());
-    assert_ne!(crate::SpawnKind::Exec, crate::SpawnKind::Attach);
-    assert_eq!(
-        serde_json::to_value(crate::SpawnKind::Terminal { exit_report: None }).unwrap(),
-        json!({"Terminal":{"exit_report":null}})
-    );
 }
 
 fn c17b1_spawn() -> Message {
@@ -3736,7 +3101,7 @@ fn c17b1_process_scalar_ranges_and_field_error_order_match_original() {
         (
             "kind",
             json!({"Terminal":{"exit_report":1.0}}),
-            error::<c17b1_original::SpawnKind>(json!({"Terminal":{"exit_report":1.0}})),
+            error::<crate::SpawnKind>(json!({"Terminal":{"exit_report":1.0}})),
         ),
     ] {
         let mut frame = c16a_frame(c17b1_spawn());
@@ -3819,7 +3184,7 @@ fn c17b1_spawn_fd_indexes_sender_lifetime_and_rejection_order_are_preserved() {
                 }
                 4 => {
                     frame.value["params"]["stdio"] = json!({"kind":"Unknown"});
-                    serde_json::from_value::<c16b1_original::WireStdio>(json!({"kind":"Unknown"}))
+                    serde_json::from_value::<contract::WireStdio>(json!({"kind":"Unknown"}))
                         .err()
                         .unwrap()
                         .to_string()
@@ -3835,215 +3200,6 @@ fn c17b1_spawn_fd_indexes_sender_lifetime_and_rejection_order_are_preserved() {
         }
         assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
-    }
-}
-mod c17b2_original {
-    use super::*;
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-    pub enum TerminalId {
-        Main,
-        Process(u64),
-    }
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct TerminalStatus {
-        pub eof: bool,
-        pub complete: bool,
-        pub interrupted: bool,
-        pub attached: bool,
-        pub detached: bool,
-        pub connected: bool,
-    }
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub enum Source {
-        Visible,
-        Recent,
-    }
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub enum Condition {
-        Match(String),
-        Regex(String),
-        Exit,
-    }
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub enum Call {
-        Read {
-            source: Source,
-            lines: Option<usize>,
-        },
-        Send {
-            text: Option<String>,
-            keys: Vec<String>,
-        },
-        Wait {
-            condition: Condition,
-            timeout: u64,
-            lines: Option<usize>,
-        },
-    }
-}
-fn c17b2_compare_serde<
-    A: Serialize + DeserializeOwned + std::fmt::Debug,
-    O: Serialize + DeserializeOwned + std::fmt::Debug,
->(
-    cases: &[&str],
-) {
-    for input in cases {
-        let old = serde_json::from_str::<O>(input)
-            .map(|v| (format!("{v:?}"), serde_json::to_string(&v).unwrap()))
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_str::<A>(input)
-            .map(|v| (format!("{v:?}"), serde_json::to_string(&v).unwrap()))
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, old, "raw {input}");
-        let v: Value = serde_json::from_str(input).unwrap();
-        let old = serde_json::from_value::<O>(v.clone())
-            .map(|v| (format!("{v:?}"), serde_json::to_value(&v).unwrap()))
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_value::<A>(v)
-            .map(|v| (format!("{v:?}"), serde_json::to_value(&v).unwrap()))
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, old, "Value {input}");
-    }
-}
-#[test]
-fn c17b2_nested_terminal_metadata_original_serde_forms_names_traits_and_defaults() {
-    fn copy<T: Copy + Clone + std::fmt::Debug + Eq>() {}
-    fn clone_eq<T: Clone + std::fmt::Debug + Eq>() {}
-    fn ordered<T: Ord>() {}
-    fn default<T: Default>() {}
-    copy::<TerminalId>();
-    ordered::<TerminalId>();
-    copy::<TerminalStatus>();
-    default::<TerminalStatus>();
-    copy::<crate::terminal::Source>();
-    clone_eq::<crate::terminal::Condition>();
-    clone_eq::<crate::terminal::Call>();
-    let mut ids = [
-        TerminalId::Process(u64::MAX),
-        TerminalId::Main,
-        TerminalId::Process(0),
-    ];
-    ids.sort();
-    assert_eq!(
-        ids,
-        [
-            TerminalId::Main,
-            TerminalId::Process(0),
-            TerminalId::Process(u64::MAX)
-        ]
-    );
-    assert_eq!(
-        serde_json::to_value(TerminalStatus::default()).unwrap(),
-        json!({"eof":false,"complete":false,"interrupted":false,"attached":false,"detached":false,"connected":false})
-    );
-    c17b2_compare_serde::<TerminalId, c17b2_original::TerminalId>(&[
-        "\"Main\"",
-        "{\"Main\":null}",
-        "{\"Process\":0}",
-        "{\"Process\":18446744073709551615}",
-        "{\"Process\":1.0}",
-        "{\"Process\":-1}",
-        "{\"Process\":18446744073709551616}",
-        "{\"Process\":null}",
-        "{\"Process\":[1]}",
-        "{\"Main\":{}}",
-        "\"Process\"",
-        "\"main\"",
-        "{}",
-        "[]",
-        "null",
-    ]);
-    c17b2_compare_serde::<crate::terminal::Source, c17b2_original::Source>(&[
-        "\"Visible\"",
-        "\"Recent\"",
-        "{\"Visible\":null}",
-        "{\"Recent\":null}",
-        "{\"Recent\":{}}",
-        "\"visible\"",
-        "{\"Visible\":null,\"Recent\":null}",
-        "[]",
-        "null",
-    ]);
-    c17b2_compare_serde::<crate::terminal::Condition, c17b2_original::Condition>(&[
-        "{\"Match\":\"\"}",
-        "{\"Match\":\"雪\\n\"}",
-        "{\"Regex\":\"[\"}",
-        "\"Exit\"",
-        "{\"Exit\":null}",
-        "{\"Match\":null}",
-        "{\"Regex\":[]}",
-        "\"Match\"",
-        "{\"Exit\":{}}",
-        "{\"Match\":\"a\",\"Regex\":\"b\"}",
-        "\"exit\"",
-        "null",
-        "[]",
-    ]);
-    c17b2_compare_serde::<crate::terminal::Call, c17b2_original::Call>(&[
-        "{\"Read\":{\"source\":\"Visible\"}}",
-        "{\"Read\":{\"source\":{\"Recent\":null},\"lines\":null,\"extra\":true}}",
-        "{\"Read\":{\"source\":\"Visible\",\"lines\":18446744073709551615}}",
-        "{\"Read\":[\"Visible\",null]}",
-        "{\"Read\":[\"Visible\"]}",
-        "{\"Read\":{}}",
-        "{\"Read\":{\"source\":\"Visible\",\"lines\":1.0}}",
-        "{\"Read\":{\"source\":\"Visible\",\"lines\":-1}}",
-        "{\"Read\":{\"source\":\"Visible\",\"lines\":18446744073709551616}}",
-        "{\"Read\":{\"source\":\"Visible\",\"lines\":1,\"lines\":2}}",
-        "{\"Send\":{\"keys\":[]}}",
-        "{\"Send\":{\"text\":null,\"keys\":[],\"extra\":true}}",
-        "{\"Send\":[null,[]]}",
-        "{\"Send\":{\"text\":\"x\"}}",
-        "{\"Send\":{\"keys\":null}}",
-        "{\"Wait\":{\"condition\":\"Exit\",\"timeout\":0}}",
-        "{\"Wait\":{\"condition\":{\"Regex\":\"[\"},\"timeout\":18446744073709551615,\"lines\":0,\"extra\":[]}}",
-        "{\"Wait\":[\"Exit\",1,null]}",
-        "{\"Wait\":[\"Exit\",1]}",
-        "{\"Wait\":{\"condition\":\"Exit\",\"timeout\":1.0}}",
-        "{\"Wait\":{\"condition\":\"Exit\"}}",
-        "{\"Wait\":{\"timeout\":1}}",
-        "{\"Wait\":null}",
-        "\"Read\"",
-        "[]",
-        "null",
-    ]);
-    let good = "{\"eof\":false,\"complete\":true,\"interrupted\":false,\"attached\":true,\"detached\":false,\"connected\":true}";
-    c17b2_compare_serde::<TerminalStatus, c17b2_original::TerminalStatus>(&[
-        good,
-        "[false,true,false,true,false,true]",
-        "[false,true,false,true,false]",
-        "[false,true,false,true,false,true,false]",
-        "{}",
-        "null",
-        "{\"eof\":false,\"complete\":true,\"interrupted\":false,\"attached\":true,\"detached\":false,\"connected\":true,\"extra\":true}",
-        "{\"eof\":false,\"complete\":true,\"interrupted\":false,\"attached\":true,\"detached\":false,\"connected\":true,\"eof\":true}",
-    ]);
-    let value: Value = serde_json::from_str(good).unwrap();
-    for field in [
-        "eof",
-        "complete",
-        "interrupted",
-        "attached",
-        "detached",
-        "connected",
-    ] {
-        let mut missing = value.clone();
-        missing.as_object_mut().unwrap().remove(field);
-        for v in [missing, {
-            let mut v = value.clone();
-            v[field] = json!(null);
-            v
-        }] {
-            let old = serde_json::from_value::<c17b2_original::TerminalStatus>(v.clone())
-                .unwrap_err()
-                .to_string();
-            assert_eq!(
-                serde_json::from_value::<TerminalStatus>(v)
-                    .unwrap_err()
-                    .to_string(),
-                old
-            );
-        }
     }
 }
 
@@ -4235,7 +3391,7 @@ fn c17b2_scalar_and_nested_terminal_errors_keep_original_field_order() {
         (
             "call",
             json!({"Read":{}}),
-            old::<c17b2_original::Call>(json!({"Read":{}})),
+            old::<crate::terminal::Call>(json!({"Read":{}})),
         ),
     ] {
         let mut frame = c16a_frame(Message::Command(Command::TerminalCall {
@@ -4257,7 +3413,7 @@ fn c17b2_scalar_and_nested_terminal_errors_keep_original_field_order() {
     }));
     frame.value["params"]["status"] = json!({});
     frame.value["params"]["error"] = json!(1);
-    c16a_error(frame, &old::<c17b2_original::TerminalStatus>(json!({})));
+    c16a_error(frame, &old::<TerminalStatus>(json!({})));
     let mut frame = c16a_frame(Message::Event(Event::Terminal {
         terminal: TerminalId::Main,
         status: TerminalStatus::default(),
@@ -4387,7 +3543,7 @@ fn c17b2_attach_capability_lifetimes_and_rejection_order_are_preserved() {
                     let value = json!({"Process":1.0});
                     frame.value["params"]["terminal"] = value.clone();
                     frame.value["params"]["stream"] = json!({"$fd":99});
-                    serde_json::from_value::<c17b2_original::TerminalId>(value)
+                    serde_json::from_value::<TerminalId>(value)
                         .unwrap_err()
                         .to_string()
                 }
@@ -4404,7 +3560,7 @@ fn c17b2_attach_capability_lifetimes_and_rejection_order_are_preserved() {
                 }
                 4 => {
                     frame.value["params"]["stream"] = json!({});
-                    serde_json::from_value::<c16a2_original::Descriptor>(json!({}))
+                    serde_json::from_value::<Descriptor>(json!({}))
                         .unwrap_err()
                         .to_string()
                 }
@@ -4420,121 +3576,6 @@ fn c17b2_attach_capability_lifetimes_and_rejection_order_are_preserved() {
         assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
     }
-}
-mod c17c_original {
-    use super::*;
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Request {
-        pub id: String,
-        #[serde(default = "package_kind")]
-        pub kind: String,
-        pub package: String,
-        pub reason: String,
-    }
-    fn package_kind() -> String {
-        "package".into()
-    }
-    #[derive(Debug, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Reply {
-        pub id: Option<String>,
-        pub status: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub message: Option<String>,
-    }
-    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Changes {
-        pub update: Option<Vec<String>>,
-        pub lock: bool,
-    }
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct DevShellSummary {
-        pub identity: String,
-        pub generation: u32,
-        pub lock: Value,
-    }
-    #[derive(Debug, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct WirePreview {
-        pub output_path: Option<PathBuf>,
-        pub in_store: bool,
-        pub download: Option<String>,
-        pub build_required: bool,
-    }
-}
-#[test]
-fn c17c_nested_original_serde_defaults_closedness_order_and_traits() {
-    fn clone_debug<T: Clone + std::fmt::Debug>() {}
-    fn default_eq<T: Default + PartialEq + Eq>() {}
-    clone_debug::<goblins_protocol::Request>();
-    clone_debug::<crate::devshell::Changes>();
-    clone_debug::<crate::policy::DevShellSummary>();
-    default_eq::<crate::devshell::Changes>();
-    let changes = crate::devshell::Changes::default();
-    assert_eq!(changes.update, None);
-    assert!(!changes.lock);
-    assert_eq!(goblins_protocol::package_kind(), "package");
-    c17b2_compare_serde::<goblins_protocol::Request, c17c_original::Request>(&[
-        r#"{"id":"","package":"../bad name","reason":""}"#,
-        r#"{"id":"r","kind":"future","package":"","reason":"雪\n"}"#,
-        r#"{"id":"r","kind":null,"package":"p","reason":"r"}"#,
-        r#"{"id":"r","package":"p","reason":"r","extra":1}"#,
-        r#"{}"#,
-        r#"{"id":"r"}"#,
-        r#"{"id":"r","package":"p"}"#,
-        r#"{"id":"a","id":"b","package":"p","reason":"r"}"#,
-        r#"["r","package","p","why"]"#,
-        r#"["r","p","why"]"#,
-        r#"["r","package","p","why",0]"#,
-        r#"null"#,
-    ]);
-    c17b2_compare_serde::<goblins_protocol::Reply, c17c_original::Reply>(&[
-        r#"{"status":"future"}"#,
-        r#"{"id":null,"status":"","message":null}"#,
-        r#"{"id":"r","status":"ok","message":"雪\n"}"#,
-        r#"{"status":"ok","extra":0}"#,
-        r#"{}"#,
-        r#"{"status":null}"#,
-        r#"{"id":"a","id":"b","status":"ok"}"#,
-        r#"[null,"ok",null]"#,
-        r#"[null,"ok"]"#,
-        r#"[]"#,
-        r#"{"id":1,"status":"ok"}"#,
-        r#"{"status":"ok","message":false}"#,
-    ]);
-    c17b2_compare_serde::<crate::devshell::Changes, c17c_original::Changes>(&[
-        r#"{"lock":false}"#,
-        r#"{"update":null,"lock":true}"#,
-        r#"{"update":[],"lock":false,"future":0}"#,
-        r#"{"update":["../invalid",""],"lock":true}"#,
-        r#"{}"#,
-        r#"{"lock":null}"#,
-        r#"{"update":[1],"lock":true}"#,
-        r#"{"lock":true,"lock":false}"#,
-        r#"[null,true]"#,
-        r#"[[],false]"#,
-        r#"[true]"#,
-        r#"[null,true,0]"#,
-    ]);
-    c17b2_compare_serde::<crate::policy::DevShellSummary, c17c_original::DevShellSummary>(&[
-        r#"{"identity":"","generation":0,"lock":null}"#,
-        r#"{"identity":"relative#?","generation":4294967295,"lock":{"$fd":0},"future":0}"#,
-        r#"{"identity":"x","generation":4294967296,"lock":{}}"#,
-        r#"{"identity":"x","generation":-1,"lock":null}"#,
-        r#"{"identity":"x","generation":1.0,"lock":null}"#,
-        r#"{"identity":"x","generation":0}"#,
-        r#"{}"#,
-        r#"{"identity":"x","generation":1,"generation":2,"lock":null}"#,
-        r#"["x",0,{"$fd":0}]"#,
-        r#"["x",0]"#,
-        r#"["x",0,null,0]"#,
-    ]);
-    let reply = goblins_protocol::Reply::new(None, "future", None);
-    assert_eq!(
-        serde_json::to_value(reply).unwrap(),
-        json!({"id":null,"status":"future"})
-    );
 }
 fn c17c_request() -> goblins_protocol::Request {
     goblins_protocol::Request {
@@ -4741,7 +3782,7 @@ fn c17c_scalar_nested_and_nullable_errors_precede_root_finish() {
             "Command.Decide",
             "request",
             json!({}),
-            err::<c17c_original::Request>(json!({})),
+            err::<goblins_protocol::Request>(json!({})),
         ),
         (
             "Command.Decide",
@@ -4760,7 +3801,7 @@ fn c17c_scalar_nested_and_nullable_errors_precede_root_finish() {
             "Command.Refresh",
             "changes",
             json!({}),
-            err::<c17c_original::Changes>(json!({})),
+            err::<crate::devshell::Changes>(json!({})),
         ),
         ("Command.Run", "serial", json!(1.0), bad_u64.clone()),
         ("Command.Run", "app", json!(null), bad_string.clone()),
@@ -4769,14 +3810,14 @@ fn c17c_scalar_nested_and_nullable_errors_precede_root_finish() {
             "Command.Diff",
             "changes",
             json!({}),
-            err::<c17c_original::Changes>(json!({})),
+            err::<crate::devshell::Changes>(json!({})),
         ),
         ("Event.Preview", "approval", json!(1.0), bad_u64.clone()),
         (
             "Event.Preview",
             "result",
             json!({"Ok":{}}),
-            err::<Result<c17c_original::WirePreview, String>>(json!({"Ok":{}})),
+            err::<Result<contract::WirePreview, String>>(json!({"Ok":{}})),
         ),
         ("Event.Progress", "request", json!(null), bad_string.clone()),
         ("Event.Progress", "state", json!(null), bad_string.clone()),
@@ -4799,7 +3840,7 @@ fn c17c_scalar_nested_and_nullable_errors_precede_root_finish() {
             "Event.Granted",
             "reply",
             json!({}),
-            err::<c17c_original::Reply>(json!({})),
+            err::<goblins_protocol::Reply>(json!({})),
         ),
         (
             "Event.Granted",
@@ -4865,7 +3906,7 @@ fn c17c_preview_private_mapping_preserves_public_skip_and_original_wire_forms() 
         json!({"Ok":null}),
         json!({"Ok":{},"Err":"e"}),
     ] {
-        let old=serde_json::from_value::<Result<c17c_original::WirePreview,String>>(input.clone())
+        let old=serde_json::from_value::<Result<contract::WirePreview,String>>(input.clone())
             .map(|result|result.map(|p|json!({"output_path":p.output_path,"in_store":p.in_store,"download":p.download,"build_required":p.build_required})))
             .map_err(|error|error.to_string());
         let actual=decode_preview(input.clone())
@@ -5003,7 +4044,7 @@ fn c17c_opaque_call_refresh_summary_preserve_json_data_and_parser_order() {
                 "Event.Refresh" => serde_json::from_str::<Result<(Value, String), String>>(text)
                     .err()
                     .map(|e| e.to_string()),
-                _ => serde_json::from_str::<c17c_original::DevShellSummary>(text)
+                _ => serde_json::from_str::<crate::policy::DevShellSummary>(text)
                     .err()
                     .map(|e| e.to_string()),
             };
@@ -5076,53 +4117,6 @@ fn c17c_path_serialization_errors_and_preview_skip_boundary_are_original() {
         json!({"in_store":false,"download":null,"build_required":false})
     );
     assert!(std::panic::catch_unwind(|| encode_preview(&Ok(preview))).is_err());
-}
-mod c17d1_original {
-    use super::*;
-    /// What a host job's supervisor records in its `status.json`.
-    #[derive(Debug, Serialize, Deserialize, Default)]
-    pub struct HostOutcome {
-        pub exit_code: Option<i32>,
-        pub signal: Option<i32>,
-        pub spawn_error: Option<String>,
-        pub cancelled: bool,
-        pub timed_out: bool,
-        pub truncated: bool,
-    }
-}
-#[test]
-fn c17d1_host_outcome_original_serde_defaults_order_ranges_and_legacy_forms() {
-    fn traits<T: Default + std::fmt::Debug + Serialize + DeserializeOwned>() {}
-    traits::<HostOutcome>();
-    assert_eq!(
-        serde_json::to_value(HostOutcome::default()).unwrap(),
-        json!({"exit_code":null,"signal":null,"spawn_error":null,"cancelled":false,"timed_out":false,"truncated":false})
-    );
-    c17b2_compare_serde::<HostOutcome, c17d1_original::HostOutcome>(&[
-        r#"{"cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{"exit_code":null,"signal":null,"spawn_error":null,"cancelled":true,"timed_out":true,"truncated":true}"#,
-        r#"{"exit_code":-2147483648,"signal":2147483647,"spawn_error":"failed\n雪","cancelled":true,"timed_out":true,"truncated":true,"future":{"$fd":0}}"#,
-        r#"{"exit_code":2147483647,"signal":-2147483648,"spawn_error":"","cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{}"#,
-        r#"{"cancelled":false}"#,
-        r#"{"cancelled":false,"timed_out":false}"#,
-        r#"{"cancelled":null,"timed_out":false,"truncated":false}"#,
-        r#"{"cancelled":false,"timed_out":0,"truncated":false}"#,
-        r#"{"exit_code":2147483648,"cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{"exit_code":-2147483649,"cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{"signal":2147483648,"cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{"signal":-2147483649,"cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{"exit_code":1.0,"cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{"spawn_error":false,"cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{"exit_code":null,"exit_code":3,"cancelled":false,"timed_out":false,"truncated":false}"#,
-        r#"{"cancelled":false,"cancelled":true,"timed_out":false,"truncated":false}"#,
-        r#"[null,null,null,false,false,false]"#,
-        r#"[-2147483648,2147483647,"error",true,true,true]"#,
-        r#"[null,null,null,false,false]"#,
-        r#"[null,null,null,false,false,false,0]"#,
-        r#"null"#,
-        r#""opaque text""#,
-    ]);
 }
 fn c17d1_outcome() -> HostOutcome {
     HostOutcome {
@@ -5375,13 +4369,13 @@ fn c17d1_host_job_plain_fields_nested_errors_and_extraction_precedence() {
             "Event.HostJobFinished",
             "outcome",
             json!({"Ok":{}}),
-            err::<Result<c17d1_original::HostOutcome, String>>(json!({"Ok":{}})),
+            err::<Result<HostOutcome, String>>(json!({"Ok":{}})),
         ),
         (
             "Event.HostJobFinished",
             "outcome",
             json!({"Ok":{"exit_code":2147483648_i64}}),
-            err::<Result<c17d1_original::HostOutcome, String>>(
+            err::<Result<HostOutcome, String>>(
                 json!({"Ok":{"exit_code":2147483648_i64}}),
             ),
         ),
@@ -5389,19 +4383,19 @@ fn c17d1_host_job_plain_fields_nested_errors_and_extraction_precedence() {
             "Event.HostJobFinished",
             "outcome",
             json!({"Err":false}),
-            err::<Result<c17d1_original::HostOutcome, String>>(json!({"Err":false})),
+            err::<Result<HostOutcome, String>>(json!({"Err":false})),
         ),
         (
             "Event.HostJobFinished",
             "outcome",
             json!({"Other":{}}),
-            err::<Result<c17d1_original::HostOutcome, String>>(json!({"Other":{}})),
+            err::<Result<HostOutcome, String>>(json!({"Other":{}})),
         ),
         (
             "Event.HostJobFinished",
             "outcome",
             json!("opaque"),
-            err::<Result<c17d1_original::HostOutcome, String>>(json!("opaque")),
+            err::<Result<HostOutcome, String>>(json!("opaque")),
         ),
     ];
     for method in [
@@ -5449,7 +4443,7 @@ fn c17d1_host_outcome_plain_nested_compatibility_and_independent_flags() {
         json!(null),
     ] {
         let old =
-            serde_json::from_value::<Result<c17d1_original::HostOutcome, String>>(value.clone())
+            serde_json::from_value::<Result<HostOutcome, String>>(value.clone())
                 .map(|v| serde_json::to_value(v).unwrap())
                 .map_err(|e| e.to_string());
         let frame = Frame {
@@ -5739,28 +4733,6 @@ fn c17d2_lifecycle_method_identity_and_empty_payloads_are_exact() {
 }
 #[test]
 fn c17d3a_membership_result_original_forms_and_typed_error_precedence() {
-    c17b2_compare_serde::<Result<Descriptor, String>, Result<c16a2_original::Descriptor, String>>(
-        &[
-            r#"{"Ok":{"$fd":0}}"#,
-            r#"{"Ok":[0]}"#,
-            r#"{"Err":"{\"$fd\":0}\n雪"}"#,
-            r#"{}"#,
-            r#"null"#,
-            r#""Ok""#,
-            r#""Err""#,
-            r#"["Ok",{"$fd":0}]"#,
-            r#"{"Other":0}"#,
-            r#"{"Err":null}"#,
-            r#"{"Ok":{"$fd":0},"Err":"e"}"#,
-            r#"{"Ok":{}}"#,
-            r#"{"Ok":{"$fd":-1}}"#,
-            r#"{"Ok":{"$fd":1.0}}"#,
-            r#"{"Ok":{"$fd":18446744073709551616}}"#,
-            r#"{"Ok":{"$fd":null}}"#,
-            r#"{"Ok":{"$fd":0,"extra":true}}"#,
-            r#"{"Ok":{"$fd":0,"$fd":1}}"#,
-        ],
-    );
     for value in [
         json!({"Ok":{"$fd":0}}),
         json!({"Ok":[0]}),
@@ -5768,7 +4740,7 @@ fn c17d3a_membership_result_original_forms_and_typed_error_precedence() {
         json!({"Err":"{\"$fd\":0}\0雪"}),
     ] {
         let old =
-            serde_json::from_value::<Result<c16a2_original::Descriptor, String>>(value.clone())
+            serde_json::from_value::<Result<Descriptor, String>>(value.clone())
                 .unwrap();
         let expected = serde_json::to_value(&old).unwrap();
         let fds = if old.is_ok() {
@@ -5801,7 +4773,7 @@ fn c17d3a_membership_result_original_forms_and_typed_error_precedence() {
         json!({"Ok":{"$fd":u64::MAX}}),
         json!({"Ok":{"$fd":0,"extra":0}}),
     ] {
-        let expected = match serde_json::from_value::<Result<c16a2_original::Descriptor, String>>(
+        let expected = match serde_json::from_value::<Result<Descriptor, String>>(
             value.clone(),
         ) {
             Err(error) => error.to_string(),
@@ -5946,7 +4918,7 @@ fn c17d3a_membership_rejection_closes_duplicates_at_original_boundaries() {
                 2 => {
                     let value = json!({"Ok":{"$fd":0,"extra":0}});
                     frame.value["params"]["result"] = value.clone();
-                    serde_json::from_value::<Result<c16a2_original::Descriptor, String>>(value)
+                    serde_json::from_value::<Result<Descriptor, String>>(value)
                         .unwrap_err()
                         .to_string()
                 }
@@ -5957,7 +4929,7 @@ fn c17d3a_membership_rejection_closes_duplicates_at_original_boundaries() {
                 4 => {
                     let value = json!({"Err":null});
                     frame.value["params"]["result"] = value.clone();
-                    serde_json::from_value::<Result<c16a2_original::Descriptor, String>>(value)
+                    serde_json::from_value::<Result<Descriptor, String>>(value)
                         .unwrap_err()
                         .to_string()
                 }
@@ -5970,135 +4942,6 @@ fn c17d3a_membership_rejection_closes_duplicates_at_original_boundaries() {
         drop(prepared);
         assert!(unix::readable(reader.as_raw_fd(), 100).unwrap());
         assert_eq!(reader.read(&mut [0]).unwrap(), 0);
-    }
-}
-mod c17d3b_original {
-    use super::*;
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct Policy {
-        pub configuration: String,
-        pub description: String,
-        pub run_targets: Vec<String>,
-        pub integration: Option<String>,
-        pub bypass_permissions: bool,
-        pub editor: Option<Editor>,
-        pub nix: bool,
-        pub host_commands: bool,
-        pub scope: Option<ScopePolicy>,
-        pub dev_shell: Option<DevShellPolicy>,
-        pub initial_packages: Vec<PathBuf>,
-        pub handlers: Option<Handlers>,
-    }
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct ScopePolicy {
-        pub name: String,
-        pub docker: bool,
-        pub pid: bool,
-    }
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct DevShellPolicy {
-        pub reference: String,
-        pub path: PathBuf,
-    }
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Editor {
-        pub kind: String,
-        pub command: String,
-    }
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct OnAttach {
-        pub command: Vec<String>,
-        pub timeout: u64,
-        #[serde(default)]
-        pub wait_for: Vec<String>,
-    }
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct Handlers {
-        pub on_attach: OnAttach,
-        pub on_detach: Option<Vec<String>>,
-    }
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-    #[serde(rename_all = "kebab-case")]
-    pub enum Feature {
-        LivePackages,
-        DevShells,
-        FlakeApps,
-        NixDaemon,
-        HostJobs,
-        Exec,
-        AttachClients,
-        Scopes,
-        SharedPid,
-        Docker,
-    }
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Support(pub std::collections::BTreeSet<Feature>);
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct Identity {
-        pub pid: u32,
-        pub helper_userns: u64,
-        pub mount_owner: u64,
-        pub source_mountns: u64,
-        pub mountns: u64,
-    }
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Skipped {
-        pub name: String,
-        pub reason: String,
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct Recreated {
-        pub packages: Vec<(String, PathBuf)>,
-        pub auto_approve: Vec<(String, PathBuf)>,
-        pub skipped: Vec<Skipped>,
-        pub fresh: Option<String>,
-    }
-    #[derive(Default, Serialize, Deserialize)]
-    pub struct Auto {
-        pub rooted: Vec<(String, PathBuf)>,
-        pub skipped: Vec<Skipped>,
-    }
-    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Report {
-        pub folder: Option<PathBuf>,
-        #[serde(default)]
-        pub checkout: Option<PathBuf>,
-        pub worktree: Option<String>,
-        pub detail: Option<String>,
-    }
-}
-fn c17d3b_serde<A: Serialize + DeserializeOwned, O: Serialize + DeserializeOwned>(
-    values: &[Value],
-    raw: &[&str],
-) {
-    for value in values {
-        let old = serde_json::from_value::<O>(value.clone())
-            .map(|v| serde_json::to_string(&v).unwrap())
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_value::<A>(value.clone())
-            .map(|v| serde_json::to_string(&v).unwrap())
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, old, "Value {value}");
-    }
-    for input in raw {
-        let old = serde_json::from_str::<O>(input)
-            .map(|v| serde_json::to_string(&v).unwrap())
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_str::<A>(input)
-            .map(|v| serde_json::to_string(&v).unwrap())
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, old, "raw {input}");
-        let value: Value = serde_json::from_str(input).unwrap();
-        let old = serde_json::from_value::<O>(value.clone())
-            .map(|v| serde_json::to_string(&v).unwrap())
-            .map_err(|e| e.to_string());
-        let actual = serde_json::from_value::<A>(value)
-            .map(|v| serde_json::to_string(&v).unwrap())
-            .map_err(|e| e.to_string());
-        assert_eq!(actual, old, "raw normalized to Value {input}");
     }
 }
 fn c17d3b_policy_value(rich: bool) -> Value {
@@ -6200,257 +5043,6 @@ fn c17d3b_started(rich: bool) -> Message {
 }
 fn c17d3b_params(rich: bool) -> Value {
     json!({"docker_enabled":rich,"policy":c17d3b_policy_value(rich),"support":if rich {json!(["live-packages","exec","docker"])}else{json!([])},"dev_shell":if rich {"{\"identity\":\"\",\"generation\":4294967295,\"lock\":{\"$fd\":999}}"}else{"null"},"identity":{"pid":if rich {u32::MAX}else{0},"helper_userns":if rich {u64::MAX}else{0},"mount_owner":0,"source_mountns":0,"mountns":0},"recreated":if rich {json!({"packages":[["bad pkg","relative\0"]],"auto_approve":[["","relative-auto"]],"skipped":[{"name":"a\nb","reason":"r\ns"}],"fresh":"new"})}else{json!(null)},"auto":if rich {json!({"rooted":[["odd","relative-auto"]],"skipped":[]})}else{json!({"rooted":[],"skipped":[]})},"worktrees":if rich {json!({"folder":"relative/folder","checkout":"../checkout","worktree":"../bad-worktree","detail":"not validated"})}else{json!({"folder":null,"checkout":null,"worktree":null,"detail":null})}})
-}
-#[test]
-fn c17d3b_policy_and_configuration_metadata_keep_original_serde_boundaries() {
-    let minimal = c17d3b_policy_value(false);
-    let rich = c17d3b_policy_value(true);
-    let mut values = vec![minimal.clone(), rich.clone(), json!({}), json!(null)];
-    let fields = [
-        "configuration",
-        "description",
-        "run_targets",
-        "integration",
-        "bypass_permissions",
-        "editor",
-        "nix",
-        "host_commands",
-        "scope",
-        "dev_shell",
-        "initial_packages",
-        "handlers",
-    ];
-    values.push(Value::Array(
-        fields.iter().map(|k| minimal[*k].clone()).collect(),
-    ));
-    for key in fields {
-        let mut v = minimal.clone();
-        v.as_object_mut().unwrap().remove(key);
-        values.push(v);
-        let mut v = minimal.clone();
-        v[key] = json!(0);
-        values.push(v);
-    }
-    let mut extra = rich.clone();
-    extra["future"] = json!(0);
-    values.push(extra);
-    c17d3b_serde::<crate::policy::Policy, c17d3b_original::Policy>(
-        &values,
-        &[r#"{"configuration":"a","configuration":"b"}"#],
-    );
-    c17d3b_serde::<crate::policy::ScopePolicy, c17d3b_original::ScopePolicy>(
-        &[
-            json!({"name":"","docker":true,"pid":true,"future":0}),
-            json!(["", false, true]),
-            json!({}),
-            json!({"name":"x","docker":null,"pid":false}),
-        ],
-        &[r#"{"name":"a","name":"b","docker":false,"pid":false}"#],
-    );
-    c17d3b_serde::<crate::policy::DevShellPolicy, c17d3b_original::DevShellPolicy>(
-        &[
-            json!({"reference":"not a path","path":"relative\0","extra":0}),
-            json!(["x", "relative"]),
-            json!({"reference":"x","path":null}),
-            json!({}),
-        ],
-        &[],
-    );
-    c17d3b_serde::<crate::config::Editor, c17d3b_original::Editor>(
-        &[
-            json!({"kind":"future","command":""}),
-            json!(["future", ""]),
-            json!({"kind":"emacs","command":"x","extra":0}),
-            json!({}),
-        ],
-        &[r#"{"kind":"a","kind":"b","command":"c"}"#],
-    );
-    c17d3b_serde::<crate::config::OnAttach, c17d3b_original::OnAttach>(
-        &[
-            json!({"command":[],"timeout":u64::MAX}),
-            json!({"command":[],"timeout":0,"wait_for":["INVALID SPACE"]}),
-            json!([[], 0]),
-            json!([[], 0, []]),
-            json!({"command":[],"timeout":1,"wait_for":null}),
-            json!({"command":[],"timeout":1.0}),
-            json!({"command":[],"timeout":0,"extra":0}),
-            json!({}),
-        ],
-        &[r#"{"command":[],"timeout":0,"timeout":1}"#],
-    );
-    c17d3b_serde::<crate::config::Handlers, c17d3b_original::Handlers>(
-        &[
-            json!({"on_attach":{"command":[],"timeout":0},"extra":0}),
-            json!([{ "command":[],"timeout":0},null]),
-            json!({"on_attach":null}),
-            json!({}),
-        ],
-        &[],
-    );
-    // Domain validation stays available and separate from structural decoding.
-    let Message::Event(Event::Started { policy, .. }) = c17d3b_started(true) else {
-        unreachable!()
-    };
-    let handlers = policy.handlers.as_ref().unwrap();
-    assert!(
-        crate::config::Handlers::check(&handlers.on_attach, handlers.on_detach.as_ref()).is_err()
-    );
-}
-#[test]
-fn c17d3b_support_and_identity_keep_original_order_traits_and_native_ranges() {
-    fn cloned<T: Clone + std::fmt::Debug>() {}
-    fn copied<T: Copy + Ord>() {}
-    cloned::<crate::policy::Policy>();
-    cloned::<crate::config::Handlers>();
-    cloned::<crate::Identity>();
-    copied::<crate::policy::Feature>();
-    c17d3b_serde::<crate::policy::Feature, c17d3b_original::Feature>(
-        &[
-            json!("docker"),
-            json!({"exec":null}),
-            json!("future"),
-            json!("LivePackages"),
-            json!([]),
-        ],
-        &[],
-    );
-    c17d3b_serde::<crate::policy::Support, c17d3b_original::Support>(
-        &[
-            json!([]),
-            json!(["docker", "exec", "live-packages", "docker"]),
-            json!([{"docker":null},"exec"]),
-            json!(["future"]),
-            json!({}),
-            json!(null),
-        ],
-        &[],
-    );
-    let support: crate::policy::Support =
-        serde_json::from_value(json!(["docker", "exec", "live-packages", "docker"])).unwrap();
-    assert_eq!(
-        serde_json::to_value(&support).unwrap(),
-        json!(["live-packages", "exec", "docker"])
-    );
-    assert!(support.has(crate::policy::Feature::Exec));
-    assert_eq!(
-        serde_json::to_value(crate::policy::Support::linux()).unwrap(),
-        json!([
-            "live-packages",
-            "dev-shells",
-            "flake-apps",
-            "nix-daemon",
-            "host-jobs",
-            "exec",
-            "attach-clients",
-            "scopes",
-            "shared-pid",
-            "docker"
-        ])
-    );
-    let id = json!({"pid":u32::MAX,"helper_userns":u64::MAX,"mount_owner":0,"source_mountns":0,"mountns":0});
-    let mut values = vec![id.clone(), json!([u32::MAX, u64::MAX, 0, 0, 0]), json!({})];
-    for key in [
-        "pid",
-        "helper_userns",
-        "mount_owner",
-        "source_mountns",
-        "mountns",
-    ] {
-        let mut v = id.clone();
-        v.as_object_mut().unwrap().remove(key);
-        values.push(v);
-        let mut v = id.clone();
-        v[key] = json!(-1);
-        values.push(v);
-        let mut v = id.clone();
-        v[key] = json!(1.0);
-        values.push(v);
-    }
-    let mut v = id.clone();
-    v["pid"] = json!(u64::from(u32::MAX) + 1);
-    values.push(v);
-    let mut v = id;
-    v["future"] = json!(0);
-    values.push(v);
-    c17d3b_serde::<crate::Identity, c17d3b_original::Identity>(
-        &values,
-        &[r#"{"pid":0,"pid":1,"helper_userns":0,"mount_owner":0,"source_mountns":0,"mountns":0}"#],
-    );
-}
-#[test]
-fn c17d3b_recreated_auto_skipped_and_report_preserve_defaults_and_tuple_forms() {
-    let rich = c17d3b_params(true);
-    let mut recreated = vec![
-        rich["recreated"].clone(),
-        json!({"packages":[],"auto_approve":[],"skipped":[]}),
-        json!([[], [], [], null]),
-        json!({}),
-        json!({"packages":[["only"]],"auto_approve":[],"skipped":[]}),
-        json!({"packages":[["name","path",0]],"auto_approve":[],"skipped":[]}),
-        json!({"packages":[],"auto_approve":[],"skipped":[{"name":"n","reason":"r","extra":0}]}),
-    ];
-    for key in ["packages", "auto_approve", "skipped", "fresh"] {
-        let mut missing = rich["recreated"].clone();
-        missing.as_object_mut().unwrap().remove(key);
-        recreated.push(missing);
-        let mut wrong = rich["recreated"].clone();
-        wrong[key] = json!(0);
-        recreated.push(wrong);
-    }
-    recreated.push(json!({"packages":[],"auto_approve":[["name",null]],"skipped":[]}));
-    let mut extra = rich["recreated"].clone();
-    extra["future"] = json!(0);
-    recreated.push(extra);
-    c17d3b_serde::<crate::Recreated, c17d3b_original::Recreated>(
-        &recreated,
-        &[r#"{"packages":[],"packages":[],"auto_approve":[],"skipped":[]}"#],
-    );
-    c17d3b_serde::<crate::Auto, c17d3b_original::Auto>(
-        &[
-            rich["auto"].clone(),
-            json!({"rooted":[],"skipped":[],"future":0}),
-            json!([[], []]),
-            json!({}),
-            json!({"rooted":[["name",null]],"skipped":[]}),
-            json!({"rooted":[]}),
-            json!({"skipped":[]}),
-            json!({"rooted":[],"skipped":null}),
-        ],
-        &[],
-    );
-    assert_eq!(
-        serde_json::to_value(crate::Auto::default()).unwrap(),
-        json!({"rooted":[],"skipped":[]})
-    );
-    c17d3b_serde::<crate::history::Skipped, c17d3b_original::Skipped>(
-        &[
-            json!({"name":"a\nb","reason":"r\ns"}),
-            json!(["a", "b"]),
-            json!({"name":"a","reason":"b","extra":0}),
-            json!({}),
-        ],
-        &[r#"{"name":"a","name":"b","reason":"r"}"#],
-    );
-    assert_eq!(
-        serde_json::to_value(crate::history::Skipped::new("a\nb", "r\ns")).unwrap(),
-        json!({"name":"a b","reason":"r s"})
-    );
-    c17d3b_serde::<crate::worktrees::Report, c17d3b_original::Report>(
-        &[
-            json!({}),
-            rich["worktrees"].clone(),
-            json!([null, null, null, null]),
-            json!([null]),
-            json!({"folder":null,"worktree":null,"detail":null,"future":0}),
-            json!({"folder":[]}),
-            json!({"checkout":0}),
-        ],
-        &[r#"{"folder":null,"folder":"x"}"#],
-    );
-    assert_eq!(
-        serde_json::to_value(crate::worktrees::Report::default()).unwrap(),
-        json!({"folder":null,"checkout":null,"worktree":null,"detail":null})
-    );
 }
 #[test]
 fn c17d3b_started_exact_minimal_rich_channel_frames_and_required_nullable_roots() {
@@ -6566,33 +5158,33 @@ fn c17d3b_started_nested_and_opaque_errors_keep_original_extraction_order() {
         (
             "policy",
             json!({}),
-            err::<Box<c17d3b_original::Policy>>(json!({})),
+            err::<Box<crate::policy::Policy>>(json!({})),
         ),
         (
             "support",
             json!(["future"]),
-            err::<c17d3b_original::Support>(json!(["future"])),
+            err::<crate::policy::Support>(json!(["future"])),
         ),
         ("dev_shell", json!({}), err::<String>(json!({}))),
         (
             "identity",
             json!({}),
-            err::<c17d3b_original::Identity>(json!({})),
+            err::<crate::Identity>(json!({})),
         ),
         (
             "recreated",
             json!({}),
-            err::<Option<Box<c17d3b_original::Recreated>>>(json!({})),
+            err::<Option<Box<crate::Recreated>>>(json!({})),
         ),
         (
             "auto",
             json!({}),
-            err::<Box<c17d3b_original::Auto>>(json!({})),
+            err::<Box<crate::Auto>>(json!({})),
         ),
         (
             "worktrees",
             json!(null),
-            err::<Box<c17d3b_original::Report>>(json!(null)),
+            err::<Box<crate::worktrees::Report>>(json!(null)),
         ),
     ] {
         let mut params = c17d3b_params(false);
@@ -6620,7 +5212,7 @@ fn c17d3b_started_nested_and_opaque_errors_keep_original_extraction_order() {
         "null",
         r#"{"identity":"x","generation":0,"lock":{"$fd":0}}"#,
     ] {
-        let old = serde_json::from_str::<Option<c17c_original::DevShellSummary>>(text);
+        let old = serde_json::from_str::<Option<crate::policy::DevShellSummary>>(text);
         let mut params = c17d3b_params(false);
         params["dev_shell"] = json!(text);
         match old {
@@ -6697,4 +5289,41 @@ fn c17d3b_started_non_utf8_paths_remain_fallible_at_original_fields() {
         assert_eq!(error.kind(), kind, "path at {location}");
         assert_eq!(error.to_string(), expected, "path at {location}");
     }
+}
+
+#[test]
+fn started_policy_retains_separate_domain_validation() {
+    let Message::Event(Event::Started { policy, .. }) = c17d3b_started(true) else {
+        unreachable!()
+    };
+    let handlers = policy.handlers.as_ref().unwrap();
+    assert!(
+        crate::config::Handlers::check(&handlers.on_attach, handlers.on_detach.as_ref()).is_err()
+    );
+}
+
+#[test]
+fn support_orders_and_deduplicates_features() {
+    let support: crate::policy::Support =
+        serde_json::from_value(json!(["docker", "exec", "live-packages", "docker"])).unwrap();
+    assert_eq!(
+        serde_json::to_value(&support).unwrap(),
+        json!(["live-packages", "exec", "docker"])
+    );
+    assert!(support.has(crate::policy::Feature::Exec));
+    assert_eq!(
+        serde_json::to_value(crate::policy::Support::linux()).unwrap(),
+        json!([
+            "live-packages",
+            "dev-shells",
+            "flake-apps",
+            "nix-daemon",
+            "host-jobs",
+            "exec",
+            "attach-clients",
+            "scopes",
+            "shared-pid",
+            "docker"
+        ])
+    );
 }

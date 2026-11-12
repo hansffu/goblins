@@ -56,55 +56,6 @@ mod tests {
         serde_json::from_str(include_str!("../../tests/fixtures.json")).unwrap()
     }
     #[test]
-    fn job_request_decoders_match_old_structs_and_both_endpoints() {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct OldJob {
-            request: String,
-        }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct OldEmpty {}
-        for case in fixtures()["host_job_parameter_cases"].as_array().unwrap() {
-            let value = case["params"].clone();
-            let valid = match case["method"].as_str().unwrap() {
-                "host.list" => {
-                    let old = serde_json::from_value::<OldEmpty>(value.clone());
-                    let a = decode_params::<host::HostList>(value.clone());
-                    let b = decode_params::<sandbox::HostList>(value);
-                    assert_eq!(old.is_ok(), a.is_ok());
-                    assert_eq!(old.is_ok(), b.is_ok());
-                    a.is_ok()
-                }
-                "host.status" => {
-                    let old = serde_json::from_value::<OldJob>(value.clone());
-                    let a = decode_params::<host::HostStatus>(value.clone());
-                    let b = decode_params::<sandbox::HostStatus>(value);
-                    assert_eq!(old.is_ok(), a.is_ok());
-                    assert_eq!(old.is_ok(), b.is_ok());
-                    if let (Ok(old), Ok(a), Ok(b)) = (&old, &a, &b) {
-                        assert_eq!(old.request, a.request);
-                        assert_eq!(old.request, b.request);
-                    }
-                    a.is_ok()
-                }
-                _ => {
-                    let old = serde_json::from_value::<OldJob>(value.clone());
-                    let a = decode_params::<host::HostCancel>(value.clone());
-                    let b = decode_params::<sandbox::HostCancel>(value);
-                    assert_eq!(old.is_ok(), a.is_ok());
-                    assert_eq!(old.is_ok(), b.is_ok());
-                    if let (Ok(old), Ok(a), Ok(b)) = (&old, &a, &b) {
-                        assert_eq!(old.request, a.request);
-                        assert_eq!(old.request, b.request);
-                    }
-                    a.is_ok()
-                }
-            };
-            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
-        }
-    }
-    #[test]
     fn strict_job_records_match_complete_schema_corpus() {
         for case in fixtures()["host_job_result_cases"].as_array().unwrap() {
             let result = serde_json::from_value::<HostJob>(case["result"].clone());

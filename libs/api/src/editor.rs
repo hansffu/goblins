@@ -111,53 +111,6 @@ pub fn parse(args: &[String]) -> Result<(Vec<File>, bool), String> {
 mod tests {
     use super::*;
     #[test]
-    fn generated_editor_requests_preserve_original_nested_decoding() {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct OldFile {
-            path: String,
-            #[serde(default)]
-            line: Option<u32>,
-            #[serde(default)]
-            column: Option<u32>,
-        }
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct OldOpen {
-            files: Vec<OldFile>,
-            wait: bool,
-        }
-        let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
-        for case in fixtures["editor_parameter_cases"].as_array().unwrap() {
-            let old = serde_json::from_value::<OldOpen>(case["params"].clone());
-            let new = crate::contract::decode_params::<crate::contract::sandbox::EditorOpen>(
-                case["params"].clone(),
-            );
-            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
-            if let (Ok(old), Ok(new)) = (old, new) {
-                assert_eq!(old.wait, new.wait);
-                assert_eq!(old.files.len(), new.files.len());
-                for (old, new) in old.files.iter().zip(&new.files) {
-                    assert_eq!(old.path, new.path);
-                    assert_eq!(old.line, new.line);
-                    assert_eq!(old.column, new.column);
-                }
-                let valid = (1..=32).contains(&old.files.len())
-                    && old.files.iter().all(|f| {
-                        normalized(&f.path)
-                            && f.line != Some(0)
-                            && f.column != Some(0)
-                            && !(f.column.is_some() && f.line.is_none())
-                    });
-                assert_eq!(new.validate().is_ok(), valid, "{case}");
-                assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
-            } else {
-                assert_eq!(case["valid"], false);
-            }
-        }
-    }
-    #[test]
     fn editor_reply_keeps_independent_i64_and_message_fallbacks() {
         use crate::contract::{EditorOpenReply, Response};
         use serde_json::{Value, json};

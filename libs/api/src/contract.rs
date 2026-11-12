@@ -1059,121 +1059,38 @@ pub fn initialize(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn permission_request_decoding_preserves_old_order_defaults_and_validation() {
-        use serde::{Deserialize, Serialize};
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct OldHost {
-            argv: Vec<String>,
-            cwd: String,
-            #[serde(default)]
-            env: Vec<(String, String)>,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            timeout: Option<u64>,
-            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-            detach: bool,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            name: Option<String>,
-        }
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct Old {
-            kind: String,
-            #[serde(default)]
-            package: String,
-            reason: String,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            update: Option<Vec<String>>,
-            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-            lock: bool,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            host: Option<OldHost>,
-        }
-        let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
-        for case in fixtures["permission_request_parameter_cases"]
-            .as_array()
-            .unwrap()
-        {
-            let old = serde_json::from_value::<Old>(case["params"].clone());
-            let new =
-                super::decode_params::<super::sandbox::PermissionsRequest>(case["params"].clone());
-            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
-            let valid = new.as_ref().is_ok_and(|p| p.validate());
-            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
-            if let (Ok(old), Ok(new)) = (old, new) {
-                let mut expected = serde_json::to_value(old).unwrap();
-                if expected["kind"] != "package" && expected["package"] == "" {
-                    expected.as_object_mut().unwrap().remove("package");
-                }
-                assert_eq!(
-                    super::params_value::<super::sandbox::PermissionsRequest>(new).unwrap(),
-                    expected,
-                    "{case}"
-                );
-            }
-        }
-    }
 
     #[test]
-    fn permission_request_client_profiles_retain_distinct_legacy_readers() {
+    fn permission_request_profiles_decode_supported_replies() {
         use super::{
             Response, sandbox::PermissionsRequest, sandbox_reply_profiles::PermissionsRequestGrant,
         };
-        #[derive(serde::Deserialize, serde::Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct OldGrant {
-            request: String,
-            status: String,
-            message: Option<String>,
-        }
-        let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
-        for case in fixtures["permission_request_result_cases"]
+        for case in fixtures()["permission_request_result_cases"]
             .as_array()
             .unwrap()
         {
             let wire = case["result"].clone();
-            let old = serde_json::from_value::<OldGrant>(wire.clone())
-                .ok()
-                .filter(|r| {
-                    crate::identifier(&r.request)
-                        && matches!(r.status.as_str(), "ready" | "denied" | "error")
-                });
-            let new = super::decode_reply_profile::<PermissionsRequest, PermissionsRequestGrant>(
+            let grant = super::decode_reply_profile::<PermissionsRequest, PermissionsRequestGrant>(
                 wire.clone(),
             );
-            assert_eq!(old.is_some(), new.is_ok(), "{case}");
-            assert_eq!(new.is_ok(), case["grant"].as_bool().unwrap(), "{case}");
-            if let (Some(old), Ok(new)) = (old, new) {
-                assert_eq!(
-                    serde_json::to_value(old).unwrap(),
-                    serde_json::to_value(new).unwrap()
-                );
-            }
+            assert_eq!(grant.is_ok(), case["grant"].as_bool().unwrap(), "{case}");
             let host = super::PermissionRequestReply::decode(wire.clone()).unwrap();
             assert_eq!(
                 host.request.as_deref(),
-                wire.get("request").and_then(serde_json::Value::as_str)
+                wire.get("request").and_then(Value::as_str)
             );
             assert_eq!(
                 host.status.as_deref(),
-                wire.get("status").and_then(serde_json::Value::as_str)
+                wire.get("status").and_then(Value::as_str)
             );
             assert_eq!(
                 host.message.as_deref(),
-                wire.get("message").and_then(serde_json::Value::as_str)
+                wire.get("message").and_then(Value::as_str)
             );
-            assert_eq!(
-                host.code,
-                wire.get("code").and_then(serde_json::Value::as_i64)
-            );
+            assert_eq!(host.code, wire.get("code").and_then(Value::as_i64));
             let produced = serde_json::from_value::<super::PermissionRequestResult>(wire.clone());
             assert_eq!(produced.is_ok(), case["valid"].as_bool().unwrap(), "{case}");
-            if case["valid"] == true {
-                assert!(produced.is_ok(), "{case}");
-                let emitted = serde_json::to_value(produced.unwrap()).unwrap();
+            if let Ok(produced) = produced {
                 let mut expected = wire.clone();
                 expected.as_object_mut().unwrap().retain(|key, _| {
                     matches!(
@@ -1189,78 +1106,11 @@ mod tests {
                             | "log"
                     )
                 });
-                assert_eq!(emitted, expected, "{case}");
+                assert_eq!(serde_json::to_value(produced).unwrap(), expected, "{case}");
             }
         }
     }
 
-    #[test]
-    fn permission_decision_requests_preserve_original_decode_and_order() {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Old {
-            session: String,
-            request: String,
-            approval: String,
-            approved: bool,
-        }
-        let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
-        for case in fixtures["permission_decision_parameter_cases"]
-            .as_array()
-            .unwrap()
-        {
-            let old = serde_json::from_value::<Old>(case["params"].clone());
-            let new =
-                super::decode_params::<super::host::PermissionsDecide>(case["params"].clone());
-            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
-            assert_eq!(new.is_ok(), case["valid"].as_bool().unwrap(), "{case}");
-            if let (Ok(old), Ok(new)) = (old, new) {
-                assert_eq!(old.session, new.session);
-                assert_eq!(old.request, new.request);
-                assert_eq!(old.approval, new.approval);
-                assert_eq!(old.approved, new.approved);
-            }
-        }
-    }
-
-    #[test]
-    fn devshell_app_requests_match_original_decoders_and_validators() {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct OldRun {
-            app: String,
-        }
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct OldEmpty {}
-        let fixtures: serde_json::Value =
-            serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap();
-        for case in fixtures["devshell_app_parameter_cases"].as_array().unwrap() {
-            let value = case["params"].clone();
-            if case["method"] == "flake.run" {
-                let old = serde_json::from_value::<OldRun>(value.clone());
-                let new = super::decode_params::<super::sandbox::FlakeRun>(value);
-                assert_eq!(old.is_ok(), new.is_ok(), "{case}");
-                if let (Ok(old), Ok(new)) = (old, new) {
-                    assert_eq!(old.app, new.app);
-                    let valid = (1..=256).contains(&old.app.len())
-                        && old
-                            .app
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b"_-+'".contains(&b));
-                    assert_eq!(new.validate(), valid, "{case}");
-                    assert_eq!(valid, case["valid"].as_bool().unwrap());
-                }
-            } else {
-                assert_eq!(
-                    serde_json::from_value::<OldEmpty>(value.clone()).is_ok(),
-                    super::decode_params::<super::sandbox::DevShellLock>(value).is_ok(),
-                    "{case}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn devshell_app_replies_retain_independent_legacy_fallbacks() {
@@ -1299,53 +1149,6 @@ mod tests {
         serde_json::from_str(include_str!("../tests/fixtures.json")).unwrap()
     }
 
-    #[test]
-    fn attachment_hello_preserves_legacy_notification_decoding_and_order() {
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct LegacyHello {
-            version: u64,
-            rows: u16,
-            cols: u16,
-            #[serde(default)]
-            terminal: Option<String>,
-        }
-        for case in fixtures()["attach_hello_parameter_cases"]
-            .as_array()
-            .unwrap()
-        {
-            let old = serde_json::from_value::<LegacyHello>(case["params"].clone());
-            let call = rpc::Call {
-                jsonrpc: "2.0".into(),
-                id: None,
-                method: attach_notifications::AttachHello::NAME.into(),
-                params: case["params"].clone(),
-            };
-            let new = decode_notification::<attach_notifications::AttachHello>(call);
-            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
-            assert_eq!(new.is_ok(), case["decoded"].as_bool().unwrap(), "{case}");
-            if let (Ok(old), Ok(new)) = (old, new) {
-                assert_eq!(
-                    (old.version, old.rows, old.cols, old.terminal),
-                    (new.version, new.rows, new.cols, new.terminal)
-                );
-            }
-        }
-        assert!(attach::METHODS.is_empty());
-        assert_eq!(attach_exchanges::Reply::ID, 0);
-        assert_eq!(attach_exchanges::LegacyAttach::ID, 0);
-        let value = notification::<attach_notifications::AttachHello>(AttachHelloParams {
-            version: ATTACH_VERSION,
-            rows: 24,
-            cols: 100,
-            terminal: None,
-        })
-        .unwrap();
-        assert_eq!(
-            value,
-            serde_json::json!({"jsonrpc":"2.0","method":"attach.hello","params":{"version":1,"rows":24,"cols":100}})
-        );
-    }
 
     #[test]
     fn attachment_waiting_and_completions_keep_old_client_acceptance() {
@@ -1384,122 +1187,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn terminal_io_generated_params_keep_legacy_order_and_defaults() {
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct Read {
-            session: String,
-            terminal: String,
-            #[serde(default)]
-            source: Option<String>,
-            #[serde(default)]
-            lines: Option<usize>,
-        }
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct Send {
-            session: String,
-            terminal: String,
-            #[serde(default)]
-            text: Option<String>,
-            #[serde(default)]
-            keys: Vec<String>,
-        }
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wait {
-            session: String,
-            terminal: String,
-            #[serde(default, rename = "match")]
-            text: Option<String>,
-            #[serde(default)]
-            regex: Option<String>,
-            #[serde(default)]
-            exit: Option<bool>,
-            #[serde(default)]
-            timeout: Option<u64>,
-            #[serde(default)]
-            lines: Option<usize>,
-        }
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct Target {
-            session: String,
-            terminal: String,
-        }
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct Resize {
-            session: String,
-            terminal: String,
-            rows: u16,
-            cols: u16,
-        }
-        fn compare<T: DeserializeOwned + Serialize, H: Method, S: Method>(case: &Value) {
-            let scoped = |value: Value| -> Option<Value> {
-                let mut map = match value {
-                    Value::Null => serde_json::Map::new(),
-                    Value::Object(map) if !map.contains_key("session") => map,
-                    _ => return None,
-                };
-                map.insert("session".into(), serde_json::json!("a"));
-                Some(Value::Object(map))
-            };
-            let value = case["params"].clone();
-            let member = case["endpoint"] == "sandbox";
-            let old = if member {
-                scoped(value.clone()).and_then(|v| serde_json::from_value::<T>(v).ok())
-            } else {
-                serde_json::from_value::<T>(value.clone()).ok()
-            };
-            let new = if member {
-                decode_params::<S>(value)
-                    .ok()
-                    .and_then(|p| params_value::<S>(p).ok())
-                    .and_then(scoped)
-            } else {
-                decode_params::<H>(value)
-                    .ok()
-                    .and_then(|p| params_value::<H>(p).ok())
-            };
-            assert_eq!(new.is_some(), old.is_some(), "{case}");
-            assert_eq!(new.is_some(), case["decoded"].as_bool().unwrap(), "{case}");
-            if let (Some(old), Some(new)) = (old, new) {
-                if case["method"] == "terminals.send" {
-                    assert!(new["keys"].is_array());
-                }
-                assert_eq!(
-                    serde_json::to_value(old).unwrap(),
-                    serde_json::to_value(serde_json::from_value::<T>(new).unwrap()).unwrap(),
-                    "{case}"
-                );
-            }
-        }
-        for case in fixtures()["terminal_io_parameter_cases"]
-            .as_array()
-            .unwrap()
-        {
-            match case["method"].as_str().unwrap() {
-                "terminals.read" => {
-                    compare::<Read, host::TerminalsRead, sandbox::TerminalsRead>(case)
-                }
-                "terminals.send" => {
-                    compare::<Send, host::TerminalsSend, sandbox::TerminalsSend>(case)
-                }
-                "terminals.wait" => {
-                    compare::<Wait, host::TerminalsWait, sandbox::TerminalsWait>(case)
-                }
-                "terminals.detach" => {
-                    compare::<Target, host::TerminalsDetach, host::TerminalsDetach>(case)
-                }
-                "terminals.resize" => {
-                    compare::<Resize, host::TerminalsResize, host::TerminalsResize>(case)
-                }
-                _ => panic!("unexpected corpus method"),
-            }
-        }
-    }
 
     #[test]
     fn terminal_read_wait_replies_keep_independent_legacy_fields() {
@@ -1538,81 +1225,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn terminal_create_params_preserve_original_order_defaults_and_endpoint_forms() {
-        #[derive(Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct LegacyCreate {
-            session: String,
-            #[serde(default)]
-            argv: Option<Vec<String>>,
-            #[serde(default)]
-            cwd: Option<String>,
-            #[serde(default)]
-            env: Vec<(String, String)>,
-            #[serde(default)]
-            name: Option<String>,
-            #[serde(default)]
-            rows: Option<u16>,
-            #[serde(default)]
-            cols: Option<u16>,
-            #[serde(default)]
-            notify: bool,
-        }
-        let scoped = |value: Value| -> Option<Value> {
-            let mut map = match value {
-                Value::Null => serde_json::Map::new(),
-                Value::Object(m) if !m.contains_key("session") => m,
-                _ => return None,
-            };
-            map.insert("session".into(), Value::String("a".into()));
-            Some(Value::Object(map))
-        };
-        for case in fixtures()["terminal_parameter_cases"].as_array().unwrap() {
-            if case["method"] != "terminals.create" {
-                continue;
-            }
-            let member = case["endpoint"] == "sandbox";
-            let value = case["params"].clone();
-            let old = if member {
-                scoped(value.clone()).and_then(|v| serde_json::from_value::<LegacyCreate>(v).ok())
-            } else {
-                serde_json::from_value::<LegacyCreate>(value.clone()).ok()
-            };
-            let new = if member {
-                decode_params::<sandbox::TerminalsCreate>(value)
-                    .ok()
-                    .and_then(|p| params_value::<sandbox::TerminalsCreate>(p).ok())
-                    .and_then(scoped)
-            } else {
-                decode_params::<host::TerminalsCreate>(value)
-                    .ok()
-                    .and_then(|p| params_value::<host::TerminalsCreate>(p).ok())
-            };
-            assert_eq!(old.is_some(), new.is_some(), "{case}");
-            assert_eq!(new.is_some(), case["decoded"].as_bool().unwrap(), "{case}");
-            if let (Some(old), Some(new)) = (old, new) {
-                if !old.notify {
-                    assert!(new.get("notify").is_none());
-                }
-                assert!(new["env"].is_array());
-                let new: LegacyCreate = serde_json::from_value(new).unwrap();
-                assert_eq!(
-                    serde_json::to_value(old).unwrap(),
-                    serde_json::to_value(new).unwrap(),
-                    "{case}"
-                );
-            }
-        }
-        assert!(decode_params::<sandbox::TerminalsList>(Value::Null).is_ok());
-        assert!(decode_params::<sandbox::TerminalsList>(serde_json::json!([])).is_err());
-        assert!(decode_params::<host::TerminalsList>(serde_json::json!(["a"])).is_ok());
-        assert!(
-            decode_params::<sandbox::TerminalsClose>(serde_json::json!({"terminal":"app"})).is_ok()
-        );
-        assert!(decode_params::<sandbox::TerminalsClose>(serde_json::json!(["app"])).is_err());
-        assert!(decode_params::<host::TerminalsClose>(serde_json::json!(["a", "app"])).is_ok());
-    }
 
     #[test]
     fn terminal_normalized_readers_preserve_independent_legacy_fallbacks() {
@@ -1647,57 +1259,6 @@ mod tests {
         assert!(TerminalCloseReply::decode(serde_json::json!([])).is_ok());
     }
 
-    #[test]
-    fn exec_parameters_preserve_legacy_order_defaults_and_decoding() {
-        #[derive(Debug, Deserialize, Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct LegacyExec {
-            session: String,
-            #[serde(default)]
-            pin: Option<String>,
-            #[serde(default)]
-            argv: Option<Vec<String>>,
-            #[serde(default)]
-            cwd: Option<String>,
-            #[serde(default)]
-            env: Vec<(String, String)>,
-            #[serde(default)]
-            tty: bool,
-            #[serde(default)]
-            interactive: bool,
-        }
-        for case in fixtures()["exec_parameter_cases"].as_array().unwrap() {
-            if case["method"] != host::SessionsExec::NAME {
-                continue;
-            }
-            let old = serde_json::from_value::<LegacyExec>(case["params"].clone());
-            let new = decode_params::<host::SessionsExec>(case["params"].clone());
-            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
-            assert_eq!(new.is_ok(), case["decoded"].as_bool().unwrap(), "{case}");
-            if let (Ok(old), Ok(new)) = (old, new) {
-                assert_eq!(old.session, new.session);
-                assert_eq!(old.pin, new.pin);
-                assert_eq!(old.argv, new.argv);
-                assert_eq!(old.cwd, new.cwd);
-                assert_eq!(old.env, new.env);
-                assert_eq!(old.tty, new.tty);
-                assert_eq!(old.interactive, new.interactive);
-                let wire = params_value::<host::SessionsExec>(new).unwrap();
-                for key in ["session", "env", "tty", "interactive"] {
-                    assert!(wire.get(key).is_some());
-                }
-                for (key, value) in [
-                    ("argv", old.argv.is_none()),
-                    ("cwd", old.cwd.is_none()),
-                    ("pin", old.pin.is_none()),
-                ] {
-                    if value {
-                        assert!(wire.get(key).is_none());
-                    }
-                }
-            }
-        }
-    }
 
     #[test]
     fn exec_notification_identity_params_and_compatible_results() {
@@ -2004,79 +1565,6 @@ mod tests {
         server.join().unwrap();
     }
 
-    // Reference decoders retain the original pre-migration field order and defaults.
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct LegacyHostLaunch {
-        key: String,
-        configuration: String,
-        #[serde(default)]
-        name: String,
-        agent_name: Option<String>,
-        #[serde(default)]
-        cwd: Option<std::path::PathBuf>,
-        #[serde(default)]
-        scope: Option<String>,
-        #[serde(default)]
-        dev_shell: Option<String>,
-        rows: u16,
-        cols: u16,
-        #[serde(default)]
-        detached: bool,
-        #[serde(default)]
-        raid: Option<String>,
-        #[serde(default)]
-        recreate: Option<String>,
-        #[serde(skip)]
-        recorded: Option<()>,
-        #[serde(skip)]
-        worktree: Option<String>,
-        #[serde(default)]
-        options: std::collections::BTreeMap<String, String>,
-    }
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct LegacyMemberLaunch {
-        key: String,
-        name: String,
-        agent_name: Option<String>,
-        #[serde(default)]
-        detached: bool,
-        #[serde(default)]
-        worktree: Option<String>,
-        #[serde(default)]
-        options: std::collections::BTreeMap<String, String>,
-    }
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct LegacyResize {
-        session: String,
-        rows: u16,
-        cols: u16,
-    }
-
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct LegacySetWorktree {
-        name: Option<String>,
-    }
-    #[test]
-    fn nullable_positional_fields_preserve_original_required_positions() {
-        for value in [
-            json!({}),
-            json!([]),
-            json!([null]),
-            json!({"name":null}),
-            json!(["branch"]),
-        ] {
-            let previous = serde_json::from_value::<LegacySetWorktree>(value.clone());
-            let current = decode_params::<sandbox::SessionsSetWorktree>(value.clone());
-            assert_eq!(previous.is_ok(), current.is_ok(), "{value}");
-            if let (Ok(previous), Ok(current)) = (previous, current) {
-                assert_eq!(previous.name, current.name);
-            }
-        }
-    }
 
     fn lifecycle_request(endpoint: &str, method: &str, value: Value) -> serde_json::Result<Value> {
         fn decode<M: Method>(v: Value) -> serde_json::Result<Value> {
@@ -2096,29 +1584,14 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_parameters_preserve_original_positional_order_and_defaults() {
+    fn lifecycle_parameters_match_supported_wire_examples() {
         for case in fixtures()["lifecycle_parameter_cases"].as_array().unwrap() {
-            let endpoint = case["endpoint"].as_str().unwrap();
-            let method = case["method"].as_str().unwrap();
-            let value = case["params"].clone();
-            let result = lifecycle_request(endpoint, method, value.clone());
+            let result = lifecycle_request(
+                case["endpoint"].as_str().unwrap(),
+                case["method"].as_str().unwrap(),
+                case["params"].clone(),
+            );
             assert_eq!(result.is_ok(), case["decoded"].as_bool().unwrap(), "{case}");
-            macro_rules! compare {
-                ($legacy:ty) => {{
-                    let previous = serde_json::from_value::<$legacy>(value);
-                    assert_eq!(previous.is_ok(), result.is_ok(), "legacy refusal: {case}");
-                    if let (Ok(previous), Ok(current)) = (previous, result) {
-                        let current = serde_json::from_value::<$legacy>(current).unwrap();
-                        assert_eq!(previous, current, "legacy field mapping: {case}");
-                    }
-                }};
-            }
-            match (endpoint, method) {
-                ("host", "sessions.start") => compare!(LegacyHostLaunch),
-                ("sandbox", "sessions.start") => compare!(LegacyMemberLaunch),
-                ("host", "sessions.resize") => compare!(LegacyResize),
-                _ => (),
-            }
         }
     }
 

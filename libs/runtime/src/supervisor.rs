@@ -10,8 +10,6 @@ use crate::{
     lease::ResourceLease,
 };
 use goblins_protocol::contract::{self, Notification};
-#[cfg(test)]
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 use std::{
