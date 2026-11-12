@@ -1,0 +1,26 @@
+#+title: API migration test audit
+
+* Scope
+
+This audit compares the migration tests with the coverage retained on =json-rpc-migration-plan=. Prefer fast Rust tests for decoding, encoding, compatibility and ownership behavior. Keep process tests when they verify actual CLI wiring, initialization, connection closure or sandbox policy; those are different boundaries from a serializer test.
+
+* Removed overlap
+
+The cleanup removes 22 Python tests and an obsolete scanner compatibility shim. It keeps the contract checker itself, the canonical full-schema/freshness check and the behavioral Rust tests. No production code, schemas, fixtures or Rust assertions change. The removed matrices tested the checker's response to many synthetic broken schemas; this intentionally reduces exhaustive fault-injection coverage of the checker, while retaining validation of the actual contracts and fast Rust wire-behavior tests.
+
+| Removed tests | Retained coverage |
+|---------------+-------------------|
+| Per-family mutation matrices for explicit-record/codegen metadata (bootstrap, nested handoff, manifest/export, membership, process, terminal, approval, devshell, host jobs, lifecycle and Started records) | =test_offline_meta_schema_and_emacs_readers_are_current= checks all current contracts; representative explicit-descriptor and tagged-enum mutation tests exercise checker failures; Rust supervisor tests exercise the generated types and wire behavior for each family. |
+| Repeated notification marker/direction/payload mutations for membership and lifecycle | Private-catalog checker mutation tests, per-family positive schema/notification fixture tests and Rust membership/lifecycle frame tests. |
+| Three retired Started pending-projection matrices and the completed operational pending-inventory matrix | The current checker and positive Started/inventory tests require the final, empty pending registries; no intermediate migration state remains supported. |
+| Two standalone checks of unchanged source coverage | The canonical full contract check already invokes both coverage scanners. |
+
+Seven other mutation tests no longer rerun the full unmodified contract checker before exercising their own mutation. The canonical check provides that baseline once. The constructor-scanner tests now call its actual override API directly instead of carrying a fallback for a pre-migration implementation.
+
+* Retained boundaries
+
+- Rust contract tests keep named/positional parameters, missing/null/unknown fields, integer ranges, reply normalization, extensions and legacy handshake behavior.
+- Rust supervisor and runtime tests keep exact envelopes, descriptor indices and stream identity, sender/receiver ownership, multipart continuation failures, lease/root cleanup and error precedence. Round-trip tests and exact-frame tests serve different purposes and remain separate.
+- Python schema-instance tests keep coverage of the published contract and the Python validation used by integration tests; Rust deserialization alone does not validate that consumer.
+- Fake-daemon CLI tests keep executable wiring, output/exit behavior and original request fields. Unit tests of the shared DTO do not prove that the CLI uses it correctly.
+- Live daemon/sandbox tests keep initialization and policy/connection boundaries. None were removed solely because they run more slowly.
