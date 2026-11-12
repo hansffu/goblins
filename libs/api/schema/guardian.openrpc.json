@@ -1,0 +1,54 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "Goblins private guardian protocol",
+    "version": "1"
+  },
+  "methods": [],
+  "x-notifications": [
+    {
+      "name": "Retain",
+      "x-rust-name": "Retain",
+      "direction": "scope-to-guardian",
+      "paramStructure": "by-name",
+      "description": "Transfer fresh resource locks for retention before acknowledgement; existing validation/ownership remain native.",
+      "params": [
+        {
+          "name": "leases",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/GuardianRetainParams/properties/leases"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/GuardianRetainParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "guardian",
+      "connection-state": "retention exchange"
+    },
+    {
+      "name": "Retained",
+      "x-rust-name": "Retained",
+      "direction": "guardian-to-scope",
+      "paramStructure": "by-name",
+      "description": "Acknowledge retention after all supplied locks have been retained.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/GuardianRetainedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "guardian",
+      "receiver": "scope",
+      "connection-state": "retention exchange"
+    }
+  ],
+  "x-wire-enum": "GuardianMessage",
+  "x-protocol-notes": "Same-build JSON-RPC notifications; jsonrpc=2.0 required, IDs absent. Canonical producer params are named; original Serde legacy reading forms and failure order remain. Frame-local descriptors are validated by Channel and native transaction owners; metadata never grants authority. EOF, rollback, acknowledgement and cleanup sequencing remain in the runtime."
+}

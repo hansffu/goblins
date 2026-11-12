@@ -16,6 +16,56 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_history_list_accepts_a_new_record_without_variables(self):
+        # Record::new starts with BTreeMap::new(); the public projection copies it.
+        record = dict(version=3, id="new-record", configuration="shell", agent_name="fixture",
+                      cwd=None, scope=None, dev_shell=None, docker_enabled=False,
+                      packages=dict(approved=[], denied=[], auto_approve=[]), variables={},
+                      sessions=[], skipped=[], worktree=None, created=1, updated=1,
+                      stopped=None, running=False)
+        with self.subTest(schema="HistoryRecord"):
+            contract.schema_validator({"$ref":"common.json#/definitions/HistoryRecord"}).validate(record)
+        with self.subTest(schema="history.list reply"):
+            self.assertTrue(contract.validate_reply("host", "history.list", dict(jsonrpc="2.0", id=1,
+                result=dict(directory="/history", records=[record], truncated=False))))
+
+    def test_c17d3b4_started_root_envelope_and_opaque_instances(self):
+        fixtures=contract.read("fixtures.json"); binding=fixtures["c17d3b4_started_binding"]
+        defs=contract.common()["definitions"]; root=defs[binding["schema"]]
+        self.assertIn(binding["schema"],contract.common()["x-rust-explicit-records"])
+        self.assertEqual(root["x-rust-name"],binding["schema"])
+        self.assertEqual(root["x-rust-derives"],["Serialize","Deserialize"])
+        self.assertEqual(root["x-rust-field-order"],binding["fields"])
+        self.assertEqual(root["required"],binding["fields"]);self.assertIs(root["additionalProperties"],False)
+        self.assertNotIn("x-rust-module",root)
+        for key,native in zip(binding["fields"],binding["types"]):
+            self.assertEqual(root["properties"][key],{**binding["shapes"][key],"x-rust-field-name":key,"x-rust-type":native})
+        validator=contract.schema_validator({"$ref":"common.json#/definitions/"+binding["schema"]})
+        for case in fixtures["c17d3b4_started_cases"]:
+            with self.subTest(root=case["label"]): self.assertEqual(validator.is_valid(case["value"]),case["valid"])
+        for case in fixtures["c17d3b4_notification_cases"]:
+            with self.subTest(notification=case["label"]):
+                if case["valid"]: self.assertTrue(contract.validate_notification("supervisor",binding["direction"],case["frame"]))
+                else:
+                    with self.assertRaises(ValidationError):contract.validate_notification("supervisor",binding["direction"],case["frame"])
+                self.assertFalse(contract.validate_notification("supervisor","daemon-to-supervisor",case["frame"]))
+        text=defs["SupervisorStartedDevShellText"]
+        self.assertEqual({key:value for key,value in text.items() if key!="description"},{"type":"string","x-json-content-schema":{"anyOf":[{"$ref":"#/definitions/SupervisorDevShellSummary"},{"type":"null"}]}})
+        # Outer String validation never parses JSON; inner Option<Summary> is checked separately.
+        inner=contract.schema_validator(text["x-json-content-schema"])
+        for case in fixtures["c17d3b4_inner_dev_shell_cases"]:
+            with self.subTest(inner=case):self.assertEqual(inner.is_valid(case["value"]),case["valid"])
+        doc=contract.document("supervisor");row=next(row for row in doc["x-notifications"] if row["name"]==binding["method"])
+        self.assertEqual(row["x-rust-name"],binding["marker"]);self.assertEqual(row["direction"],binding["direction"])
+        self.assertEqual(row["sender"],"supervisor");self.assertEqual(row["receiver"],"daemon")
+        self.assertEqual(row["paramStructure"],"by-name");self.assertEqual(row["x-positional-schema"],{"not":{}})
+        self.assertEqual(row["x-params-schema"],{"$ref":"common.json#/definitions/"+binding["schema"]})
+        self.assertEqual(row["params"],[{"name":key,"required":True,"schema":{"$ref":"common.json#/definitions/"+binding["schema"]+"/properties/"+key}} for key in binding["fields"]])
+        self.assertEqual(doc["x-pending-payload-contracts"],{});self.assertEqual(doc["x-pending-notifications"],{})
+        self.assertEqual(sum(map(len,doc["x-pending-notifications"].values())),0)
+
+
+
     def test_c17d3b3_restoration_records_tuples_and_pending_projection_instances(self):
         fixtures = contract.read("fixtures.json"); common = contract.common()
         for binding in fixtures["c17d3b3_restoration_bindings"]:
@@ -41,11 +91,13 @@ class ContractTests(unittest.TestCase):
         nullable = contract.schema_validator({"anyOf":[{"$ref":"#/definitions/SupervisorStartedRecreated"},{"type":"null"}]})
         self.assertTrue(nullable.is_valid(None)); self.assertTrue(nullable.is_valid({"packages":[],"auto_approve":[],"skipped":[]})); self.assertFalse(nullable.is_valid({}))
         doc = contract.document("supervisor")
-        self.assertEqual(doc["x-pending-payload-contracts"], {"Event.Started":{
-            "policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"},
-            "recreated":{"anyOf":[{"$ref":"common.json#/definitions/SupervisorStartedRecreated"},{"type":"null"}]},"auto":{"$ref":"common.json#/definitions/SupervisorStartedAuto"},"worktrees":{"$ref":"common.json#/definitions/SupervisorStartedReport"}}})
-        self.assertNotIn("Event.Started",{row["name"] for row in doc["x-notifications"]})
-        self.assertEqual(sum(len(group) for group in doc["x-pending-notifications"].values()),7)
+        self.assertEqual(doc["x-pending-payload-contracts"], {})
+        self.assertIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
+        root = contract.common()["definitions"]["SupervisorEventStartedParams"]["properties"]
+        for field, shape in {'policy': {'$ref': 'common.json#/definitions/SupervisorStartedPolicy'}, 'support': {'$ref': 'common.json#/definitions/SupervisorStartedSupport'}, 'identity': {'$ref': 'common.json#/definitions/SupervisorStartedIdentity'}, 'recreated': {'anyOf': [{'$ref': 'common.json#/definitions/SupervisorStartedRecreated'}, {'type': 'null'}]}, 'auto': {'$ref': 'common.json#/definitions/SupervisorStartedAuto'}, 'worktrees': {'$ref': 'common.json#/definitions/SupervisorStartedReport'}}.items():
+            self.assertEqual({key:value for key,value in root[field].items() if not key.startswith("x-rust-")}, json.loads(json.dumps(shape).replace("common.json#/", "#/")))
+        self.assertIn("Event.Started",{row["name"] for row in doc["x-notifications"]})
+        self.assertEqual(sum(len(group) for group in doc["x-pending-notifications"].values()),0)
 
     def test_c17d3b3_restoration_codegen_metadata_rejects_drift(self):
         from unittest.mock import patch
@@ -108,12 +160,12 @@ class ContractTests(unittest.TestCase):
         contract.check(); original=contract.document
         for field in ["recreated","auto","worktrees"]:
             for mutation in ["missing","wrong reference"]:
-                changed=copy.deepcopy(original("supervisor")); projection=changed["x-pending-payload-contracts"]["Event.Started"]
+                changed=copy.deepcopy(original("supervisor")); projection=changed["x-pending-payload-contracts"].setdefault("Event.Started", copy.deepcopy({'policy': {'$ref': 'common.json#/definitions/SupervisorStartedPolicy'}, 'support': {'$ref': 'common.json#/definitions/SupervisorStartedSupport'}, 'identity': {'$ref': 'common.json#/definitions/SupervisorStartedIdentity'}, 'recreated': {'anyOf': [{'$ref': 'common.json#/definitions/SupervisorStartedRecreated'}, {'type': 'null'}]}, 'auto': {'$ref': 'common.json#/definitions/SupervisorStartedAuto'}, 'worktrees': {'$ref': 'common.json#/definitions/SupervisorStartedReport'}}))
                 if mutation=="missing": del projection[field]
                 else: projection[field]={"$ref":"common.json#/definitions/SupervisorStartedPolicy"}
                 with self.subTest(field=field,mutation=mutation),patch.object(contract,"document",side_effect=lambda endpoint:changed if endpoint=="supervisor" else original(endpoint)):
                     with self.assertRaises(ValueError): contract.check()
-        changed=copy.deepcopy(original("supervisor")); changed["x-pending-payload-contracts"]["Event.Started"]["recreated"]["anyOf"].pop()
+        changed=copy.deepcopy(original("supervisor")); changed["x-pending-payload-contracts"].setdefault("Event.Started", copy.deepcopy({'policy': {'$ref': 'common.json#/definitions/SupervisorStartedPolicy'}, 'support': {'$ref': 'common.json#/definitions/SupervisorStartedSupport'}, 'identity': {'$ref': 'common.json#/definitions/SupervisorStartedIdentity'}, 'recreated': {'anyOf': [{'$ref': 'common.json#/definitions/SupervisorStartedRecreated'}, {'type': 'null'}]}, 'auto': {'$ref': 'common.json#/definitions/SupervisorStartedAuto'}, 'worktrees': {'$ref': 'common.json#/definitions/SupervisorStartedReport'}}))["recreated"]["anyOf"].pop()
         with patch.object(contract,"document",side_effect=lambda endpoint:changed if endpoint=="supervisor" else original(endpoint)):
             with self.assertRaises(ValueError): contract.check()
 
@@ -148,12 +200,13 @@ class ContractTests(unittest.TestCase):
                 with self.subTest(schema=name,case=case):
                     self.assertEqual(validator.is_valid(case["value"]), case["valid"])
         doc = contract.document("supervisor")
-        self.assertEqual(doc["x-pending-payload-contracts"], {"Event.Started":{
-            "policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},
-            "support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},
-            "identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"},"recreated":{"anyOf":[{"$ref":"common.json#/definitions/SupervisorStartedRecreated"},{"type":"null"}]},"auto":{"$ref":"common.json#/definitions/SupervisorStartedAuto"},"worktrees":{"$ref":"common.json#/definitions/SupervisorStartedReport"}}})
-        self.assertNotIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
-        self.assertEqual(sum(len(group) for group in doc["x-pending-notifications"].values()), 7)
+        self.assertEqual(doc["x-pending-payload-contracts"], {})
+        self.assertIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
+        root = contract.common()["definitions"]["SupervisorEventStartedParams"]["properties"]
+        for field, shape in {'policy': {'$ref': 'common.json#/definitions/SupervisorStartedPolicy'}, 'support': {'$ref': 'common.json#/definitions/SupervisorStartedSupport'}, 'identity': {'$ref': 'common.json#/definitions/SupervisorStartedIdentity'}, 'recreated': {'anyOf': [{'$ref': 'common.json#/definitions/SupervisorStartedRecreated'}, {'type': 'null'}]}, 'auto': {'$ref': 'common.json#/definitions/SupervisorStartedAuto'}, 'worktrees': {'$ref': 'common.json#/definitions/SupervisorStartedReport'}}.items():
+            self.assertEqual({key:value for key,value in root[field].items() if not key.startswith("x-rust-")}, json.loads(json.dumps(shape).replace("common.json#/", "#/")))
+        self.assertIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
+        self.assertEqual(sum(len(group) for group in doc["x-pending-notifications"].values()), 0)
 
     def test_c17d3b2_feature_set_identity_codegen_metadata_rejects_drift(self):
         from unittest.mock import patch
@@ -211,7 +264,7 @@ class ContractTests(unittest.TestCase):
         contract.check(); original = contract.document
         for field in ["support","identity"]:
             for mutation in ["missing","wrong reference"]:
-                changed = copy.deepcopy(original("supervisor")); projection = changed["x-pending-payload-contracts"]["Event.Started"]
+                changed = copy.deepcopy(original("supervisor")); projection = changed["x-pending-payload-contracts"].setdefault("Event.Started", copy.deepcopy({'policy': {'$ref': 'common.json#/definitions/SupervisorStartedPolicy'}, 'support': {'$ref': 'common.json#/definitions/SupervisorStartedSupport'}, 'identity': {'$ref': 'common.json#/definitions/SupervisorStartedIdentity'}, 'recreated': {'anyOf': [{'$ref': 'common.json#/definitions/SupervisorStartedRecreated'}, {'type': 'null'}]}, 'auto': {'$ref': 'common.json#/definitions/SupervisorStartedAuto'}, 'worktrees': {'$ref': 'common.json#/definitions/SupervisorStartedReport'}}))
                 if mutation=="missing": del projection[field]
                 else: projection[field] = {"$ref":"common.json#/definitions/SupervisorStartedPolicy"}
                 with self.subTest(field=field,mutation=mutation), patch.object(contract,"document",side_effect=lambda endpoint: changed if endpoint=="supervisor" else original(endpoint)):
@@ -246,11 +299,15 @@ class ContractTests(unittest.TestCase):
         # Policy.description is a real String field, not schema prose.
         self.assertEqual(common["definitions"]["SupervisorStartedPolicy"]["properties"]["description"]["type"], "string")
         doc = contract.document("supervisor")
-        self.assertEqual(doc["x-pending-payload-contracts"], {"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"},"recreated":{"anyOf":[{"$ref":"common.json#/definitions/SupervisorStartedRecreated"},{"type":"null"}]},"auto":{"$ref":"common.json#/definitions/SupervisorStartedAuto"},"worktrees":{"$ref":"common.json#/definitions/SupervisorStartedReport"}}})
-        self.assertNotIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
+        self.assertEqual(doc["x-pending-payload-contracts"], {})
+        self.assertIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
+        root = contract.common()["definitions"]["SupervisorEventStartedParams"]["properties"]
+        for field, shape in {'policy': {'$ref': 'common.json#/definitions/SupervisorStartedPolicy'}, 'support': {'$ref': 'common.json#/definitions/SupervisorStartedSupport'}, 'identity': {'$ref': 'common.json#/definitions/SupervisorStartedIdentity'}, 'recreated': {'anyOf': [{'$ref': 'common.json#/definitions/SupervisorStartedRecreated'}, {'type': 'null'}]}, 'auto': {'$ref': 'common.json#/definitions/SupervisorStartedAuto'}, 'worktrees': {'$ref': 'common.json#/definitions/SupervisorStartedReport'}}.items():
+            self.assertEqual({key:value for key,value in root[field].items() if not key.startswith("x-rust-")}, json.loads(json.dumps(shape).replace("common.json#/", "#/")))
+        self.assertIn("Event.Started", {row["name"] for row in doc["x-notifications"]})
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
-        self.assertEqual(len(pending), 7)
-        self.assertEqual(doc["x-pending-notifications"]["C17d-lifecycle-host-jobs"], ["Event.Started"])
+        self.assertEqual(len(pending), 0)
+        self.assertNotIn("C17d-lifecycle-host-jobs", doc["x-pending-notifications"])
 
     def test_c17d3b1_started_policy_codegen_metadata_rejects_drift(self):
         from unittest.mock import patch
@@ -316,8 +373,8 @@ class ContractTests(unittest.TestCase):
         for mutation in ["missing", "wrong reference", "additional field", "additional pending method"]:
             changed = copy.deepcopy(original("supervisor"))
             if mutation == "missing": del changed["x-pending-payload-contracts"]
-            elif mutation == "wrong reference": changed["x-pending-payload-contracts"]["Event.Started"]["policy"] = {"$ref":"common.json#/definitions/SupervisorStartedEditor"}
-            elif mutation == "additional field": changed["x-pending-payload-contracts"]["Event.Started"]["docker_enabled"] = {"$ref":"common.json#/definitions/SupervisorArguments"}
+            elif mutation == "wrong reference": changed["x-pending-payload-contracts"].setdefault("Event.Started", {})["policy"] = {"$ref":"common.json#/definitions/SupervisorStartedEditor"}
+            elif mutation == "additional field": changed["x-pending-payload-contracts"].setdefault("Event.Started", {})["docker_enabled"] = {"$ref":"common.json#/definitions/SupervisorArguments"}
             else: changed["x-pending-payload-contracts"]["Event.SandboxCall"] = {"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"}}
             with self.subTest(mutation=mutation), patch.object(contract,"document",side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
                 with self.assertRaises(ValueError):
@@ -344,9 +401,9 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(row["x-rust-name"], "CommandScopeMembership")
         self.assertEqual(row["x-params-schema"], {"$ref":"common.json#/definitions/SupervisorCommandScopeMembershipParams"})
         self.assertEqual([field["name"] for field in row["params"]], ["result"])
-        self.assertEqual(doc["x-pending-notifications"]["C17d-lifecycle-host-jobs"], ["Event.Started"])
+        self.assertNotIn("C17d-lifecycle-host-jobs", doc["x-pending-notifications"])
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
-        self.assertEqual(len(pending), 7)
+        self.assertEqual(len(pending), 0)
         self.assertNotIn("Command.ScopeMembership", pending)
 
     def test_c17d3a_membership_result_metadata_rejects_drift(self):
@@ -411,9 +468,11 @@ class ContractTests(unittest.TestCase):
         completed = {binding["method"] for binding in fixtures["c17d2_lifecycle_bindings"]}
         self.assertEqual(len(completed), 10)
         completed.add("Command.ScopeMembership")
-        self.assertEqual(len(pending), 7)
-        self.assertEqual(doc["x-pending-notifications"]["C17d-lifecycle-host-jobs"], ["Event.Started"])
-        self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
+        completed.add("Event.Started")
+        completed.update({'Command.SandboxSend', 'Event.SandboxClosed', 'Event.SandboxCall', 'Command.RecordEvent', 'Command.SandboxClose', 'Event.SandboxOpened'})
+        self.assertEqual(len(pending), 0)
+        self.assertNotIn("C17d-lifecycle-host-jobs", doc["x-pending-notifications"])
+        self.assertEqual(doc["x-pending-notifications"], {})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -483,8 +542,10 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(len(completed), 6)
         completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
         completed.add("Command.ScopeMembership")
-        self.assertEqual(len(pending), 7)
-        self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
+        completed.add("Event.Started")
+        completed.update({'Command.SandboxSend', 'Event.SandboxClosed', 'Event.SandboxCall', 'Command.RecordEvent', 'Command.SandboxClose', 'Event.SandboxOpened'})
+        self.assertEqual(len(pending), 0)
+        self.assertEqual(doc["x-pending-notifications"], {})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -594,8 +655,10 @@ class ContractTests(unittest.TestCase):
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
         completed.add("Command.ScopeMembership")
-        self.assertEqual(len(pending), 7)
-        self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
+        completed.add("Event.Started")
+        completed.update({'Command.SandboxSend', 'Event.SandboxClosed', 'Event.SandboxCall', 'Command.RecordEvent', 'Command.SandboxClose', 'Event.SandboxOpened'})
+        self.assertEqual(len(pending), 0)
+        self.assertEqual(doc["x-pending-notifications"], {})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -705,8 +768,10 @@ class ContractTests(unittest.TestCase):
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
         completed.add("Command.ScopeMembership")
-        self.assertEqual(len(pending), 7)
-        self.assertEqual(set(doc["x-pending-notifications"]), {"C17d-lifecycle-host-jobs", "C17e-relay-logging"})
+        completed.add("Event.Started")
+        completed.update({'Command.SandboxSend', 'Event.SandboxClosed', 'Event.SandboxCall', 'Command.RecordEvent', 'Command.SandboxClose', 'Event.SandboxOpened'})
+        self.assertEqual(len(pending), 0)
+        self.assertEqual(doc["x-pending-notifications"], {})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -813,7 +878,7 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(inner.is_valid(value))
         doc = contract.document("supervisor")
         pending = [name for group in doc["x-pending-notifications"].values() for name in group]
-        self.assertEqual(len(pending), 7)
+        self.assertEqual(len(pending), 0)
         completed = {case["frame"]["method"] for case in fixtures["c17b2_notification_cases"]}
         self.assertEqual(len(completed), 7)
         completed |= {case["frame"]["method"] for case in fixtures["c17c1_notification_cases"]}
@@ -821,6 +886,8 @@ class ContractTests(unittest.TestCase):
         completed |= {case["frame"]["method"] for case in fixtures["c17d1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in fixtures["c17d2_notification_cases"]}
         completed.add("Command.ScopeMembership")
+        completed.add("Event.Started")
+        completed.update({'Command.SandboxSend', 'Event.SandboxClosed', 'Event.SandboxCall', 'Command.RecordEvent', 'Command.SandboxClose', 'Event.SandboxOpened'})
         self.assertFalse(completed & set(pending))
         self.assertTrue(completed <= {row["name"] for row in doc["x-notifications"]})
 
@@ -957,8 +1024,8 @@ class ContractTests(unittest.TestCase):
         doc = original("supervisor")
         pending = doc["x-pending-notifications"]
         names = [name for group in pending.values() for name in group]
-        self.assertEqual(len(names), 7)
-        self.assertEqual(len(set(names)), 7)
+        self.assertEqual(len(names), 0)
+        self.assertEqual(len(set(names)), 0)
         completed = {r["method"] for r in contract.read("fixtures.json")["c17b1_process_roots"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17b2_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17c1_notification_cases"]}
@@ -966,19 +1033,21 @@ class ContractTests(unittest.TestCase):
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17d1_notification_cases"]}
         completed |= {case["frame"]["method"] for case in contract.read("fixtures.json")["c17d2_notification_cases"]}
         completed.add("Command.ScopeMembership")
+        completed.add("Event.Started")
+        completed.update({'Command.SandboxSend', 'Event.SandboxClosed', 'Event.SandboxCall', 'Command.RecordEvent', 'Command.SandboxClose', 'Event.SandboxOpened'})
         declared = {r["name"] for r in doc["x-notifications"]}
         self.assertTrue(completed <= declared)
         self.assertFalse(set(names) & declared)
-        self.assertEqual(set(pending), {"C17d-lifecycle-host-jobs","C17e-relay-logging"})
-        for mutation in ["completed method pending", "missing pending method", "duplicate pending method", "unknown pending method", "wrong pending family"]:
+        self.assertEqual(pending, {})
+        for mutation in ["completed method pending", "retired family reintroduced missing method", "duplicate pending method", "unknown pending method", "wrong pending family"]:
             changed = copy.deepcopy(doc)
             registry = changed["x-pending-notifications"]
-            group = registry["C17d-lifecycle-host-jobs"]
+            group = registry.setdefault("C17e-relay-logging", ['Command.SandboxSend', 'Command.SandboxClose', 'Command.RecordEvent', 'Event.SandboxOpened', 'Event.SandboxCall', 'Event.SandboxClosed'])
             if mutation == "completed method pending": group.append("Command.Spawn")
-            elif mutation == "missing pending method": group.pop()
+            elif mutation == "retired family reintroduced missing method": group.pop()
             elif mutation == "duplicate pending method": group.append(group[0])
             elif mutation == "unknown pending method": group.append("Command.Unknown")
-            else: registry["C17e-relay-logging"].append(group.pop())
+            else: registry.setdefault("C17d-lifecycle-host-jobs", []).append(group.pop())
             with self.subTest(mutation=mutation), patch.object(contract, "document", side_effect=lambda endpoint: changed if endpoint == "supervisor" else original(endpoint)):
                 with self.assertRaises(ValueError):
                     contract.check()
@@ -1067,12 +1136,14 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(row["consumer"], expected["consumer"])
                 self.assertTrue(row["description"])
                 self.assertEqual(row.get("x-dispatch-variants", {}), expected.get("variants", {}))
-                self.assertEqual(set(row["pending-identities"]), set(expected["pending"]))
+                self.assertEqual(row["pending-identities"], {})
                 for name in row["allowed"]:
-                    if name in expected["pending"]:
-                        self.assertEqual(row["pending-identities"][name]["chunk"], expected["pending"][name])
-                        self.assertTrue(row["pending-identities"][name]["reason"])
-                        self.assertNotIn(name, notifications)  # Identity-only is not payload migration.
+                    if name == "Setup":
+                        setup = next(r for r in contract.document("scope")["x-notifications"] if r["name"] == name)
+                        self.assertEqual(setup["direction"], "daemon-to-scope")
+                        self.assertEqual(setup["x-rust-name"], "Setup")
+                        self.assertEqual(setup["x-params-schema"], {"$ref":"common.json#/definitions/ScopeSetupParams"})
+                        self.assertNotIn(name, row["pending-identities"])
                     else:
                         self.assertIn(notifications[name]["direction"], [row["direction"], "bidirectional"])
                         self.assertTrue(notifications[name]["x-rust-name"])
@@ -1107,9 +1178,9 @@ class ContractTests(unittest.TestCase):
         mutated("wrong entry dispatch variant", lambda d: d["x-phases"][0]["x-dispatch-variants"].update(Preflight="Maintenance"))
         mutated("missing entry dispatch variant", lambda d: d["x-phases"][0]["x-dispatch-variants"].pop("Setup"))
         mutated("extra entry dispatch variant", lambda d: d["x-phases"][0]["x-dispatch-variants"].update(Unknown="Unknown"))
-        mutated("missing Setup pending", lambda d: d["x-phases"][0]["pending-identities"].pop("Setup"))
-        mutated("wrong Setup chunk", lambda d: d["x-phases"][0]["pending-identities"]["Setup"].update(chunk="C17"))
-        mutated("empty pending reason", lambda d: d["x-phases"][0]["pending-identities"]["Setup"].update(reason=""))
+        mutated("retired Setup pending map missing", lambda d: d["x-phases"][0].pop("pending-identities"))
+        mutated("retired Setup reintroduced wrong chunk", lambda d: d["x-phases"][0]["pending-identities"].update(Setup={"chunk":"C17","reason":"retired fallback"}))
+        mutated("retired Setup reintroduced empty reason", lambda d: d["x-phases"][0]["pending-identities"].update(Setup={"chunk":"C18","reason":""}))
         mutated("retired Event.Manifest pending reintroduced", lambda d: d["x-phases"][3]["pending-identities"].update({"Event.Manifest":{"chunk":"C17","reason":"retired payload fallback"}}))
         mutated("retired Event.Manifest rebound to wrong chunk", lambda d: d["x-phases"][3]["pending-identities"].update({"Event.Manifest":{"chunk":"C18","reason":"wrong payload fallback"}}))
         mutated("generated identity marked pending", lambda d: d["x-phases"][0]["pending-identities"].update(Maintenance={"chunk":"C18","reason":"wrong fallback"}))

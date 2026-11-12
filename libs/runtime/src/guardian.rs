@@ -6,7 +6,6 @@ use crate::{
     ResourceLease, Result,
     channel::{Channel, Descriptor},
 };
-use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
     os::{
@@ -80,18 +79,8 @@ impl Bootstrap {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Lease {
-    pub directory: PathBuf,
-    pub lock: Descriptor,
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "method", content = "params", deny_unknown_fields)]
-enum Message {
-    Retain { leases: Vec<Lease> },
-    Retained {},
-}
+pub use goblins_protocol::contract::guardian_metadata::Lease;
+use goblins_protocol::contract::guardian_metadata::Message;
 fn encode(message: &Message) -> serde_json::Value {
     let mut value = serde_json::to_value(message).unwrap();
     value
@@ -176,7 +165,6 @@ impl Retainer {
         Ok(())
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +409,24 @@ mod tests {
             assert!(resource_exclusive(path).unwrap().is_some());
         }
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod migration_happy_path_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn remaining_migration_guardian_normal_frames_roundtrip() {
+        for (message,expected) in [
+            (Message::Retain { leases:vec![] },json!({"jsonrpc":"2.0","method":"Retain","params":{"leases":[]}})),
+            (Message::Retain { leases:vec![Lease { directory:"/resources/one".into(),lock:Descriptor::new(0) },Lease { directory:"/resources/two".into(),lock:Descriptor::new(1) }] },json!({"jsonrpc":"2.0","method":"Retain","params":{"leases":[{"directory":"/resources/one","lock":{"$fd":0}},{"directory":"/resources/two","lock":{"$fd":1}}]}})),
+            (Message::Retained {},json!({"jsonrpc":"2.0","method":"Retained","params":{}})),
+        ] {
+            assert_eq!(encode(&message),expected);
+            assert_eq!(encode(&decode(expected.clone()).unwrap()),expected);
+        }
+        retained(json!({"jsonrpc":"2.0","method":"Retained","params":{}})).unwrap();
     }
 }

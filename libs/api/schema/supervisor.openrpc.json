@@ -1758,9 +1758,254 @@
       "sender": "daemon",
       "receiver": "supervisor",
       "connection-state": "operational scope membership response"
+    },
+    {
+      "name": "Event.Started",
+      "x-rust-name": "EventStarted",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Publish descriptor-free launch metadata using generated nested policy/support/identity/recreation/worktree records. All eight fields are required; recreated may be null, while dev_shell is an opaque String encoding Option<DevShellSummary>. Parse fields in original order, including inner dev_shell before identity, without early whole-record validation or new policy checks. No capabilities or adoption token are introduced.",
+      "params": [
+        {
+          "name": "docker_enabled",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStartedParams/properties/docker_enabled"
+          }
+        },
+        {
+          "name": "policy",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStartedParams/properties/policy"
+          }
+        },
+        {
+          "name": "support",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStartedParams/properties/support"
+          }
+        },
+        {
+          "name": "dev_shell",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStartedParams/properties/dev_shell"
+          }
+        },
+        {
+          "name": "identity",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStartedParams/properties/identity"
+          }
+        },
+        {
+          "name": "recreated",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStartedParams/properties/recreated"
+          }
+        },
+        {
+          "name": "auto",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStartedParams/properties/auto"
+          }
+        },
+        {
+          "name": "worktrees",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventStartedParams/properties/worktrees"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventStartedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational startup result"
+    },
+    {
+      "name": "Command.RecordEvent",
+      "x-rust-name": "CommandRecordEvent",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Carry diagnostic event text and opaque arbitrary JSON fields; logging policy remains unchanged.",
+      "params": [
+        {
+          "name": "event",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRecordEventParams/properties/event"
+          }
+        },
+        {
+          "name": "fields",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandRecordEventParams/properties/fields"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandRecordEventParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational relay/logging command"
+    },
+    {
+      "name": "Command.SandboxSend",
+      "x-rust-name": "CommandSandboxSend",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Relay opaque arbitrary JSON to the original connection id; descriptor-looking data remains inside the String.",
+      "params": [
+        {
+          "name": "connection",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSandboxSendParams/properties/connection"
+          }
+        },
+        {
+          "name": "message",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSandboxSendParams/properties/message"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandSandboxSendParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational relay/logging command"
+    },
+    {
+      "name": "Command.SandboxClose",
+      "x-rust-name": "CommandSandboxClose",
+      "direction": "daemon-to-supervisor",
+      "paramStructure": "by-name",
+      "description": "Close the named connection after queued output drains, preserving existing runtime behavior.",
+      "params": [
+        {
+          "name": "connection",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandSandboxCloseParams/properties/connection"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorCommandSandboxCloseParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "supervisor",
+      "connection-state": "operational relay/logging command"
+    },
+    {
+      "name": "Event.SandboxOpened",
+      "x-rust-name": "EventSandboxOpened",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report a new connection whose id is local to this runtime.",
+      "params": [
+        {
+          "name": "connection",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSandboxOpenedParams/properties/connection"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventSandboxOpenedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational relay event"
+    },
+    {
+      "name": "Event.SandboxCall",
+      "x-rust-name": "EventSandboxCall",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Relay the admitted call as opaque JSON text. Preserve the existing structural Call reader/defaults and upstream admission checks; inner JSON is not scanned for capabilities.",
+      "params": [
+        {
+          "name": "connection",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSandboxCallParams/properties/connection"
+          }
+        },
+        {
+          "name": "call",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSandboxCallParams/properties/call"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventSandboxCallParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational relay event"
+    },
+    {
+      "name": "Event.SandboxClosed",
+      "x-rust-name": "EventSandboxClosed",
+      "direction": "supervisor-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report connection closure from EOF, invalid input, overflow or runtime shutdown.",
+      "params": [
+        {
+          "name": "connection",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorEventSandboxClosedParams/properties/connection"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SupervisorEventSandboxClosedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "supervisor",
+      "receiver": "daemon",
+      "connection-state": "operational relay event"
     }
   ],
-  "x-contract-chunk": "C17d3b3",
+  "x-contract-chunk": "supervisor-complete",
   "x-transport": {
     "jsonrpc": "2.0",
     "framing": "Content-Length plus Descriptor-Count over channel::Channel",
@@ -1769,10 +2014,7 @@
     "ids": "absent",
     "decoding": "Original Params take/finish order; raw envelope and owned descriptors remain handwritten."
   },
-  "x-pending": [
-    "C17 remaining operational families listed in x-pending-notifications",
-    "C18 scope Setup payload (entry phase identity only)"
-  ],
+  "x-pending": [],
   "x-phases": [
     {
       "name": "entry",
@@ -1790,12 +2032,7 @@
         "Preflight": "Preflight",
         "SupervisorStart": "SupervisorStart"
       },
-      "pending-identities": {
-        "Setup": {
-          "chunk": "C18",
-          "reason": "Scope Setup payload contract remains separate; only the existing first-frame method identity is bound here."
-        }
-      },
+      "pending-identities": {},
       "consumer": "libs/supervisor/src/entry.rs:main",
       "description": "Classify the raw first method before general decoding or runtime startup. Missing, non-string or unknown methods retain the existing refusal; Setup retains its independent descriptor refusal."
     },
@@ -1845,46 +2082,6 @@
       "description": "Only the single-frame maintenance result reaches logical decoding. Existing fixed post-result deadline, EOF and successful reap requirements remain unchanged."
     }
   ],
-  "x-pending-notifications": {
-    "C17d-lifecycle-host-jobs": [
-      "Event.Started"
-    ],
-    "C17e-relay-logging": [
-      "Command.RecordEvent",
-      "Command.SandboxSend",
-      "Command.SandboxClose",
-      "Event.SandboxOpened",
-      "Event.SandboxCall",
-      "Event.SandboxClosed"
-    ]
-  },
-  "x-pending-payload-contracts": {
-    "Event.Started": {
-      "policy": {
-        "$ref": "common.json#/definitions/SupervisorStartedPolicy"
-      },
-      "support": {
-        "$ref": "common.json#/definitions/SupervisorStartedSupport"
-      },
-      "identity": {
-        "$ref": "common.json#/definitions/SupervisorStartedIdentity"
-      },
-      "recreated": {
-        "anyOf": [
-          {
-            "$ref": "common.json#/definitions/SupervisorStartedRecreated"
-          },
-          {
-            "type": "null"
-          }
-        ]
-      },
-      "auto": {
-        "$ref": "common.json#/definitions/SupervisorStartedAuto"
-      },
-      "worktrees": {
-        "$ref": "common.json#/definitions/SupervisorStartedReport"
-      }
-    }
-  }
+  "x-pending-notifications": {},
+  "x-pending-payload-contracts": {}
 }

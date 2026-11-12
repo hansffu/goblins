@@ -202,16 +202,7 @@ pub struct Docker {
     #[serde(default)]
     pub enabled: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScopeDefinition {
-    pub persistent: bool,
-    pub pid: bool,
-    #[serde(default)]
-    pub storage: Vec<String>,
-    #[serde(default)]
-    pub docker: bool,
-}
+pub use goblins_protocol::contract::scope_metadata::ScopeDefinition;
 /// The scope a launch joins, with this goblin's storage mount points.
 #[derive(Clone, Debug)]
 pub struct Scope {
@@ -585,7 +576,6 @@ fn substitute(
         })
         .collect()
 }
-
 #[cfg(test)]
 mod root_tests {
     use super::*;

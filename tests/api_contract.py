@@ -16,7 +16,7 @@ SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ELISP_READERS = ROOT / "emacs/goblins-api-generated.el"
 ENDPOINTS = ("host", "sandbox", "attach")
-PRIVATE_ENDPOINTS = ("supervisor",)
+PRIVATE_ENDPOINTS = ("supervisor", "scope", "guardian")
 NORMALIZATIONS = {
     "raid-members-display": "Read raid/member display strings independently with - fallback, booleans strictly, members only when an array, created_by string presence and existing escaped/sorted option rendering; accept non-object legacy results.",
     "state-subscribe-fields": "Project string subscription, u64 sequence and raw snapshot independently; preserve validation only after nonblocking setup in the Rust consumer, including original missing-field diagnostics and initial cross-instance acceptance.",
@@ -1068,7 +1068,7 @@ def check_supervisor_handoff_metadata():
 def check_supervisor_phases():
     """Pin existing actor method gates and narrowly scoped pending identities."""
     expected=[
-        ("entry","Entry","daemon-to-supervisor",["Setup","Maintenance","Preflight","SupervisorStart"],"libs/supervisor/src/entry.rs:main",{"Setup":"C18"}),
+        ("entry","Entry","daemon-to-supervisor",["Setup","Maintenance","Preflight","SupervisorStart"],"libs/supervisor/src/entry.rs:main",{}),
         ("maintenance-first","MaintenanceFirst","daemon-to-supervisor",["Maintenance"],"libs/supervisor/src/maintenance.rs:start",{}),
         ("preflight-adopted","PreflightAdopted","daemon-to-supervisor",["Adopted"],"libs/supervisor/src/preflight.rs:start",{}),
         ("manifest-result","ManifestResult","supervisor-to-daemon",["Event.Manifest","PreflightFailed"],"packages/daemon/src/supervised/oneshot.rs:Expected::allows",{}),
@@ -1078,6 +1078,7 @@ def check_supervisor_phases():
     if [row.get("name") for row in rows]!=[row[0] for row in expected]:
         raise ValueError("private supervisor phase inventory differs")
     notifications={row["name"]:row for row in doc["x-notifications"]}
+    notifications.update({row["name"]:row for row in document("scope")["x-notifications"] if row["name"]=="Setup"})
     for row,(name,rust,direction,allowed,consumer,pending) in zip(rows,expected):
         if (row.get("x-rust-name")!=rust or row.get("direction")!=direction or
             row.get("allowed")!=allowed or row.get("consumer")!=consumer):
@@ -1087,15 +1088,15 @@ def check_supervisor_phases():
         variants={name:name for name in allowed} if name=="entry" else None
         if (variants is not None and row.get("x-dispatch-variants")!=variants) or (variants is None and "x-dispatch-variants" in row):
             raise ValueError("private supervisor entry classifier differs")
-        actual=row.get("pending-identities",{})
-        if set(actual)!=set(pending):raise ValueError("private phase identity fallback scope differs")
+        actual=row.get("pending-identities")
+        if not isinstance(actual,dict) or set(actual)!=set(pending):raise ValueError("private phase identity fallback scope differs")
         for identity in allowed:
             if identity in pending:
                 record=actual[identity]
                 if (identity in notifications or set(record)!={"chunk","reason"} or
                     record.get("chunk")!=pending[identity] or not isinstance(record.get("reason"),str) or not record["reason"]):
                     raise ValueError("invalid private phase pending identity")
-            elif identity not in notifications or notifications[identity]["direction"] not in (direction,"bidirectional"):
+            elif identity not in notifications or notifications[identity]["direction"] not in (("daemon-to-scope",) if identity=="Setup" else (direction,"bidirectional")):
                 raise ValueError("private phase identity has no matching directional contract")
 
 
@@ -1425,7 +1426,7 @@ def check_supervisor_started_policy_metadata():
     for name,value in expected.items():
         if {key:value for key,value in defs["SupervisorStarted"+name].items() if key!="description"}!=value:
             raise ValueError("private Started policy schema/Rust metadata differs: "+name)
-    if document("supervisor").get("x-pending-payload-contracts")!={"Event.Started":{"policy":{"$ref":"common.json#/definitions/SupervisorStartedPolicy"},"support":{"$ref":"common.json#/definitions/SupervisorStartedSupport"},"identity":{"$ref":"common.json#/definitions/SupervisorStartedIdentity"},"recreated":{"anyOf":[{"$ref":"common.json#/definitions/SupervisorStartedRecreated"},{"type":"null"}]},"auto":{"$ref":"common.json#/definitions/SupervisorStartedAuto"},"worktrees":{"$ref":"common.json#/definitions/SupervisorStartedReport"}}}:
+    if document("supervisor").get("x-pending-payload-contracts")!={}:
         raise ValueError("private Started pending payload projection differs")
 
 
@@ -1554,17 +1555,36 @@ def check_private_contracts():
         'Event.InitLost':('supervisor-to-daemon','SupervisorEmptyParams',[]),
         'Event.PayloadExited':('supervisor-to-daemon','SupervisorEmptyParams',[]),
         'Command.ScopeMembership':('daemon-to-supervisor','SupervisorCommandScopeMembershipParams',['result']),
+        'Event.Started':('supervisor-to-daemon','SupervisorEventStartedParams',['docker_enabled','policy','support','dev_shell','identity','recreated','auto','worktrees']),
+        'Command.RecordEvent':('daemon-to-supervisor','SupervisorCommandRecordEventParams',['event', 'fields']),
+        'Command.SandboxSend':('daemon-to-supervisor','SupervisorCommandSandboxSendParams',['connection', 'message']),
+        'Command.SandboxClose':('daemon-to-supervisor','SupervisorCommandSandboxCloseParams',['connection']),
+        'Event.SandboxOpened':('supervisor-to-daemon','SupervisorEventSandboxOpenedParams',['connection']),
+        'Event.SandboxCall':('supervisor-to-daemon','SupervisorEventSandboxCallParams',['connection', 'call']),
+        'Event.SandboxClosed':('supervisor-to-daemon','SupervisorEventSandboxClosedParams',['connection']),
     }
     for endpoint in PRIVATE_ENDPOINTS:
         doc=document(endpoint)
+        endpoint_catalog=catalog
+        if endpoint!="supervisor":
+            enum=common()["definitions"][common()["x-private-protocols"][endpoint]]
+            variants={v["name"]:v for v in enum["x-rust-variants"]}
+            endpoint_catalog={}
+            for row in doc["x-notifications"]:
+                variant=variants.get(row["name"])
+                if variant is None:raise ValueError("private notification missing generated variant")
+                record=variant["schema-ref"].split("/")[-1]
+                schema=common()["definitions"][record]
+                endpoint_catalog[row["name"]]=(row["direction"],record,list(schema["properties"]))
+            if set(endpoint_catalog)!=set(variants):raise ValueError("private generated variant inventory differs")
         Draft7Validator(read("vendor/openrpc-1.3.2.json")).validate(doc)
         rows=doc.get("x-notifications",[])
-        if doc["methods"] or len(rows)!=len(catalog) or {row.get("name") for row in rows}!=set(catalog):
+        if doc["methods"] or len(rows)!=len(endpoint_catalog) or {row.get("name") for row in rows}!=set(endpoint_catalog):
             raise ValueError("private notification inventory differs from migrated slice")
         names=[row.get("x-rust-name") for row in rows]
         if len(names)!=len(set(names)):raise ValueError("duplicate private Rust notification marker")
         for row in rows:
-            name=row["name"];direction,record,order=catalog[name]
+            name=row["name"];direction,record,order=endpoint_catalog[name]
             rust=name.replace(".","")
             if row.get("x-rust-name")!=rust or row.get("direction")!=direction:
                 raise ValueError("private notification identity/direction differs")
@@ -1574,12 +1594,12 @@ def check_private_contracts():
             if row.get("x-params-schema")!=pointer or row.get("paramStructure")!="by-name" or row.get("x-positional-schema")!={"not":{}}:
                 raise ValueError("private notification parameter strategy differs")
             schema=resolve(pointer)
-            if schema.get("type")!="object" or schema.get("additionalProperties") is not False or list(schema.get("properties",{}))!=order or schema.get("required")!=order:
+            if schema.get("type")!="object" or schema.get("additionalProperties") is not False or list(schema.get("properties",{}))!=order or (endpoint=="supervisor" and schema.get("required")!=order):
                 raise ValueError("private record fields/order/required slots differ")
-            params=[{"name":field,"required":True,"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
+            params=[{"name":field,"required":field in schema.get("required",[]),"schema":{"$ref":f"common.json#/definitions/{record}/properties/{field}"}} for field in order]
             if row.get("params")!=params:raise ValueError("private parameter catalog differs from DTO")
             schema_validator(pointer).check_schema(schema)
-    if common().get("x-rust-explicit-records")!=["SupervisorDescriptor","SupervisorRecreate","SupervisorWorktree","SupervisorDirectory","SupervisorLease","SupervisorHandoff","SupervisorTerminalStatus","SupervisorApprovalRequest","SupervisorApprovalReply","SupervisorPreview","SupervisorEventGrantedParams","SupervisorDevShellChanges","SupervisorDevShellSummary","SupervisorHostOutcome","SupervisorEventHostJobFinishedParams","SupervisorStartedEditor","SupervisorStartedOnAttach","SupervisorStartedHandlers","SupervisorStartedScopePolicy","SupervisorStartedDevShellPolicy","SupervisorStartedPolicy","SupervisorStartedIdentity","SupervisorStartedSkipped","SupervisorStartedRecreated","SupervisorStartedAuto","SupervisorStartedReport"]:
+    if common().get("x-rust-explicit-records")!=['SupervisorDescriptor', 'SupervisorRecreate', 'SupervisorWorktree', 'SupervisorDirectory', 'SupervisorLease', 'SupervisorHandoff', 'SupervisorTerminalStatus', 'SupervisorApprovalRequest', 'SupervisorApprovalReply', 'SupervisorPreview', 'SupervisorEventGrantedParams', 'SupervisorDevShellChanges', 'SupervisorDevShellSummary', 'SupervisorHostOutcome', 'SupervisorEventHostJobFinishedParams', 'SupervisorStartedEditor', 'SupervisorStartedOnAttach', 'SupervisorStartedHandlers', 'SupervisorStartedScopePolicy', 'SupervisorStartedDevShellPolicy', 'SupervisorStartedPolicy', 'SupervisorStartedIdentity', 'SupervisorStartedSkipped', 'SupervisorStartedRecreated', 'SupervisorStartedAuto', 'SupervisorStartedReport', 'SupervisorEventStartedParams', 'SupervisorRelayCall', 'ScopeDefinition', 'ScopeJoin', 'ScopeDockerConfig', 'ScopeSetupParams', 'ScopeAddMemberParams', 'ScopeStopParams', 'ScopeStoppingParams', 'ScopeIdleParams', 'ScopeJoinedParams', 'ScopeOpenStorageParams', 'ScopeStorageParams', 'ScopeRegisterMemberParams', 'ScopeRegisteredParams', 'ScopeAttachDockerParams', 'ScopeExtendDockerParams', 'ScopeDockerPendingParams', 'ScopeDockerAttachedParams', 'ScopeDetachDockerParams', 'ScopeDockerDetachedParams', 'ScopeLeaveParams', 'ScopeLeftParams', 'ScopeErrorParams', 'GuardianLease', 'GuardianRetainParams', 'GuardianRetainedParams']:
         raise ValueError("private explicit record registry differs")
     descriptor=common()["definitions"]["SupervisorDescriptor"]
     expected_property={"$ref":"#/definitions/SupervisorDescriptorIndex","x-rust-type":"usize","x-rust-field-name":"index"}

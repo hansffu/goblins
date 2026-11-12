@@ -1,108 +1,10 @@
 //! Private scope process protocol. Descriptors use frame-local indices.
-use crate::{channel::Descriptor, config::ScopeDefinition};
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf};
+pub use goblins_protocol::contract::scope_metadata::{DockerConfig, DockerPart, Join, Message};
 
 pub const API: u32 = 1;
 pub const CONTROL_FD: i32 = 3;
 /// Match the existing daemon CLI cleanup wait; scope Drop was unbounded.
 pub const RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Join {
-    pub definition: ScopeDefinition,
-    pub bwrap: PathBuf,
-    pub helper: PathBuf,
-    pub pasta: Option<PathBuf>,
-    pub allow_nix: bool,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DockerConfig {
-    pub bwrap: PathBuf,
-    pub helper: PathBuf,
-    pub daemon: PathBuf,
-}
-/// Each part has at most one capability, so transactions can exceed a frame's
-/// descriptor budget without serializing host fd numbers into argument text.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub enum DockerPart {
-    Arguments {
-        values: Vec<String>,
-    },
-    Bind {
-        source: Descriptor,
-        destination: PathBuf,
-        readonly: bool,
-    },
-    Store {},
-    Grant {
-        source: Descriptor,
-        destination: PathBuf,
-        readonly: bool,
-    },
-    Lease {
-        directory: PathBuf,
-        lock: Descriptor,
-    },
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "method", content = "params", deny_unknown_fields)]
-pub enum Message {
-    Setup {
-        api: u32,
-        name: String,
-        directory: PathBuf,
-    },
-    AddMember {
-        fd: Descriptor,
-    },
-    Stop {},
-    Stopping {},
-    Idle {
-        added: u64,
-    },
-    Join(Join),
-    Joined {
-        outer: Descriptor,
-        user: Descriptor,
-        net: Descriptor,
-        pid: Option<Descriptor>,
-        directory: PathBuf,
-    },
-    /// Storage capabilities are requested in bounded batches after Join.
-    OpenStorage {
-        names: Vec<String>,
-    },
-    Storage {
-        directories: BTreeMap<String, Descriptor>,
-    },
-    RegisterMember {
-        mountns: Descriptor,
-    },
-    Registered {},
-    AttachDocker {
-        config: Option<DockerConfig>,
-        parts: Vec<DockerPart>,
-        more: bool,
-    },
-    ExtendDocker {
-        parts: Vec<DockerPart>,
-        more: bool,
-    },
-    DockerPending {},
-    DockerAttached {
-        socket: PathBuf,
-    },
-    DetachDocker {},
-    DockerDetached {},
-    Leave {},
-    Left {},
-    Error {
-        message: String,
-    },
-}
 pub fn encode(message: &Message) -> serde_json::Value {
     let mut value = serde_json::to_value(message).expect("scope message is serializable");
     value
@@ -150,7 +52,6 @@ pub fn remove_stale(directory: &std::path::Path, dry_run: bool) -> crate::Result
     }
     Ok(true)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +79,49 @@ mod tests {
         assert!(root.join("marker").exists());
         assert!(remove_stale(&root, false).unwrap());
         assert!(!root.exists());
+    }
+}
+
+#[cfg(test)]
+mod migration_happy_path_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn remaining_migration_scope_normal_frames_roundtrip() {
+        let definition = json!({"persistent":true,"pid":true,"storage":["cache"],"docker":true});
+        let config = json!({"bwrap":"/bin/bwrap","helper":"/bin/helper","daemon":"/bin/docker"});
+        let parts = json!([
+            {"kind":"Arguments","values":["--debug"]},
+            {"kind":"Bind","source":{"$fd":0},"destination":"/workspace","readonly":false},
+            {"kind":"Store"},
+            {"kind":"Grant","source":{"$fd":1},"destination":"/grant","readonly":true},
+            {"kind":"Lease","directory":"/resource","lock":{"$fd":2}}
+        ]);
+        let cases = [
+            ("Setup",json!({"api":1,"name":"shared","directory":"/runtime"})),
+            ("AddMember",json!({"fd":{"$fd":0}})),
+            ("Stop",json!({})), ("Stopping",json!({})),
+            ("Idle",json!({"added":3})),
+            ("Join",json!({"definition":definition,"bwrap":"/bin/bwrap","helper":"/bin/helper","pasta":"/bin/pasta","allow_nix":true})),
+            ("Join",json!({"definition":{"persistent":false,"pid":false,"storage":[],"docker":false},"bwrap":"/bin/bwrap","helper":"/bin/helper","pasta":null,"allow_nix":false})),
+            ("Joined",json!({"outer":{"$fd":0},"user":{"$fd":1},"net":{"$fd":2},"pid":{"$fd":3},"directory":"/runtime"})),
+            ("Joined",json!({"outer":{"$fd":0},"user":{"$fd":1},"net":{"$fd":2},"pid":null,"directory":"/runtime"})),
+            ("OpenStorage",json!({"names":["cache","data"]})),
+            ("Storage",json!({"directories":{"cache":{"$fd":0},"data":{"$fd":1}}})),
+            ("RegisterMember",json!({"mountns":{"$fd":0}})), ("Registered",json!({})),
+            ("AttachDocker",json!({"config":config,"parts":parts,"more":true})),
+            ("AttachDocker",json!({"config":null,"parts":[],"more":false})),
+            ("ExtendDocker",json!({"parts":[{"kind":"Store"}],"more":false})),
+            ("DockerPending",json!({})), ("DockerAttached",json!({"socket":"/docker.sock"})),
+            ("DetachDocker",json!({})), ("DockerDetached",json!({})),
+            ("Leave",json!({})), ("Left",json!({})),
+            ("Error",json!({"message":"scope stopped"})),
+        ];
+        for (method,params) in cases {
+            let expected=json!({"jsonrpc":"2.0","method":method,"params":params});
+            let message=decode(expected.clone()).unwrap();
+            assert_eq!(encode(&message),expected,"{method}");
+        }
     }
 }

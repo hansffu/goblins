@@ -12,6 +12,11 @@ fn main() {
         "std::collections::BTreeMap<String, String>",
         [].into_iter(),
     );
+    settings.with_replacement(
+        "HistoryVariables",
+        "std::collections::BTreeMap<String, String>",
+        [].into_iter(),
+    );
     settings.with_replacement("WorktreeName", "std::string::String", [].into_iter());
     settings.with_replacement(
         "EmptyParams",
@@ -292,7 +297,12 @@ fn main() {
         "::std::result::Result<crate::contract::WireHandoff, String>",
         [].into_iter(),
     );
-    for name in common["x-rust-external-enums"].as_array().unwrap() {
+    for name in common["x-rust-external-enums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(common["x-rust-wire-enums"].as_array().unwrap())
+    {
         let name = name.as_str().unwrap();
         let schema = &common["definitions"][name];
         let rust = schema["x-rust-name"].as_str().unwrap();
@@ -302,6 +312,7 @@ fn main() {
         };
         settings.with_replacement(name, path, [].into_iter());
     }
+    settings.with_replacement("ScopeApi", "u32", [].into_iter());
     settings.with_replacement("SupervisorDimension", "u16", [].into_iter());
     settings.with_replacement("SupervisorOptionalString", "Option<String>", [].into_iter());
     settings.with_replacement("SupervisorTerminalResult", "String", [].into_iter());
@@ -358,6 +369,10 @@ fn main() {
         "Vec<(String,::std::path::PathBuf)>",
         [].into_iter(),
     );
+    settings.with_replacement("SupervisorStartedDevShellText", "String", [].into_iter());
+    for name in ["SupervisorOpaqueJson", "SupervisorRelayCallText"] {
+        settings.with_replacement(name, "String", [].into_iter());
+    }
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -562,7 +577,12 @@ fn main() {
     }
     // Default external-tag Serde enums retain their original public variants
     // and payload permissiveness; canonical branch metadata supplies fields.
-    for name in common["x-rust-external-enums"].as_array().unwrap() {
+    for name in common["x-rust-external-enums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(common["x-rust-wire-enums"].as_array().unwrap())
+    {
         let name = name.as_str().unwrap();
         let schema = &common["definitions"][name];
         let rust = schema["x-rust-name"].as_str().unwrap();
@@ -584,6 +604,15 @@ fn main() {
         enum_output.push_str(&format!("#[derive({derives})] "));
         if let Some(rename_all) = schema["x-rust-rename-all"].as_str() {
             enum_output.push_str(&format!("#[serde(rename_all={rename_all:?})] "));
+        }
+        if let Some(tag) = schema["x-rust-tag"].as_str() {
+            if let Some(content) = schema["x-rust-content"].as_str() {
+                enum_output.push_str(&format!(
+                    "#[serde(tag={tag:?},content={content:?},deny_unknown_fields)] "
+                ));
+            } else {
+                enum_output.push_str(&format!("#[serde(tag={tag:?},deny_unknown_fields)] "));
+            }
         }
         enum_output.push_str(&format!("pub enum {rust} {{"));
         for variant in schema["x-rust-variants"].as_array().unwrap() {
@@ -753,7 +782,14 @@ fn main() {
         "HistoryPruneReply".to_string(),
         "StateSubscribeReply".to_string(),
     ]);
-    for endpoint in ["host", "sandbox", "attach", "supervisor"] {
+    for endpoint in [
+        "host",
+        "sandbox",
+        "attach",
+        "supervisor",
+        "scope",
+        "guardian",
+    ] {
         let document: Value = serde_json::from_str(
             &fs::read_to_string(format!("schema/{endpoint}.openrpc.json")).unwrap(),
         )
@@ -957,6 +993,8 @@ fn main() {
     let supervisor: Value =
         serde_json::from_str(&fs::read_to_string("schema/supervisor.openrpc.json").unwrap())
             .unwrap();
+    let scope: Value =
+        serde_json::from_str(&fs::read_to_string("schema/scope.openrpc.json").unwrap()).unwrap();
     output.push_str("pub mod supervisor_phases {\n");
     for phase in supervisor["x-phases"].as_array().unwrap() {
         let rust = phase["x-rust-name"].as_str().unwrap();
@@ -966,6 +1004,9 @@ fn main() {
             if let Some(notification) = supervisor["x-notifications"].as_array().unwrap().iter().find(|n| n["name"] == name) {
                 let binding = notification["x-rust-name"].as_str().unwrap();
                 format!("<super::supervisor_notifications::{binding} as crate::contract::Notification>::NAME")
+            } else if let Some(notification) = scope["x-notifications"].as_array().unwrap().iter().find(|n| n["name"] == name) {
+                let binding = notification["x-rust-name"].as_str().unwrap();
+                format!("<super::scope_notifications::{binding} as crate::contract::Notification>::NAME")
             } else {
                 assert!(phase["pending-identities"][name].is_object(), "unassigned supervisor phase identity");
                 format!("{name:?}")

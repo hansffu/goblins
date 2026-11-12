@@ -14,6 +14,11 @@ impl Descriptor {
     }
 }
 
+/// Original admitted-call params default, distinct from JSON null.
+pub fn relay_empty_params() -> Value {
+    serde_json::json!({})
+}
+
 /// Original bootstrap tuple; Typify replacements require a named type path.
 pub type SupervisorDimensions = (u16, u16);
 

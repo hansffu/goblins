@@ -1,0 +1,539 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "Goblins private scope protocol",
+    "version": "1"
+  },
+  "methods": [],
+  "x-notifications": [
+    {
+      "name": "Setup",
+      "x-rust-name": "Setup",
+      "direction": "daemon-to-scope",
+      "paramStructure": "by-name",
+      "description": "Bootstrap a scope process; the existing API/name/path validation remains in the entrypoint.",
+      "params": [
+        {
+          "name": "api",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeSetupParams/properties/api"
+          }
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeSetupParams/properties/name"
+          }
+        },
+        {
+          "name": "directory",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeSetupParams/properties/directory"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeSetupParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "scope",
+      "connection-state": "bootstrap"
+    },
+    {
+      "name": "AddMember",
+      "x-rust-name": "AddMember",
+      "direction": "daemon-to-scope",
+      "paramStructure": "by-name",
+      "description": "Transfer one member channel capability; original ownership and membership counts remain native.",
+      "params": [
+        {
+          "name": "fd",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeAddMemberParams/properties/fd"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeAddMemberParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Stop",
+      "x-rust-name": "Stop",
+      "direction": "daemon-to-scope",
+      "paramStructure": "by-name",
+      "description": "Request scope teardown using existing lifecycle ordering.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeStopParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "daemon",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Stopping",
+      "x-rust-name": "Stopping",
+      "direction": "scope-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Acknowledge teardown start.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeStoppingParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "daemon",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Idle",
+      "x-rust-name": "Idle",
+      "direction": "scope-to-daemon",
+      "paramStructure": "by-name",
+      "description": "Report idle membership with the original monotonic added count.",
+      "params": [
+        {
+          "name": "added",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeIdleParams/properties/added"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeIdleParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "daemon",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Join",
+      "x-rust-name": "Join",
+      "direction": "member-to-scope",
+      "paramStructure": "by-name",
+      "description": "Request membership using the closed Join metadata; scope authority stays native.",
+      "params": [
+        {
+          "name": "definition",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoin/properties/definition"
+          }
+        },
+        {
+          "name": "bwrap",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoin/properties/bwrap"
+          }
+        },
+        {
+          "name": "helper",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoin/properties/helper"
+          }
+        },
+        {
+          "name": "pasta",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoin/properties/pasta"
+          }
+        },
+        {
+          "name": "allow_nix",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoin/properties/allow_nix"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeJoin"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "member",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Joined",
+      "x-rust-name": "Joined",
+      "direction": "scope-to-member",
+      "paramStructure": "by-name",
+      "description": "Return namespace capabilities and scope directory.",
+      "params": [
+        {
+          "name": "outer",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoinedParams/properties/outer"
+          }
+        },
+        {
+          "name": "user",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoinedParams/properties/user"
+          }
+        },
+        {
+          "name": "net",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoinedParams/properties/net"
+          }
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoinedParams/properties/pid"
+          }
+        },
+        {
+          "name": "directory",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeJoinedParams/properties/directory"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeJoinedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "member",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "OpenStorage",
+      "x-rust-name": "OpenStorage",
+      "direction": "member-to-scope",
+      "paramStructure": "by-name",
+      "description": "Request storage capabilities in existing bounded batches.",
+      "params": [
+        {
+          "name": "names",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeOpenStorageParams/properties/names"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeOpenStorageParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "member",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Storage",
+      "x-rust-name": "Storage",
+      "direction": "scope-to-member",
+      "paramStructure": "by-name",
+      "description": "Return named storage capabilities.",
+      "params": [
+        {
+          "name": "directories",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeStorageParams/properties/directories"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeStorageParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "member",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "RegisterMember",
+      "x-rust-name": "RegisterMember",
+      "direction": "member-to-scope",
+      "paramStructure": "by-name",
+      "description": "Register the member mount namespace before membership release.",
+      "params": [
+        {
+          "name": "mountns",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeRegisterMemberParams/properties/mountns"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeRegisterMemberParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "member",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Registered",
+      "x-rust-name": "Registered",
+      "direction": "scope-to-member",
+      "paramStructure": "by-name",
+      "description": "Acknowledge member registration.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeRegisteredParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "member",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "AttachDocker",
+      "x-rust-name": "AttachDocker",
+      "direction": "member-to-scope",
+      "paramStructure": "by-name",
+      "description": "Begin a Docker attachment transaction with frame-local capabilities.",
+      "params": [
+        {
+          "name": "config",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeAttachDockerParams/properties/config"
+          }
+        },
+        {
+          "name": "parts",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeAttachDockerParams/properties/parts"
+          }
+        },
+        {
+          "name": "more",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeAttachDockerParams/properties/more"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeAttachDockerParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "member",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "ExtendDocker",
+      "x-rust-name": "ExtendDocker",
+      "direction": "member-to-scope",
+      "paramStructure": "by-name",
+      "description": "Extend attachment using existing bounded transactions and rollback.",
+      "params": [
+        {
+          "name": "parts",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeExtendDockerParams/properties/parts"
+          }
+        },
+        {
+          "name": "more",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeExtendDockerParams/properties/more"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeExtendDockerParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "member",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "DockerPending",
+      "x-rust-name": "DockerPending",
+      "direction": "scope-to-member",
+      "paramStructure": "by-name",
+      "description": "Report pending engine attachment.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeDockerPendingParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "member",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "DockerAttached",
+      "x-rust-name": "DockerAttached",
+      "direction": "scope-to-member",
+      "paramStructure": "by-name",
+      "description": "Report the attached engine socket.",
+      "params": [
+        {
+          "name": "socket",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeDockerAttachedParams/properties/socket"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeDockerAttachedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "member",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "DetachDocker",
+      "x-rust-name": "DetachDocker",
+      "direction": "member-to-scope",
+      "paramStructure": "by-name",
+      "description": "Request engine detachment.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeDetachDockerParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "member",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "DockerDetached",
+      "x-rust-name": "DockerDetached",
+      "direction": "scope-to-member",
+      "paramStructure": "by-name",
+      "description": "Acknowledge engine detachment.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeDockerDetachedParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "member",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Leave",
+      "x-rust-name": "Leave",
+      "direction": "member-to-scope",
+      "paramStructure": "by-name",
+      "description": "Request membership release; existing drain/cleanup barriers remain native.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeLeaveParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "member",
+      "receiver": "scope",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Left",
+      "x-rust-name": "Left",
+      "direction": "scope-to-member",
+      "paramStructure": "by-name",
+      "description": "Acknowledge released membership.",
+      "params": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeLeftParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "member",
+      "connection-state": "control/member transaction"
+    },
+    {
+      "name": "Error",
+      "x-rust-name": "Error",
+      "direction": "scope-to-client",
+      "paramStructure": "by-name",
+      "description": "Report the existing scope control/member error text.",
+      "params": [
+        {
+          "name": "message",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/ScopeErrorParams/properties/message"
+          }
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/ScopeErrorParams"
+      },
+      "x-positional-schema": {
+        "not": {}
+      },
+      "sender": "scope",
+      "receiver": "client",
+      "connection-state": "control/member transaction"
+    }
+  ],
+  "x-wire-enum": "ScopeMessage",
+  "x-protocol-notes": "Same-build JSON-RPC notifications; jsonrpc=2.0 required, IDs absent. Canonical producer params are named; original Serde legacy reading forms and failure order remain. Frame-local descriptors are validated by Channel and native transaction owners; metadata never grants authority. EOF, rollback, acknowledgement and cleanup sequencing remain in the runtime."
+}

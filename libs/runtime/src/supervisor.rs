@@ -11,8 +11,8 @@ use crate::{
 };
 use goblins_protocol::contract::{self, Notification};
 #[cfg(test)]
-use serde::Deserialize;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 use std::{
     collections::VecDeque,
@@ -349,15 +349,6 @@ impl Builder {
         self.params = params;
         Ok(())
     }
-    fn value(&mut self, key: &str, value: &impl Serialize) -> io::Result<()> {
-        self.params.insert(key.into(), serde_json::to_value(value)?);
-        Ok(())
-    }
-    fn opaque(&mut self, key: &str, value: &impl Serialize) -> io::Result<()> {
-        self.params
-            .insert(key.into(), Value::String(serde_json::to_string(value)?));
-        Ok(())
-    }
     fn owned(&mut self, fd: OwnedFd) -> io::Result<Descriptor> {
         if self.fds.len() >= channel::MAX_FDS {
             return Err(invalid("descriptor frame budget exceeded"));
@@ -407,9 +398,6 @@ impl Params {
         )
         .map_err(other)
     }
-    fn opaque<T: DeserializeOwned>(&mut self, name: &str) -> io::Result<T> {
-        serde_json::from_str(&self.take::<String>(name)?).map_err(other)
-    }
     fn finish(self) -> io::Result<()> {
         if self.0.is_empty() {
             Ok(())
@@ -440,366 +428,996 @@ impl Descriptors {
         }
     }
 }
-macro_rules! put {
-    ($b:ident, plain, $name:expr, $v:expr) => { $b.value($name, $v) };
-    ($b:ident, started_policy, $name:expr, $v:expr) => {{ let value=encode_started_policy($v); $b.value($name, &value) }};
-    ($b:ident, started_support, $name:expr, $v:expr) => {{ let value=encode_started_support($v); $b.value($name, &value) }};
-    ($b:ident, started_identity, $name:expr, $v:expr) => {{ let value=encode_started_identity($v); $b.value($name, &value) }};
-    ($b:ident, started_recreated, $name:expr, $v:expr) => {{ let value=encode_started_recreated($v); $b.value($name, &value) }};
-    ($b:ident, started_auto, $name:expr, $v:expr) => {{ let value=encode_started_auto($v); $b.value($name, &value) }};
-    ($b:ident, started_report, $name:expr, $v:expr) => {{ let value=encode_started_report($v); $b.value($name, &value) }};
-    ($b:ident, opaque, $name:expr, $v:expr) => { $b.opaque($name, $v) };
-    ($b:ident, call, $name:expr, $v:expr) => { $b.opaque($name, &json!({"jsonrpc":$v.jsonrpc,"id":$v.id,"method":$v.method,"params":$v.params})) };
-}
-macro_rules! get {
-    ($p:ident, $d:ident, plain, $name:expr, $ty:ty) => {
-        $p.take::<$ty>($name)?
-    };
-    ($p:ident, $d:ident, started_policy, $name:expr, $ty:ty) => {
-        decode_started_policy($p.take($name)?)
-    };
-    ($p:ident, $d:ident, started_support, $name:expr, $ty:ty) => {
-        decode_started_support($p.take($name)?)
-    };
-    ($p:ident, $d:ident, started_identity, $name:expr, $ty:ty) => {
-        decode_started_identity($p.take($name)?)
-    };
-    ($p:ident, $d:ident, started_recreated, $name:expr, $ty:ty) => {
-        decode_started_recreated($p.take($name)?)
-    };
-    ($p:ident, $d:ident, started_auto, $name:expr, $ty:ty) => {
-        decode_started_auto($p.take($name)?)
-    };
-    ($p:ident, $d:ident, started_report, $name:expr, $ty:ty) => {
-        decode_started_report($p.take($name)?)
-    };
-    ($p:ident, $d:ident, opaque, $name:expr, $ty:ty) => {
-        $p.opaque::<$ty>($name)?
-    };
-    ($p:ident, $d:ident, call, $name:expr, $ty:ty) => {
-        $p.opaque::<$ty>($name)?
-    };
-}
-macro_rules! command_codec {
-    ($($v:ident { $($f:ident : $ty:ty => $kind:ident),* $(,)? }),* $(,)?) => {
-        fn encode_command(command: &Command, b: &mut Builder) -> io::Result<()> {
-            match command {
-                Command::Cancel(id) => b.notification::<contract::supervisor_notifications::CommandCancel>(contract::SupervisorCommandCancelParams { id:*id })?,
-                Command::Stop => b.notification::<contract::supervisor_notifications::CommandStop>(contract::SupervisorEmptyParams {})?,
-                Command::ScopeFailed => b.notification::<contract::supervisor_notifications::CommandScopeFailed>(contract::SupervisorEmptyParams {})?,
-                Command::Start(handoff) => {
-                    let handoff=encode_handoff_wire(handoff,b)?;
-                    // Preserve the original helper's serialization boundary.
-                    serde_json::to_value(&handoff).map_err(other)?;
-                    b.notification::<contract::supervisor_notifications::CommandStart>(contract::SupervisorCommandStartParams { handoff })?;
-                }
-                Command::Spawn { id,kind,argv,cwd,env,stdio } => {
-                    let stdio=encode_stdio_wire(stdio,b)?;
-                    b.notification::<contract::supervisor_notifications::CommandSpawn>(contract::SupervisorCommandSpawnParams { id:*id,kind:*kind,argv:argv.clone(),cwd:cwd.clone(),env:env.clone(),stdio })?;
-                }
-                Command::Signal { id,signal } => b.notification::<contract::supervisor_notifications::CommandSignal>(contract::SupervisorCommandSignalParams { id:*id,signal:*signal })?,
-                Command::CancelProcess { id,everything } => b.notification::<contract::supervisor_notifications::CommandCancelProcess>(contract::SupervisorCommandCancelProcessParams { id:*id,everything:*everything })?,
-                Command::KillAll => b.notification::<contract::supervisor_notifications::CommandKillAll>(contract::SupervisorEmptyParams {})?,
-                Command::Attach { terminal,stream,rows,cols } => {
-                    // Keep terminal serialization before stream duplication.
-                    serde_json::to_value(terminal)?;
-                    let stream=b.fd(stream)?;
-                    b.notification::<contract::supervisor_notifications::CommandAttach>(contract::SupervisorCommandAttachParams { terminal:*terminal,stream,rows:*rows,cols:*cols })?;
-                }
-                Command::Detach { terminal } => b.notification::<contract::supervisor_notifications::CommandDetach>(contract::SupervisorCommandDetachParams { terminal:*terminal })?,
-                Command::Resize { terminal,rows,cols } => b.notification::<contract::supervisor_notifications::CommandResize>(contract::SupervisorCommandResizeParams { terminal:*terminal,rows:*rows,cols:*cols })?,
-                Command::TerminalCall { request,terminal,call } => b.notification::<contract::supervisor_notifications::CommandTerminalCall>(contract::SupervisorCommandTerminalCallParams { request:*request,terminal:*terminal,call:call.clone() })?,
-                Command::TerminalCancel { request } => b.notification::<contract::supervisor_notifications::CommandTerminalCancel>(contract::SupervisorCommandTerminalCancelParams { request:*request })?,
-                Command::Preview { approval,package } => b.notification::<contract::supervisor_notifications::CommandPreview>(contract::SupervisorCommandPreviewParams { approval:*approval,package:package.clone() })?,
-                Command::Decide { request,approved,output } => b.notification::<contract::supervisor_notifications::CommandDecide>(contract::SupervisorCommandDecideParams { request:request.clone(),approved:*approved,output:output.clone() })?,
-                Command::Refresh { approval,changes } => b.notification::<contract::supervisor_notifications::CommandRefresh>(contract::SupervisorCommandRefreshParams { approval:*approval,changes:changes.clone() })?,
-                Command::Run { serial,app } => b.notification::<contract::supervisor_notifications::CommandRun>(contract::SupervisorCommandRunParams { serial:*serial,app:app.clone() })?,
-                Command::Diff { serial,changes } => b.notification::<contract::supervisor_notifications::CommandDiff>(contract::SupervisorCommandDiffParams { serial:*serial,changes:changes.clone() })?,
-                Command::PrepareHostJob { request,cwd } => b.notification::<contract::supervisor_notifications::CommandPrepareHostJob>(contract::SupervisorCommandPrepareHostJobParams { request:request.clone(),cwd:cwd.clone() })?,
-                Command::RunHostJob { request,argv,env,timeout } => b.notification::<contract::supervisor_notifications::CommandRunHostJob>(contract::SupervisorCommandRunHostJobParams { request:request.clone(),argv:argv.clone(),env:env.clone(),timeout:*timeout })?,
-                Command::CancelHostJob { request } => b.notification::<contract::supervisor_notifications::CommandCancelHostJob>(contract::SupervisorCommandCancelHostJobParams { request:request.clone() })?,
-                Command::Export { member } => b.notification::<contract::supervisor_notifications::CommandExport>(contract::SupervisorCommandExportParams { member:member.clone() })?,
-                Command::ScopeMembership { result } => {
-                    let result=match result { Ok(fd)=>Ok(b.fd(fd)?),Err(error)=>Err(error.clone()) };
-                    b.notification::<contract::supervisor_notifications::CommandScopeMembership>(contract::SupervisorCommandScopeMembershipParams { result })?;
+
+fn encode_command(command: &Command, b: &mut Builder) -> io::Result<()> {
+    match command {
+        Command::RecordEvent { event, fields } => {
+            b.notification::<contract::supervisor_notifications::CommandRecordEvent>(
+                contract::SupervisorCommandRecordEventParams {
+                    event: event.clone(),
+                    fields: serde_json::to_string(fields)?,
                 },
-                $(Command::$v { $($f),* } => { b.method=concat!("Command.", stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
-            }
-            Ok(())
+            )?
         }
-        fn decode_command(method:&str, mut p:Params, d:&mut Descriptors) -> io::Result<Command> {
-            let command=match method {
-                name if name==contract::supervisor_notifications::CommandCancel::NAME => {
-                    let wire=contract::SupervisorCommandCancelParams { id:p.take("id")? };
-                    Command::Cancel(wire.id)
+        Command::SandboxSend {
+            connection,
+            message,
+        } => b.notification::<contract::supervisor_notifications::CommandSandboxSend>(
+            contract::SupervisorCommandSandboxSendParams {
+                connection: *connection,
+                message: serde_json::to_string(message)?,
+            },
+        )?,
+        Command::SandboxClose { connection } => {
+            b.notification::<contract::supervisor_notifications::CommandSandboxClose>(
+                contract::SupervisorCommandSandboxCloseParams {
+                    connection: *connection,
                 },
-                name if name==contract::supervisor_notifications::CommandStop::NAME => Command::Stop,
-                name if name==contract::supervisor_notifications::CommandScopeFailed::NAME => Command::ScopeFailed,
-                name if name==contract::supervisor_notifications::CommandSpawn::NAME => {
-                    let wire=contract::SupervisorCommandSpawnParams {
-                        id:p.take("id")?,kind:p.take("kind")?,argv:p.take("argv")?,cwd:p.take("cwd")?,env:p.take("env")?,
-                        stdio:serde_json::from_value(p.take::<Value>("stdio")?)?,
-                    };
-                    let stdio=decode_stdio_wire(wire.stdio,d)?;
-                    Command::Spawn { id:wire.id,kind:wire.kind,argv:wire.argv,cwd:wire.cwd,env:wire.env,stdio }
+            )?
+        }
+        Command::Cancel(id) => b
+            .notification::<contract::supervisor_notifications::CommandCancel>(
+                contract::SupervisorCommandCancelParams { id: *id },
+            )?,
+        Command::Stop => b.notification::<contract::supervisor_notifications::CommandStop>(
+            contract::SupervisorEmptyParams {},
+        )?,
+        Command::ScopeFailed => b
+            .notification::<contract::supervisor_notifications::CommandScopeFailed>(
+                contract::SupervisorEmptyParams {},
+            )?,
+        Command::Start(handoff) => {
+            let handoff = encode_handoff_wire(handoff, b)?;
+            // Preserve the original helper's serialization boundary.
+            serde_json::to_value(&handoff).map_err(other)?;
+            b.notification::<contract::supervisor_notifications::CommandStart>(
+                contract::SupervisorCommandStartParams { handoff },
+            )?;
+        }
+        Command::Spawn {
+            id,
+            kind,
+            argv,
+            cwd,
+            env,
+            stdio,
+        } => {
+            let stdio = encode_stdio_wire(stdio, b)?;
+            b.notification::<contract::supervisor_notifications::CommandSpawn>(
+                contract::SupervisorCommandSpawnParams {
+                    id: *id,
+                    kind: *kind,
+                    argv: argv.clone(),
+                    cwd: cwd.clone(),
+                    env: env.clone(),
+                    stdio,
                 },
-                name if name==contract::supervisor_notifications::CommandSignal::NAME => {
-                    let wire=contract::SupervisorCommandSignalParams { id:p.take("id")?,signal:p.take("signal")? };
-                    Command::Signal { id:wire.id,signal:wire.signal }
+            )?;
+        }
+        Command::Signal { id, signal } => b
+            .notification::<contract::supervisor_notifications::CommandSignal>(
+                contract::SupervisorCommandSignalParams {
+                    id: *id,
+                    signal: *signal,
                 },
-                name if name==contract::supervisor_notifications::CommandCancelProcess::NAME => {
-                    let wire=contract::SupervisorCommandCancelProcessParams { id:p.take("id")?,everything:p.take("everything")? };
-                    Command::CancelProcess { id:wire.id,everything:wire.everything }
+            )?,
+        Command::CancelProcess { id, everything } => {
+            b.notification::<contract::supervisor_notifications::CommandCancelProcess>(
+                contract::SupervisorCommandCancelProcessParams {
+                    id: *id,
+                    everything: *everything,
                 },
-                name if name==contract::supervisor_notifications::CommandKillAll::NAME => Command::KillAll,
-                name if name==contract::supervisor_notifications::CommandAttach::NAME => {
-                    let terminal=p.take("terminal")?;
-                    let descriptor=p.take("stream")?;
-                    // Consume the capability before reading dimensions, as before.
-                    let stream=d.take(descriptor)?.into();
-                    let wire=contract::SupervisorCommandAttachParams { terminal,stream:descriptor,rows:p.take("rows")?,cols:p.take("cols")? };
-                    Command::Attach { terminal:wire.terminal,stream,rows:wire.rows,cols:wire.cols }
+            )?
+        }
+        Command::KillAll => b.notification::<contract::supervisor_notifications::CommandKillAll>(
+            contract::SupervisorEmptyParams {},
+        )?,
+        Command::Attach {
+            terminal,
+            stream,
+            rows,
+            cols,
+        } => {
+            // Keep terminal serialization before stream duplication.
+            serde_json::to_value(terminal)?;
+            let stream = b.fd(stream)?;
+            b.notification::<contract::supervisor_notifications::CommandAttach>(
+                contract::SupervisorCommandAttachParams {
+                    terminal: *terminal,
+                    stream,
+                    rows: *rows,
+                    cols: *cols,
                 },
-                name if name==contract::supervisor_notifications::CommandDetach::NAME => {
-                    let wire=contract::SupervisorCommandDetachParams { terminal:p.take("terminal")? };
-                    Command::Detach { terminal:wire.terminal }
+            )?;
+        }
+        Command::Detach { terminal } => b
+            .notification::<contract::supervisor_notifications::CommandDetach>(
+                contract::SupervisorCommandDetachParams {
+                    terminal: *terminal,
                 },
-                name if name==contract::supervisor_notifications::CommandResize::NAME => {
-                    let wire=contract::SupervisorCommandResizeParams { terminal:p.take("terminal")?,rows:p.take("rows")?,cols:p.take("cols")? };
-                    Command::Resize { terminal:wire.terminal,rows:wire.rows,cols:wire.cols }
+            )?,
+        Command::Resize {
+            terminal,
+            rows,
+            cols,
+        } => b.notification::<contract::supervisor_notifications::CommandResize>(
+            contract::SupervisorCommandResizeParams {
+                terminal: *terminal,
+                rows: *rows,
+                cols: *cols,
+            },
+        )?,
+        Command::TerminalCall {
+            request,
+            terminal,
+            call,
+        } => b.notification::<contract::supervisor_notifications::CommandTerminalCall>(
+            contract::SupervisorCommandTerminalCallParams {
+                request: *request,
+                terminal: *terminal,
+                call: call.clone(),
+            },
+        )?,
+        Command::TerminalCancel { request } => {
+            b.notification::<contract::supervisor_notifications::CommandTerminalCancel>(
+                contract::SupervisorCommandTerminalCancelParams { request: *request },
+            )?
+        }
+        Command::Preview { approval, package } => {
+            b.notification::<contract::supervisor_notifications::CommandPreview>(
+                contract::SupervisorCommandPreviewParams {
+                    approval: *approval,
+                    package: package.clone(),
                 },
-                name if name==contract::supervisor_notifications::CommandTerminalCall::NAME => {
-                    let wire=contract::SupervisorCommandTerminalCallParams { request:p.take("request")?,terminal:p.take("terminal")?,call:p.take("call")? };
-                    Command::TerminalCall { request:wire.request,terminal:wire.terminal,call:wire.call }
+            )?
+        }
+        Command::Decide {
+            request,
+            approved,
+            output,
+        } => b.notification::<contract::supervisor_notifications::CommandDecide>(
+            contract::SupervisorCommandDecideParams {
+                request: request.clone(),
+                approved: *approved,
+                output: output.clone(),
+            },
+        )?,
+        Command::Refresh { approval, changes } => {
+            b.notification::<contract::supervisor_notifications::CommandRefresh>(
+                contract::SupervisorCommandRefreshParams {
+                    approval: *approval,
+                    changes: changes.clone(),
                 },
-                name if name==contract::supervisor_notifications::CommandTerminalCancel::NAME => {
-                    let wire=contract::SupervisorCommandTerminalCancelParams { request:p.take("request")? };
-                    Command::TerminalCancel { request:wire.request }
+            )?
+        }
+        Command::Run { serial, app } => b
+            .notification::<contract::supervisor_notifications::CommandRun>(
+                contract::SupervisorCommandRunParams {
+                    serial: *serial,
+                    app: app.clone(),
                 },
-                name if name==contract::supervisor_notifications::CommandPreview::NAME => {
-                    let wire=contract::SupervisorCommandPreviewParams { approval:p.take("approval")?,package:p.take("package")? };
-                    Command::Preview { approval:wire.approval,package:wire.package }
+            )?,
+        Command::Diff { serial, changes } => b
+            .notification::<contract::supervisor_notifications::CommandDiff>(
+                contract::SupervisorCommandDiffParams {
+                    serial: *serial,
+                    changes: changes.clone(),
                 },
-                name if name==contract::supervisor_notifications::CommandDecide::NAME => {
-                    let wire=contract::SupervisorCommandDecideParams { request:p.take("request")?,approved:p.take("approved")?,output:p.take("output")? };
-                    Command::Decide { request:wire.request,approved:wire.approved,output:wire.output }
+            )?,
+        Command::PrepareHostJob { request, cwd } => {
+            b.notification::<contract::supervisor_notifications::CommandPrepareHostJob>(
+                contract::SupervisorCommandPrepareHostJobParams {
+                    request: request.clone(),
+                    cwd: cwd.clone(),
                 },
-                name if name==contract::supervisor_notifications::CommandRefresh::NAME => {
-                    let wire=contract::SupervisorCommandRefreshParams { approval:p.take("approval")?,changes:p.take("changes")? };
-                    Command::Refresh { approval:wire.approval,changes:wire.changes }
+            )?
+        }
+        Command::RunHostJob {
+            request,
+            argv,
+            env,
+            timeout,
+        } => b.notification::<contract::supervisor_notifications::CommandRunHostJob>(
+            contract::SupervisorCommandRunHostJobParams {
+                request: request.clone(),
+                argv: argv.clone(),
+                env: env.clone(),
+                timeout: *timeout,
+            },
+        )?,
+        Command::CancelHostJob { request } => {
+            b.notification::<contract::supervisor_notifications::CommandCancelHostJob>(
+                contract::SupervisorCommandCancelHostJobParams {
+                    request: request.clone(),
                 },
-                name if name==contract::supervisor_notifications::CommandRun::NAME => {
-                    let wire=contract::SupervisorCommandRunParams { serial:p.take("serial")?,app:p.take("app")? };
-                    Command::Run { serial:wire.serial,app:wire.app }
+            )?
+        }
+        Command::Export { member } => b
+            .notification::<contract::supervisor_notifications::CommandExport>(
+                contract::SupervisorCommandExportParams {
+                    member: member.clone(),
                 },
-                name if name==contract::supervisor_notifications::CommandDiff::NAME => {
-                    let wire=contract::SupervisorCommandDiffParams { serial:p.take("serial")?,changes:p.take("changes")? };
-                    Command::Diff { serial:wire.serial,changes:wire.changes }
-                },
-                name if name==contract::supervisor_notifications::CommandPrepareHostJob::NAME => {
-                    let wire=contract::SupervisorCommandPrepareHostJobParams { request:p.take("request")?,cwd:p.take("cwd")? };
-                    Command::PrepareHostJob { request:wire.request,cwd:wire.cwd }
-                },
-                name if name==contract::supervisor_notifications::CommandRunHostJob::NAME => {
-                    let wire=contract::SupervisorCommandRunHostJobParams { request:p.take("request")?,argv:p.take("argv")?,env:p.take("env")?,timeout:p.take("timeout")? };
-                    Command::RunHostJob { request:wire.request,argv:wire.argv,env:wire.env,timeout:wire.timeout }
-                },
-                name if name==contract::supervisor_notifications::CommandCancelHostJob::NAME => {
-                    let wire=contract::SupervisorCommandCancelHostJobParams { request:p.take("request")? };
-                    Command::CancelHostJob { request:wire.request }
-                },
-                name if name==contract::supervisor_notifications::CommandExport::NAME => {
-                    let wire=contract::SupervisorCommandExportParams { member:p.take("member")? };
-                    Command::Export { member:wire.member }
-                },
-                name if name==contract::supervisor_notifications::CommandScopeMembership::NAME => {
-                    let wire=contract::SupervisorCommandScopeMembershipParams { result:p.take("result")? };
-                    let result=match wire.result { Ok(descriptor)=>Ok(d.take(descriptor)?.into()),Err(error)=>Err(error) };
-                    Command::ScopeMembership { result }
-                },
-                $(concat!("Command.",stringify!($v)) => Command::$v { $($f:get!(p,d,$kind,stringify!($f),$ty)),* }),*,
-                _ => return Err(invalid("unknown supervisor command")),
+            )?,
+        Command::ScopeMembership { result } => {
+            let result = match result {
+                Ok(fd) => Ok(b.fd(fd)?),
+                Err(error) => Err(error.clone()),
             };
-            p.finish()?; Ok(command)
+            b.notification::<contract::supervisor_notifications::CommandScopeMembership>(
+                contract::SupervisorCommandScopeMembershipParams { result },
+            )?;
         }
     }
+    Ok(())
 }
-command_codec! {
-    RecordEvent { event:String=>plain, fields:Value=>opaque },
-    SandboxSend { connection:u64=>plain, message:Value=>opaque },
-    SandboxClose { connection:u64=>plain },
+fn decode_command(method: &str, mut p: Params, d: &mut Descriptors) -> io::Result<Command> {
+    let command = match method {
+        name if name == contract::supervisor_notifications::CommandRecordEvent::NAME => {
+            let wire = contract::SupervisorCommandRecordEventParams {
+                event: p.take("event")?,
+                fields: p.take("fields")?,
+            };
+            Command::RecordEvent {
+                event: wire.event,
+                fields: serde_json::from_str(&wire.fields).map_err(other)?,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandSandboxSend::NAME => {
+            let wire = contract::SupervisorCommandSandboxSendParams {
+                connection: p.take("connection")?,
+                message: p.take("message")?,
+            };
+            Command::SandboxSend {
+                connection: wire.connection,
+                message: serde_json::from_str(&wire.message).map_err(other)?,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandSandboxClose::NAME => {
+            let wire = contract::SupervisorCommandSandboxCloseParams {
+                connection: p.take("connection")?,
+            };
+            Command::SandboxClose {
+                connection: wire.connection,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandCancel::NAME => {
+            let wire = contract::SupervisorCommandCancelParams { id: p.take("id")? };
+            Command::Cancel(wire.id)
+        }
+        name if name == contract::supervisor_notifications::CommandStop::NAME => Command::Stop,
+        name if name == contract::supervisor_notifications::CommandScopeFailed::NAME => {
+            Command::ScopeFailed
+        }
+        name if name == contract::supervisor_notifications::CommandSpawn::NAME => {
+            let wire = contract::SupervisorCommandSpawnParams {
+                id: p.take("id")?,
+                kind: p.take("kind")?,
+                argv: p.take("argv")?,
+                cwd: p.take("cwd")?,
+                env: p.take("env")?,
+                stdio: serde_json::from_value(p.take::<Value>("stdio")?)?,
+            };
+            let stdio = decode_stdio_wire(wire.stdio, d)?;
+            Command::Spawn {
+                id: wire.id,
+                kind: wire.kind,
+                argv: wire.argv,
+                cwd: wire.cwd,
+                env: wire.env,
+                stdio,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandSignal::NAME => {
+            let wire = contract::SupervisorCommandSignalParams {
+                id: p.take("id")?,
+                signal: p.take("signal")?,
+            };
+            Command::Signal {
+                id: wire.id,
+                signal: wire.signal,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandCancelProcess::NAME => {
+            let wire = contract::SupervisorCommandCancelProcessParams {
+                id: p.take("id")?,
+                everything: p.take("everything")?,
+            };
+            Command::CancelProcess {
+                id: wire.id,
+                everything: wire.everything,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandKillAll::NAME => {
+            Command::KillAll
+        }
+        name if name == contract::supervisor_notifications::CommandAttach::NAME => {
+            let terminal = p.take("terminal")?;
+            let descriptor = p.take("stream")?;
+            // Consume the capability before reading dimensions, as before.
+            let stream = d.take(descriptor)?.into();
+            let wire = contract::SupervisorCommandAttachParams {
+                terminal,
+                stream: descriptor,
+                rows: p.take("rows")?,
+                cols: p.take("cols")?,
+            };
+            Command::Attach {
+                terminal: wire.terminal,
+                stream,
+                rows: wire.rows,
+                cols: wire.cols,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandDetach::NAME => {
+            let wire = contract::SupervisorCommandDetachParams {
+                terminal: p.take("terminal")?,
+            };
+            Command::Detach {
+                terminal: wire.terminal,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandResize::NAME => {
+            let wire = contract::SupervisorCommandResizeParams {
+                terminal: p.take("terminal")?,
+                rows: p.take("rows")?,
+                cols: p.take("cols")?,
+            };
+            Command::Resize {
+                terminal: wire.terminal,
+                rows: wire.rows,
+                cols: wire.cols,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandTerminalCall::NAME => {
+            let wire = contract::SupervisorCommandTerminalCallParams {
+                request: p.take("request")?,
+                terminal: p.take("terminal")?,
+                call: p.take("call")?,
+            };
+            Command::TerminalCall {
+                request: wire.request,
+                terminal: wire.terminal,
+                call: wire.call,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandTerminalCancel::NAME => {
+            let wire = contract::SupervisorCommandTerminalCancelParams {
+                request: p.take("request")?,
+            };
+            Command::TerminalCancel {
+                request: wire.request,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandPreview::NAME => {
+            let wire = contract::SupervisorCommandPreviewParams {
+                approval: p.take("approval")?,
+                package: p.take("package")?,
+            };
+            Command::Preview {
+                approval: wire.approval,
+                package: wire.package,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandDecide::NAME => {
+            let wire = contract::SupervisorCommandDecideParams {
+                request: p.take("request")?,
+                approved: p.take("approved")?,
+                output: p.take("output")?,
+            };
+            Command::Decide {
+                request: wire.request,
+                approved: wire.approved,
+                output: wire.output,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandRefresh::NAME => {
+            let wire = contract::SupervisorCommandRefreshParams {
+                approval: p.take("approval")?,
+                changes: p.take("changes")?,
+            };
+            Command::Refresh {
+                approval: wire.approval,
+                changes: wire.changes,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandRun::NAME => {
+            let wire = contract::SupervisorCommandRunParams {
+                serial: p.take("serial")?,
+                app: p.take("app")?,
+            };
+            Command::Run {
+                serial: wire.serial,
+                app: wire.app,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandDiff::NAME => {
+            let wire = contract::SupervisorCommandDiffParams {
+                serial: p.take("serial")?,
+                changes: p.take("changes")?,
+            };
+            Command::Diff {
+                serial: wire.serial,
+                changes: wire.changes,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandPrepareHostJob::NAME => {
+            let wire = contract::SupervisorCommandPrepareHostJobParams {
+                request: p.take("request")?,
+                cwd: p.take("cwd")?,
+            };
+            Command::PrepareHostJob {
+                request: wire.request,
+                cwd: wire.cwd,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandRunHostJob::NAME => {
+            let wire = contract::SupervisorCommandRunHostJobParams {
+                request: p.take("request")?,
+                argv: p.take("argv")?,
+                env: p.take("env")?,
+                timeout: p.take("timeout")?,
+            };
+            Command::RunHostJob {
+                request: wire.request,
+                argv: wire.argv,
+                env: wire.env,
+                timeout: wire.timeout,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandCancelHostJob::NAME => {
+            let wire = contract::SupervisorCommandCancelHostJobParams {
+                request: p.take("request")?,
+            };
+            Command::CancelHostJob {
+                request: wire.request,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandExport::NAME => {
+            let wire = contract::SupervisorCommandExportParams {
+                member: p.take("member")?,
+            };
+            Command::Export {
+                member: wire.member,
+            }
+        }
+        name if name == contract::supervisor_notifications::CommandScopeMembership::NAME => {
+            let wire = contract::SupervisorCommandScopeMembershipParams {
+                result: p.take("result")?,
+            };
+            let result = match wire.result {
+                Ok(descriptor) => Ok(d.take(descriptor)?.into()),
+                Err(error) => Err(error),
+            };
+            Command::ScopeMembership { result }
+        }
+
+        _ => return Err(invalid("unknown supervisor command")),
+    };
+    p.finish()?;
+    Ok(command)
 }
-macro_rules! event_codec {
-    ($($v:ident { $($f:ident : $ty:ty => $kind:ident),* $(,)? }),* $(,)?) => {
-        fn encode_event(event:&Event,b:&mut Builder) -> io::Result<()> {
-            match event {
-                Event::Failed(error) => b.notification::<contract::supervisor_notifications::EventFailed>(contract::SupervisorEventFailedParams { error:error.clone() })?,
-                Event::Manifest { sequence,lease,catalogue } => {
-                    // Preserve path/root serialization before catalogue and owner.
-                    serde_json::to_value(&lease.path)?;
-                    let root=lease.root().map(std::path::Path::to_path_buf);
-                    serde_json::to_value(&root)?;
-                    // Configuration names remain opaque to descriptor scanning.
-                    let catalogue=serde_json::to_string(catalogue)?;
-                    let owner=b.manifest.take().map(|fd| b.owned(fd)).transpose()?;
-                    let transfer=b.transfer;
-                    b.notification::<contract::supervisor_notifications::EventManifest>(contract::SupervisorEventManifestParams {
-                        sequence:*sequence, path:lease.path.clone(), root, catalogue, owner, transfer,
-                    })?;
-                }
-                Event::Exported { member,result } => {
-                    let result=match result {
-                        Ok(h) => {
-                            let handoff=encode_handoff_wire(h,b)?;
-                            serde_json::to_value(&handoff).map_err(other)?;
-                            Ok(handoff)
+
+fn encode_event(event: &Event, b: &mut Builder) -> io::Result<()> {
+    match event {
+        Event::SandboxOpened { connection } => {
+            b.notification::<contract::supervisor_notifications::EventSandboxOpened>(
+                contract::SupervisorEventSandboxOpenedParams {
+                    connection: *connection,
+                },
+            )?
+        }
+        Event::SandboxCall { connection, call } => {
+            b.notification::<contract::supervisor_notifications::EventSandboxCall>(
+                contract::SupervisorEventSandboxCallParams {
+                    connection: *connection,
+                    call: serde_json::to_string(&serde_json::to_value(
+                        contract::relay_metadata::Call {
+                            jsonrpc: call.jsonrpc.clone(),
+                            id: call.id.clone(),
+                            method: call.method.clone(),
+                            params: call.params.clone(),
                         },
-                        Err(error)=>Err(error.clone()),
-                    };
-                    b.notification::<contract::supervisor_notifications::EventExported>(contract::SupervisorEventExportedParams { member:member.clone(),result })?;
+                    )?)?,
+                },
+            )?
+        }
+        Event::SandboxClosed { connection } => {
+            b.notification::<contract::supervisor_notifications::EventSandboxClosed>(
+                contract::SupervisorEventSandboxClosedParams {
+                    connection: *connection,
+                },
+            )?
+        }
+        Event::Failed(error) => b.notification::<contract::supervisor_notifications::EventFailed>(
+            contract::SupervisorEventFailedParams {
+                error: error.clone(),
+            },
+        )?,
+        Event::Manifest {
+            sequence,
+            lease,
+            catalogue,
+        } => {
+            // Preserve path/root serialization before catalogue and owner.
+            serde_json::to_value(&lease.path)?;
+            let root = lease.root().map(std::path::Path::to_path_buf);
+            serde_json::to_value(&root)?;
+            // Configuration names remain opaque to descriptor scanning.
+            let catalogue = serde_json::to_string(catalogue)?;
+            let owner = b.manifest.take().map(|fd| b.owned(fd)).transpose()?;
+            let transfer = b.transfer;
+            b.notification::<contract::supervisor_notifications::EventManifest>(
+                contract::SupervisorEventManifestParams {
+                    sequence: *sequence,
+                    path: lease.path.clone(),
+                    root,
+                    catalogue,
+                    owner,
+                    transfer,
+                },
+            )?;
+        }
+        Event::Exported { member, result } => {
+            let result = match result {
+                Ok(h) => {
+                    let handoff = encode_handoff_wire(h, b)?;
+                    serde_json::to_value(&handoff).map_err(other)?;
+                    Ok(handoff)
                 }
-                Event::Spawned { id,pid } => b.notification::<contract::supervisor_notifications::EventSpawned>(contract::SupervisorEventSpawnedParams { id:*id,pid:*pid })?,
-                Event::SpawnFailed { id,code,message } => b.notification::<contract::supervisor_notifications::EventSpawnFailed>(contract::SupervisorEventSpawnFailedParams { id:*id,code:*code,message:message.clone() })?,
-                Event::Exited { id,code,signal } => b.notification::<contract::supervisor_notifications::EventExited>(contract::SupervisorEventExitedParams { id:*id,code:*code,signal:*signal })?,
-                Event::Terminal { terminal,status,error } => b.notification::<contract::supervisor_notifications::EventTerminal>(contract::SupervisorEventTerminalParams { terminal:*terminal,status:*status,error:error.clone() })?,
-                Event::TerminalResult { request,result } => {
-                    let result=serde_json::to_string(result)?;
-                    b.notification::<contract::supervisor_notifications::EventTerminalResult>(contract::SupervisorEventTerminalResultParams { request:*request,result })?;
-                },
-                Event::Preview { approval,result } => {
-                    let result=encode_preview_wire(result);
-                    b.notification::<contract::supervisor_notifications::EventPreview>(contract::SupervisorEventPreviewParams { approval:*approval,result })?;
-                },
-                Event::Progress { request,state } => b.notification::<contract::supervisor_notifications::EventProgress>(contract::SupervisorEventProgressParams { request:request.clone(),state:state.clone() })?,
-                Event::Granted { reply,detail,output } => b.notification::<contract::supervisor_notifications::EventGranted>(contract::SupervisorEventGrantedParams { reply:goblins_protocol::Reply { id:reply.id.clone(),status:reply.status.clone(),message:reply.message.clone() },detail:detail.clone(),output:output.clone() })?,
-                Event::Refresh { approval,result } => {
-                    let result=serde_json::to_string(result)?;
-                    b.notification::<contract::supervisor_notifications::EventRefresh>(contract::SupervisorEventRefreshParams { approval:*approval,result })?;
-                },
-                Event::Call { serial,result } => {
-                    let result=serde_json::to_string(result)?;
-                    b.notification::<contract::supervisor_notifications::EventCall>(contract::SupervisorEventCallParams { serial:*serial,result })?;
-                },
-                Event::DevShell { summary } => {
-                    let summary=serde_json::to_string(summary)?;
-                    b.notification::<contract::supervisor_notifications::EventDevShell>(contract::SupervisorEventDevShellParams { summary })?;
-                },
-                Event::HostJobPrepared { request,result } => b.notification::<contract::supervisor_notifications::EventHostJobPrepared>(contract::SupervisorEventHostJobPreparedParams { request:request.clone(),result:result.clone() })?,
-                Event::HostJobFailed { request,error } => b.notification::<contract::supervisor_notifications::EventHostJobFailed>(contract::SupervisorEventHostJobFailedParams { request:request.clone(),error:error.clone() })?,
-                Event::HostJobFinished { request,outcome } => {
-                    let outcome=match outcome {
-                        Ok(value)=>Ok(HostOutcome { exit_code:value.exit_code,signal:value.signal,spawn_error:value.spawn_error.clone(),cancelled:value.cancelled,timed_out:value.timed_out,truncated:value.truncated }),
-                        Err(error)=>Err(error.clone()),
-                    };
-                    b.notification::<contract::supervisor_notifications::EventHostJobFinished>(contract::SupervisorEventHostJobFinishedParams { request:request.clone(),outcome })?;
-                },
-                Event::ScopeFailed { name } => b.notification::<contract::supervisor_notifications::EventScopeFailed>(contract::SupervisorEventScopeFailedParams { name:name.clone() })?,
-                Event::ScopeNeeded { name } => b.notification::<contract::supervisor_notifications::EventScopeNeeded>(contract::SupervisorEventScopeNeededParams { name:name.clone() })?,
-                Event::Mode { server } => b.notification::<contract::supervisor_notifications::EventMode>(contract::SupervisorEventModeParams { server:*server })?,
-                Event::Stopped { exit_code } => b.notification::<contract::supervisor_notifications::EventStopped>(contract::SupervisorEventStoppedParams { exit_code:*exit_code })?,
-                $(Event::$v { $($f),* } => { b.method=concat!("Event.",stringify!($v)); $(put!(b,$kind,stringify!($f),$f)?;)* }),*
-                Event::InitLost => b.notification::<contract::supervisor_notifications::EventInitLost>(contract::SupervisorEmptyParams {})?,
-                Event::PayloadExited => b.notification::<contract::supervisor_notifications::EventPayloadExited>(contract::SupervisorEmptyParams {})?,
-            }
-            Ok(())
-        }
-        fn decode_event(method:&str,mut p:Params,_d:&mut Descriptors)->io::Result<Event> {
-            let event=match method {
-                name if name==contract::supervisor_notifications::EventFailed::NAME => {
-                    let wire=contract::SupervisorEventFailedParams { error:p.take("error")? };
-                    Event::Failed(wire.error)
-                },
-                name if name==contract::supervisor_notifications::EventInitLost::NAME => Event::InitLost,
-                name if name==contract::supervisor_notifications::EventPayloadExited::NAME => Event::PayloadExited,
-                name if name==contract::supervisor_notifications::EventSpawned::NAME => {
-                    let wire=contract::SupervisorEventSpawnedParams { id:p.take("id")?,pid:p.take("pid")? };
-                    Event::Spawned { id:wire.id,pid:wire.pid }
-                },
-                name if name==contract::supervisor_notifications::EventSpawnFailed::NAME => {
-                    let wire=contract::SupervisorEventSpawnFailedParams { id:p.take("id")?,code:p.take("code")?,message:p.take("message")? };
-                    Event::SpawnFailed { id:wire.id,code:wire.code,message:wire.message }
-                },
-                name if name==contract::supervisor_notifications::EventExited::NAME => {
-                    let wire=contract::SupervisorEventExitedParams { id:p.take("id")?,code:p.take("code")?,signal:p.take("signal")? };
-                    Event::Exited { id:wire.id,code:wire.code,signal:wire.signal }
-                },
-                name if name==contract::supervisor_notifications::EventTerminal::NAME => {
-                    let wire=contract::SupervisorEventTerminalParams { terminal:p.take("terminal")?,status:p.take("status")?,error:p.take("error")? };
-                    Event::Terminal { terminal:wire.terminal,status:wire.status,error:wire.error }
-                },
-                name if name==contract::supervisor_notifications::EventTerminalResult::NAME => {
-                    let wire=contract::SupervisorEventTerminalResultParams { request:p.take("request")?,result:p.take("result")? };
-                    // Opaque inner JSON still parses before unknown-root rejection.
-                    let result=serde_json::from_str(&wire.result).map_err(other)?;
-                    Event::TerminalResult { request:wire.request,result }
-                },
-                name if name==contract::supervisor_notifications::EventPreview::NAME => {
-                    let wire=contract::SupervisorEventPreviewParams { approval:p.take("approval")?,result:p.take("result")? };
-                    Event::Preview { approval:wire.approval,result:decode_preview_wire(wire.result) }
-                },
-                name if name==contract::supervisor_notifications::EventProgress::NAME => {
-                    let wire=contract::SupervisorEventProgressParams { request:p.take("request")?,state:p.take("state")? };
-                    Event::Progress { request:wire.request,state:wire.state }
-                },
-                name if name==contract::supervisor_notifications::EventGranted::NAME => {
-                    let wire=contract::SupervisorEventGrantedParams { reply:p.take("reply")?,detail:p.take("detail")?,output:p.take("output")? };
-                    Event::Granted { reply:wire.reply,detail:wire.detail,output:wire.output }
-                },
-                name if name==contract::supervisor_notifications::EventRefresh::NAME => {
-                    let wire=contract::SupervisorEventRefreshParams { approval:p.take("approval")?,result:p.take("result")? };
-                    let result=serde_json::from_str(&wire.result).map_err(other)?;
-                    Event::Refresh { approval:wire.approval,result }
-                },
-                name if name==contract::supervisor_notifications::EventCall::NAME => {
-                    let wire=contract::SupervisorEventCallParams { serial:p.take("serial")?,result:p.take("result")? };
-                    let result=serde_json::from_str(&wire.result).map_err(other)?;
-                    Event::Call { serial:wire.serial,result }
-                },
-                name if name==contract::supervisor_notifications::EventDevShell::NAME => {
-                    let wire=contract::SupervisorEventDevShellParams { summary:p.take("summary")? };
-                    let summary=serde_json::from_str(&wire.summary).map_err(other)?;
-                    Event::DevShell { summary }
-                },
-                name if name==contract::supervisor_notifications::EventHostJobPrepared::NAME => {
-                    let wire=contract::SupervisorEventHostJobPreparedParams { request:p.take("request")?,result:p.take("result")? };
-                    Event::HostJobPrepared { request:wire.request,result:wire.result }
-                },
-                name if name==contract::supervisor_notifications::EventHostJobFailed::NAME => {
-                    let wire=contract::SupervisorEventHostJobFailedParams { request:p.take("request")?,error:p.take("error")? };
-                    Event::HostJobFailed { request:wire.request,error:wire.error }
-                },
-                name if name==contract::supervisor_notifications::EventHostJobFinished::NAME => {
-                    let wire=contract::SupervisorEventHostJobFinishedParams { request:p.take("request")?,outcome:p.take("outcome")? };
-                    Event::HostJobFinished { request:wire.request,outcome:wire.outcome }
-                },
-                name if name==contract::supervisor_notifications::EventScopeFailed::NAME => {
-                    let wire=contract::SupervisorEventScopeFailedParams { name:p.take("name")? };
-                    Event::ScopeFailed { name:wire.name }
-                },
-                name if name==contract::supervisor_notifications::EventScopeNeeded::NAME => {
-                    let wire=contract::SupervisorEventScopeNeededParams { name:p.take("name")? };
-                    Event::ScopeNeeded { name:wire.name }
-                },
-                name if name==contract::supervisor_notifications::EventMode::NAME => {
-                    let wire=contract::SupervisorEventModeParams { server:p.take("server")? };
-                    Event::Mode { server:wire.server }
-                },
-                name if name==contract::supervisor_notifications::EventStopped::NAME => {
-                    let wire=contract::SupervisorEventStoppedParams { exit_code:p.take("exit_code")? };
-                    Event::Stopped { exit_code:wire.exit_code }
-                },
-                $(concat!("Event.",stringify!($v))=>Event::$v { $($f:get!(p,_d,$kind,stringify!($f),$ty)),* }),*,
-                _=>return Err(invalid("unknown supervisor event")),
+                Err(error) => Err(error.clone()),
             };
-            p.finish()?; Ok(event)
+            b.notification::<contract::supervisor_notifications::EventExported>(
+                contract::SupervisorEventExportedParams {
+                    member: member.clone(),
+                    result,
+                },
+            )?;
         }
+        Event::Spawned { id, pid } => b
+            .notification::<contract::supervisor_notifications::EventSpawned>(
+                contract::SupervisorEventSpawnedParams { id: *id, pid: *pid },
+            )?,
+        Event::SpawnFailed { id, code, message } => {
+            b.notification::<contract::supervisor_notifications::EventSpawnFailed>(
+                contract::SupervisorEventSpawnFailedParams {
+                    id: *id,
+                    code: *code,
+                    message: message.clone(),
+                },
+            )?
+        }
+        Event::Exited { id, code, signal } => b
+            .notification::<contract::supervisor_notifications::EventExited>(
+                contract::SupervisorEventExitedParams {
+                    id: *id,
+                    code: *code,
+                    signal: *signal,
+                },
+            )?,
+        Event::Terminal {
+            terminal,
+            status,
+            error,
+        } => b.notification::<contract::supervisor_notifications::EventTerminal>(
+            contract::SupervisorEventTerminalParams {
+                terminal: *terminal,
+                status: *status,
+                error: error.clone(),
+            },
+        )?,
+        Event::TerminalResult { request, result } => {
+            let result = serde_json::to_string(result)?;
+            b.notification::<contract::supervisor_notifications::EventTerminalResult>(
+                contract::SupervisorEventTerminalResultParams {
+                    request: *request,
+                    result,
+                },
+            )?;
+        }
+        Event::Preview { approval, result } => {
+            let result = encode_preview_wire(result);
+            b.notification::<contract::supervisor_notifications::EventPreview>(
+                contract::SupervisorEventPreviewParams {
+                    approval: *approval,
+                    result,
+                },
+            )?;
+        }
+        Event::Progress { request, state } => b
+            .notification::<contract::supervisor_notifications::EventProgress>(
+                contract::SupervisorEventProgressParams {
+                    request: request.clone(),
+                    state: state.clone(),
+                },
+            )?,
+        Event::Granted {
+            reply,
+            detail,
+            output,
+        } => b.notification::<contract::supervisor_notifications::EventGranted>(
+            contract::SupervisorEventGrantedParams {
+                reply: goblins_protocol::Reply {
+                    id: reply.id.clone(),
+                    status: reply.status.clone(),
+                    message: reply.message.clone(),
+                },
+                detail: detail.clone(),
+                output: output.clone(),
+            },
+        )?,
+        Event::Refresh { approval, result } => {
+            let result = serde_json::to_string(result)?;
+            b.notification::<contract::supervisor_notifications::EventRefresh>(
+                contract::SupervisorEventRefreshParams {
+                    approval: *approval,
+                    result,
+                },
+            )?;
+        }
+        Event::Call { serial, result } => {
+            let result = serde_json::to_string(result)?;
+            b.notification::<contract::supervisor_notifications::EventCall>(
+                contract::SupervisorEventCallParams {
+                    serial: *serial,
+                    result,
+                },
+            )?;
+        }
+        Event::DevShell { summary } => {
+            let summary = serde_json::to_string(summary)?;
+            b.notification::<contract::supervisor_notifications::EventDevShell>(
+                contract::SupervisorEventDevShellParams { summary },
+            )?;
+        }
+        Event::HostJobPrepared { request, result } => {
+            b.notification::<contract::supervisor_notifications::EventHostJobPrepared>(
+                contract::SupervisorEventHostJobPreparedParams {
+                    request: request.clone(),
+                    result: result.clone(),
+                },
+            )?
+        }
+        Event::HostJobFailed { request, error } => {
+            b.notification::<contract::supervisor_notifications::EventHostJobFailed>(
+                contract::SupervisorEventHostJobFailedParams {
+                    request: request.clone(),
+                    error: error.clone(),
+                },
+            )?
+        }
+        Event::HostJobFinished { request, outcome } => {
+            let outcome = match outcome {
+                Ok(value) => Ok(HostOutcome {
+                    exit_code: value.exit_code,
+                    signal: value.signal,
+                    spawn_error: value.spawn_error.clone(),
+                    cancelled: value.cancelled,
+                    timed_out: value.timed_out,
+                    truncated: value.truncated,
+                }),
+                Err(error) => Err(error.clone()),
+            };
+            b.notification::<contract::supervisor_notifications::EventHostJobFinished>(
+                contract::SupervisorEventHostJobFinishedParams {
+                    request: request.clone(),
+                    outcome,
+                },
+            )?;
+        }
+        Event::ScopeFailed { name } => b
+            .notification::<contract::supervisor_notifications::EventScopeFailed>(
+                contract::SupervisorEventScopeFailedParams { name: name.clone() },
+            )?,
+        Event::ScopeNeeded { name } => b
+            .notification::<contract::supervisor_notifications::EventScopeNeeded>(
+                contract::SupervisorEventScopeNeededParams { name: name.clone() },
+            )?,
+        Event::Mode { server } => b.notification::<contract::supervisor_notifications::EventMode>(
+            contract::SupervisorEventModeParams { server: *server },
+        )?,
+        Event::Stopped { exit_code } => b
+            .notification::<contract::supervisor_notifications::EventStopped>(
+                contract::SupervisorEventStoppedParams {
+                    exit_code: *exit_code,
+                },
+            )?,
+        Event::Started {
+            docker_enabled,
+            policy,
+            support,
+            dev_shell,
+            identity,
+            recreated,
+            auto,
+            worktrees,
+        } => {
+            let policy = encode_started_policy(policy);
+            // Keep policy/path serialization before opaque dev_shell encoding.
+            serde_json::to_value(&policy)?;
+            let support = encode_started_support(support);
+            serde_json::to_value(&support)?;
+            let dev_shell = serde_json::to_string(dev_shell)?;
+            b.notification::<contract::supervisor_notifications::EventStarted>(
+                contract::SupervisorEventStartedParams {
+                    docker_enabled: *docker_enabled,
+                    policy: Box::new(policy),
+                    support,
+                    dev_shell,
+                    identity: encode_started_identity(identity),
+                    recreated: encode_started_recreated(recreated),
+                    auto: Box::new(encode_started_auto(auto)),
+                    worktrees: Box::new(encode_started_report(worktrees)),
+                },
+            )?;
+        }
+
+        Event::InitLost => b.notification::<contract::supervisor_notifications::EventInitLost>(
+            contract::SupervisorEmptyParams {},
+        )?,
+        Event::PayloadExited => b
+            .notification::<contract::supervisor_notifications::EventPayloadExited>(
+                contract::SupervisorEmptyParams {},
+            )?,
     }
+    Ok(())
 }
-event_codec! {
-    Started { docker_enabled:bool=>plain, policy:Box<crate::policy::Policy> =>started_policy, support:crate::policy::Support=>started_support, dev_shell:Option<crate::policy::DevShellSummary> =>opaque, identity:crate::Identity=>started_identity, recreated:Option<Box<crate::Recreated>> =>started_recreated, auto:Box<crate::Auto> =>started_auto, worktrees:Box<crate::worktrees::Report> =>started_report },
-    SandboxOpened { connection:u64=>plain },
-    SandboxCall { connection:u64=>plain, call:goblins_jsonrpc::Call=>call },
-    SandboxClosed { connection:u64=>plain },
+fn decode_event(method: &str, mut p: Params, _d: &mut Descriptors) -> io::Result<Event> {
+    let event = match method {
+        name if name == contract::supervisor_notifications::EventSandboxOpened::NAME => {
+            let wire = contract::SupervisorEventSandboxOpenedParams {
+                connection: p.take("connection")?,
+            };
+            Event::SandboxOpened {
+                connection: wire.connection,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventSandboxCall::NAME => {
+            let wire = contract::SupervisorEventSandboxCallParams {
+                connection: p.take("connection")?,
+                call: p.take("call")?,
+            };
+            Event::SandboxCall {
+                connection: wire.connection,
+                call: {
+                    let call: contract::relay_metadata::Call =
+                        serde_json::from_str(&wire.call).map_err(other)?;
+                    goblins_jsonrpc::Call {
+                        jsonrpc: call.jsonrpc,
+                        id: call.id,
+                        method: call.method,
+                        params: call.params,
+                    }
+                },
+            }
+        }
+        name if name == contract::supervisor_notifications::EventSandboxClosed::NAME => {
+            let wire = contract::SupervisorEventSandboxClosedParams {
+                connection: p.take("connection")?,
+            };
+            Event::SandboxClosed {
+                connection: wire.connection,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventFailed::NAME => {
+            let wire = contract::SupervisorEventFailedParams {
+                error: p.take("error")?,
+            };
+            Event::Failed(wire.error)
+        }
+        name if name == contract::supervisor_notifications::EventInitLost::NAME => Event::InitLost,
+        name if name == contract::supervisor_notifications::EventPayloadExited::NAME => {
+            Event::PayloadExited
+        }
+        name if name == contract::supervisor_notifications::EventSpawned::NAME => {
+            let wire = contract::SupervisorEventSpawnedParams {
+                id: p.take("id")?,
+                pid: p.take("pid")?,
+            };
+            Event::Spawned {
+                id: wire.id,
+                pid: wire.pid,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventSpawnFailed::NAME => {
+            let wire = contract::SupervisorEventSpawnFailedParams {
+                id: p.take("id")?,
+                code: p.take("code")?,
+                message: p.take("message")?,
+            };
+            Event::SpawnFailed {
+                id: wire.id,
+                code: wire.code,
+                message: wire.message,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventExited::NAME => {
+            let wire = contract::SupervisorEventExitedParams {
+                id: p.take("id")?,
+                code: p.take("code")?,
+                signal: p.take("signal")?,
+            };
+            Event::Exited {
+                id: wire.id,
+                code: wire.code,
+                signal: wire.signal,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventTerminal::NAME => {
+            let wire = contract::SupervisorEventTerminalParams {
+                terminal: p.take("terminal")?,
+                status: p.take("status")?,
+                error: p.take("error")?,
+            };
+            Event::Terminal {
+                terminal: wire.terminal,
+                status: wire.status,
+                error: wire.error,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventTerminalResult::NAME => {
+            let wire = contract::SupervisorEventTerminalResultParams {
+                request: p.take("request")?,
+                result: p.take("result")?,
+            };
+            // Opaque inner JSON still parses before unknown-root rejection.
+            let result = serde_json::from_str(&wire.result).map_err(other)?;
+            Event::TerminalResult {
+                request: wire.request,
+                result,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventPreview::NAME => {
+            let wire = contract::SupervisorEventPreviewParams {
+                approval: p.take("approval")?,
+                result: p.take("result")?,
+            };
+            Event::Preview {
+                approval: wire.approval,
+                result: decode_preview_wire(wire.result),
+            }
+        }
+        name if name == contract::supervisor_notifications::EventProgress::NAME => {
+            let wire = contract::SupervisorEventProgressParams {
+                request: p.take("request")?,
+                state: p.take("state")?,
+            };
+            Event::Progress {
+                request: wire.request,
+                state: wire.state,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventGranted::NAME => {
+            let wire = contract::SupervisorEventGrantedParams {
+                reply: p.take("reply")?,
+                detail: p.take("detail")?,
+                output: p.take("output")?,
+            };
+            Event::Granted {
+                reply: wire.reply,
+                detail: wire.detail,
+                output: wire.output,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventRefresh::NAME => {
+            let wire = contract::SupervisorEventRefreshParams {
+                approval: p.take("approval")?,
+                result: p.take("result")?,
+            };
+            let result = serde_json::from_str(&wire.result).map_err(other)?;
+            Event::Refresh {
+                approval: wire.approval,
+                result,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventCall::NAME => {
+            let wire = contract::SupervisorEventCallParams {
+                serial: p.take("serial")?,
+                result: p.take("result")?,
+            };
+            let result = serde_json::from_str(&wire.result).map_err(other)?;
+            Event::Call {
+                serial: wire.serial,
+                result,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventDevShell::NAME => {
+            let wire = contract::SupervisorEventDevShellParams {
+                summary: p.take("summary")?,
+            };
+            let summary = serde_json::from_str(&wire.summary).map_err(other)?;
+            Event::DevShell { summary }
+        }
+        name if name == contract::supervisor_notifications::EventHostJobPrepared::NAME => {
+            let wire = contract::SupervisorEventHostJobPreparedParams {
+                request: p.take("request")?,
+                result: p.take("result")?,
+            };
+            Event::HostJobPrepared {
+                request: wire.request,
+                result: wire.result,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventHostJobFailed::NAME => {
+            let wire = contract::SupervisorEventHostJobFailedParams {
+                request: p.take("request")?,
+                error: p.take("error")?,
+            };
+            Event::HostJobFailed {
+                request: wire.request,
+                error: wire.error,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventHostJobFinished::NAME => {
+            let wire = contract::SupervisorEventHostJobFinishedParams {
+                request: p.take("request")?,
+                outcome: p.take("outcome")?,
+            };
+            Event::HostJobFinished {
+                request: wire.request,
+                outcome: wire.outcome,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventScopeFailed::NAME => {
+            let wire = contract::SupervisorEventScopeFailedParams {
+                name: p.take("name")?,
+            };
+            Event::ScopeFailed { name: wire.name }
+        }
+        name if name == contract::supervisor_notifications::EventScopeNeeded::NAME => {
+            let wire = contract::SupervisorEventScopeNeededParams {
+                name: p.take("name")?,
+            };
+            Event::ScopeNeeded { name: wire.name }
+        }
+        name if name == contract::supervisor_notifications::EventMode::NAME => {
+            let wire = contract::SupervisorEventModeParams {
+                server: p.take("server")?,
+            };
+            Event::Mode {
+                server: wire.server,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventStopped::NAME => {
+            let wire = contract::SupervisorEventStoppedParams {
+                exit_code: p.take("exit_code")?,
+            };
+            Event::Stopped {
+                exit_code: wire.exit_code,
+            }
+        }
+        name if name == contract::supervisor_notifications::EventStarted::NAME => {
+            let docker_enabled = p.take("docker_enabled")?;
+            let policy = p.take("policy")?;
+            let support = p.take("support")?;
+            let dev_shell = p.take::<String>("dev_shell")?;
+            // The opaque inner Option/Summary still parses before identity.
+            let decoded_dev_shell = serde_json::from_str(&dev_shell).map_err(other)?;
+            let wire = contract::SupervisorEventStartedParams {
+                docker_enabled,
+                policy,
+                support,
+                dev_shell,
+                identity: p.take("identity")?,
+                recreated: p.take("recreated")?,
+                auto: p.take("auto")?,
+                worktrees: p.take("worktrees")?,
+            };
+            Event::Started {
+                docker_enabled: wire.docker_enabled,
+                policy: decode_started_policy(*wire.policy),
+                support: decode_started_support(wire.support),
+                dev_shell: decoded_dev_shell,
+                identity: decode_started_identity(wire.identity),
+                recreated: decode_started_recreated(wire.recreated),
+                auto: decode_started_auto(*wire.auto),
+                worktrees: decode_started_report(*wire.worktrees),
+            }
+        }
+
+        _ => return Err(invalid("unknown supervisor event")),
+    };
+    p.finish()?;
+    Ok(event)
 }
 mod started;
 use started::{

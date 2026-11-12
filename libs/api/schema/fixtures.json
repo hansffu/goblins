@@ -36816,4 +36816,2465 @@
       }
     ]
   }
+,
+  "c17d3b4_started_binding": {
+    "schema": "SupervisorEventStartedParams",
+    "method": "Event.Started",
+    "marker": "EventStarted",
+    "direction": "supervisor-to-daemon",
+    "fields": [
+      "docker_enabled",
+      "policy",
+      "support",
+      "dev_shell",
+      "identity",
+      "recreated",
+      "auto",
+      "worktrees"
+    ],
+    "types": [
+      "bool",
+      "Box<crate::contract::started_metadata::Policy>",
+      "crate::contract::SupervisorStartedSupport",
+      "String",
+      "crate::contract::started_metadata::Identity",
+      "Option<Box<crate::contract::started_metadata::Recreated>>",
+      "Box<crate::contract::started_metadata::Auto>",
+      "Box<crate::contract::started_metadata::Report>"
+    ],
+    "shapes": {
+      "docker_enabled": {
+        "type": "boolean"
+      },
+      "policy": {
+        "$ref": "#/definitions/SupervisorStartedPolicy"
+      },
+      "support": {
+        "$ref": "#/definitions/SupervisorStartedSupport"
+      },
+      "identity": {
+        "$ref": "#/definitions/SupervisorStartedIdentity"
+      },
+      "recreated": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SupervisorStartedRecreated"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "auto": {
+        "$ref": "#/definitions/SupervisorStartedAuto"
+      },
+      "worktrees": {
+        "$ref": "#/definitions/SupervisorStartedReport"
+      },
+      "dev_shell": {
+        "$ref": "#/definitions/SupervisorStartedDevShellText"
+      }
+    }
+  },
+  "c17d3b4_started_cases": [
+    {
+      "label": "minimal required nullable",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": true
+    },
+    {
+      "label": "rich structural metadata",
+      "value": {
+        "docker_enabled": true,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [
+          "live-packages",
+          "live-packages"
+        ],
+        "dev_shell": "{\"generation\": 4294967295, \"lock\": {\"opaque\": [true, null]}, \"identity\": \"fixture-generation\"}",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": {
+          "packages": [
+            [
+              "pkg",
+              "relative"
+            ]
+          ],
+          "auto_approve": [],
+          "skipped": [
+            {
+              "name": "a",
+              "reason": " raw\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {
+          "folder": "relative",
+          "checkout": null,
+          "worktree": "",
+          "detail": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts ''",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts 'not JSON'",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "not JSON",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts '{}'",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "{}",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts '0'",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "0",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts '[]'",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "[]",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts '\"text\"'",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "\"text\"",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": true
+    },
+    {
+      "label": "missing docker_enabled",
+      "value": {
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong docker_enabled",
+      "value": {
+        "docker_enabled": [],
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "missing policy",
+      "value": {
+        "docker_enabled": false,
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong policy",
+      "value": {
+        "docker_enabled": false,
+        "policy": [],
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "missing support",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong support",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": 0,
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "missing dev_shell",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong dev_shell",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": [],
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "missing identity",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong identity",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": [],
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "missing recreated",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong recreated",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": [],
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "missing auto",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong auto",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": [],
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "missing worktrees",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong worktrees",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": []
+      },
+      "valid": false
+    },
+    {
+      "label": "closed extra",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {},
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "label": "closed $fd",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {},
+        "$fd": 0
+      },
+      "valid": false
+    },
+    {
+      "label": "outer null forbidden",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": null,
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "outer object forbidden",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": {
+          "generation": 0,
+          "lock": null
+        },
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": null,
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    },
+    {
+      "label": "nullable recreation still typed",
+      "value": {
+        "docker_enabled": false,
+        "policy": {
+          "configuration": "",
+          "description": "",
+          "run_targets": [],
+          "integration": null,
+          "bypass_permissions": false,
+          "editor": null,
+          "nix": false,
+          "host_commands": false,
+          "scope": null,
+          "dev_shell": null,
+          "initial_packages": [],
+          "handlers": null
+        },
+        "support": [],
+        "dev_shell": "null",
+        "identity": {
+          "pid": 0,
+          "helper_userns": 0,
+          "mount_owner": 0,
+          "source_mountns": 0,
+          "mountns": 0
+        },
+        "recreated": {},
+        "auto": {
+          "rooted": [],
+          "skipped": []
+        },
+        "worktrees": {}
+      },
+      "valid": false
+    }
+  ],
+  "c17d3b4_notification_cases": [
+    {
+      "label": "minimal required nullable",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "rich structural metadata",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": true,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [
+            "live-packages",
+            "live-packages"
+          ],
+          "dev_shell": "{\"generation\": 4294967295, \"lock\": {\"opaque\": [true, null]}, \"identity\": \"fixture-generation\"}",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": {
+            "packages": [
+              [
+                "pkg",
+                "relative"
+              ]
+            ],
+            "auto_approve": [],
+            "skipped": [
+              {
+                "name": "a",
+                "reason": " raw\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              }
+            ]
+          },
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {
+            "folder": "relative",
+            "checkout": null,
+            "worktree": "",
+            "detail": null
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts ''",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts 'not JSON'",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "not JSON",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts '{}'",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "{}",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts '0'",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "0",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts '[]'",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "[]",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "outer String accepts '\"text\"'",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "\"text\"",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": true
+    },
+    {
+      "label": "missing docker_enabled",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong docker_enabled",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": [],
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "missing policy",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong policy",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": [],
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "missing support",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong support",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": 0,
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "missing dev_shell",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong dev_shell",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": [],
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "missing identity",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong identity",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": [],
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "missing recreated",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong recreated",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": [],
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "missing auto",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong auto",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": [],
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "missing worktrees",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong worktrees",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": []
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "closed extra",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {},
+          "extra": 1
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "closed $fd",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {},
+          "$fd": 0
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "outer null forbidden",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": null,
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "outer object forbidden",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": {
+            "generation": 0,
+            "lock": null
+          },
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "nullable recreation still typed",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": {},
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    },
+    {
+      "label": "request id",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        },
+        "id": 1
+      },
+      "valid": false
+    },
+    {
+      "label": "root envelope extra",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        },
+        "extra": 1
+      },
+      "valid": false
+    },
+    {
+      "label": "positional params",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "Event.Started",
+        "params": [
+          false,
+          {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          [],
+          "null",
+          {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          null,
+          {
+            "rooted": [],
+            "skipped": []
+          },
+          {}
+        ]
+      },
+      "valid": false
+    },
+    {
+      "label": "wrong jsonrpc",
+      "frame": {
+        "jsonrpc": "1.0",
+        "method": "Event.Started",
+        "params": {
+          "docker_enabled": false,
+          "policy": {
+            "configuration": "",
+            "description": "",
+            "run_targets": [],
+            "integration": null,
+            "bypass_permissions": false,
+            "editor": null,
+            "nix": false,
+            "host_commands": false,
+            "scope": null,
+            "dev_shell": null,
+            "initial_packages": [],
+            "handlers": null
+          },
+          "support": [],
+          "dev_shell": "null",
+          "identity": {
+            "pid": 0,
+            "helper_userns": 0,
+            "mount_owner": 0,
+            "source_mountns": 0,
+            "mountns": 0
+          },
+          "recreated": null,
+          "auto": {
+            "rooted": [],
+            "skipped": []
+          },
+          "worktrees": {}
+        }
+      },
+      "valid": false
+    }
+  ],
+  "c17d3b4_inner_dev_shell_cases": [
+    {
+      "value": null,
+      "valid": true
+    },
+    {
+      "value": {
+        "generation": 0,
+        "lock": null,
+        "identity": "fixture-generation"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "generation": 4294967295,
+        "lock": [
+          true,
+          null
+        ],
+        "unknown": 1,
+        "identity": "fixture-generation"
+      },
+      "valid": true
+    },
+    {
+      "value": {
+        "identity": "fixture-generation"
+      },
+      "valid": false
+    },
+    {
+      "value": [],
+      "valid": false
+    },
+    {
+      "value": 0,
+      "valid": false
+    },
+    {
+      "value": "null",
+      "valid": false
+    },
+    {
+      "value": {
+        "generation": -1,
+        "lock": null,
+        "identity": "fixture-generation"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "generation": 4294967296,
+        "lock": null,
+        "identity": "fixture-generation"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "generation": 0,
+        "identity": "fixture-generation"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "lock": null,
+        "identity": "fixture-generation"
+      },
+      "valid": false
+    },
+    {
+      "value": {
+        "generation": 0,
+        "lock": null
+      },
+      "valid": false
+    }
+  ]
 }

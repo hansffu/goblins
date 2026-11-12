@@ -14349,6 +14349,1286 @@ Positional parameters:
 }
 #+end_src
 
+** Notification =Event.Started=
+
+Publish descriptor-free launch metadata using generated nested policy/support/identity/recreation/worktree records. All eight fields are required; recreated may be null, while dev_shell is an opaque String encoding Option<DevShellSummary>. Parse fields in original order, including inner dev_shell before identity, without early whole-record validation or new policy checks. No capabilities or adoption token are introduced.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational startup result.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "docker_enabled": {
+      "type": "boolean",
+      "x-rust-field-name": "docker_enabled",
+      "x-rust-type": "bool"
+    },
+    "policy": {
+      "$ref": "#/definitions/SupervisorStartedPolicy",
+      "x-rust-field-name": "policy",
+      "x-rust-type": "Box<crate::contract::started_metadata::Policy>"
+    },
+    "support": {
+      "$ref": "#/definitions/SupervisorStartedSupport",
+      "x-rust-field-name": "support",
+      "x-rust-type": "crate::contract::SupervisorStartedSupport"
+    },
+    "dev_shell": {
+      "$ref": "#/definitions/SupervisorStartedDevShellText",
+      "x-rust-field-name": "dev_shell",
+      "x-rust-type": "String"
+    },
+    "identity": {
+      "$ref": "#/definitions/SupervisorStartedIdentity",
+      "x-rust-field-name": "identity",
+      "x-rust-type": "crate::contract::started_metadata::Identity"
+    },
+    "recreated": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorStartedRecreated"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-field-name": "recreated",
+      "x-rust-type": "Option<Box<crate::contract::started_metadata::Recreated>>"
+    },
+    "auto": {
+      "$ref": "#/definitions/SupervisorStartedAuto",
+      "x-rust-field-name": "auto",
+      "x-rust-type": "Box<crate::contract::started_metadata::Auto>"
+    },
+    "worktrees": {
+      "$ref": "#/definitions/SupervisorStartedReport",
+      "x-rust-field-name": "worktrees",
+      "x-rust-type": "Box<crate::contract::started_metadata::Report>"
+    }
+  },
+  "required": [
+    "docker_enabled",
+    "policy",
+    "support",
+    "dev_shell",
+    "identity",
+    "recreated",
+    "auto",
+    "worktrees"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "SupervisorEventStartedParams",
+  "x-rust-field-order": [
+    "docker_enabled",
+    "policy",
+    "support",
+    "dev_shell",
+    "identity",
+    "recreated",
+    "auto",
+    "worktrees"
+  ],
+  "x-rust-derives": [
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.RecordEvent=
+
+Carry diagnostic event text and opaque arbitrary JSON fields; logging policy remains unchanged.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational relay/logging command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "event": {
+      "type": "string"
+    },
+    "fields": {
+      "$ref": "#/definitions/SupervisorOpaqueJson"
+    }
+  },
+  "required": [
+    "event",
+    "fields"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.SandboxSend=
+
+Relay opaque arbitrary JSON to the original connection id; descriptor-looking data remains inside the String.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational relay/logging command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "message": {
+      "$ref": "#/definitions/SupervisorOpaqueJson"
+    }
+  },
+  "required": [
+    "connection",
+    "message"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Command.SandboxClose=
+
+Close the named connection after queued output drains, preserving existing runtime behavior.
+
+Direction: =daemon-to-supervisor=. Sender: daemon. Receiver: supervisor. State: operational relay/logging command.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "connection"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.SandboxOpened=
+
+Report a new connection whose id is local to this runtime.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational relay event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "connection"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.SandboxCall=
+
+Relay the admitted call as opaque JSON text. Preserve the existing structural Call reader/defaults and upstream admission checks; inner JSON is not scanned for capabilities.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational relay event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "call": {
+      "$ref": "#/definitions/SupervisorRelayCallText"
+    }
+  },
+  "required": [
+    "connection",
+    "call"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Event.SandboxClosed=
+
+Report connection closure from EOF, invalid input, overflow or runtime shutdown.
+
+Direction: =supervisor-to-daemon=. Sender: supervisor. Receiver: daemon. State: operational relay event.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "connection"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+* scope
+
+** Notification =Setup=
+
+Bootstrap a scope process; the existing API/name/path validation remains in the entrypoint.
+
+Direction: =daemon-to-scope=. Sender: daemon. Receiver: scope. State: bootstrap.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "api": {
+      "$ref": "#/definitions/ScopeApi",
+      "x-rust-type": "u32",
+      "x-rust-field-name": "api"
+    },
+    "name": {
+      "type": "string",
+      "x-rust-type": "String",
+      "x-rust-field-name": "name"
+    },
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "directory"
+    }
+  },
+  "required": [
+    "api",
+    "name",
+    "directory"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeSetupParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "api",
+    "name",
+    "directory"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =AddMember=
+
+Transfer one member channel capability; original ownership and membership counts remain native.
+
+Direction: =daemon-to-scope=. Sender: daemon. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "fd": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "fd"
+    }
+  },
+  "required": [
+    "fd"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeAddMemberParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "fd"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Stop=
+
+Request scope teardown using existing lifecycle ordering.
+
+Direction: =daemon-to-scope=. Sender: daemon. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeStopParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Stopping=
+
+Acknowledge teardown start.
+
+Direction: =scope-to-daemon=. Sender: scope. Receiver: daemon. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeStoppingParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Idle=
+
+Report idle membership with the original monotonic added count.
+
+Direction: =scope-to-daemon=. Sender: scope. Receiver: daemon. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "added": {
+      "$ref": "#/definitions/SupervisorSequence",
+      "x-rust-type": "u64",
+      "x-rust-field-name": "added"
+    }
+  },
+  "required": [
+    "added"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeIdleParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "added"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Join=
+
+Request membership using the closed Join metadata; scope authority stays native.
+
+Direction: =member-to-scope=. Sender: member. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "definition": {
+      "$ref": "#/definitions/ScopeDefinition",
+      "x-rust-type": "ScopeDefinition",
+      "x-rust-field-name": "definition"
+    },
+    "bwrap": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "bwrap"
+    },
+    "helper": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "helper"
+    },
+    "pasta": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorPath"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-type": "Option<::std::path::PathBuf>",
+      "x-rust-field-name": "pasta"
+    },
+    "allow_nix": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "allow_nix"
+    }
+  },
+  "required": [
+    "definition",
+    "bwrap",
+    "helper",
+    "allow_nix"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "Join",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "definition",
+    "bwrap",
+    "helper",
+    "pasta",
+    "allow_nix"
+  ],
+  "x-rust-derives": [
+    "Clone",
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Joined=
+
+Return namespace capabilities and scope directory.
+
+Direction: =scope-to-member=. Sender: scope. Receiver: member. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "outer": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "outer"
+    },
+    "user": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "user"
+    },
+    "net": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "net"
+    },
+    "pid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorDescriptor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-type": "Option<crate::contract::Descriptor>",
+      "x-rust-field-name": "pid"
+    },
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "directory"
+    }
+  },
+  "required": [
+    "outer",
+    "user",
+    "net",
+    "directory"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeJoinedParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "outer",
+    "user",
+    "net",
+    "pid",
+    "directory"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =OpenStorage=
+
+Request storage capabilities in existing bounded batches.
+
+Direction: =member-to-scope=. Sender: member. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "names": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "x-rust-type": "Vec<String>",
+      "x-rust-field-name": "names"
+    }
+  },
+  "required": [
+    "names"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeOpenStorageParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "names"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Storage=
+
+Return named storage capabilities.
+
+Direction: =scope-to-member=. Sender: scope. Receiver: member. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "directories": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/SupervisorDescriptor"
+      },
+      "x-rust-type": "::std::collections::BTreeMap<String,crate::contract::Descriptor>",
+      "x-rust-field-name": "directories"
+    }
+  },
+  "required": [
+    "directories"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeStorageParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "directories"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =RegisterMember=
+
+Register the member mount namespace before membership release.
+
+Direction: =member-to-scope=. Sender: member. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "mountns": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "mountns"
+    }
+  },
+  "required": [
+    "mountns"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeRegisterMemberParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "mountns"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Registered=
+
+Acknowledge member registration.
+
+Direction: =scope-to-member=. Sender: scope. Receiver: member. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeRegisteredParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =AttachDocker=
+
+Begin a Docker attachment transaction with frame-local capabilities.
+
+Direction: =member-to-scope=. Sender: member. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "config": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ScopeDockerConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-type": "Option<DockerConfig>",
+      "x-rust-field-name": "config"
+    },
+    "parts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ScopeDockerPart"
+      },
+      "x-rust-type": "Vec<DockerPart>",
+      "x-rust-field-name": "parts"
+    },
+    "more": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "more"
+    }
+  },
+  "required": [
+    "parts",
+    "more"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeAttachDockerParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "config",
+    "parts",
+    "more"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =ExtendDocker=
+
+Extend attachment using existing bounded transactions and rollback.
+
+Direction: =member-to-scope=. Sender: member. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "parts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ScopeDockerPart"
+      },
+      "x-rust-type": "Vec<DockerPart>",
+      "x-rust-field-name": "parts"
+    },
+    "more": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "more"
+    }
+  },
+  "required": [
+    "parts",
+    "more"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeExtendDockerParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "parts",
+    "more"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =DockerPending=
+
+Report pending engine attachment.
+
+Direction: =scope-to-member=. Sender: scope. Receiver: member. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDockerPendingParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =DockerAttached=
+
+Report the attached engine socket.
+
+Direction: =scope-to-member=. Sender: scope. Receiver: member. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "socket": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "socket"
+    }
+  },
+  "required": [
+    "socket"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDockerAttachedParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "socket"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =DetachDocker=
+
+Request engine detachment.
+
+Direction: =member-to-scope=. Sender: member. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDetachDockerParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =DockerDetached=
+
+Acknowledge engine detachment.
+
+Direction: =scope-to-member=. Sender: scope. Receiver: member. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDockerDetachedParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Leave=
+
+Request membership release; existing drain/cleanup barriers remain native.
+
+Direction: =member-to-scope=. Sender: member. Receiver: scope. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeLeaveParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Left=
+
+Acknowledge released membership.
+
+Direction: =scope-to-member=. Sender: scope. Receiver: member. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeLeftParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Error=
+
+Report the existing scope control/member error text.
+
+Direction: =scope-to-client=. Sender: scope. Receiver: client. State: control/member transaction.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string",
+      "x-rust-type": "String",
+      "x-rust-field-name": "message"
+    }
+  },
+  "required": [
+    "message"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeErrorParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "message"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+* guardian
+
+** Notification =Retain=
+
+Transfer fresh resource locks for retention before acknowledgement; existing validation/ownership remain native.
+
+Direction: =scope-to-guardian=. Sender: scope. Receiver: guardian. State: retention exchange.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "leases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/GuardianLease"
+      },
+      "x-rust-type": "Vec<Lease>",
+      "x-rust-field-name": "leases"
+    }
+  },
+  "required": [
+    "leases"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "GuardianRetainParams",
+  "x-rust-module": "guardian_metadata",
+  "x-rust-field-order": [
+    "leases"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
+** Notification =Retained=
+
+Acknowledge retention after all supplied locks have been retained.
+
+Direction: =guardian-to-scope=. Sender: guardian. Receiver: scope. State: retention exchange.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "GuardianRetainedParams",
+  "x-rust-module": "guardian_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "not": {}
+}
+#+end_src
+
 * supervisor actor method phases
 
 These gates inspect method identity before logical decoding. Pending identities name an existing gate without claiming migration of its payload.
@@ -14371,12 +15651,7 @@ These gates inspect method identity before logical decoding. Pending identities 
       "Preflight": "Preflight",
       "SupervisorStart": "SupervisorStart"
     },
-    "pending-identities": {
-      "Setup": {
-        "chunk": "C18",
-        "reason": "Scope Setup payload contract remains separate; only the existing first-frame method identity is bound here."
-      }
-    },
+    "pending-identities": {},
     "consumer": "libs/supervisor/src/entry.rs:main",
     "description": "Classify the raw first method before general decoding or runtime startup. Missing, non-string or unknown methods retain the existing refusal; Setup retains its independent descriptor refusal."
   },
@@ -14426,26 +15701,6 @@ These gates inspect method identity before logical decoding. Pending identities 
     "description": "Only the single-frame maintenance result reaches logical decoding. Existing fixed post-result deadline, EOF and successful reap requirements remain unchanged."
   }
 ]
-#+end_src
-
-* supervisor remaining notification chunks
-
-These existing messages remain assigned to later migration slices; their payloads are not claimed as generated yet.
-
-#+begin_src json
-{
-  "C17d-lifecycle-host-jobs": [
-    "Event.Started"
-  ],
-  "C17e-relay-logging": [
-    "Command.RecordEvent",
-    "Command.SandboxSend",
-    "Command.SandboxClose",
-    "Event.SandboxOpened",
-    "Event.SandboxCall",
-    "Event.SandboxClosed"
-  ]
-}
 #+end_src
 
 * Generated Serde reader details
@@ -14887,9 +16142,11 @@ Original Serde container names, field order, required nullable sequence slots an
 - =Host job results= :: Prepared and Finished carry plain standard Result<PathBuf,String> and Result<HostOutcome,String>, not opaque strings. Native paths preserve non-UTF8 fallible serialization; run arguments/environment/optional timeout retain unrestricted structural ranges and original field extraction. No host command admission, environment, outcome exclusivity or timeout policy is added.
 - =Lifecycle scalar roots= :: Generated parameter records and identities retain present empty object params for Command.ScopeFailed/Stop and Event.InitLost/PayloadExited, original member/name/error strings and bool mode, plus required nullable i32 stopped exit_code. Root fieldwise decoding and original unknown-method/extra/missing diagnostics stay unchanged. Stop remains distinct from lifecycle control notifications Stopping/Released; no lifecycle, scope or export policy is added.
 - =Scope membership= :: Generated Command.ScopeMembership root and standard Result<Descriptor,String> metadata preserve the original plain Result shape. The producer duplicates the owned Fd at the original result point; the reader parses the Result, consumes its referenced capability, then finishes root params. Actual ownership, cleanup, framing, no-adoption and scope authority remain native. Legacy descriptor sequences accepted at the typed Value boundary do not claim Channel framing accepts forms without its $fd marker.
-- =Started policy/config= :: Generated started_metadata Policy/ScopePolicy/DevShellPolicy/Editor/OnAttach/Handlers preserve original Serde names, field order/types/traits and open/closed/default behavior. Live Started.policy field uses native-to-wire and wire-to-native conversions at the original serialization/extraction point. Runtime domain types, methods, docs and authority remain native. Event.Started root and its other fields stay pending in later C17d3b slices; this is not whole-root closure.
-- =Started support/identity= :: Generated Feature metadata retains original kebab-case variants, declaration order and ordering traits. Support uses a generated BTreeSet alias preserving declaration-order serialization and duplicate normalization; its schema permits repeated input features as the native reader does. Identity metadata retains original open record, u32 pid and u64 namespace fields. Live fields convert at original codec points; native Support helpers, Feature docs and Identity authority/ownership remain unchanged. Started root is still pending.
-- =Started recreation/worktrees= :: Generated started_metadata Recreated/Auto/Skipped/Report preserve original names/traits/order, open/closed fields, native String/PathBuf tuples and optional/default emission. Auto Default is constructor-only; Report.checkout keeps its explicit Serde default. Live field bridges preserve unsanitized structural Skipped.reason and optional values; native restoration, Skipped.new normalization, worktree functions and public docs remain unchanged. Started root stays pending.
+- =Started policy/config= :: Generated started_metadata Policy/ScopePolicy/DevShellPolicy/Editor/OnAttach/Handlers preserve original Serde names, field order/types/traits and open/closed/default behavior. Live Started.policy field uses native-to-wire and wire-to-native conversions at the original serialization/extraction point. Runtime domain types, methods, docs and authority remain native. The completed Event.Started root links this metadata with its other typed fields.
+- =Started support/identity= :: Generated Feature metadata retains original kebab-case variants, declaration order and ordering traits. Support uses a generated BTreeSet alias preserving declaration-order serialization and duplicate normalization; its schema permits repeated input features as the native reader does. Identity metadata retains original open record, u32 pid and u64 namespace fields. Live fields convert at original codec points; native Support helpers, Feature docs and Identity authority/ownership remain unchanged. The completed Started root links this metadata.
+- =Started recreation/worktrees= :: Generated started_metadata Recreated/Auto/Skipped/Report preserve original names/traits/order, open/closed fields, native String/PathBuf tuples and optional/default emission. Auto Default is constructor-only; Report.checkout keeps its explicit Serde default. Live field bridges preserve unsanitized structural Skipped.reason and optional values; native restoration, Skipped.new normalization, worktree functions and public docs remain unchanged. The completed Started root links these records.
+- =Started root= :: Generated Event.Started identity and explicit parameter record link all nested metadata. Root fields remain required, including nullable recreated and opaque String dev_shell encoding Option<Summary>. Producer preserves policy serialization before opaque encoding and root declaration order. Reader parses scalar/nested fields individually, with inner dev_shell parsing before identity, then finishes root. Native runtime policy/support/identity/restoration/worktree authority stays unchanged; this completes the former Started projections.
+- =Relay/logging= :: All six relay/logging notifications use generated outer records and identities. Arbitrary diagnostic/message JSON remains opaque String data. The admitted-call metadata preserves native Call names/defaults/closedness without re-running public envelope policy; its inner producer converts through Value to retain original sorted JSON text. No descriptor capability or admission/authority semantics move.
 
 * Envelopes (handwritten transport, schema checked)
 
@@ -25967,7 +27224,7 @@ Original Serde container names, field order, required nullable sequence slots an
       "$ref": "#/definitions/HistoryPackages"
     },
     "variables": {
-      "$ref": "#/definitions/Variables"
+      "$ref": "#/definitions/HistoryVariables"
     },
     "sessions": {
       "type": "array",
@@ -30740,6 +31997,1882 @@ Original Serde container names, field order, required nullable sequence slots an
     "Serialize",
     "Deserialize"
   ]
+}
+#+end_src
+
+** =SupervisorStartedDevShellText=
+
+#+begin_src json
+{
+  "type": "string",
+  "description": "Opaque serde_json encoding of Option<DevShellSummary>, including literal null inside a String. Parsing remains at the original dev_shell field point before identity.",
+  "x-json-content-schema": {
+    "anyOf": [
+      {
+        "$ref": "#/definitions/SupervisorDevShellSummary"
+      },
+      {
+        "type": "null"
+      }
+    ]
+  }
+}
+#+end_src
+
+** =SupervisorEventStartedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "docker_enabled": {
+      "type": "boolean",
+      "x-rust-field-name": "docker_enabled",
+      "x-rust-type": "bool"
+    },
+    "policy": {
+      "$ref": "#/definitions/SupervisorStartedPolicy",
+      "x-rust-field-name": "policy",
+      "x-rust-type": "Box<crate::contract::started_metadata::Policy>"
+    },
+    "support": {
+      "$ref": "#/definitions/SupervisorStartedSupport",
+      "x-rust-field-name": "support",
+      "x-rust-type": "crate::contract::SupervisorStartedSupport"
+    },
+    "dev_shell": {
+      "$ref": "#/definitions/SupervisorStartedDevShellText",
+      "x-rust-field-name": "dev_shell",
+      "x-rust-type": "String"
+    },
+    "identity": {
+      "$ref": "#/definitions/SupervisorStartedIdentity",
+      "x-rust-field-name": "identity",
+      "x-rust-type": "crate::contract::started_metadata::Identity"
+    },
+    "recreated": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorStartedRecreated"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-field-name": "recreated",
+      "x-rust-type": "Option<Box<crate::contract::started_metadata::Recreated>>"
+    },
+    "auto": {
+      "$ref": "#/definitions/SupervisorStartedAuto",
+      "x-rust-field-name": "auto",
+      "x-rust-type": "Box<crate::contract::started_metadata::Auto>"
+    },
+    "worktrees": {
+      "$ref": "#/definitions/SupervisorStartedReport",
+      "x-rust-field-name": "worktrees",
+      "x-rust-type": "Box<crate::contract::started_metadata::Report>"
+    }
+  },
+  "required": [
+    "docker_enabled",
+    "policy",
+    "support",
+    "dev_shell",
+    "identity",
+    "recreated",
+    "auto",
+    "worktrees"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "SupervisorEventStartedParams",
+  "x-rust-field-order": [
+    "docker_enabled",
+    "policy",
+    "support",
+    "dev_shell",
+    "identity",
+    "recreated",
+    "auto",
+    "worktrees"
+  ],
+  "x-rust-derives": [
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =SupervisorOpaqueJson=
+
+#+begin_src json
+{
+  "type": "string",
+  "description": "Opaque serde_json encoding of an arbitrary JSON value; descriptor-looking data remains inside the String.",
+  "x-json-content-schema": {}
+}
+#+end_src
+
+** =SupervisorRelayCall=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "jsonrpc": {
+      "type": "string",
+      "x-rust-field-name": "jsonrpc",
+      "x-rust-type": "String"
+    },
+    "id": {
+      "default": null,
+      "x-rust-field-name": "id",
+      "x-rust-type": "Option<::serde_json::Value>",
+      "x-rust-default": true
+    },
+    "method": {
+      "type": "string",
+      "x-rust-field-name": "method",
+      "x-rust-type": "String"
+    },
+    "params": {
+      "default": {},
+      "x-rust-field-name": "params",
+      "x-rust-type": "::serde_json::Value",
+      "x-rust-default": "crate::contract::relay_empty_params"
+    }
+  },
+  "required": [
+    "jsonrpc",
+    "method"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "Call",
+  "x-rust-module": "relay_metadata",
+  "x-rust-field-order": [
+    "jsonrpc",
+    "id",
+    "method",
+    "params"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =SupervisorRelayCallText=
+
+#+begin_src json
+{
+  "type": "string",
+  "description": "Opaque serde_json encoding of the existing admitted-call record. Structural decoding preserves String version/method, arbitrary JSON id/params and original absent defaults; public envelope validation remains upstream.",
+  "x-json-content-schema": {
+    "$ref": "#/definitions/SupervisorRelayCall"
+  }
+}
+#+end_src
+
+** =SupervisorCommandRecordEventParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "event": {
+      "type": "string"
+    },
+    "fields": {
+      "$ref": "#/definitions/SupervisorOpaqueJson"
+    }
+  },
+  "required": [
+    "event",
+    "fields"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorCommandSandboxSendParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "message": {
+      "$ref": "#/definitions/SupervisorOpaqueJson"
+    }
+  },
+  "required": [
+    "connection",
+    "message"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorCommandSandboxCloseParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "connection"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventSandboxOpenedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "connection"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventSandboxCallParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    },
+    "call": {
+      "$ref": "#/definitions/SupervisorRelayCallText"
+    }
+  },
+  "required": [
+    "connection",
+    "call"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =SupervisorEventSandboxClosedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "connection": {
+      "$ref": "#/definitions/SupervisorSequence"
+    }
+  },
+  "required": [
+    "connection"
+  ],
+  "additionalProperties": false
+}
+#+end_src
+
+** =ScopeApi=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 0,
+  "maximum": 4294967295,
+  "x-json-integer": true
+}
+#+end_src
+
+** =ScopeDefinition=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "persistent": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "persistent"
+    },
+    "pid": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "pid"
+    },
+    "storage": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "x-rust-type": "Vec<String>",
+      "x-rust-field-name": "storage",
+      "x-rust-default": true
+    },
+    "docker": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "docker",
+      "x-rust-default": true
+    }
+  },
+  "required": [
+    "persistent",
+    "pid"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDefinition",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "persistent",
+    "pid",
+    "storage",
+    "docker"
+  ],
+  "x-rust-derives": [
+    "Clone",
+    "Debug",
+    "PartialEq",
+    "Eq",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeJoin=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "definition": {
+      "$ref": "#/definitions/ScopeDefinition",
+      "x-rust-type": "ScopeDefinition",
+      "x-rust-field-name": "definition"
+    },
+    "bwrap": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "bwrap"
+    },
+    "helper": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "helper"
+    },
+    "pasta": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorPath"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-type": "Option<::std::path::PathBuf>",
+      "x-rust-field-name": "pasta"
+    },
+    "allow_nix": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "allow_nix"
+    }
+  },
+  "required": [
+    "definition",
+    "bwrap",
+    "helper",
+    "allow_nix"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "Join",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "definition",
+    "bwrap",
+    "helper",
+    "pasta",
+    "allow_nix"
+  ],
+  "x-rust-derives": [
+    "Clone",
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeDockerConfig=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "bwrap": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "bwrap"
+    },
+    "helper": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "helper"
+    },
+    "daemon": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "daemon"
+    }
+  },
+  "required": [
+    "bwrap",
+    "helper",
+    "daemon"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "DockerConfig",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "bwrap",
+    "helper",
+    "daemon"
+  ],
+  "x-rust-derives": [
+    "Clone",
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeDockerPart=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Arguments"
+          ]
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-rust-type": "Vec<String>"
+        }
+      },
+      "required": [
+        "kind",
+        "values"
+      ],
+      "additionalProperties": false,
+      "x-rust-field-order": [
+        "values"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Bind"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/SupervisorDescriptor",
+          "x-rust-type": "crate::contract::Descriptor"
+        },
+        "destination": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-type": "::std::path::PathBuf"
+        },
+        "readonly": {
+          "type": "boolean",
+          "x-rust-type": "bool"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "destination",
+        "readonly"
+      ],
+      "additionalProperties": false,
+      "x-rust-field-order": [
+        "source",
+        "destination",
+        "readonly"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Store"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "x-rust-field-order": []
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Grant"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/SupervisorDescriptor",
+          "x-rust-type": "crate::contract::Descriptor"
+        },
+        "destination": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-type": "::std::path::PathBuf"
+        },
+        "readonly": {
+          "type": "boolean",
+          "x-rust-type": "bool"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "destination",
+        "readonly"
+      ],
+      "additionalProperties": false,
+      "x-rust-field-order": [
+        "source",
+        "destination",
+        "readonly"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Lease"
+          ]
+        },
+        "directory": {
+          "$ref": "#/definitions/SupervisorPath",
+          "x-rust-type": "::std::path::PathBuf"
+        },
+        "lock": {
+          "$ref": "#/definitions/SupervisorDescriptor",
+          "x-rust-type": "crate::contract::Descriptor"
+        }
+      },
+      "required": [
+        "kind",
+        "directory",
+        "lock"
+      ],
+      "additionalProperties": false,
+      "x-rust-field-order": [
+        "directory",
+        "lock"
+      ]
+    }
+  ],
+  "x-rust-name": "DockerPart",
+  "x-rust-module": "scope_metadata",
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ],
+  "x-rust-tag": "kind",
+  "x-rust-variants": [
+    {
+      "name": "Arguments",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDockerPart/oneOf/0"
+    },
+    {
+      "name": "Bind",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDockerPart/oneOf/1"
+    },
+    {
+      "name": "Store",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDockerPart/oneOf/2"
+    },
+    {
+      "name": "Grant",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDockerPart/oneOf/3"
+    },
+    {
+      "name": "Lease",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDockerPart/oneOf/4"
+    }
+  ],
+  "description": "Each part has at most one capability, so transactions can exceed a frame's descriptor budget without serializing host fd numbers into argument text."
+}
+#+end_src
+
+** =ScopeSetupParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "api": {
+      "$ref": "#/definitions/ScopeApi",
+      "x-rust-type": "u32",
+      "x-rust-field-name": "api"
+    },
+    "name": {
+      "type": "string",
+      "x-rust-type": "String",
+      "x-rust-field-name": "name"
+    },
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "directory"
+    }
+  },
+  "required": [
+    "api",
+    "name",
+    "directory"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeSetupParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "api",
+    "name",
+    "directory"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeAddMemberParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "fd": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "fd"
+    }
+  },
+  "required": [
+    "fd"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeAddMemberParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "fd"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeStopParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeStopParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeStoppingParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeStoppingParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeIdleParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "added": {
+      "$ref": "#/definitions/SupervisorSequence",
+      "x-rust-type": "u64",
+      "x-rust-field-name": "added"
+    }
+  },
+  "required": [
+    "added"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeIdleParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "added"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeJoinedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "outer": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "outer"
+    },
+    "user": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "user"
+    },
+    "net": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "net"
+    },
+    "pid": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SupervisorDescriptor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-type": "Option<crate::contract::Descriptor>",
+      "x-rust-field-name": "pid"
+    },
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "directory"
+    }
+  },
+  "required": [
+    "outer",
+    "user",
+    "net",
+    "directory"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeJoinedParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "outer",
+    "user",
+    "net",
+    "pid",
+    "directory"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeOpenStorageParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "names": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "x-rust-type": "Vec<String>",
+      "x-rust-field-name": "names"
+    }
+  },
+  "required": [
+    "names"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeOpenStorageParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "names"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeStorageParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "directories": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/SupervisorDescriptor"
+      },
+      "x-rust-type": "::std::collections::BTreeMap<String,crate::contract::Descriptor>",
+      "x-rust-field-name": "directories"
+    }
+  },
+  "required": [
+    "directories"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeStorageParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "directories"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeRegisterMemberParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "mountns": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "mountns"
+    }
+  },
+  "required": [
+    "mountns"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeRegisterMemberParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "mountns"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeRegisteredParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeRegisteredParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeAttachDockerParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "config": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ScopeDockerConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-rust-type": "Option<DockerConfig>",
+      "x-rust-field-name": "config"
+    },
+    "parts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ScopeDockerPart"
+      },
+      "x-rust-type": "Vec<DockerPart>",
+      "x-rust-field-name": "parts"
+    },
+    "more": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "more"
+    }
+  },
+  "required": [
+    "parts",
+    "more"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeAttachDockerParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "config",
+    "parts",
+    "more"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeExtendDockerParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "parts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ScopeDockerPart"
+      },
+      "x-rust-type": "Vec<DockerPart>",
+      "x-rust-field-name": "parts"
+    },
+    "more": {
+      "type": "boolean",
+      "x-rust-type": "bool",
+      "x-rust-field-name": "more"
+    }
+  },
+  "required": [
+    "parts",
+    "more"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeExtendDockerParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "parts",
+    "more"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeDockerPendingParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDockerPendingParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeDockerAttachedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "socket": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "socket"
+    }
+  },
+  "required": [
+    "socket"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDockerAttachedParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "socket"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeDetachDockerParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDetachDockerParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeDockerDetachedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeDockerDetachedParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeLeaveParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeLeaveParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeLeftParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeLeftParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeErrorParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string",
+      "x-rust-type": "String",
+      "x-rust-field-name": "message"
+    }
+  },
+  "required": [
+    "message"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "ScopeErrorParams",
+  "x-rust-module": "scope_metadata",
+  "x-rust-field-order": [
+    "message"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =ScopeMessage=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Setup"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeSetupParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "AddMember"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeAddMemberParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Stop"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeStopParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Stopping"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeStoppingParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Idle"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeIdleParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Join"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeJoin"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Joined"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeJoinedParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "OpenStorage"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeOpenStorageParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Storage"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeStorageParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "RegisterMember"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeRegisterMemberParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Registered"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeRegisteredParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "AttachDocker"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeAttachDockerParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "ExtendDocker"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeExtendDockerParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "DockerPending"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeDockerPendingParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "DockerAttached"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeDockerAttachedParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "DetachDocker"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeDetachDockerParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "DockerDetached"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeDockerDetachedParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Leave"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeLeaveParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Left"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeLeftParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Error"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/ScopeErrorParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "x-rust-name": "Message",
+  "x-rust-module": "scope_metadata",
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ],
+  "x-rust-tag": "method",
+  "x-rust-content": "params",
+  "x-rust-variants": [
+    {
+      "name": "Setup",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeSetupParams"
+    },
+    {
+      "name": "AddMember",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeAddMemberParams"
+    },
+    {
+      "name": "Stop",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeStopParams"
+    },
+    {
+      "name": "Stopping",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeStoppingParams"
+    },
+    {
+      "name": "Idle",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeIdleParams"
+    },
+    {
+      "name": "Join",
+      "kind": "newtype",
+      "schema-ref": "#/definitions/ScopeJoin",
+      "x-rust-type": "Join"
+    },
+    {
+      "name": "Joined",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeJoinedParams"
+    },
+    {
+      "name": "OpenStorage",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeOpenStorageParams",
+      "description": "Storage capabilities are requested in bounded batches after Join."
+    },
+    {
+      "name": "Storage",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeStorageParams"
+    },
+    {
+      "name": "RegisterMember",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeRegisterMemberParams"
+    },
+    {
+      "name": "Registered",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeRegisteredParams"
+    },
+    {
+      "name": "AttachDocker",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeAttachDockerParams"
+    },
+    {
+      "name": "ExtendDocker",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeExtendDockerParams"
+    },
+    {
+      "name": "DockerPending",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDockerPendingParams"
+    },
+    {
+      "name": "DockerAttached",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDockerAttachedParams"
+    },
+    {
+      "name": "DetachDocker",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDetachDockerParams"
+    },
+    {
+      "name": "DockerDetached",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeDockerDetachedParams"
+    },
+    {
+      "name": "Leave",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeLeaveParams"
+    },
+    {
+      "name": "Left",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeLeftParams"
+    },
+    {
+      "name": "Error",
+      "kind": "struct",
+      "schema-ref": "#/definitions/ScopeErrorParams"
+    }
+  ]
+}
+#+end_src
+
+** =GuardianLease=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "directory": {
+      "$ref": "#/definitions/SupervisorPath",
+      "x-rust-type": "::std::path::PathBuf",
+      "x-rust-field-name": "directory"
+    },
+    "lock": {
+      "$ref": "#/definitions/SupervisorDescriptor",
+      "x-rust-type": "crate::contract::Descriptor",
+      "x-rust-field-name": "lock"
+    }
+  },
+  "required": [
+    "directory",
+    "lock"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "Lease",
+  "x-rust-module": "guardian_metadata",
+  "x-rust-field-order": [
+    "directory",
+    "lock"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =GuardianRetainParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "leases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/GuardianLease"
+      },
+      "x-rust-type": "Vec<Lease>",
+      "x-rust-field-name": "leases"
+    }
+  },
+  "required": [
+    "leases"
+  ],
+  "additionalProperties": false,
+  "x-rust-name": "GuardianRetainParams",
+  "x-rust-module": "guardian_metadata",
+  "x-rust-field-order": [
+    "leases"
+  ],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =GuardianRetainedParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false,
+  "x-rust-name": "GuardianRetainedParams",
+  "x-rust-module": "guardian_metadata",
+  "x-rust-field-order": [],
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ]
+}
+#+end_src
+
+** =GuardianMessage=
+
+#+begin_src json
+{
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Retain"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/GuardianRetainParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "Retained"
+          ]
+        },
+        "params": {
+          "$ref": "#/definitions/GuardianRetainedParams"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "x-rust-name": "Message",
+  "x-rust-module": "guardian_metadata",
+  "x-rust-derives": [
+    "Debug",
+    "Serialize",
+    "Deserialize"
+  ],
+  "x-rust-tag": "method",
+  "x-rust-content": "params",
+  "x-rust-variants": [
+    {
+      "name": "Retain",
+      "kind": "struct",
+      "schema-ref": "#/definitions/GuardianRetainParams"
+    },
+    {
+      "name": "Retained",
+      "kind": "struct",
+      "schema-ref": "#/definitions/GuardianRetainedParams"
+    }
+  ]
+}
+#+end_src
+
+** =HistoryVariables=
+
+#+begin_src json
+{
+  "description": "Recorded agent variables, including an empty map before any report or after all keys are removed. Persisted records retain their original string map without request-time validation.",
+  "type": "object",
+  "additionalProperties": {
+    "type": "string"
+  }
 }
 #+end_src
 
