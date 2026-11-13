@@ -39,6 +39,7 @@ Accepted decisions:
 - [[file:adr/0016-server-and-client-goblins.md][ADR 0016]]: server and client goblins with attach handlers; Codex without the relay
 - [[file:adr/0017-claude-integration-in-goblin.md][ADR 0017]]: Claude wakeup integration lives inside the goblin
 - [[file:adr/0018-per-goblin-supervisors.md][ADR 0018]]: supervisor processes own runtime, relay, terminals and scoped capabilities
+- [[file:adr/0020-catalogue-from-the-pinned-store-path.md][ADR 0020]]: the pinned catalogue is imported from its store path in restricted evaluation
 
 * Build and run from a checkout
 

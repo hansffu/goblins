@@ -25,6 +25,7 @@ let
       helper = "${helper}/bin/goblins-mount-helper";
       # Resolve approved attributes directly from our pinned nixpkgs source.
       flake = "path:${pkgs.path}";
+      nixpkgs = "${pkgs.path}";
     };
   config = pkgs.writeText "goblins-config.json" (
     builtins.toJSON {

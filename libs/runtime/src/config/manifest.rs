@@ -274,6 +274,19 @@ mod tests {
     }
 
     #[test]
+    fn the_pinned_nixpkgs_entry_is_optional() {
+        let absent = parse(manifest(json!({"shell": goblin(json!({}))})));
+        assert_eq!(absent.goblins["shell"].nixpkgs, None);
+        let present = parse(manifest(json!({
+            "shell": goblin(json!({"nixpkgs": "/nix/store/abc-source"}))
+        })));
+        assert_eq!(
+            present.goblins["shell"].nixpkgs.as_deref(),
+            Some(std::path::Path::new("/nix/store/abc-source"))
+        );
+    }
+
+    #[test]
     fn reading_is_distinct_from_validation_and_selection_preserves_error_order() {
         let dir = goblins_unix::temp_directory().unwrap();
         let path = dir.join("manifest.json");

@@ -147,6 +147,7 @@ pub fn launch(config: &Configuration) -> Result<Launch> {
                 .ok_or("missing bwrap")?
                 .into(),
             flake: config.flake.clone(),
+            nixpkgs: config.nixpkgs.clone(),
             client_package: config.client_package.clone(),
             initial_packages: string("sandbox_path")?
                 .split(':')

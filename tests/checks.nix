@@ -408,6 +408,9 @@ in
       scopes = import "${source}/nix/demo-goblins/scopes.nix" { inherit (api.builders) mkScope; };
     };
   demo-goblins = demo;
+  # A self-contained shell for test flakes that must not import nixpkgs: a
+  # path: input copies it without references, which a static binary needs none of.
+  static-bash = pkgs.pkgsStatic.bash;
   # Ordinary API/terminal tests need Fish semantics, not the demo's agent and
   # developer tool closures. Keep the complete demo above for packaging and
   # connected-shell coverage. Exec tests only need Bash and core utilities.

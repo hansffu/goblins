@@ -1295,13 +1295,8 @@ impl Session {
         })
     }
     fn realize(&self, name: &str) -> Result<PathBuf> {
-        let selection = crate::catalog::select(
-            &self.launch.flake,
-            name,
-            &self.directory,
-            &self.cancel,
-            true,
-        )?;
+        let selection =
+            crate::catalog::select(&self.catalog(), name, &self.directory, &self.cancel, true)?;
         self.build(name, &selection)
     }
     /// Resolve a recreated goblin's recorded grants against the current
@@ -1359,16 +1354,19 @@ impl Session {
         }
         Ok(())
     }
+    /// Where this goblin's catalogue packages are evaluated from.
+    pub fn catalog(&self) -> crate::catalog::Source<'_> {
+        crate::catalog::source(&self.launch.flake, self.launch.nixpkgs.as_deref())
+    }
     fn build(&self, name: &str, selection: &crate::catalog::Selection) -> Result<PathBuf> {
-        let attr = crate::catalog::attribute(&self.launch.flake, name);
-        let output = &selection.output;
+        let mut command = crate::catalog::nix();
+        command
+            .args(["build", "--no-write-lock-file", "--out-link"])
+            .arg(self.directory.join("roots").join(format!("catalog-{name}")))
+            .arg("--print-out-paths");
+        crate::catalog::installable(&self.catalog(), name, Some(&selection.output), &mut command);
         let result = self
-            .command(
-                crate::catalog::nix()
-                    .args(["build", "--no-write-lock-file", "--out-link"])
-                    .arg(self.directory.join("roots").join(format!("catalog-{name}")))
-                    .args(["--print-out-paths", &format!("{attr}^{output}")]),
-            )
+            .command(&mut command)
             .map_err(|e| format!("could not build package '{name}': {e}"))?;
         let paths: Vec<_> = result.lines().collect();
         if paths.len() != 1 {

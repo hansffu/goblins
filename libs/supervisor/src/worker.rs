@@ -392,7 +392,7 @@ impl Worker {
                     match commands.recv_timeout(WORKER_TICK) {
                         Ok((Command::Preview { approval, package }, cancel)) => {
                             let result = crate::catalog::preview(
-                                &session.launch.flake,
+                                &session.catalog(),
                                 &package,
                                 &session.directory,
                                 &cancel,

@@ -29,6 +29,10 @@ pub struct Configuration {
     pub client_package: PathBuf,
     pub helper: PathBuf,
     pub flake: String,
+    /// The pinned nixpkgs source tree that `flake` serves. When present, the
+    /// catalogue imports it directly instead of evaluating the flake.
+    #[serde(default)]
+    pub nixpkgs: Option<PathBuf>,
     #[serde(default)]
     pub sandbox_etc: BTreeMap<String, PathBuf>,
     /// Further /etc files mounted only in sandboxes with a flake dev shell.
@@ -454,6 +458,10 @@ pub struct Launch {
     pub helper: PathBuf,
     pub bwrap: PathBuf,
     pub flake: String,
+    /// The pinned nixpkgs source tree that `flake` serves. When present, the
+    /// catalogue imports it directly instead of evaluating the flake.
+    #[serde(default)]
+    pub nixpkgs: Option<PathBuf>,
     pub client_package: PathBuf,
     #[serde(default)]
     pub initial_packages: Vec<PathBuf>,

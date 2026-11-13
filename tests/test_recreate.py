@@ -16,8 +16,9 @@ import time
 import unittest
 import uuid
 
-from build_support import fixture_app, nix_bin
+from build_support import fixture_app, fixture_path, nix_bin
 from daemon_support import Daemon, RPC, receive
+from support import FLAKE, command
 
 FRESH = ["--no-config", "-c", "printf 'ARGS=fresh\\n'; exec sleep 600"]
 RESUME = ["--no-config", "-c",
@@ -38,6 +39,20 @@ def checks_manifest(name):
     app = fixture_app(name)
     return re.search(r'exec \S+ --runtime (\S+)', app.read_text()).group(1)
 
+
+
+CUSTOM_CATALOGUE = """{
+  inputs.tools = { url = "path:@TOOLS@"; flake = false; };
+  outputs = { tools, ... }: {
+    legacyPackages.x86_64-linux.probe = derivation {
+      name = "goblins-custom-catalogue-probe";
+      system = "x86_64-linux";
+      builder = "${tools}/bin/bash";
+      args = [ "-c" "echo probe > $out" ];
+    };
+  };
+}
+"""
 
 class RecreateTests(unittest.TestCase):
     def daemon(self, *records, **options):
@@ -134,6 +149,45 @@ class RecreateTests(unittest.TestCase):
         offline = json.loads(d.cli("history", "--json").stdout)
         self.assertEqual([(r["id"], r["running"]) for r in offline], [("rec-a", None)])
         self.assertRegex(d.cli("history").stdout, r"(?m)^rec-a .* \? ")
+
+    def test_the_daemons_environment_does_not_change_what_the_catalogue_offers(self):
+        # The pinned catalogue ignores the host's nixpkgs settings: unfree
+        # packages stay refused although the daemon's environment allows them.
+        d = self.daemon(record("rec-env", packages={"approved": ["unrar", "hello"], "denied": []}),
+                        env={**os.environ, "NIXPKGS_ALLOW_UNFREE": "1"})
+        r = d.get(self.recreate(d, "rec-env")["session"])
+        self.assertEqual(r["packages"], ["hello"])
+        reasons = {s["name"]: s["reason"] for s in r["skipped"]}
+        self.assertEqual(list(reasons), ["unrar"])
+        self.assertIn("unfree", reasons["unrar"])
+
+    def test_a_store_backed_catalogue_that_is_not_nixpkgs_is_served_as_a_flake(self):
+        # A flake in the store whose only package is 'probe', with no
+        # default.nix and no nixpkgs: only the flake path can serve it.
+        bash = fixture_path(FLAKE + "#checks.x86_64-linux.static-bash^out")
+        source = Path(tempfile.mkdtemp(prefix="goblins-catalogue-"))
+        self.addCleanup(shutil.rmtree, source)
+        (source / "flake.nix").write_text(CUSTOM_CATALOGUE.replace("@TOOLS@", str(bash)))
+        command(["nix", "flake", "lock", f"path:{source}"])
+        store = command(["nix", "store", "add-path", str(source)]).strip()
+        d = self.daemon()
+        config = json.loads(Path(d.manifest).read_text())
+        goblin = config["goblins"]["shell"]
+        goblin["flake"] = f"path:{store}"
+        del goblin["nixpkgs"]
+        manifest = Path(d.temp.name) / "custom-catalogue.json"
+        manifest.write_text(json.dumps(config))
+        session = d.start(manifest=manifest)["session"]
+        for package, status in (("probe", "ready"), ("hello", "error")):
+            with self.subTest(package=package):
+                request, permission = d.pending(session, package)
+                self.addCleanup(request.close)
+                d.decide(permission, True)
+                request.peer.settimeout(120)
+                self.assertEqual(receive(request.peer)["result"]["status"], status)
+        self.assertEqual(d.get(session)["packages"], ["probe"])
+        self.assertIn("does not provide attribute",
+                      d.rpc.call("permissions.get", {"request": permission["id"]})["message"])
 
     def test_packages_that_fail_are_skipped_with_reasons_and_tried_again(self):
         bindir = Path(tempfile.mkdtemp(prefix="goblins-fake-nix-"))

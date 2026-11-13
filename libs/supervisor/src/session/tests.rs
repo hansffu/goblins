@@ -280,7 +280,10 @@ fn host_driver() {
                     Ok(serde_json::to_value(reply)?)
                 }
                 "flake" => {
-                    session.as_mut().unwrap().launch.flake = req["value"].as_str().unwrap().into();
+                    // An explicit catalogue flake replaces the pinned source.
+                    let launch = &mut session.as_mut().unwrap().launch;
+                    launch.flake = req["value"].as_str().unwrap().into();
+                    launch.nixpkgs = None;
                     Ok(json!(null))
                 }
                 "remove-stale" => Ok(json!(goblins_runtime::scope::remove_stale(
