@@ -9,7 +9,7 @@ import uuid
 
 from build_support import fixture_app
 from daemon_support import Daemon, RPC
-from support import FLAKE, command
+from support import command, lock_flake, pinned_nixpkgs
 from test_devshell import TEMPLATE
 
 
@@ -320,16 +320,15 @@ class DevShellWorktreeTests(WorktreeTests):
     del name
 
     def flake(self, directory, marker):
-        nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
-                           f'(builtins.getFlake "{FLAKE}").inputs.nixpkgs.outPath'])
-        (directory / "flake.nix").write_text(TEMPLATE.replace("NIXPKGS", nixpkgs).replace("@MARKER@", marker))
+        (directory / "flake.nix").write_text(
+            TEMPLATE.replace("NIXPKGS", pinned_nixpkgs()[0]).replace("@MARKER@", marker))
 
     def test_the_initial_launch_and_a_refresh_evaluate_a_worktree_flake(self):
         checkout = self.home_path / "code/api"
         checkout.mkdir(parents=True)
         self.git(checkout, "init", "-q", "-b", "main")
         self.flake(checkout, "original")
-        command(["nix", "flake", "lock", f"path:{checkout}"])
+        lock_flake(checkout)
         self.git(checkout, "add", "flake.nix", "flake.lock")
         self.git(checkout, "commit", "-qm", "flake")
         worktree = self.link(checkout, "fix")

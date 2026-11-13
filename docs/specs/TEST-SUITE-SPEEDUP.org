@@ -306,7 +306,9 @@ Steps:
 - [X] *Step 7: Run* =nix develop -c just test-plan --changed master= and the recommended tasks (expect =full=).
 - [X] *Step 8: Review, then commit* as "Evaluate catalogue packages from the pinned store path". Report the measured before and after for one grant.
 
-** TODO Task 7: Give dev-shell tests a flake that does not import nixpkgs
+** DONE Task 7: Give dev-shell tests a flake that does not import nixpkgs
+
+Done differently, with the user's approval. Measured with a fresh Nix cache and =--offline=, =nix print-dev-env= on a =mkShellNoCC= flake takes 3.0 s with a =path:= nixpkgs input, which Nix hashes on every command, and 0.3 s with the same nixpkgs as a locked =github:= input, which Nix finds in the store by its hash. So every dev-shell test keeps real nixpkgs: =lock_flake= in =tests/support.py= copies the nixpkgs node of the repository's own =flake.lock= into each test flake's lock, and the four tests that add an input add the static bash instead of nixpkgs. Measured group times: Refresh 154 s to 66 s, FlakeRun 69 s to 12 s, Diff 47 s to 7.8 s, Subdirectory 21 s to 3.8 s, Docker dev shell 28 s to 9 s. The steps below describe the original static-bash plan and were not followed.
 
 *User decision needed first.* This changes what most dev-shell tests evaluate. Ask: "May the dev-shell tests use a hand-written dev shell built from a static bash instead of nixpkgs =mkShellNoCC=, keeping =DevShellTests= (six launch tests), the Docker dev-shell tests and the worktree dev-shell test on real nixpkgs?" Proceed only on yes.
 

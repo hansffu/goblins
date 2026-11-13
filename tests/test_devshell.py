@@ -8,15 +8,15 @@ import time
 import unittest
 import uuid
 
-from build_support import fixture_app
+from build_support import fixture_app, fixture_path
 from daemon_support import Daemon, RPC
-from support import FLAKE, command
+from support import FLAKE, command, lock_flake, pinned_nixpkgs
 from terminal_support import Terminal
 # A module import, so its DockerTests are not collected here as well.
 import test_docker
 
 TEMPLATE = """{
-  inputs.nixpkgs.url = "path:NIXPKGS";
+  inputs.nixpkgs.url = "NIXPKGS";
   outputs = { nixpkgs, ... }:
     let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {
       devShells.x86_64-linux.default = pkgs.mkShellNoCC {
@@ -39,15 +39,20 @@ class DevShellTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Test flakes name this repository's own nixpkgs as a locked github:
+        # input (see lock_flake); the store path serves direct imports.
+        cls.nixpkgs_url = pinned_nixpkgs()[0]
         cls.nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
                                f'(builtins.getFlake "{FLAKE}").inputs.nixpkgs.outPath'])
+        # A small input for tests that add one: a path: input is hashed whole.
+        cls.tools = fixture_path(FLAKE + "#checks.x86_64-linux.static-bash^out")
 
     def setUp(self):
         root = tempfile.TemporaryDirectory(prefix="goblin-devshell-")
         self.addCleanup(root.cleanup)
         self.project = Path(root.name)
         self.write_flake("original")
-        command(["nix", "flake", "lock", f"path:{self.project}"])
+        lock_flake(self.project)
         # A Git flake is the common case: only tracked files reach the store.
         command(["git", "-C", str(self.project), "init", "-q"])
         command(["git", "-C", str(self.project), "add", "flake.nix", "flake.lock"])
@@ -59,7 +64,7 @@ class DevShellTests(unittest.TestCase):
 
     def write_flake(self, marker):
         (self.project / "flake.nix").write_text(
-            TEMPLATE.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", marker))
+            TEMPLATE.replace("NIXPKGS", self.nixpkgs_url).replace("@MARKER@", marker))
 
     def run_cli(self, *args):
         terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "run", "shell", *args],
@@ -134,7 +139,7 @@ class DevShellTests(unittest.TestCase):
         # Nix would silently fetch and use an input the lock does not mention.
         flake = (self.project / "flake.nix").read_text().replace(
             "inputs.nixpkgs.url",
-            f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
+            f'inputs.extra = {{ url = "path:{self.tools}"; flake = false; }};\n  inputs.nixpkgs.url')
         (self.project / "flake.nix").write_text(flake)
         result = self.d.rpc.call("sessions.start", {
             "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
@@ -331,7 +336,7 @@ class DevShellRefreshTests(DevShellTests):
     def test_lock_adds_new_inputs_and_writes_the_approved_lock(self):
         flake = (self.project / "flake.nix").read_text().replace(
             "inputs.nixpkgs.url",
-            f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
+            f'inputs.extra = {{ url = "path:{self.tools}"; flake = false; }};\n  inputs.nixpkgs.url')
         (self.project / "flake.nix").write_text(flake)
         # Without --lock, an incomplete lock is an error, not an update.
         output, code = self.run_in("goblin devshell refresh")
@@ -343,9 +348,9 @@ class DevShellRefreshTests(DevShellTests):
         self.assertEqual(record["package"], "refresh --lock")
         preview = record["preview"]
         self.assertEqual(preview["attention"],
-                         [{"kind": "new-input", "input": "extra", "source": f"path:{self.nixpkgs}"}])
+                         [{"kind": "new-input", "input": "extra", "source": f"path:{self.tools}"}])
         self.assertEqual([(c["name"], c["change"], c["new"]["source"]) for c in preview["inputs"]],
-                         [("extra", "added", f"path:{self.nixpkgs}")])
+                         [("extra", "added", f"path:{self.tools}")])
         self.assertNotIn('"nodes"', preview["diff"])
         self.assertNotIn("extra", json.loads((self.project / "flake.lock").read_text())["nodes"])
         self.d.decide(record, True)
@@ -450,7 +455,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
         self.project.mkdir()
         (self.repo / "marker").write_text("from-parent")
         self.write_flake("unused")
-        command(["nix", "flake", "lock", f"path:{self.project}"])
+        lock_flake(self.project)
         command(["git", "-C", str(self.repo), "init", "-q"])
         command(["git", "-C", str(self.repo), "add", "marker", "sub/flake.nix", "sub/flake.lock"])
         self.d = Daemon()
@@ -465,7 +470,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
 
     def write_flake(self, marker):
         (self.project / "flake.nix").write_text(
-            TEMPLATE.replace("NIXPKGS", self.nixpkgs)
+            TEMPLATE.replace("NIXPKGS", self.nixpkgs_url)
             .replace('DEV_MARKER = "@MARKER@";', "DEV_MARKER = builtins.readFile ../marker;"))
 
     def test_subdirectory_flake_uses_files_outside_its_directory(self):
@@ -474,7 +479,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
         (self.repo / "marker").write_text("changed")
         flake = (self.project / "flake.nix").read_text().replace(
             "inputs.nixpkgs.url",
-            f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
+            f'inputs.extra = {{ url = "path:{self.tools}"; flake = false; }};\n  inputs.nixpkgs.url')
         (self.project / "flake.nix").write_text(flake)
         n = self.send(self.terminal, "goblin devshell refresh --lock")
         record = self.pending_refresh()
@@ -543,7 +548,7 @@ class DevShellFlakeRunTests(DevShellRefreshTests):
                               "    in {")
         flake = flake.replace("      devShells.x86_64-linux.default", APPS, 1)
         (self.project / "flake.nix").write_text(
-            flake.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", marker)
+            flake.replace("NIXPKGS", self.nixpkgs_url).replace("@MARKER@", marker)
             .replace("@REPO@", str(self.outside)).replace("@REV@", self.rev))
 
     def test_apps_and_packages_of_the_trusted_generation_run_with_arguments(self):
@@ -650,15 +655,15 @@ class DevShellDiffTests(DevShellRefreshTests):
         lock = (self.project / "flake.lock").read_text()
         flake = (self.project / "flake.nix").read_text().replace(
             "inputs.nixpkgs.url",
-            f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
+            f'inputs.extra = {{ url = "path:{self.tools}"; flake = false; }};\n  inputs.nixpkgs.url')
         (self.project / "flake.nix").write_text(flake)
         output, code = self.run_in("goblin devshell diff")
         self.assertEqual(code, 1, output)
         self.assertIn("does not lock everything flake.nix uses", output)
         output, code = self.run_in("goblin devshell diff --lock", timeout=300)
         self.assertEqual(code, 0, output)
-        self.assertIn(f"ATTENTION ! new input 'extra' from path:{self.nixpkgs}", output)
-        self.assertIn(f"INPUTS    [A] extra path:{self.nixpkgs}", output)
+        self.assertIn(f"ATTENTION ! new input 'extra' from path:{self.tools}", output)
+        self.assertIn(f"INPUTS    [A] extra path:{self.tools}", output)
         self.assertEqual((self.project / "flake.lock").read_text(), lock)
         self.assertEqual(self.d.permissions(), [])
 
@@ -688,7 +693,7 @@ for _name in dir(DevShellRefreshTests):
 
 
 DOCKER_FLAKE = """{
-  inputs.nixpkgs.url = "path:NIXPKGS";
+  inputs.nixpkgs.url = "NIXPKGS";
   outputs = { nixpkgs, ... }:
     let
       pkgs = nixpkgs.legacyPackages.x86_64-linux;
@@ -721,7 +726,7 @@ class DevShellDockerTests(test_docker.DockerTests):
         self.project = self.root / "project"
         self.project.mkdir()
         self.write_flake(added=False)
-        command(["nix", "flake", "lock", f"path:{self.project}"])
+        lock_flake(self.project)
         command(["git", "-C", str(self.project), "init", "-q"])
         command(["git", "-C", str(self.project), "add", "flake.nix", "flake.lock"])
         params = {"name": "plain", "configuration": self.d.manifest, "key": uuid.uuid4().hex,
@@ -738,7 +743,7 @@ class DevShellDockerTests(test_docker.DockerTests):
 
     def write_flake(self, added):
         (self.project / "flake.nix").write_text(
-            DOCKER_FLAKE.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", self.marker)
+            DOCKER_FLAKE.replace("NIXPKGS", self.nixpkgs_url).replace("@MARKER@", self.marker)
             .replace("@ADDED@", "true" if added else "false"))
 
     def output(self, text, timeout=300):

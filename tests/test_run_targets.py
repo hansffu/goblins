@@ -12,7 +12,7 @@ import uuid
 
 from build_support import fixture_app
 from daemon_support import Daemon, RPC, frame, receive
-from support import FLAKE, command
+from support import command, lock_flake, pinned_nixpkgs
 from terminal_support import Terminal
 
 
@@ -578,14 +578,12 @@ class RunTargetTests(RunTargetFixture):
 
     def test_member_shares_the_owners_dev_shell_generation(self):
         from test_devshell import TEMPLATE
-        nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
-                           f'(builtins.getFlake "{FLAKE}").inputs.nixpkgs.outPath'])
         project = self.root / "project"
         project.mkdir()
         flake = lambda marker: (project / "flake.nix").write_text(
-            TEMPLATE.replace("NIXPKGS", nixpkgs).replace("@MARKER@", marker))
+            TEMPLATE.replace("NIXPKGS", pinned_nixpkgs()[0]).replace("@MARKER@", marker))
         flake("original")
-        command(["nix", "flake", "lock", f"path:{project}"])
+        lock_flake(project)
         command(["git", "-C", str(project), "init", "-q"])
         command(["git", "-C", str(project), "add", "flake.nix", "flake.lock"])
         result = subprocess.run([str(self.app), "--state-dir", str(self.d.state), "run", "coordinator",

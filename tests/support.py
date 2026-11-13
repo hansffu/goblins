@@ -55,6 +55,29 @@ def command(args):
     return result.stdout.strip()
 
 
+
+def pinned_nixpkgs():
+    """This repository's locked nixpkgs: the flake URL naming it and its lock node."""
+    lock = json.loads((HERE / "flake.lock").read_text())
+    node = lock["nodes"][lock["nodes"][lock["root"]]["inputs"]["nixpkgs"]]
+    original = node["original"]
+    return f"github:{original['owner']}/{original['repo']}/{original['rev']}", node
+
+
+def lock_flake(directory):
+    """Lock a test flake whose input `nixpkgs` is pinned_nixpkgs()'s URL.
+
+    Its lock node is copied from this repository's flake.lock, so Nix finds
+    the pinned source in the store by its hash, offline and without hashing
+    the tree on every command as it does for a path: input. Nix locks any
+    other inputs."""
+    _, node = pinned_nixpkgs()
+    (Path(directory) / "flake.lock").write_text(json.dumps({
+        "nodes": {"nixpkgs": {"locked": node["locked"], "original": node["original"]},
+                  "root": {"inputs": {"nixpkgs": "nixpkgs"}}},
+        "root": "root", "version": 7}, indent=2) + "\n")
+    command(["nix", "flake", "lock", "--offline", f"path:{directory}"])
+
 def request(**updates):
     return {"id": "r1", "package": "jq", "reason": "test", **updates}
 
