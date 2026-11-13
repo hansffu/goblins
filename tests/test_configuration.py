@@ -24,11 +24,13 @@ class ConfigurationTests(unittest.TestCase):
             incompatible = root / "incompatible.json"
             config = json.loads(Path(d.manifest).read_text()); config["helper_api"] = 999
             incompatible.write_text(json.dumps(config))
-            for path, expected, name in [(root / "missing", "cannot open configuration", "fishy"),
+            for index, (path, expected, name) in enumerate([(root / "missing", "cannot open configuration", "fishy"),
                                          (malformed, "invalid configuration", "fishy"), (fifo, "regular file", "fishy"),
                                          (root, "regular file", "fishy"), (oversized, "exceeds 1 MiB", "fishy"),
-                                         (d.manifest, "unknown goblin", "missing"), (incompatible, "incompatible", "fishy")]:
-                launch = d.start(name, path, wait=False)
+                                         (d.manifest, "unknown goblin", "missing"), (incompatible, "incompatible", "fishy")]):
+                # A failed launch keeps its agent name until its runtime has
+                # stopped, so a random name could still hold "snikk" below.
+                launch = d.start(name, path, wait=False, agent_name=f"rejected-{index}")
                 record = d.wait(lambda: (r if (r := d.get(launch["session"]))["state"] == "failed" else None))
                 self.assertIn(expected, record["detail"])
             with self.assertRaises(ValueError): d.start("fishy", "relative.json")
