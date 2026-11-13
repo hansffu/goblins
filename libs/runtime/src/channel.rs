@@ -443,6 +443,9 @@ mod tests {
         }
         panic!("frame not delivered");
     }
+    /// Callers hold `no_forks()` from creating the pipe: a fork in a concurrent
+    /// test copies the write end until the child executes, and the read would
+    /// then see `WouldBlock` instead of end of file.
     fn eof(reader: &mut File) {
         let mut b = [0];
         assert_eq!(
@@ -453,6 +456,7 @@ mod tests {
     }
     #[test]
     fn fragmented_and_coalesced_frames_keep_descriptor_ownership() {
+        let _no_forks = goblins_unix::no_forks();
         let (mut sender, receiver) = UnixStream::pair().unwrap();
         let mut receiver = Channel::new(receiver).unwrap();
         let (mut r1, w1) = pipe();
@@ -505,6 +509,7 @@ mod tests {
     }
     #[test]
     fn short_writes_resume_and_send_descriptors_once() {
+        let _no_forks = goblins_unix::no_forks();
         let (left, right) = UnixStream::pair().unwrap();
         let size: libc::c_int = 4096;
         assert_eq!(
@@ -543,6 +548,7 @@ mod tests {
     }
     #[test]
     fn eof_and_protocol_errors_close_all_descriptors() {
+        let _no_forks = goblins_unix::no_forks();
         for kind in 0..7 {
             let (mut sender, receiver) = UnixStream::pair().unwrap();
             let mut receiver = Channel::new(receiver).unwrap();
@@ -597,6 +603,7 @@ mod tests {
     }
     #[test]
     fn a_later_frame_cannot_borrow_a_misattached_descriptor() {
+        let _no_forks = goblins_unix::no_forks();
         let (mut sender, stream) = UnixStream::pair().unwrap();
         let mut receiver = Channel::new(stream).unwrap();
         let (mut reader, writer) = pipe();
@@ -632,6 +639,7 @@ mod tests {
 
     #[test]
     fn descriptor_attached_after_its_frames_first_byte_is_refused() {
+        let _no_forks = goblins_unix::no_forks();
         let (mut sender, stream) = UnixStream::pair().unwrap();
         let mut receiver = Channel::new(stream).unwrap();
         let (mut reader, writer) = pipe();
@@ -658,6 +666,7 @@ mod tests {
 
     #[test]
     fn full_queue_returns_ownership_and_error_drains_pending_output() {
+        let _no_forks = goblins_unix::no_forks();
         let (mut peer, stream) = UnixStream::pair().unwrap();
         let mut channel = Channel::new(stream).unwrap();
         let value = json!({"fd":{"$fd":0}});
@@ -681,6 +690,7 @@ mod tests {
     }
     #[test]
     fn ancillary_truncation_closes_every_installed_descriptor() {
+        let _no_forks = goblins_unix::no_forks();
         let (sender, stream) = UnixStream::pair().unwrap();
         let mut receiver = Channel::new(stream).unwrap();
         let (mut reader, writer) = pipe();
@@ -694,6 +704,7 @@ mod tests {
     }
     #[test]
     fn peer_close_drains_unsent_descriptors() {
+        let _no_forks = goblins_unix::no_forks();
         let (peer, stream) = UnixStream::pair().unwrap();
         let mut channel = Channel::new(stream).unwrap();
         let (mut reader, writer) = pipe();
