@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import fcntl
+import json
 import multiprocessing
 import os
 from pathlib import Path
@@ -135,6 +136,28 @@ def parallel_suite(suite, jobs, cache, failfast):
     return results
 
 
+def record_timings(cache, results, total, jobs):
+    """Merge this run's group and test times into the cache's timing record.
+
+    The record sits beside last-run/, which each run deletes, so the next run
+    can still read it. A subset run keeps the entries it did not touch."""
+    path = cache / "timings.json"
+    try:
+        timings = json.loads(path.read_text())
+        if not (isinstance(timings, dict) and isinstance(timings.get("groups"), dict)
+                and isinstance(timings.get("tests"), dict)):
+            raise ValueError
+    except (OSError, ValueError):
+        timings = {"groups": {}, "tests": {}}
+    for result in results:
+        timings["groups"][result["module"]] = result["elapsed"]
+        timings["tests"].update((name, seconds) for seconds, name in result["timings"])
+    timings["total"], timings["jobs"] = total, jobs
+    temporary = path.with_name(f".timings.{os.getpid()}.json")
+    temporary.write_text(json.dumps(timings, indent=1, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
 def print_durations(timings, fixtures, count):
     if count <= 0:
         return
@@ -177,6 +200,7 @@ def main():
                     directory.unlink()
                 elif directory.exists():
                     shutil.rmtree(directory)
+            (cache / "timings.json").unlink(missing_ok=True)
             # Leave the lock inode in place so a competing invocation cannot
             # acquire a newly-created lock while this one is still held.
             print(f"Released fixture roots and removed launchers/logs in {cache}. "
@@ -214,7 +238,9 @@ def main():
             tests = sum(r["tests"] for r in results)
             skipped = sum(r["skipped"] for r in results)
             ok = all(r["ok"] for r in results)
-            print(f"\nRan {tests} tests in {time.monotonic()-started:.3f}s\n"
+            total = time.monotonic() - started
+            record_timings(cache, results, total, args.jobs)
+            print(f"\nRan {tests} tests in {total:.3f}s\n"
                   f"{'OK' if ok else 'FAILED'} (skipped={skipped})", flush=True)
             print_durations([t for r in results for t in r["timings"]],
                             [t for r in results for t in r["fixtures"]], args.durations)

@@ -71,6 +71,18 @@ class RunnerTests(unittest.TestCase):
             self.assertIn(name + "-child-output", log)
             self.assertIn("OK", log)
 
+    def test_parallel_runs_record_and_merge_timings(self):
+        self.module("probe_a", "self.assertTrue(True)")
+        self.module("probe_b", "self.assertTrue(True)")
+        self.run_runner("--jobs", "2", "probe_a", "probe_b")
+        timings = json.loads((self.cache / "timings.json").read_text())
+        self.assertEqual(set(timings["groups"]), {"probe_a", "probe_b"})
+        self.assertEqual(set(timings["tests"]), {"probe_a.Probe.test_probe", "probe_b.Probe.test_probe"})
+        self.assertEqual(timings["jobs"], 2)
+        self.run_runner("--jobs", "2", "probe_a")
+        merged = json.loads((self.cache / "timings.json").read_text())
+        self.assertEqual(set(merged["groups"]), {"probe_a", "probe_b"})
+
     def test_workers_use_the_adapter_reported_by_cargo(self):
         self.env["GOBLINS_CODEX_ADAPTER"] = "/stale/adapter"
         self.env["GOBLINS_SUPERVISOR_RUNTIME"] = "/stale/scope-runtime"
@@ -120,13 +132,15 @@ class RunnerTests(unittest.TestCase):
         outside = self.directory / "retained-store-output"
         outside.write_text("keep")
         (self.cache / "roots" / "root").symlink_to(outside)
+        (self.cache / "timings.json").write_text("{}")
         lock = self.cache / "run.lock"
         lock.touch()
         inode = lock.stat().st_ino
         self.run_runner("--clean-cache")
         self.assertEqual(outside.read_text(), "keep")
         self.assertEqual(lock.stat().st_ino, inode)
-        self.assertTrue(all(not (self.cache / name).exists() for name in ("roots", "apps", "last-run")))
+        self.assertTrue(all(not (self.cache / name).exists()
+                            for name in ("roots", "apps", "last-run", "timings.json")))
 
     def test_overlapping_selectors_execute_each_case_once(self):
         for jobs in (1, 4):

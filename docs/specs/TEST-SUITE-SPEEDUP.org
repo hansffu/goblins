@@ -118,7 +118,7 @@ The per-group lines (=[PASS] <group>: N tests, S s=) go to stdout; the per-test 
 
 * Tasks
 
-** TODO Task 1: Record timings on every run
+** DONE Task 1: Record timings on every run
 
 The later tasks are judged by numbers, and Task 5 needs last run's durations. Today the runner prints the slowest tests to stderr and keeps nothing.
 
@@ -136,7 +136,7 @@ Interfaces:
 
 Steps:
 
-- [ ] *Step 1: Write the failing test* in =tests/test_runner.py=, next to =test_two_workers_overlap_and_keep_complete_module_logs=, using the existing =self.module= and =self.run_runner= helpers.
+- [X] *Step 1: Write the failing test* in =tests/test_runner.py=, next to =test_two_workers_overlap_and_keep_complete_module_logs=, using the existing =self.module= and =self.run_runner= helpers.
 
   #+begin_src python
   def test_parallel_runs_record_and_merge_timings(self):
@@ -152,10 +152,10 @@ Steps:
       self.assertEqual(set(merged["groups"]), {"probe_a", "probe_b"})
   #+end_src
 
-- [ ] *Step 2: Run it and see it fail.* Run =nix develop -c python3 tests/run.py -j 1 test_runner=. Expected: the new test fails with =FileNotFoundError= for =timings.json=.
-- [ ] *Step 3: Implement* the write at the end of the ~args.jobs > 1~ branch of =main=, from the =results= list (=r["module"]=, =r["elapsed"]=, =r["timings"]=).
-- [ ] *Step 4: Run* =nix develop -c just test-feature infrastructure=. Expected: PASS.
-- [ ] *Step 5: Review, then commit* as "Record per-group and per-test timings for each test run".
+- [X] *Step 2: Run it and see it fail.* Run =nix develop -c python3 tests/run.py -j 1 test_runner=. Expected: the new test fails with =FileNotFoundError= for =timings.json=.
+- [X] *Step 3: Implement* the write at the end of the ~args.jobs > 1~ branch of =main=, from the =results= list (=r["module"]=, =r["elapsed"]=, =r["timings"]=).
+- [X] *Step 4: Run* =nix develop -c just test-feature infrastructure=. Expected: PASS.
+- [X] *Step 5: Review, then commit* as "Record per-group and per-test timings for each test run".
 
 ** TODO Task 2: Stop running one dev-shell test twice
 
