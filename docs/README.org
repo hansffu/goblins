@@ -17,6 +17,7 @@ The [[file:../README.org][top-level README]] is for users. This directory holds 
 | [[file:specs/SUPERVISOR-REFACTOR.org][specs/SUPERVISOR-REFACTOR.org]] | Completed runtime cutover, phased history and final gate evidence |
 | [[file:specs/SANDBOX-ACCESS.org][specs/SANDBOX-ACCESS.org]]     | =goblins exec=, TRAMP and the sandbox editor                            |
 | [[file:specs/CHILDREN-AND-RAIDS.org][specs/CHILDREN-AND-RAIDS.org]] | Child configurations and raids                                          |
+| [[file:specs/TEST-SUITE-SPEEDUP.org][specs/TEST-SUITE-SPEEDUP.org]] | Measured test-suite timings and the proposed plan to shorten the gate |
 | [[file:specs/TODO.org][specs/TODO.org]]               | Open work                                                               |
 | [[file:adr/][adr/]]                         | Architecture decision records                                           |
 | [[file:../emacs/README.org][emacs/README.org]]             | Emacs frontend reference and its checks                                 |

@@ -1,0 +1,400 @@
+#+title: Plan: a faster test suite
+#+date: 2026-11-13
+
+Status: proposed. Nothing in this plan is implemented. The measurements were taken on 2026-11-13 at commit =ac83ec6=.
+
+* Goal
+
+Cut the wall time of the merge gate (=just test-merge=), and of the Python integration stage in particular, without removing coverage or isolation.
+
+The time is not in daemons or sandboxes; it is in Nix. Every Nix command that names the pinned nixpkgs through a =path:= flake reference re-hashes the whole 469 MB nixpkgs tree (about 2.7 s) before it evaluates anything. Package grants and dev-shell operations each run several such commands, so they dominate the suite. The plan removes that cost first (one product change, one test-fixture change), removes fixed waits and one duplicated test, and only then retunes the scheduler, because the same hashing is what makes parallel workers contend on disk I/O.
+
+* How to work through this plan
+
+Work through the tasks in order, one task per change. Each task is its own reviewed change and its own commit, following =AGENTS.md=: review by a goblin of the other model, commit only after the reviewer has no findings, =just test-merge= before merge. Steps are checkboxes; tick them as they are done.
+
+Tasks 5 to 9 each start with a decision the user must make. Do not start them without that answer.
+
+* Measured baseline
+
+Machine: 32 cores, 30 GiB RAM, Nix 2.34. Commands ran inside =nix develop= with ~GOBLINS_TEST_CODEX=1~, as the merge gate does.
+
+** Stage times
+
+| Stage          | Command                                                    | Warm  | Cold (first run after a Rust change) |
+|----------------+------------------------------------------------------------+-------+--------------------------------------|
+| Rust           | =just test-rust=                                           | 60 s  | several minutes of compiling         |
+| Python         | =python3 tests/run.py -j 2=                                | 926 s | 1115 s                               |
+| Emacs ERT      | =just test-emacs=                                          | 3 s   | 3 s                                  |
+| Nix checks     | =just test-nix=                                            | 7 s   | about 520 s                          |
+| Packaged smoke | =tests/run.py --packaged test_server test_exec test_roots= | 14 s  | 14 s                                 |
+
+The whole cold gate took 30 min 24 s at 29% of one CPU, and the warm gate 17 min 17 s at 33%: the machine is almost idle while the suite waits on Nix and on fixed sleeps.
+
+** Cost of the primitives
+
+Measured warm, with a script against the =shell-goblins= fixture.
+
+| Operation                                                           | Time                         |
+|---------------------------------------------------------------------+------------------------------|
+| Start a daemon (=Daemon()=)                                         | 0.05 s                       |
+| Start a goblin (=d.start()=)                                        | 0.15 s                       |
+| Run a raid member (=d.member()=)                                    | 0.45 s                       |
+| =goblins exec <id> -- true=                                         | 0.09 s                       |
+| Stop a goblin                                                       | 0.1 s                        |
+| Stop a daemon with live goblins (=d.close()=)                       | 0.16 s                       |
+| *Grant one package (=hello=), request to =ready=*                   | *5.9 s*                      |
+| =nix eval 'path:<nixpkgs>#legacyPackages.x86_64-linux.hello'=       | 2.9 s                        |
+| The same attribute without a flake reference (see Task 6)           | 0.29 s                       |
+| =nix flake metadata 'path:<nixpkgs>'= (no evaluation at all)        | 2.7 s                        |
+| =nix print-dev-env= on the dev-shell test flake                     | 5.1 s, then 3.2 s per repeat |
+| =nix print-dev-env= on a flake with no nixpkgs input (see Task 7)   | 2.2 s first build, then 0.03 s |
+
+Conclusions that follow from this table:
+
+- Restarting daemons and sandboxes per test costs about 0.4 s per test. Sharing daemons between tests would save well under a minute over the whole suite and would give up isolation. *Do not do it.*
+- A package grant costs 6 s because it runs =nix eval= twice and =nix build= once, each paying the 2.7 s nixpkgs hash. About 20 test modules grant packages.
+- A dev-shell launch or refresh runs four or five Nix commands against a flake whose nixpkgs input is =path:<nixpkgs>=, so each costs 12–20 s. The 30 dev-shell tests account for about 355 s of group time.
+- [[file:../RESULTS.org][RESULTS.org]] ("Four-worker opt-in and I/O investigation") recorded I/O pressure of 50% =full= during the suite and only a 16% gain from four workers. The nixpkgs hashing is the likely source: every hash streams 469 MB through the Nix daemon.
+
+** Slowest groups
+
+Python stage, cold run unless marked warm; fixture builds excluded.
+
+| Group                                    | Tests | Group time  | Runs exclusively | Main cause                                                 |
+|------------------------------------------+-------+-------------+------------------+------------------------------------------------------------|
+| =test_devshell.DevShellRefreshTests=     |     9 | 150 s       | no               | Nix evaluation through =path:= nixpkgs                     |
+| =test_run_targets=                       |    19 | 122 s       | yes              | package grants; 89 s is =RaidMemberTests=, which needs no engine |
+| =test_docker=                            |    34 | 118 s       | yes              | 3.5 s per test, engine start; no single hot spot           |
+| =test_emacs=                             |     8 | 87 s        | yes              | one terminal-Emacs test takes 46 s                         |
+| =test_devshell.DevShellFlakeRunTests=    |     5 | 64 s        | no               | Nix evaluation                                             |
+| =test_recreate=                          |     8 | 60 s        | no               | package grants                                             |
+| =test_codex_native=                      |    17 | 55 s        | yes              | adapter polling intervals                                  |
+| =test_claude_config=                     |     7 | 50 s (warm) | no               | one =sleep(32)=, one =sleep(7)=                            |
+| =test_devshell.DevShellDiffTests=        |     4 | 50 s        | no               | Nix evaluation                                             |
+| =test_codex_config=                      |    11 | 44 s        | yes              |                                                            |
+| =test_daemon=                            |     8 | 38 s (warm) | no               | package grants                                             |
+| =test_devshell.DevShellSubdirectoryTests= |    3 | 40 s        | no               | Nix evaluation; one test is an unintended duplicate        |
+| =test_attach_handlers=                   |     7 | 34 s (warm) | no               | tests of 3 s protocol bounds                               |
+| =test_activity=                          |     1 | 31 s (warm) | no               | waits for the real 30 s activity expiry                    |
+| =test_terminals=                         |    14 | 32 s        | no               | one =sleep(13)=                                            |
+
+The exclusive groups run one at a time after everything else and add up to about 470 s, which is half of the warm Python stage (926 s).
+
+** Checked and not worth changing
+
+- =test_api_contract= (112 tests, 34 s), =test_scope_process=, =test_cleanup=, =test_supervised=, =test_server=, =test_exec=: already fast.
+- =test_docker=: 34 tests at 3.5 s each. Each needs its own engine and storage; there is no fixed wait to remove.
+- =test_attach_handlers= =sleep(4)= and the 5 s =nix-store= wrapper, =test_claude_config= =sleep(7)=: they test 3 s and 5 s bounds that are constants of older frontends. Leave them.
+- =test_claude_config.test_spawn_message_wakes_indented_claude_composer= =sleep(32)=: it proves the adapter's 10 s heartbeat outlives the daemon's 30 s expiry. Shortening it needs both intervals to be configurable inside the sandbox. Leave it unless the user asks; it runs in the parallel pool and costs one worker 32 s.
+- =test_daemon.ShutdownReapingTests= reruns two tests under a subreaper (7 s) on purpose.
+- Moving integration tests to unit tests: the slow tests are slow because of Nix, not because they are integration tests. No test was found whose assertions could move to a unit test without losing what it checks, apart from the activity expiry in Task 4, which already has a Rust unit test.
+
+** How to reproduce the baseline
+
+#+begin_src sh
+nix develop -c env GOBLINS_TEST_CODEX=1 python3 tests/run.py -j 2 --durations 1000 2> durations.txt
+#+end_src
+
+The per-group lines (=[PASS] <group>: N tests, S s=) go to stdout; the per-test list goes to stderr. Run it twice and use the second run: the first includes Nix fixture builds, listed at the end under "Nix fixture resolution".
+
+* Constraints for every task
+
+- Follow =AGENTS.md=: work inside =nix develop=; run one test runner at a time per checkout; pick tasks with =just test-plan --changed master=; run them with =just test-feature FEATURE...=; run =just test-merge= on the final candidate before merge.
+- Never fake a pass: do not remove assertions, disable cases or add retries, and preserve isolation for lifecycle, authority and cleanup checks. Every task below that removes or shortens something says exactly what and why; do nothing beyond it.
+- Do not raise Nix build concurrency to match test workers (=AGENTS.md=). Tasks 8 and 9 ask the user before touching any concurrency default.
+- Keep =tests/features.toml= current; =just test-feature-check= must pass after every task.
+- Any RPC API change needs =docs/API.org= in the same change. No task here changes an RPC method; Task 6 changes how the catalogue is evaluated, not the API.
+- Write documentation prose with one line per paragraph.
+- Changes to =tests/run.py=, =tests/tasks.py=, =tests/support.py=, =tests/build_support.py=, =tests/daemon_support.py=, =tests/features.toml=, =libs/supervisor/src/session.rs= and =packages/daemon/src/controller.rs= are "broad" in =tests/features.toml= and recommend =full=.
+
+* What a reviewer should check
+
+- A user's ~NIXPKGS_ALLOW_UNFREE=1~, =~/.config/nixpkgs/config.nix= or overlays must not change what the catalogue offers after Task 6. The unfree case is tested by =test_recreate=; Task 6 adds the environment case.
+- A catalogue =flake= value that is not =path:/nix/store/...= must keep working after Task 6, through the old code path.
+- After Task 5, a failing or missing timing file must not change which tests run, only their order.
+- After Task 7, at least one launch and one refresh must still evaluate a real nixpkgs =mkShell=, so a regression in handling real dev shells is still caught.
+- After Task 3, fish printing its "could not read response" warning must still fail the test.
+
+* Tasks
+
+** TODO Task 1: Record timings on every run
+
+The later tasks are judged by numbers, and Task 5 needs last run's durations. Today the runner prints the slowest tests to stderr and keeps nothing.
+
+Files:
+
+- Modify: =tests/run.py= (=parallel_suite=, =main=)
+- Test: =tests/test_runner.py=
+
+Interfaces:
+
+- Produces =<cache>/timings.json=, where =<cache>= is =build_support.cache_directory()=. It is written after every parallel run (=-j= above 1), whether the run passed or failed. Shape: ={"groups": {"<group name>": <elapsed seconds, float>}, "tests": {"<test id>": <seconds, float>}, "total": <float>, "jobs": <int>}=. Group names are exactly the keys =parallel_suite= already uses (=test_docker=, =test_devshell.DevShellRefreshTests=, ...).
+- The file lives beside =last-run/=, not inside it, because =last-run/= is deleted at the start of each run and Task 5 reads the previous file before the new one is written.
+- A run of a subset merges into the existing file: update the groups and tests that ran, keep the others. Write it atomically (write a temporary file in the same directory, then =os.replace=).
+- =--clean-cache= also removes =timings.json=; extend =test_cleanup_releases_only_fixture_cache_and_keeps_lock_inode= in =tests/test_runner.py= to create the file and assert it is gone.
+
+Steps:
+
+- [ ] *Step 1: Write the failing test* in =tests/test_runner.py=, next to =test_two_workers_overlap_and_keep_complete_module_logs=, using the existing =self.module= and =self.run_runner= helpers.
+
+  #+begin_src python
+  def test_parallel_runs_record_and_merge_timings(self):
+      self.module("probe_a", "self.assertTrue(True)")
+      self.module("probe_b", "self.assertTrue(True)")
+      self.run_runner("--jobs", "2", "probe_a", "probe_b")
+      timings = json.loads((self.cache / "timings.json").read_text())
+      self.assertEqual(set(timings["groups"]), {"probe_a", "probe_b"})
+      self.assertEqual(set(timings["tests"]), {"probe_a.Probe.test_probe", "probe_b.Probe.test_probe"})
+      self.assertEqual(timings["jobs"], 2)
+      self.run_runner("--jobs", "2", "probe_a")
+      merged = json.loads((self.cache / "timings.json").read_text())
+      self.assertEqual(set(merged["groups"]), {"probe_a", "probe_b"})
+  #+end_src
+
+- [ ] *Step 2: Run it and see it fail.* Run =nix develop -c python3 tests/run.py -j 1 test_runner=. Expected: the new test fails with =FileNotFoundError= for =timings.json=.
+- [ ] *Step 3: Implement* the write at the end of the ~args.jobs > 1~ branch of =main=, from the =results= list (=r["module"]=, =r["elapsed"]=, =r["timings"]=).
+- [ ] *Step 4: Run* =nix develop -c just test-feature infrastructure=. Expected: PASS.
+- [ ] *Step 5: Review, then commit* as "Record per-group and per-test timings for each test run".
+
+** TODO Task 2: Stop running one dev-shell test twice
+
+=DevShellSubdirectoryTests= inherits from =DevShellRefreshTests= and disables the inherited tests by name. =test_refresh_cannot_be_approved_before_its_preview= was added to the parent later and is missing from that list, so it runs in both classes (19.7 s each). The subdirectory class exists for two tests of its own; =DevShellFlakeRunTests= and =DevShellDiffTests= already disable every inherited test with a loop.
+
+Files:
+
+- Modify: =tests/test_devshell.py:442-452= (the eight ~test_... = None~ lines in =DevShellSubdirectoryTests=)
+
+Steps:
+
+- [ ] *Step 1: Replace the eight ~= None~ lines* with the same loop the two later classes use, placed after the class body (before ~APPS = ...~):
+
+  #+begin_src python
+  for _name in dir(DevShellRefreshTests):
+      if _name.startswith("test_") and _name not in DevShellSubdirectoryTests.__dict__:
+          setattr(DevShellSubdirectoryTests, _name, None)
+  #+end_src
+
+- [ ] *Step 2: Verify the selection.* Run =nix develop -c python3 tests/run.py -j 2 test_devshell.DevShellSubdirectoryTests=. Expected: =2 tests=, both passing (=test_subdirectory_flake_uses_files_outside_its_directory=, =test_launch_from_the_flake_directory_cannot_widen_access_to_the_repository=), about 20 s instead of 40 s.
+- [ ] *Step 3: Run* =nix develop -c just test-feature-check= and =nix develop -c just test-feature devshell=. Expected: PASS; the feature map still covers every test (the removed ID no longer exists, so nothing is unmapped).
+- [ ] *Step 4: Review, then commit* as "Run the refresh-preview test once, not again in the subdirectory class". Say in the review request that the removed case is an exact duplicate that still runs in =DevShellRefreshTests=.
+
+** TODO Task 3: Remove the 13 s sleep from the fish terminal test
+
+=tests/test_terminals.py= =FishTerminalTests.test_fish_in_a_terminal_nobody_attached_to_is_not_left_waiting_for_an_answer= sleeps 13 s and then checks that fish printed no warning. Fish asks its terminal for device attributes at startup; with no answer it blocks for ten seconds, prints "could not read response", and only then reads input. So the same thing can be observed without a fixed wait: a command typed at once is answered quickly only if the query was answered, and the warning, if any, is on screen before that command's output.
+
+Files:
+
+- Modify: =tests/test_terminals.py:387-405=
+
+Steps:
+
+- [ ] *Step 1: Rewrite the test body* to this order, keeping the two existing =assertNotIn= checks and the final status check:
+  1. =terminals.create= as now.
+  2. ~started = time.monotonic()~, then =terminals.send= with ="echo ready"= and =terminals.wait= for =^ready$= with ="timeout": 20000=, and =assertEqual(result["status"], "matched")=.
+  3. =self.assertLess(time.monotonic() - started, 8, "fish waited for a terminal answer")=. Eight seconds is below fish's ten-second give-up and far above a normal start.
+  4. =terminals.read= with ="source": "recent"=, then the two =assertNotIn= checks on that text.
+- [ ] *Step 2: Prove the test still detects the fault.* Find where the supervisor's emulated terminal answers the device-attributes query (in =libs/supervisor/src/terminals.rs=; search for the reply =62;22c=, which the unit test near line 931 expects). Temporarily disable that answer, rebuild, and run =nix develop -c python3 tests/run.py -j 1 test_terminals.FishTerminalTests=. Expected: FAIL, either on the 8 s bound or on the warning text. Restore the code and state in the review request that this check was done. If the test passes with the answer disabled, stop: the rewrite is not equivalent, keep the sleep and report that.
+- [ ] *Step 3: Run* =nix develop -c just test-feature terminals=. Expected: PASS, with the fish test under 2 s.
+- [ ] *Step 4: Review, then commit* as "Observe fish's terminal answer by its response time instead of a fixed wait".
+
+** TODO Task 4: Make the activity expiry configurable for tests
+
+=tests/test_activity.py= waits for the daemon to expire a goblin's reported activity, which takes the real 30 s (=packages/daemon/src/controller.rs:3415=, =expire_activity=). The expiry logic already has a Rust unit test (in =controller.rs=, the test that calls =d.expire_activity(at + Duration::from_secs(31))=). What the Python test adds is that the expiry is published to subscribers. That does not need thirty seconds.
+
+Files:
+
+- Modify: =packages/daemon/src/controller.rs= (=expire_activity= and a new private function)
+- Modify: =tests/test_activity.py=
+- Modify: =docs/USAGE.org=. Line 144 documents =GOBLINS_EVALUATION_TIMEOUT=; find where agent activity or the =agent_state= expiry is described and add one sentence naming =GOBLINS_ACTIVITY_EXPIRY=, in the same style. If activity expiry is described nowhere in =docs/USAGE.org=, add the sentence to the paragraph at line 144.
+
+Interfaces:
+
+- Produces the environment variable =GOBLINS_ACTIVITY_EXPIRY=, whole seconds, read by the daemon. Unset or unparsable means 30. Follow the existing pattern exactly: =evaluation_limit()= in =libs/supervisor/src/session.rs:103-109=.
+
+Steps:
+
+- [ ] *Step 1: Add* =fn activity_expiry() -> std::time::Duration= to =controller.rs=, reading the variable once (a =std::sync::OnceLock<Duration>=, since =expire_activity= runs on every tick), and use it in =expire_activity= in place of =Duration::from_secs(30)=. The existing Rust unit test passes 31 s and must keep passing unchanged.
+- [ ] *Step 2: Change the Python test* to start its daemon with ~Daemon(env={**os.environ, "GOBLINS_ACTIVITY_EXPIRY": "2"})~ (add =import os=), and change =sub.peer.settimeout(35)= to =sub.peer.settimeout(10)=. Change nothing else. The =select(..., .2)= check that a heartbeat publishes nothing stays valid with a 2 s expiry.
+- [ ] *Step 3: Run* =nix develop -c just test-rust= and =nix develop -c python3 tests/run.py -j 1 test_activity=. Expected: PASS, the Python test in about 3 s instead of 31 s.
+- [ ] *Step 4: Run* =nix develop -c just test-plan --changed master=, then the recommended tasks (expect =full=, because =controller.rs= is broad).
+- [ ] *Step 5: Review, then commit* as "Let tests shorten the activity expiry".
+
+** TODO Task 5: Let raid-member tests run in the parallel pool, and schedule long groups first
+
+*User decision needed first.* =tests/run.py= runs all of =test_run_targets= exclusively because some of its tests start Docker engines. =RaidMemberTests= (10 tests, 89 s) uses the plain =shell-goblins= fixture: no scope and no engine. Ask the user: "May =test_run_targets.RaidMemberTests= run alongside other groups? =RunTargetTests= and =RunTargetDockerTests= stay exclusive." Proceed only on yes.
+
+Separately, ordinary groups are submitted in discovery (alphabetical) order, so a long group that starts late leaves one worker idle at the end. Submitting the longest known groups first packs the two workers better.
+
+Files:
+
+- Modify: =tests/run.py= (=EXCLUSIVE_MODULES=, =EXCLUSIVE_CLASSES=, the grouping line in =parallel_suite=, the =ordinary= iterator)
+- Test: =tests/test_runner.py=
+
+Interfaces:
+
+- Consumes =<cache>/timings.json= from Task 1 (the =groups= mapping).
+- Produces ~CLASS_GROUPED_MODULES = {"test_devshell", "test_run_targets"}~: modules whose classes are scheduled as separate groups. The grouping line becomes ~group = name if module in CLASS_GROUPED_MODULES or name in EXCLUSIVE_CLASSES else module~.
+- =test_run_targets= leaves =EXCLUSIVE_MODULES=; =EXCLUSIVE_CLASSES= gains ="test_run_targets.RunTargetTests"= and ="test_run_targets.RunTargetDockerTests"=.
+- Ordering: read =timings.json= before the run (a missing or invalid file means an empty mapping; never an error). Sort the ordinary groups by recorded elapsed time, longest first; groups with no record go first, in their existing order, since their cost is unknown. Exclusive groups keep their current order.
+
+Steps:
+
+- [ ] *Step 1: Write failing tests* in =tests/test_runner.py=:
+  - =test_long_groups_are_submitted_first=: create probes =probe_a=, =probe_b=, =probe_c=, each with the body =(root/'<name>.start').write_text(str(time.monotonic_ns()))\ntime.sleep(.5)=; create =self.cache= and pre-write =self.cache / "timings.json"= with ={"groups": {"probe_a": 1, "probe_b": 9, "probe_c": 5}, "tests": {}, "total": 15, "jobs": 2}=; run =self.run_runner("--jobs", "2", "probe_a", "probe_b", "probe_c")=; read the three start files as integers and assert that =probe_b= and =probe_c= both started before =probe_a=. With two workers the first two submissions start at once and the third waits half a second, so the assertion does not depend on timing luck.
+  - =test_a_corrupt_timing_file_changes_nothing_but_order=: write =not json= to =timings.json=, run two probes, assert =Ran 2 tests= and exit code 0.
+  - Read =test_four_workers_overlap_before_exclusive_groups_run= in the same file (it uses a synthetic =test_docker= module as the exclusive stand-in) and add a sibling test built the same way, so that a class listed in =EXCLUSIVE_CLASSES= of a class-grouped module still runs alone while a sibling class of the same module overlaps with another group. The stand-ins must be named after real entries (=test_run_targets= with classes =RaidMemberTests= and =RunTargetTests=), as the existing test does for =test_docker=.
+- [ ] *Step 2: Run them and see them fail.* Run =nix develop -c python3 tests/run.py -j 1 test_runner=.
+- [ ] *Step 3: Implement* the three changes listed under Interfaces.
+- [ ] *Step 4: Run* =nix develop -c just test-feature infrastructure raids=. Expected: PASS, and in the output =test_run_targets.RaidMemberTests= is reported before the exclusive groups begin.
+- [ ] *Step 5: Run =RaidMemberTests= under contention five times* to check it is stable in the pool: =for i in 1 2 3 4 5; do nix develop -c python3 tests/run.py -j 4 test_run_targets.RaidMemberTests test_daemon test_recreate test_raids || break; done=. Expected: five passes. If any run fails, do not add a retry or a longer timeout: report the failure and leave =RaidMemberTests= exclusive, keeping only the ordering change.
+- [ ] *Step 6: Review, then commit* as "Schedule long test groups first and run raid-member tests in the pool".
+
+** TODO Task 6: Evaluate catalogue packages without re-hashing nixpkgs
+
+*User decision needed first.* This is a product change with a security-relevant evaluation mode, so it needs the user's approval and probably an ADR. Present the following and wait.
+
+What happens today: =libs/supervisor/src/catalog.rs= builds the installable =<flake>#legacyPackages.x86_64-linux.<name>= and runs =nix eval= on it for the preview, =nix eval= again on approval, and =nix build= (=libs/supervisor/src/session.rs=, =fn build=). The =flake= value is always =path:${pkgs.path}= (=packages/daemon/wrapper.nix:27=, =tests/fixtures.nix:15=). Nix 2.34 hashes the whole tree for a =path:= reference on every command: 2.7 s before evaluation starts, measured with =nix flake metadata=, and adding =?narHash== does not avoid it. A real user waits about 3 s for every package preview and 6 s for a grant for the same reason.
+
+Proposed: when =flake= is =path:= followed by a store path, evaluate the same package set directly from that store path:
+
+#+begin_src sh
+nix --extra-experimental-features 'nix-command flakes' eval --impure --option restrict-eval true \
+    -I nixpkgs=<store path> --json \
+    --expr '(import <nixpkgs> { system = "x86_64-linux"; config = {}; overlays = []; }).<name>' \
+    --apply '<the existing selection function>'
+#+end_src
+
+Measured on this machine against the same nixpkgs: 0.29 s instead of 2.9 s, the same output path for =hello=, =unrar= still refused as unfree with ~NIXPKGS_ALLOW_UNFREE=1~ in the environment, =builtins.getEnv "HOME"= returns the empty string and =builtins.pathExists /etc/passwd= is false (restricted evaluation hides the environment and every path outside =-I=). =nix build ... --expr= with the same options took 0.31 s for an already-built package.
+
+Known differences the user should weigh: =--impure= is required for =<nixpkgs>= lookup, with =restrict-eval= as the guard instead of pure flake evaluation; without =restrict-eval=, plain =--impure= does let =NIXPKGS_ALLOW_UNFREE= through; Nix's error text for a missing attribute changes (see Step 4); the nixpkgs flake adds version metadata to =lib= that a plain import lacks, which did not change any output path tested.
+
+Files:
+
+- Modify: =libs/supervisor/src/catalog.rs= (=attribute=, =select=, =preview=)
+- Modify: =libs/supervisor/src/session.rs= (=fn build=, about line 1362)
+- Modify: =tests/test_recreate.py= (Step 5)
+- Create or modify: an ADR under =docs/adr/= if the user asks for one
+
+Interfaces:
+
+- Produces, in =catalog.rs=: ~pub enum Source<'a> { Store(&'a Path), Flake(&'a str) }~ and ~pub fn source(flake: &str) -> Source<'_>~. =source= returns =Store= only when the value is =path:= followed by an absolute path directly under =/nix/store/= with no =?= or =#=; anything else is =Flake= and keeps today's behaviour byte for byte.
+- Produces: ~pub fn installable(flake: &str, name: &str, output: Option<&str>, command: &mut Command)~, which appends the arguments that name the package. =select= passes =output: None=; =preview= (its =build --dry-run=) and =Session::build= pass =Some(&selection.output)=.
+  - =Flake= source: one argument, =attribute(flake, name)= with =^<output>= appended when an output is given. This is exactly what the three call sites build today.
+  - =Store= source, no output (the =nix eval= in =select=): ~--impure --option restrict-eval true -I nixpkgs=<path> --expr '(import <nixpkgs> { system = "x86_64-linux"; config = {}; overlays = []; }).<name>'~. The expression must end with =.<name>=: the fake =nix= wrappers in =tests/test_recreate.py:147= and =tests/test_responsiveness.py:24= recognise an evaluation by the word =eval= plus an argument ending in or containing =.<name>=. Do not edit those wrappers.
+  - =Store= source with an output (both =nix build= calls): the same options, ~--expr 'import <nixpkgs> { system = "x86_64-linux"; config = {}; overlays = []; }'~, then the positional argument =<name>^<output>=. This form was verified by hand (=cowsay^out= built, =openssl^bin= resolved). The build wrappers in =tests/test_responsiveness.py:25= match on =build= and the absence of =--dry-run=, so they are unaffected.
+- =name= is already validated by =package_name= before it reaches the expression; keep that check first and add a unit test that a name with a quote or a space is rejected before any command is built.
+
+Steps:
+
+- [ ] *Step 1: Write failing Rust unit tests* in =catalog.rs=: =source("path:/nix/store/abc-source")= is =Store=; ~source("path:/nix/store/abc-source?narHash=x")~, =source("github:NixOS/nixpkgs")=, =source("path:/home/user/nixpkgs")= and =source("path:/nix/store/../etc")= are =Flake=; =installable= for a store source yields arguments containing =restrict-eval=, =-I=, ~nixpkgs=/nix/store/abc-source~ and an expression ending in =.hello=; for a flake source it yields exactly one argument equal to =attribute(flake, "hello")=.
+- [ ] *Step 2: Run* =nix develop -c cargo test --locked -p goblins-supervisor catalog=. Expected: FAIL to compile (the functions do not exist).
+- [ ] *Step 3: Implement* =Source=, =source= and =installable=, and switch the three call sites.
+- [ ] *Step 4: Fix the missing-attribute message.* =tests/test_recreate.py:113= asserts that the skip reason contains =does not provide attribute=, which is the flake wording; the expression form says =attribute '<name>' missing=. Do not change the assertion. In =select=, when the source is =Store= and Nix's error contains =attribute '= and =' missing=, return the error =cannot resolve package '<name>' from pinned nixpkgs: the pinned nixpkgs does not provide attribute '<name>'=. Add a Rust unit test for that mapping on a captured error string.
+- [ ] *Step 5: Add the environment regression* to =tests/test_recreate.py=, as a new test beside =test_packages_that_fail_are_skipped_with_reasons_and_tried_again=: start the daemon with ~env={**os.environ, "NIXPKGS_ALLOW_UNFREE": "1"}~ passed through ~self.daemon(record("rec-env", packages={"approved": ["unrar", "hello"], "denied": []}), env=...)~, recreate, and assert ~r["packages"] == ["hello"]~ and that the reason for =unrar= contains =unfree=. Add its ID to =tests/features.toml= if =just test-feature-check= reports it unmapped (it should not: =test_recreate= is mapped as a module).
+- [ ] *Step 6: Run* =nix develop -c just test-rust=, then =nix develop -c python3 tests/run.py -j 2 test_recreate test_daemon test_responsiveness test_roots test_tui test_history test_connected test_integration=. Expected: PASS. Compare =timings.json= with the baseline: =test_daemon= 38 s, =test_recreate= 60 s, =test_connected= 23 s should each fall by more than half.
+- [ ] *Step 7: Run* =nix develop -c just test-plan --changed master= and the recommended tasks (expect =full=).
+- [ ] *Step 8: Review, then commit* as "Evaluate catalogue packages from the pinned store path". Report the measured before and after for one grant.
+
+** TODO Task 7: Give dev-shell tests a flake that does not import nixpkgs
+
+*User decision needed first.* This changes what most dev-shell tests evaluate. Ask: "May the dev-shell tests use a hand-written dev shell built from a static bash instead of nixpkgs =mkShellNoCC=, keeping =DevShellTests= (six launch tests), the Docker dev-shell tests and the worktree dev-shell test on real nixpkgs?" Proceed only on yes.
+
+Why: the test flake's only input is =path:<nixpkgs>=. Every Nix command the daemon runs for a launch or a refresh (=flake metadata=, =derivation show=, =build --dry-run=, =print-dev-env=, =eval=; see =libs/supervisor/src/devshell.rs:120,210,263,564,699,795=) re-hashes nixpkgs, and the evaluator's cache is private to each goblin (=libs/supervisor/src/evaluator.rs=), so nothing is reused between tests. A flake whose only input is a 1.8 MB static bash evaluates in 0.03 s. This was tried by hand:
+
+#+begin_src nix
+{
+  inputs.tools = { url = "path:@TOOLS@"; flake = false; };
+  outputs = { tools, ... }: {
+    devShells.x86_64-linux.default = derivation {
+      name = "mini-dev-shell";
+      system = "x86_64-linux";
+      outputs = [ "out" ];
+      builder = "${tools}/bin/bash";
+      args = [ "-c" "echo > $out" ];
+      DEV_MARKER = "@MARKER@";
+      shellHook = ''
+        echo "hook-ran in $PWD"
+        export HOOK_VAR="from-hook-$DEV_MARKER"
+      '';
+    };
+  };
+}
+#+end_src
+
+=nix print-dev-env --json= on it returned =DEV_MARKER= and =shellHook= correctly (~outputs = [ "out" ]~ is required: Nix's =get-env.sh= iterates =$outputs=). =@TOOLS@= was the store path of =pkgsStatic.bash= from the pinned nixpkgs. The daemon has not been run against this flake.
+
+This task is a spike first. Stop after Step 3 and report if it does not work; do not bend the daemon to fit the fixture.
+
+Files:
+
+- Modify: =tests/checks.nix= (add a check attribute =static-bash= equal to =pkgs.pkgsStatic.bash=, so =fixture_path= can root it)
+- Modify: =tests/test_devshell.py= (=TEMPLATE=, =DevShellTests.setUpClass=, =write_flake=, and the =write_flake= overrides)
+
+Interfaces:
+
+- Produces =MINI_TEMPLATE= in =tests/test_devshell.py= (the flake above) and a class attribute ~cls.tools = fixture_path(FLAKE + "#checks.x86_64-linux.static-bash")~.
+- =DevShellRefreshTests=, =DevShellSubdirectoryTests= and =DevShellDiffTests= use =MINI_TEMPLATE=. =DevShellTests=, =DevShellSkillTests=, =DevShellFlakeRunTests= (its apps use =pkgs.writeShellScriptBin= and =builtins.fetchGit=), =DevShellDockerTests= and =test_worktrees.DevShellWorktreeTests= keep =TEMPLATE= with real nixpkgs.
+- Coverage that must remain on real nixpkgs, because the mini flake cannot show it: =DevShellRefreshTests.test_approved_refresh_enters_the_edited_flake_and_keeps_running_environment= stays on =TEMPLATE=. Do that by moving that single test into a small class =DevShellRealRefreshTests(DevShellRefreshTests)= that uses =TEMPLATE= and disables every other inherited test with the loop from Task 2, and disable the test in the mini-flake class so it does not run twice.
+
+Steps:
+
+- [ ] *Step 1: Spike one test.* Add the =static-bash= check and =MINI_TEMPLATE=, point only =test_denied_refresh_changes_nothing= at it, and run =nix develop -c python3 tests/run.py -j 1 test_devshell.DevShellRefreshTests.test_denied_refresh_changes_nothing=. Baseline for this test: 20.4 s.
+- [ ] *Step 2: Check what the daemon needs from the dev shell.* If the launch fails, read the goblin's =detail= and the session log. Likely needs, each fixable inside the fixture only: a =PATH= (add ~PATH = "${tools}/bin";~), =hello= on the path (only =DevShellTests= uses it, and that class keeps nixpkgs), the static bash's reference to =ncurses= (a =path:= input is copied without references, which is fine for a static binary).
+- [ ] *Step 3: Decide.* If the spiked test passes and takes under 8 s, continue. If it needs a change outside =tests/=, or is not at least twice as fast, revert the spike and report the numbers and the obstacle; the task ends there.
+- [ ] *Step 4: Convert the three classes*, test by test, running each class after converting it: =nix develop -c python3 tests/run.py -j 2 test_devshell.DevShellRefreshTests= (then =DevShellSubdirectoryTests=, =DevShellDiffTests=). Tests that edit the flake text with ~.replace('DEV_MARKER = "original";', ...)~ keep working because the marker line is the same. =test_lock_adds_new_inputs_and_writes_the_approved_lock= and the subdirectory test add an input =extra= with =path:{self.nixpkgs}=: change those to =path:{self.tools}= so they do not bring the hashing back, and update the asserted =source= strings to match. =test_refresh_never_builds_import_from_derivation_before_approval= uses =pkgs.runCommand=: keep that one test on =TEMPLATE=, in the same way as the real refresh test.
+- [ ] *Step 5: Run* =nix develop -c just test-feature devshell worktrees docker= and =nix develop -c just test-feature-check=. Expected: PASS, with the same number of distinct tests as before this task. Record the new group times from =timings.json= in the review request (baseline: Refresh 150 s, Diff 50 s, Subdirectory 40 s before Task 2).
+- [ ] *Step 6: Review, then commit* as "Evaluate most dev-shell tests against a flake without nixpkgs".
+
+** TODO Task 8: Re-measure, then retune workers and exclusivity
+
+*User decision needed first.* =AGENTS.md= and [[file:../RESULTS.org][RESULTS.org]] chose two workers, two Cargo jobs and =--max-jobs 1 --cores 2= deliberately, after measuring I/O pressure. Tasks 6 and 7 remove the likely source of that pressure. This task only measures and proposes; changing a default needs the user's yes, with the numbers in front of them.
+
+Files:
+
+- Modify (only after approval): =tests/run.py= (=--jobs= choices and default), =tests/tasks.py= (=--jobs=), =tests/rust_tests.py= (~--test-threads=2~), the =justfile= comment on the =test= recipe, =AGENTS.md= if a stated number changes
+- Modify: =docs/RESULTS.org= (add a section with the measurements, one line per paragraph)
+
+Steps:
+
+- [ ] *Step 1: Measure the Python stage at 2, 4 and 8 workers*, twice each, warm, nothing else running: temporarily allow 8 in the =choices= of =--jobs= in a local, uncommitted edit, run ~nix develop -c env GOBLINS_TEST_CODEX=1 python3 tests/run.py -j N~, and note the =Ran N tests in S= line and whether anything failed. While each runs, sample =/proc/pressure/io= and =/proc/pressure/cpu= every ten seconds.
+- [ ] *Step 2: Measure the exclusive tail.* From =timings.json=, add up the exclusive groups (=test_docker=, =test_scopes=, =test_cleanup=, =test_emacs=, =test_codex_config=, =test_codex_native=, the two =test_run_targets= classes, =test_devshell.DevShellDockerTests=). If the tail is more than a third of the stage, try running the two frontend groups (=test_codex_config=, =test_codex_native=) in the pool, five runs at the candidate worker count. A single failure means they stay exclusive.
+- [ ] *Step 3: Measure Rust tests* at =--test-threads= 2, 4 and 8: ~nix develop -c python3 tests/rust_tests.py --workspace -j 2 -- --test-threads=N~, three runs each. The controller suite (264 tests) took 34 s of the 60 s stage at two threads.
+- [ ] *Step 4: Write the results* into =docs/RESULTS.org= as a new top-level section at the top (the file is newest first), with a table like the existing "Four-worker opt-in" section, and propose defaults. Present them to the user and stop.
+- [ ] *Step 5 (after approval): Change the approved defaults*, update the runner tests in =tests/test_runner.py= that name worker counts, run =just test-merge=, review, and commit as "Raise default test workers to N".
+
+** TODO Task 9: Shorten the Nix check stage after a Rust change
+
+*User decision needed at Step 2.* After any change under =libs/=, the Nix stage rebuilt twelve separate Rust derivations (=checks.rust-*= in =tests/checks.nix:375-386=, built by =nix/builders/rust.nix=), one at a time with two cores, each compiling its dependencies from nothing and running that crate's tests again in release mode: about 520 s. The same derivations are inputs of the test fixtures, so the first Python run after a Rust change also waited 92 s for =shell-goblins.config= before any test could start.
+
+This task is investigation with a decision at the end; the options trade different things and the user chooses.
+
+Files:
+
+- Modify (depending on the option chosen): =nix/builders/rust.nix=, =tests/checks.nix=, =justfile= (=test-nix=)
+
+Steps:
+
+- [ ] *Step 1: Measure per derivation.* On a scratch branch, add a one-line doc comment to =libs/api/src/lib.rs= so every crate is invalidated, then build each of the twelve =rust-*= attributes under =time=, for example =time nix develop -c nix build --max-jobs 1 --cores 2 --print-build-logs .#checks.x86_64-linux.rust-daemon=. Record the build time and, from the log, how much of it is =cargo test=. Discard the scratch branch afterwards.
+- [ ] *Step 2: Present these options with the numbers, and stop:*
+  1. Raise =test-nix= to =--max-jobs 4 --cores 4=. It runs after the test workers have finished, so it does not compete with them; this reads the constraint in =AGENTS.md= narrowly. Expected: close to a fourfold cut for a full rebuild.
+  2. Split build from test: the package derivations used by fixtures get ~doCheck = false~, and =checks.rust-*= become ~package.overrideAttrs { doCheck = true; }~. Fixtures stop waiting for crate tests, so the first Python run after a Rust change starts sooner; the gate compiles some crates twice.
+  3. Share compiled dependencies between the twelve derivations (one dependency-only derivation used as a Cargo target seed). Largest gain, largest change to =nix/builders/rust.nix=; it must keep the property the comments there describe, that a package's source contains only itself and its declared libraries.
+- [ ] *Step 3 (after the user chooses): Implement the chosen option* as its own change, run =just test-merge=, review, and commit.
+
+* Expected result
+
+These are estimates from the measured per-test times; Task 1 exists so each one is checked rather than assumed.
+
+| Task | Change                                                         | Estimated saving                              |
+|------+----------------------------------------------------------------+-----------------------------------------------|
+|    2 | duplicate dev-shell test                                       | 20 s                                          |
+|    3 | fish sleep                                                     | 12 s                                          |
+|    4 | activity expiry                                                | 28 s                                          |
+|    5 | =RaidMemberTests= out of the exclusive tail, long groups first | up to 89 s of wall time off the serial tail   |
+|    6 | catalogue evaluation, about 5 s per grant                      | 250–400 s                                     |
+|    7 | dev-shell tests without nixpkgs                                | 150–200 s                                     |
+|    8 | more workers once I/O contention is gone                       | to be measured                                |
+|    9 | Nix stage after a Rust change                                  | up to 400 s of the 520 s                      |
+
+The savings for Tasks 2 to 7 are sums of test time in the Python stage. Wall time falls by less than the sum, since two workers share the parallel part: expect the warm Python stage to go from 926 s to roughly half after Tasks 2–7, before any change to worker counts.
