@@ -111,7 +111,7 @@ The per-group lines (=[PASS] <group>: N tests, S s=) go to stdout; the per-test 
 * What a reviewer should check
 
 - A user's ~NIXPKGS_ALLOW_UNFREE=1~, =~/.config/nixpkgs/config.nix= or overlays must not change what the catalogue offers after Task 6. The unfree case is tested by =test_recreate=; Task 6 adds the environment case.
-- A catalogue =flake= value that is not =path:/nix/store/...= must keep working after Task 6, through the old code path.
+- A catalogue whose runtime manifest has no =nixpkgs= entry must keep working after Task 6, through the old code path, even when its =flake= is a =path:/nix/store/...= reference: a store-backed flake can offer =legacyPackages= without being an importable nixpkgs tree.
 - After Task 5, a failing or missing timing file must not change which tests run, only their order.
 - After Task 7, at least one launch and one refresh must still evaluate a real nixpkgs =mkShell=, so a regression in handling real dev shells is still caught.
 - After Task 3, fish printing its "could not read response" warning must still fail the test.
@@ -256,7 +256,9 @@ Steps:
 
 What happens today: =libs/supervisor/src/catalog.rs= builds the installable =<flake>#legacyPackages.x86_64-linux.<name>= and runs =nix eval= on it for the preview, =nix eval= again on approval, and =nix build= (=libs/supervisor/src/session.rs=, =fn build=). The =flake= value is always =path:${pkgs.path}= (=packages/daemon/wrapper.nix:27=, =tests/fixtures.nix:15=). Nix 2.34 hashes the whole tree for a =path:= reference on every command: 2.7 s before evaluation starts, measured with =nix flake metadata=, and adding =?narHash== does not avoid it. A real user waits about 3 s for every package preview and 6 s for a grant for the same reason.
 
-Proposed: when =flake= is =path:= followed by a store path, evaluate the same package set directly from that store path:
+Proposed: the runtime manifest names the pinned nixpkgs source explicitly, in a new optional =nixpkgs= entry beside =flake=, and when that entry is present the daemon evaluates the same package set directly from that store path. The location of =flake= alone must not decide this: the manifest accepts any flake reference, and a store-backed flake can expose =legacyPackages= without a compatible =default.nix=, or with different packages. Without the entry, nothing changes.
+
+The direct evaluation is:
 
 #+begin_src sh
 nix --extra-experimental-features 'nix-command flakes' eval --impure --option restrict-eval true \
@@ -271,6 +273,8 @@ Known differences the user should weigh: =--impure= is required for =<nixpkgs>= 
 
 Files:
 
+- Modify: =libs/runtime/src/config.rs= (both structs that have ~pub flake: String~, near lines 31 and 456: add ~#[serde(default)] pub nixpkgs: Option<PathBuf>~), and every place that copies =flake= from one to the other or into a session (=libs/supervisor/src/config.rs:149=, =libs/supervisor/src/worker.rs:395=; find the rest with =grep -rn '\.flake' libs packages=)
+- Modify: =packages/daemon/wrapper.nix:27= and =tests/fixtures.nix:15= (add ~nixpkgs = "${pkgs.path}";~ beside =flake=)
 - Modify: =libs/supervisor/src/catalog.rs= (=attribute=, =select=, =preview=)
 - Modify: =libs/supervisor/src/session.rs= (=fn build=, about line 1362)
 - Modify: =tests/test_recreate.py= (Step 5)
@@ -278,8 +282,9 @@ Files:
 
 Interfaces:
 
-- Produces, in =catalog.rs=: ~pub enum Source<'a> { Store(&'a Path), Flake(&'a str) }~ and ~pub fn source(flake: &str) -> Source<'_>~. =source= returns =Store= only when the value is =path:= followed by an absolute path directly under =/nix/store/= with no =?= or =#=; anything else is =Flake= and keeps today's behaviour byte for byte.
-- Produces: ~pub fn installable(flake: &str, name: &str, output: Option<&str>, command: &mut Command)~, which appends the arguments that name the package. =select= passes =output: None=; =preview= (its =build --dry-run=) and =Session::build= pass =Some(&selection.output)=.
+- Produces the optional runtime-manifest entry =nixpkgs=: an absolute store path of a nixpkgs source tree. It is optional so that existing manifests stay valid; the manifest structs reject unknown fields, so the field must be added before any manifest carries it. If the manifest format is described in =docs/USAGE.org= or a spec, document the entry there in the same change.
+- Produces, in =catalog.rs=: ~pub enum Source<'a> { Store(&'a Path), Flake(&'a str) }~ and ~pub fn source<'a>(flake: &'a str, nixpkgs: Option<&'a Path>) -> Source<'a>~. =source= returns =Store= only when =nixpkgs= is given and is an absolute path directly under =/nix/store/=; otherwise it returns =Flake=, which keeps today's behaviour byte for byte. It never inspects =flake= to decide.
+- Produces: ~pub fn installable(source: &Source<'_>, name: &str, output: Option<&str>, command: &mut Command)~, which appends the arguments that name the package. =select= passes =output: None=; =preview= (its =build --dry-run=) and =Session::build= pass =Some(&selection.output)=.
   - =Flake= source: one argument, =attribute(flake, name)= with =^<output>= appended when an output is given. This is exactly what the three call sites build today.
   - =Store= source, no output (the =nix eval= in =select=): ~--impure --option restrict-eval true -I nixpkgs=<path> --expr '(import <nixpkgs> { system = "x86_64-linux"; config = {}; overlays = []; }).<name>'~. The expression must end with =.<name>=: the fake =nix= wrappers in =tests/test_recreate.py:147= and =tests/test_responsiveness.py:24= recognise an evaluation by the word =eval= plus an argument ending in or containing =.<name>=. Do not edit those wrappers.
   - =Store= source with an output (both =nix build= calls): the same options, ~--expr 'import <nixpkgs> { system = "x86_64-linux"; config = {}; overlays = []; }'~, then the positional argument =<name>^<output>=. This form was verified by hand (=cowsay^out= built, =openssl^bin= resolved). The build wrappers in =tests/test_responsiveness.py:25= match on =build= and the absence of =--dry-run=, so they are unaffected.
@@ -287,11 +292,16 @@ Interfaces:
 
 Steps:
 
-- [ ] *Step 1: Write failing Rust unit tests* in =catalog.rs=: =source("path:/nix/store/abc-source")= is =Store=; ~source("path:/nix/store/abc-source?narHash=x")~, =source("github:NixOS/nixpkgs")=, =source("path:/home/user/nixpkgs")= and =source("path:/nix/store/../etc")= are =Flake=; =installable= for a store source yields arguments containing =restrict-eval=, =-I=, ~nixpkgs=/nix/store/abc-source~ and an expression ending in =.hello=; for a flake source it yields exactly one argument equal to =attribute(flake, "hello")=.
+- [ ] *Step 1: Write failing Rust unit tests.* In =libs/runtime/src/config.rs=: a manifest without =nixpkgs= still parses and yields =None=; one with ~"nixpkgs": "/nix/store/abc-source"~ yields that path. In =catalog.rs=: =source("path:/nix/store/abc-source", None)= is =Flake= (the location of the flake alone never selects the store form); =source("path:/nix/store/abc-source", Some("/nix/store/abc-source"))= is =Store=; =source(f, Some("/home/user/nixpkgs"))=, =source(f, Some("/nix/store/../etc"))= and =source(f, Some("nix/store/abc"))= are =Flake=; =installable= for a store source yields arguments containing =restrict-eval=, =-I=, ~nixpkgs=/nix/store/abc-source~ and an expression ending in =.hello=; for a flake source it yields exactly one argument equal to =attribute(flake, "hello")=.
 - [ ] *Step 2: Run* =nix develop -c cargo test --locked -p goblins-supervisor catalog=. Expected: FAIL to compile (the functions do not exist).
-- [ ] *Step 3: Implement* =Source=, =source= and =installable=, and switch the three call sites.
+- [ ] *Step 3: Implement* the manifest entry, =Source=, =source= and =installable=, switch the three call sites, and set =nixpkgs= in =packages/daemon/wrapper.nix= and =tests/fixtures.nix=.
 - [ ] *Step 4: Fix the missing-attribute message.* =tests/test_recreate.py:113= asserts that the skip reason contains =does not provide attribute=, which is the flake wording; the expression form says =attribute '<name>' missing=. Do not change the assertion. In =select=, when the source is =Store= and Nix's error contains =attribute '= and =' missing=, return the error =cannot resolve package '<name>' from pinned nixpkgs: the pinned nixpkgs does not provide attribute '<name>'=. Add a Rust unit test for that mapping on a captured error string.
 - [ ] *Step 5: Add the environment regression* to =tests/test_recreate.py=, as a new test beside =test_packages_that_fail_are_skipped_with_reasons_and_tried_again=: start the daemon with ~env={**os.environ, "NIXPKGS_ALLOW_UNFREE": "1"}~ passed through ~self.daemon(record("rec-env", packages={"approved": ["unrar", "hello"], "denied": []}), env=...)~, recreate, and assert ~r["packages"] == ["hello"]~ and that the reason for =unrar= contains =unfree=. Add its ID to =tests/features.toml= if =just test-feature-check= reports it unmapped (it should not: =test_recreate= is mapped as a module).
+- [ ] *Step 5b: Add the custom-catalogue regression* to =tests/test_recreate.py= or =tests/test_daemon.py=, whichever already grants a package with the least setup. It proves that a store-backed flake that is not nixpkgs is still served through the flake path.
+  1. Write a flake in a temporary directory whose only output is ~legacyPackages.x86_64-linux.probe~, with no =default.nix=. Read the =--apply= function in =select= first to see which attributes a package must have, and give =probe= exactly those. Build it from the static bash of Task 7 as a locked =path:= input with ~flake = false~ (run =nix flake lock= in the test), not from nixpkgs.
+  2. Add the directory to the store (=nix store add-path=) and build the manifest the way =tests/test_attach_handlers.py:41-43= does: load =self.d.manifest= as JSON, set =flake= to =path:<that store path>=, delete the =nixpkgs= key, write it to a temporary file and start the goblin with ~manifest=~.
+  3. Request =probe= and assert the grant reaches =ready=; request =hello= and assert it is refused because this catalogue does not provide it.
+  If this cannot be built without changing product code or shared fixtures, stop and report what blocked it; the Rust tests of Step 1 are then the only cover for this case and the user decides whether that is enough.
 - [ ] *Step 6: Run* =nix develop -c just test-rust=, then =nix develop -c python3 tests/run.py -j 2 test_recreate test_daemon test_responsiveness test_roots test_tui test_history test_connected test_integration=. Expected: PASS. Compare =timings.json= with the baseline: =test_daemon= 38 s, =test_recreate= 60 s, =test_connected= 23 s should each fall by more than half.
 - [ ] *Step 7: Run* =nix develop -c just test-plan --changed master= and the recommended tasks (expect =full=).
 - [ ] *Step 8: Review, then commit* as "Evaluate catalogue packages from the pinned store path". Report the measured before and after for one grant.
@@ -343,6 +353,11 @@ Steps:
 - [ ] *Step 2: Check what the daemon needs from the dev shell.* If the launch fails, read the goblin's =detail= and the session log. Likely needs, each fixable inside the fixture only: a =PATH= (add ~PATH = "${tools}/bin";~), =hello= on the path (only =DevShellTests= uses it, and that class keeps nixpkgs), the static bash's reference to =ncurses= (a =path:= input is copied without references, which is fine for a static binary).
 - [ ] *Step 3: Decide.* If the spiked test passes and takes under 8 s, continue. If it needs a change outside =tests/=, or is not at least twice as fast, revert the spike and report the numbers and the obstacle; the task ends there.
 - [ ] *Step 4: Convert the three classes*, test by test, running each class after converting it: =nix develop -c python3 tests/run.py -j 2 test_devshell.DevShellRefreshTests= (then =DevShellSubdirectoryTests=, =DevShellDiffTests=). Tests that edit the flake text with ~.replace('DEV_MARKER = "original";', ...)~ keep working because the marker line is the same. =test_lock_adds_new_inputs_and_writes_the_approved_lock= and the subdirectory test add an input =extra= with =path:{self.nixpkgs}=: change those to =path:{self.tools}= so they do not bring the hashing back, and update the asserted =source= strings to match. =test_refresh_never_builds_import_from_derivation_before_approval= uses =pkgs.runCommand=: keep that one test on =TEMPLATE=, in the same way as the real refresh test.
+- [ ] *Step 4b: Migrate everything that names the =nixpkgs= input.* =MINI_TEMPLATE= has no input of that name, so these would break or silently stop testing anything. Find them all with =grep -n 'nixpkgs' tests/test_devshell.py= and handle each one in a class that uses =MINI_TEMPLATE=:
+  - Lock edits: =test_hand_edited_lock_is_rejected_until_restored= (line 314) and =test_diff_rejects_a_hand_edited_lock= (line 644) set ~edited["nodes"]["nixpkgs"]["locked"]["narHash"]~. Change the key to ="tools"=, and the assertion at line 319 from =nodes.nixpkgs.locked.narHash= to =nodes.tools.locked.narHash=. First confirm that the lock written for the mini flake has =nodes.tools.locked.narHash=; if it does not, keep these two tests on =TEMPLATE=.
+  - New-input insertions: lines 333, 485 and 656 insert =inputs.extra= by replacing the text =inputs.nixpkgs.url=, which does not occur in =MINI_TEMPLATE=, so the replacement would do nothing and the test would run against an unedited flake. Use an anchor that exists in the template the class uses (=inputs.tools= for =MINI_TEMPLATE=), and after each such =.replace= assert that the text changed (~self.assertNotEqual(edited, original)~), so a missing anchor fails the test.
+  - Diagnostics: the assertions at lines 346, 348, 664 and 665 name the new input's source; update them to =path:{self.tools}= together with the insertion they check. Keep every assertion; change only the expected input name and path.
+  - Line 136 (=test_launch_rejects_inputs_missing_from_the_lock=) is in =DevShellTests=, which keeps =TEMPLATE=: leave it.
 - [ ] *Step 5: Run* =nix develop -c just test-feature devshell worktrees docker= and =nix develop -c just test-feature-check=. Expected: PASS, with the same number of distinct tests as before this task. Record the new group times from =timings.json= in the review request (baseline: Refresh 150 s, Diff 50 s, Subdirectory 40 s before Task 2).
 - [ ] *Step 6: Review, then commit* as "Evaluate most dev-shell tests against a flake without nixpkgs".
 
@@ -365,7 +380,7 @@ Steps:
 
 ** TODO Task 9: Shorten the Nix check stage after a Rust change
 
-*User decision needed at Step 2.* After any change under =libs/=, the Nix stage rebuilt twelve separate Rust derivations (=checks.rust-*= in =tests/checks.nix:375-386=, built by =nix/builders/rust.nix=), one at a time with two cores, each compiling its dependencies from nothing and running that crate's tests again in release mode: about 520 s. The same derivations are inputs of the test fixtures, so the first Python run after a Rust change also waited 92 s for =shell-goblins.config= before any test could start.
+*User decision needed at Step 2.* In the cold measurement, where none of them was cached, the Nix stage built twelve separate Rust derivations (=checks.rust-*= in =tests/checks.nix:375-386=, built by =nix/builders/rust.nix=), one at a time with two cores, each compiling its dependencies from nothing and running that crate's tests again in release mode: about 520 s. The same derivations are inputs of the test fixtures, so the first Python run after a Rust change also waited 92 s for =shell-goblins.config= before any test could start.
 
 This task is investigation with a decision at the end; the options trade different things and the user chooses.
 
@@ -375,7 +390,10 @@ Files:
 
 Steps:
 
-- [ ] *Step 1: Measure per derivation.* On a scratch branch, add a one-line doc comment to =libs/api/src/lib.rs= so every crate is invalidated, then build each of the twelve =rust-*= attributes under =time=, for example =time nix develop -c nix build --max-jobs 1 --cores 2 --print-build-logs .#checks.x86_64-linux.rust-daemon=. Record the build time and, from the log, how much of it is =cargo test=. Discard the scratch branch afterwards.
+- [ ] *Step 1: Measure per derivation, for two cases.* The Rust derivations see only their own sources and declared libraries (=nix/builders/rust.nix=), so one edit does not invalidate all twelve: =rust-unix= and =rust-jsonrpc=, for example, do not contain =libs/api=. Measure both cases on a scratch branch, and before timing anything record =nix eval --raw .#checks.x86_64-linux.<attr>.drvPath= for all twelve =rust-*= attributes before and after the edit, so the table says which derivations changed.
+  1. Full rebuild: add a comment line to the root =Cargo.toml=, which every derivation's source includes. All twelve derivation paths must differ; if any does not, find an edit that changes all of them before going on.
+  2. API-change rebuild, the common case: add a one-line doc comment to =libs/api/src/lib.rs= instead. List which derivations changed and which stayed cached.
+  For each case, build every changed attribute under =time=, for example =time nix develop -c nix build --max-jobs 1 --cores 2 --print-build-logs .#checks.x86_64-linux.rust-daemon=, and record the build time and, from the log, how much of it is =cargo test=. Report the two cases separately; never add a cached derivation's time to a rebuild total. Discard the scratch branch afterwards.
 - [ ] *Step 2: Present these options with the numbers, and stop:*
   1. Raise =test-nix= to =--max-jobs 4 --cores 4=. It runs after the test workers have finished, so it does not compete with them; this reads the constraint in =AGENTS.md= narrowly. Expected: close to a fourfold cut for a full rebuild.
   2. Split build from test: the package derivations used by fixtures get ~doCheck = false~, and =checks.rust-*= become ~package.overrideAttrs { doCheck = true; }~. Fixtures stop waiting for crate tests, so the first Python run after a Rust change starts sooner; the gate compiles some crates twice.
