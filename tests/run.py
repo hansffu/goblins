@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import fcntl
 import json
+import math
 import multiprocessing
 import os
 from pathlib import Path
@@ -16,13 +17,18 @@ from build_support import cache_directory, fixture_timings
 from support import HERE, cargo_artifacts, cases, rust_driver
 
 # Keep engines/native frontends exclusive. Ordinary modules stay intact;
-# dev-shell classes use private projects/daemons and may overlap, while their
-# Docker class remains exclusive. Class fixtures always stay in one worker.
+# classes of CLASS_GROUPED_MODULES use private projects/daemons and may overlap,
+# while their engine classes remain exclusive. Class fixtures always stay in
+# one worker.
 EXCLUSIVE_MODULES = {
-    "test_docker", "test_scopes", "test_cleanup", "test_run_targets",
+    "test_docker", "test_scopes", "test_cleanup",
     "test_emacs", "test_codex_config", "test_codex_native",
 }
-EXCLUSIVE_CLASSES = {"test_devshell.DevShellDockerTests", "test_host_commands.HostDockerAcceptance"}
+EXCLUSIVE_CLASSES = {
+    "test_devshell.DevShellDockerTests", "test_host_commands.HostDockerAcceptance",
+    "test_run_targets.RunTargetTests", "test_run_targets.RunTargetDockerTests",
+}
+CLASS_GROUPED_MODULES = {"test_devshell", "test_run_targets"}
 
 
 def exclusive(group):
@@ -74,12 +80,24 @@ def run_group(group, names, log_path, failfast):
                 "fixtures": list(fixture_timings), "log": log_path}
 
 
+def previous_timings(cache):
+    """Group times from the last runs; a missing or invalid record is empty."""
+    try:
+        groups = json.loads((cache / "timings.json").read_text())["groups"]
+        recorded = {name: float(seconds) for name, seconds in groups.items()}
+        if not all(math.isfinite(seconds) for seconds in recorded.values()):
+            raise ValueError("non-finite group time")
+        return recorded
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
+        return {}
+
+
 def parallel_suite(suite, jobs, cache, failfast):
     groups = {}
     for test in cases(suite):
         module = type(test).__module__
         name = module + "." + type(test).__qualname__
-        group = name if module == "test_devshell" or name in EXCLUSIVE_CLASSES else module
+        group = name if module in CLASS_GROUPED_MODULES or name in EXCLUSIVE_CLASSES else module
         groups.setdefault(group, []).append(test.id())
     logs = cache / "last-run"
     if logs.exists():
@@ -100,8 +118,13 @@ def parallel_suite(suite, jobs, cache, failfast):
 
     with ProcessPoolExecutor(max_workers=jobs, mp_context=multiprocessing.get_context("spawn")) as pool:
         pending = {}
-        ordinary = iter((module, names) for module, names in groups.items()
-                        if not exclusive(module))
+        # Longest recorded groups first, so a long group does not start last
+        # and leave the other workers idle. Unrecorded groups go first, in
+        # their discovery order, since their cost is unknown.
+        recorded = previous_timings(cache)
+        ordinary = iter(sorted(((module, names) for module, names in groups.items()
+                                if not exclusive(module)),
+                               key=lambda item: -recorded.get(item[0], float("inf"))))
 
         def submit_next():
             item = next(ordinary, None)

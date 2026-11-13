@@ -100,6 +100,9 @@ class RunnerTests(unittest.TestCase):
                 waiting = [f"probe_wait_{i}" for i in range(jobs - 1)]
                 for name in waiting:
                     self.module(name, "time.sleep(1)\nself.assertTrue(True)")
+                # The previous subtest's recorded times would reorder these
+                # groups; this test needs probe_later submitted last.
+                (self.cache / "timings.json").unlink(missing_ok=True)
                 result = self.run_runner("--jobs", str(jobs), "--failfast", "probe_fail",
                                          *waiting, "probe_later", code=1)
                 self.assertIn("deliberate-worker-failure", result.stderr)
@@ -124,6 +127,56 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("Ran 6 tests", result.stdout)
         self.assertIn("[PASS] test_docker", result.stdout)
         self.assertIn("[PASS] test_host_commands.HostDockerAcceptance", result.stdout)
+
+    def test_long_groups_are_submitted_first(self):
+        for name in ("probe_a", "probe_b", "probe_c"):
+            self.module(name, f"(root/'{name}.start').write_text(str(time.monotonic_ns()))\ntime.sleep(.5)")
+        self.cache.mkdir()
+        (self.cache / "timings.json").write_text(json.dumps(
+            {"groups": {"probe_a": 1, "probe_b": 9, "probe_c": 5}, "tests": {}, "total": 15, "jobs": 2}))
+        self.run_runner("--jobs", "2", "probe_a", "probe_b", "probe_c")
+        start = {name: int((self.directory / (name + ".start")).read_text())
+                 for name in ("probe_a", "probe_b", "probe_c")}
+        self.assertLess(start["probe_b"], start["probe_a"])
+        self.assertLess(start["probe_c"], start["probe_a"])
+
+    def test_a_corrupt_timing_file_changes_nothing_but_order(self):
+        self.module("probe_a", "self.assertTrue(True)")
+        self.module("probe_b", "self.assertTrue(True)")
+        self.cache.mkdir()
+        # Unparsable, too large for a float, and not finite.
+        for record in ("not json", '{"groups": {"probe_a": 1' + "0" * 400 + '}}',
+                       '{"groups": {"probe_a": 1e400}}', '{"groups": {"probe_a": NaN}}'):
+            with self.subTest(record=record[:40]):
+                (self.cache / "timings.json").write_text(record)
+                result = self.run_runner("--jobs", "2", "probe_a", "probe_b")
+                self.assertIn("Ran 2 tests", result.stdout)
+
+    def test_exclusive_classes_of_a_class_grouped_module_run_alone(self):
+        names = [f"probe_{i}" for i in range(3)]
+        # Three ordinary groups and the pooled raid-member class must all be
+        # running at once; the exclusive class of the same module only after.
+        for name in names:
+            self.module(name, f"(root/'started_{name}').touch()\n"
+                        "deadline=time.monotonic()+10\n"
+                        "while len(list(root.glob('started_*'))) < 4 and time.monotonic()<deadline: time.sleep(.01)\n"
+                        "self.assertEqual(len(list(root.glob('started_*'))),4)\n"
+                        f"(root/'finished_{name}').touch()")
+        (self.directory / "test_run_targets.py").write_text(
+            "import os,time,unittest\nfrom pathlib import Path\n"
+            "root=Path(os.environ['PROBE_DIRECTORY'])\n"
+            "class RaidMemberTests(unittest.TestCase):\n    def test_probe(self):\n"
+            "        (root/'started_raid').touch()\n"
+            "        deadline=time.monotonic()+10\n"
+            "        while len(list(root.glob('started_*'))) < 4 and time.monotonic()<deadline: time.sleep(.01)\n"
+            "        self.assertEqual(len(list(root.glob('started_*'))),4)\n"
+            "        (root/'finished_raid').touch()\n"
+            "class RunTargetTests(unittest.TestCase):\n    def test_probe(self):\n"
+            "        self.assertEqual(len(list(root.glob('finished_*'))),4)\n")
+        result = self.run_runner("--jobs", "4", "test_run_targets", *names)
+        self.assertIn("Ran 5 tests", result.stdout)
+        self.assertIn("[PASS] test_run_targets.RaidMemberTests", result.stdout)
+        self.assertIn("[PASS] test_run_targets.RunTargetTests", result.stdout)
 
     def test_cleanup_releases_only_fixture_cache_and_keeps_lock_inode(self):
         for name in ("roots", "apps", "last-run"):

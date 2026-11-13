@@ -220,7 +220,7 @@ Steps:
 - [X] *Step 4: Run* =nix develop -c just test-plan --changed master=, then the recommended tasks (expect =full=, because =controller.rs= is broad).
 - [X] *Step 5: Review, then commit* as "Let tests shorten the activity expiry".
 
-** TODO Task 5: Let raid-member tests run in the parallel pool, and schedule long groups first
+** DONE Task 5: Let raid-member tests run in the parallel pool, and schedule long groups first
 
 *User decision needed first.* =tests/run.py= runs all of =test_run_targets= exclusively because some of its tests start Docker engines. =RaidMemberTests= (10 tests, 89 s) uses the plain =shell-goblins= fixture: no scope and no engine. Ask the user: "May =test_run_targets.RaidMemberTests= run alongside other groups? =RunTargetTests= and =RunTargetDockerTests= stay exclusive." Proceed only on yes.
 
@@ -240,15 +240,15 @@ Interfaces:
 
 Steps:
 
-- [ ] *Step 1: Write failing tests* in =tests/test_runner.py=:
+- [X] *Step 1: Write failing tests* in =tests/test_runner.py=:
   - =test_long_groups_are_submitted_first=: create probes =probe_a=, =probe_b=, =probe_c=, each with the body =(root/'<name>.start').write_text(str(time.monotonic_ns()))\ntime.sleep(.5)=; create =self.cache= and pre-write =self.cache / "timings.json"= with ={"groups": {"probe_a": 1, "probe_b": 9, "probe_c": 5}, "tests": {}, "total": 15, "jobs": 2}=; run =self.run_runner("--jobs", "2", "probe_a", "probe_b", "probe_c")=; read the three start files as integers and assert that =probe_b= and =probe_c= both started before =probe_a=. With two workers the first two submissions start at once and the third waits half a second, so the assertion does not depend on timing luck.
   - =test_a_corrupt_timing_file_changes_nothing_but_order=: write =not json= to =timings.json=, run two probes, assert =Ran 2 tests= and exit code 0.
   - Read =test_four_workers_overlap_before_exclusive_groups_run= in the same file (it uses a synthetic =test_docker= module as the exclusive stand-in) and add a sibling test built the same way, so that a class listed in =EXCLUSIVE_CLASSES= of a class-grouped module still runs alone while a sibling class of the same module overlaps with another group. The stand-ins must be named after real entries (=test_run_targets= with classes =RaidMemberTests= and =RunTargetTests=), as the existing test does for =test_docker=.
-- [ ] *Step 2: Run them and see them fail.* Run =nix develop -c python3 tests/run.py -j 1 test_runner=.
-- [ ] *Step 3: Implement* the three changes listed under Interfaces.
-- [ ] *Step 4: Run* =nix develop -c just test-feature infrastructure raids=. Expected: PASS, and in the output =test_run_targets.RaidMemberTests= is reported before the exclusive groups begin.
-- [ ] *Step 5: Run =RaidMemberTests= under contention five times* to check it is stable in the pool: =for i in 1 2 3 4 5; do nix develop -c python3 tests/run.py -j 4 test_run_targets.RaidMemberTests test_daemon test_recreate test_raids || break; done=. Expected: five passes. If any run fails, do not add a retry or a longer timeout: report the failure and leave =RaidMemberTests= exclusive, keeping only the ordering change.
-- [ ] *Step 6: Review, then commit* as "Schedule long test groups first and run raid-member tests in the pool".
+- [X] *Step 2: Run them and see them fail.* Run =nix develop -c python3 tests/run.py -j 1 test_runner=.
+- [X] *Step 3: Implement* the three changes listed under Interfaces.
+- [X] *Step 4: Run* =nix develop -c just test-feature infrastructure raids=. Expected: PASS, and in the output =test_run_targets.RaidMemberTests= is reported before the exclusive groups begin.
+- [X] *Step 5: Run =RaidMemberTests= under contention five times* to check it is stable in the pool: =for i in 1 2 3 4 5; do nix develop -c python3 tests/run.py -j 4 test_run_targets.RaidMemberTests test_daemon test_recreate test_raids || break; done=. Expected: five passes. If any run fails, do not add a retry or a longer timeout: report the failure and leave =RaidMemberTests= exclusive, keeping only the ordering change.
+- [X] *Step 6: Review, then commit* as "Schedule long test groups first and run raid-member tests in the pool".
 
 ** TODO Task 6: Evaluate catalogue packages without re-hashing nixpkgs
 
