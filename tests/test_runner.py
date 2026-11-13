@@ -95,7 +95,7 @@ class RunnerTests(unittest.TestCase):
     def test_parallel_failfast_does_not_schedule_another_module(self):
         self.module("probe_fail", "os.write(1,b'\\xff')\nself.fail('deliberate-worker-failure')")
         self.module("probe_later", "(root/'unexpected').touch()")
-        for jobs in (2, 4):
+        for jobs in (2, 4, 8):
             with self.subTest(jobs=jobs):
                 waiting = [f"probe_wait_{i}" for i in range(jobs - 1)]
                 for name in waiting:

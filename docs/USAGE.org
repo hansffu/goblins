@@ -1357,7 +1357,7 @@ nix develop                       # enter once; pinned Rust and Python/pyte, you
 just test                         # Rust, Python integration and Emacs ERT, serially
 just test-python test_exec         # or a module, class, or individual method
 just test-python -j 1 test_exec    # serial execution with live output
-just test-python -j 4              # opt in to four integration-test workers
+just test-python -j 2              # fewer integration-test workers (default 8)
 just test-features                # list named feature tasks
 just test-plan exec history        # preview relevant checks without builds
 just test-feature exec history     # one union, with matching language checks

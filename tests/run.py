@@ -16,13 +16,14 @@ import unittest
 from build_support import cache_directory, fixture_timings
 from support import HERE, cargo_artifacts, cases, rust_driver
 
-# Keep engines/native frontends exclusive. Ordinary modules stay intact;
+# Keep engines and Emacs exclusive; the Codex frontend modules share the pool
+# (five full runs at eight workers, docs/RESULTS.org). Ordinary modules stay intact;
 # classes of CLASS_GROUPED_MODULES use private projects/daemons and may overlap,
 # while their engine classes remain exclusive. Class fixtures always stay in
 # one worker.
 EXCLUSIVE_MODULES = {
     "test_docker", "test_scopes", "test_cleanup",
-    "test_emacs", "test_codex_config", "test_codex_native",
+    "test_emacs",
 }
 EXCLUSIVE_CLASSES = {
     "test_devshell.DevShellDockerTests", "test_host_commands.HostDockerAcceptance",
@@ -103,7 +104,7 @@ def parallel_suite(suite, jobs, cache, failfast):
     if logs.exists():
         shutil.rmtree(logs)
     logs.mkdir()
-    print(f"Running test groups with {jobs} workers; engine/frontend suites run exclusively. Logs: {logs}", flush=True)
+    print(f"Running test groups with {jobs} workers; engine and Emacs suites run exclusively. Logs: {logs}", flush=True)
     results = []
     stopped = False
 
@@ -197,8 +198,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-f", "--failfast", action="store_true", help="stop on the first failure")
     parser.add_argument("--packaged", action="store_true", help="use Nix-built controllers too")
-    parser.add_argument("-j", "--jobs", type=int, choices=(1, 2, 4), default=2,
-                        help="test workers (default: 2); use 1 for serial verbose execution")
+    parser.add_argument("-j", "--jobs", type=int, choices=(1, 2, 4, 8), default=8,
+                        help="test workers (default: 8); use 1 for serial verbose execution")
     parser.add_argument("--clean-cache", action="store_true",
                         help="release fixture roots and remove cached launchers/logs; never run Nix GC")
     parser.add_argument("--durations", type=int, default=15, help="number of slow tests to report")

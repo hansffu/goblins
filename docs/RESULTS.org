@@ -1,6 +1,31 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-10-19
 
+* Test workers re-measured after the catalogue and dev-shell speedups (2026-11-13)
+
+Task 8 of [[file:specs/TEST-SUITE-SPEEDUP.org][TEST-SUITE-SPEEDUP.org]] re-measured worker counts on the host (32 cores), warm, with nothing else running and =GOBLINS_TEST_CODEX=1=, after Tasks 1–7. Eight workers were allowed by a local, uncommitted edit of =tests/run.py=. Every Python run passed all 486 tests with the same two opt-in skips (=HostDockerAcceptance= and the Testcontainers check).
+
+| Python stage                                  | Run 1   | Run 2   | Runs 3–5                  |
+|-----------------------------------------------+---------+---------+---------------------------|
+| 2 workers (previous default)                  | 616.8 s | 619.0 s |                           |
+| 4 workers                                     | 469.2 s | 472.8 s |                           |
+| 8 workers                                     | 401.3 s | 402.5 s |                           |
+| 8 workers, Codex frontend groups in the pool  | 331.1 s | 312.2 s | 313.0 s, 311.4 s, 312.4 s |
+
+I/O and CPU pressure, sampled every ten seconds, stayed near zero at every worker count: the highest ten-second =some= average was 0.7 % for I/O and 1.2 % for CPU. The pressure that led to two workers came from hashing nixpkgs on every package request and dev-shell evaluation, which Tasks 6 and 7 removed.
+
+The exclusive groups took about 320 s of every run, 68 % of the stage at four workers: =test_docker= 104 s, =test_emacs= 72 s, =test_codex_native= 54 s, =test_codex_config= 45 s, =test_scopes= 20 s, =RunTargetTests= 13 s, =DevShellDockerTests= 8 s, =RunTargetDockerTests= 4 s and =test_cleanup= 1 s. The longest pooled group took 120 s. Moving the two Codex frontend groups into the pool passed five runs of five at eight workers and shortened the stage by another 90 s.
+
+| Rust tests (=--test-threads=)  | Run 1          | Run 2         | Run 3          |
+|--------------------------------+----------------+---------------+----------------|
+| 2 (previous default)           | 60.0 s         | 59.9 s        | 59.9 s         |
+| 4                              | 53.0 s         | 53.0 s        | 53.0 s         |
+| 8                              | 43.9 s, failed | 52.5 s        | 43.8 s, failed |
+
+At eight threads a different =goblins-runtime= channel test failed in two of three runs: the non-blocking end-of-file read in =libs/runtime/src/channel.rs:449= returned =WouldBlock=. The likely cause is that the =guardian= tests in the same process fork while a channel test holds a pipe's write end, so a child briefly holds it open; more threads widen that window. Fixed by having every channel test that checks for end of file take =goblins_unix::no_forks()=, the guard =libs/unix= already provides for this: unfixed, =cargo test -p goblins-runtime --lib -- --test-threads=8= failed 16 of 40 runs; fixed, it passed 100 of 100.
+
+The defaults are now eight Python workers, with =test_codex_config= and =test_codex_native= in the pool, and four Rust test threads, which passed all three runs. Cargo jobs and Nix build concurrency are unchanged.
+
 * Test-runner review follow-up (2026-10-19)
 
 Both incremental Cargo entry points now use one artifact reader with =json-render-diagnostics=: executable paths remain machine-readable while compiler errors reach stderr. A regression compiles an invalid dependency-free crate through both entry points and checks the actual rustc diagnostics. Suite traversal also has one shared implementation.

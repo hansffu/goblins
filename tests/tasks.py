@@ -142,7 +142,7 @@ def main(argv=None):
     parser.add_argument("--plan", action="store_true", help="show checks without running or building anything")
     parser.add_argument("--paths", nargs="+", default=[], help="recommend tasks for repository-relative paths")
     parser.add_argument("--changed", metavar="BASE", help="include branch/worktree/untracked changes since merge-base with BASE")
-    parser.add_argument("-j", "--jobs", type=int, choices=(1, 2, 4), default=2)
+    parser.add_argument("-j", "--jobs", type=int, choices=(1, 2, 4, 8), default=8)
     args = parser.parse_args(argv)
     try:
         data = load_manifest()

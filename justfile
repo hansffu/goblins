@@ -39,7 +39,8 @@ emacs-daemon *args:
     {{just_executable()}} --justfile {{justfile()}} emacs "$@"
 
 # Enter `nix develop` once, then run these commands directly.
-# Rust/Python/Emacs suites are serial; Python defaults to two workers (-j 4 opts in).
+# Rust/Python/Emacs suites run one after another; Python defaults to eight workers
+# and Rust to four test threads.
 test: test-rust test-python test-emacs
 
 test-rust:

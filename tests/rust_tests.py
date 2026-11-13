@@ -29,7 +29,7 @@ def main(args=None):
         "--bin", "goblins-supervisor-bwrap"))
     environment = {**os.environ, "GOBLINS_TEST_SUPERVISOR_EXECUTABLE": str(executable)}
     return subprocess.call([os.environ.get("CARGO", "cargo"), "test", "--locked",
-                            *(args or ["--workspace", "-j", "2", "--", "--test-threads=2"])],
+                            *(args or ["--workspace", "-j", "2", "--", "--test-threads=4"])],
                            cwd=HERE, env=environment)
 
 

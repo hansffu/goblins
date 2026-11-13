@@ -58,7 +58,7 @@ class RustRunnerTests(unittest.TestCase):
                                               "goblins-supervisor-bwrap", "--bin", "goblins-supervisor-bwrap")
                 command = test.call_args.args[0]
                 self.assertEqual(command[1:3], ["test", "--locked"])
-                self.assertEqual(command[3:], args or ["--workspace", "-j", "2", "--", "--test-threads=2"])
+                self.assertEqual(command[3:], args or ["--workspace", "-j", "2", "--", "--test-threads=4"])
                 self.assertEqual(test.call_args.kwargs["env"]["GOBLINS_TEST_SUPERVISOR_EXECUTABLE"],
                                  str(self.executable))
 

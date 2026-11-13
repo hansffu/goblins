@@ -363,7 +363,7 @@ Steps:
 - [ ] *Step 5: Run* =nix develop -c just test-feature devshell worktrees docker= and =nix develop -c just test-feature-check=. Expected: PASS, with the same number of distinct tests as before this task. Record the new group times from =timings.json= in the review request (baseline: Refresh 150 s, Diff 50 s, Subdirectory 40 s before Task 2).
 - [ ] *Step 6: Review, then commit* as "Evaluate most dev-shell tests against a flake without nixpkgs".
 
-** TODO Task 8: Re-measure, then retune workers and exclusivity
+** DONE Task 8: Re-measure, then retune workers and exclusivity
 
 *User decision needed first.* =AGENTS.md= and [[file:../RESULTS.org][RESULTS.org]] chose two workers, two Cargo jobs and =--max-jobs 1 --cores 2= deliberately, after measuring I/O pressure. Tasks 6 and 7 remove the likely source of that pressure. This task only measures and proposes; changing a default needs the user's yes, with the numbers in front of them.
 
@@ -374,11 +374,11 @@ Files:
 
 Steps:
 
-- [ ] *Step 1: Measure the Python stage at 2, 4 and 8 workers*, twice each, warm, nothing else running: temporarily allow 8 in the =choices= of =--jobs= in a local, uncommitted edit, run ~nix develop -c env GOBLINS_TEST_CODEX=1 python3 tests/run.py -j N~, and note the =Ran N tests in S= line and whether anything failed. While each runs, sample =/proc/pressure/io= and =/proc/pressure/cpu= every ten seconds.
-- [ ] *Step 2: Measure the exclusive tail.* From =timings.json=, add up the exclusive groups (=test_docker=, =test_scopes=, =test_cleanup=, =test_emacs=, =test_codex_config=, =test_codex_native=, the two =test_run_targets= classes, =test_devshell.DevShellDockerTests=). If the tail is more than a third of the stage, try running the two frontend groups (=test_codex_config=, =test_codex_native=) in the pool, five runs at the candidate worker count. A single failure means they stay exclusive.
-- [ ] *Step 3: Measure Rust tests* at =--test-threads= 2, 4 and 8: ~nix develop -c python3 tests/rust_tests.py --workspace -j 2 -- --test-threads=N~, three runs each. The controller suite (264 tests) took 34 s of the 60 s stage at two threads.
-- [ ] *Step 4: Write the results* into =docs/RESULTS.org= as a new top-level section at the top (the file is newest first), with a table like the existing "Four-worker opt-in" section, and propose defaults. Present them to the user and stop.
-- [ ] *Step 5 (after approval): Change the approved defaults*, update the runner tests in =tests/test_runner.py= that name worker counts, run =just test-merge=, review, and commit as "Raise default test workers to N".
+- [X] *Step 1: Measure the Python stage at 2, 4 and 8 workers*, twice each, warm, nothing else running: temporarily allow 8 in the =choices= of =--jobs= in a local, uncommitted edit, run ~nix develop -c env GOBLINS_TEST_CODEX=1 python3 tests/run.py -j N~, and note the =Ran N tests in S= line and whether anything failed. While each runs, sample =/proc/pressure/io= and =/proc/pressure/cpu= every ten seconds.
+- [X] *Step 2: Measure the exclusive tail.* From =timings.json=, add up the exclusive groups (=test_docker=, =test_scopes=, =test_cleanup=, =test_emacs=, =test_codex_config=, =test_codex_native=, the two =test_run_targets= classes, =test_devshell.DevShellDockerTests=). If the tail is more than a third of the stage, try running the two frontend groups (=test_codex_config=, =test_codex_native=) in the pool, five runs at the candidate worker count. A single failure means they stay exclusive.
+- [X] *Step 3: Measure Rust tests* at =--test-threads= 2, 4 and 8: ~nix develop -c python3 tests/rust_tests.py --workspace -j 2 -- --test-threads=N~, three runs each. The controller suite (264 tests) took 34 s of the 60 s stage at two threads.
+- [X] *Step 4: Write the results* into =docs/RESULTS.org= as a new top-level section at the top (the file is newest first), with a table like the existing "Four-worker opt-in" section, and propose defaults. Present them to the user and stop.
+- [X] *Step 5 (after approval): Change the approved defaults*, update the runner tests in =tests/test_runner.py= that name worker counts, run =just test-merge=, review, and commit as "Raise default test workers to N".
 
 ** TODO Task 9: Shorten the Nix check stage after a Rust change
 
