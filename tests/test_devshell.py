@@ -442,15 +442,6 @@ class DevShellRefreshTests(DevShellTests):
 class DevShellSubdirectoryTests(DevShellRefreshTests):
     """A flake in a subdirectory of its Git repository keeps the repository as source."""
 
-    test_approved_refresh_enters_the_edited_flake_and_keeps_running_environment = None
-    test_member_refresh_to_an_inherited_generation_needs_no_approval = None
-    test_hand_edited_lock_is_rejected_until_restored = None
-    test_lock_adds_new_inputs_and_writes_the_approved_lock = None
-    test_denied_refresh_changes_nothing = None
-    test_pending_candidate_source_is_a_gc_root = None
-    test_refresh_never_builds_import_from_derivation_before_approval = None
-    test_refresh_evaluation_times_out = None
-
     def setUp(self):
         root = tempfile.TemporaryDirectory(prefix="goblin-devshell-repo-")
         self.addCleanup(root.cleanup)
@@ -509,6 +500,11 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
         self.assertEqual(record["state"], "failed", record)
         self.assertIn(f"source tree {self.repo.resolve()} is outside the sandbox's working directory "
                       f"{self.project.resolve()}", record["detail"])
+
+
+for _name in dir(DevShellRefreshTests):
+    if _name.startswith("test_") and _name not in DevShellSubdirectoryTests.__dict__:
+        setattr(DevShellSubdirectoryTests, _name, None)
 
 
 APPS = """      apps.x86_64-linux = {

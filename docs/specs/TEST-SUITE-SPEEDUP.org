@@ -157,7 +157,7 @@ Steps:
 - [X] *Step 4: Run* =nix develop -c just test-feature infrastructure=. Expected: PASS.
 - [X] *Step 5: Review, then commit* as "Record per-group and per-test timings for each test run".
 
-** TODO Task 2: Stop running one dev-shell test twice
+** DONE Task 2: Stop running one dev-shell test twice
 
 =DevShellSubdirectoryTests= inherits from =DevShellRefreshTests= and disables the inherited tests by name. =test_refresh_cannot_be_approved_before_its_preview= was added to the parent later and is missing from that list, so it runs in both classes (19.7 s each). The subdirectory class exists for two tests of its own; =DevShellFlakeRunTests= and =DevShellDiffTests= already disable every inherited test with a loop.
 
@@ -167,7 +167,7 @@ Files:
 
 Steps:
 
-- [ ] *Step 1: Replace the eight ~= None~ lines* with the same loop the two later classes use, placed after the class body (before ~APPS = ...~):
+- [X] *Step 1: Replace the eight ~= None~ lines* with the same loop the two later classes use, placed after the class body (before ~APPS = ...~):
 
   #+begin_src python
   for _name in dir(DevShellRefreshTests):
@@ -175,9 +175,9 @@ Steps:
           setattr(DevShellSubdirectoryTests, _name, None)
   #+end_src
 
-- [ ] *Step 2: Verify the selection.* Run =nix develop -c python3 tests/run.py -j 2 test_devshell.DevShellSubdirectoryTests=. Expected: =2 tests=, both passing (=test_subdirectory_flake_uses_files_outside_its_directory=, =test_launch_from_the_flake_directory_cannot_widen_access_to_the_repository=), about 20 s instead of 40 s.
-- [ ] *Step 3: Run* =nix develop -c just test-feature-check= and =nix develop -c just test-feature devshell=. Expected: PASS; the feature map still covers every test (the removed ID no longer exists, so nothing is unmapped).
-- [ ] *Step 4: Review, then commit* as "Run the refresh-preview test once, not again in the subdirectory class". Say in the review request that the removed case is an exact duplicate that still runs in =DevShellRefreshTests=.
+- [X] *Step 2: Verify the selection.* Run =nix develop -c python3 tests/run.py -j 2 test_devshell.DevShellSubdirectoryTests=. Expected: =2 tests=, both passing (=test_subdirectory_flake_uses_files_outside_its_directory=, =test_launch_from_the_flake_directory_cannot_widen_access_to_the_repository=), about 20 s instead of 40 s.
+- [X] *Step 3: Run* =nix develop -c just test-feature-check= and =nix develop -c just test-feature devshell=. Expected: PASS; the feature map still covers every test (the removed ID no longer exists, so nothing is unmapped).
+- [X] *Step 4: Review, then commit* as "Run the refresh-preview test once, not again in the subdirectory class". Say in the review request that the removed case is an exact duplicate that still runs in =DevShellRefreshTests=.
 
 ** TODO Task 3: Remove the 13 s sleep from the fish terminal test
 
