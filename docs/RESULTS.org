@@ -1,6 +1,29 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-10-19
 
+* Nix check stage after a Rust change (2026-11-13)
+
+Task 9 of [[file:specs/TEST-SUITE-SPEEDUP.org][TEST-SUITE-SPEEDUP.org]] timed the twelve =checks.rust-*= derivations one at a time with =--max-jobs 1 --cores 2=, in a scratch worktree, from the derivation paths before and after each edit. A comment in the root =Cargo.toml= changed all twelve; a doc comment in =libs/api/src/lib.rs= changed ten, leaving only =rust-unix= and =rust-jsonrpc= cached. Each changed derivation took the same time in both cases, so a change to the root manifest or to =libs/api=, which almost every crate uses, costs nearly a full rebuild; a change to a crate fewer packages include rebuilds fewer derivations.
+
+| Derivation        | Total | Before tests | Test phase |
+|-------------------+-------+--------------+------------|
+| =rust-daemon=           | 213 s | 84 s | 128 s |
+| =rust-supervisor=       | 101 s | 53 s |  48 s |
+| =rust-runtime=          |  71 s | 42 s |  29 s |
+| =rust-supervisor-bwrap= |  54 s | 53 s |   0 s |
+| =rust-adapter-codex=    |  49 s | 43 s |   5 s |
+| =rust-mount-helper=     |  47 s | 43 s |   4 s |
+| =rust-sandbox-cli=      |  42 s | 37 s |   5 s |
+| =rust-api=              |  40 s | 25 s |  14 s |
+| =rust-adapter-claude=   |  38 s | 32 s |   5 s |
+| =rust-init=             |  26 s | 25 s |   1 s |
+| =rust-jsonrpc=          |  13 s |  8 s |   5 s |
+| =rust-unix=             |   4 s |  3 s |   1 s |
+| Full rebuild, all twelve | 697 s | ≈450 s | ≈245 s |
+| API change, ten rebuilt  | 677 s |       |       |
+
+The test phase includes compiling the test binaries. Building all twelve at once with =--max-jobs 4 --cores 4= took 257 s instead of 697 s. =just test-nix= now uses that, since it runs after the test workers have finished; fixture builds in =tests/build_support.py= keep one job with two cores. Sharing compiled dependencies between the derivations is recorded as a follow-up in [[file:specs/TODO.org][TODO.org]].
+
 * Test workers re-measured after the catalogue and dev-shell speedups (2026-11-13)
 
 Task 8 of [[file:specs/TEST-SUITE-SPEEDUP.org][TEST-SUITE-SPEEDUP.org]] re-measured worker counts on the host (32 cores), warm, with nothing else running and =GOBLINS_TEST_CODEX=1=, after Tasks 1–7. Eight workers were allowed by a local, uncommitted edit of =tests/run.py=. Every Python run passed all 486 tests with the same two opt-in skips (=HostDockerAcceptance= and the Testcontainers check).

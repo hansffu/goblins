@@ -16,7 +16,7 @@ Documentation-only changes are exempt from both: a change that touches only docu
 
 Never fake a pass: do not remove assertions, disable cases or add retries, and preserve isolation for lifecycle, authority and cleanup checks. Report skipped Docker or Testcontainers checks; when you change those integrations, run them before merge or report the blocker.
 
-Run one test runner at a time per checkout and cache. This applies across the whole raid: members share the checkout and cache, so coordinate through daemon messages before starting a runner. Other agents using the same checkout count too. Do not raise Nix build concurrency to match test workers.
+Run one test runner at a time per checkout and cache. This applies across the whole raid: members share the checkout and cache, so coordinate through daemon messages before starting a runner. Other agents using the same checkout count too. Do not raise Nix build concurrency to match test workers: fixture builds stay at one job. Only `just test-nix`, which runs after the test workers finish, builds with four jobs of four cores.
 
 Keep `tests/features.toml` current when adding tests or features; `just test-feature-check` finds unmapped tests and stale selectors.
 

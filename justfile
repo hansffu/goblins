@@ -96,8 +96,10 @@ api-generate:
 api-check:
     python3 tests/api_contract.py
 
+# Runs after the test workers finish, so it may use more of the machine than
+# fixture builds do (docs/RESULTS.org).
 test-nix:
-    nix flake check --max-jobs 1 --cores 2
+    nix flake check --max-jobs 4 --cores 4
 
 [positional-arguments]
 test-packaged *args:

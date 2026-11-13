@@ -380,7 +380,7 @@ Steps:
 - [X] *Step 4: Write the results* into =docs/RESULTS.org= as a new top-level section at the top (the file is newest first), with a table like the existing "Four-worker opt-in" section, and propose defaults. Present them to the user and stop.
 - [X] *Step 5 (after approval): Change the approved defaults*, update the runner tests in =tests/test_runner.py= that name worker counts, run =just test-merge=, review, and commit as "Raise default test workers to N".
 
-** TODO Task 9: Shorten the Nix check stage after a Rust change
+** DONE Task 9: Shorten the Nix check stage after a Rust change
 
 *User decision needed at Step 2.* In the cold measurement, where none of them was cached, the Nix stage built twelve separate Rust derivations (=checks.rust-*= in =tests/checks.nix:375-386=, built by =nix/builders/rust.nix=), one at a time with two cores, each compiling its dependencies from nothing and running that crate's tests again in release mode: about 520 s. The same derivations are inputs of the test fixtures, so the first Python run after a Rust change also waited 92 s for =shell-goblins.config= before any test could start.
 
@@ -392,15 +392,17 @@ Files:
 
 Steps:
 
-- [ ] *Step 1: Measure per derivation, for two cases.* The Rust derivations see only their own sources and declared libraries (=nix/builders/rust.nix=), so one edit does not invalidate all twelve: =rust-unix= and =rust-jsonrpc=, for example, do not contain =libs/api=. Measure both cases on a scratch branch, and before timing anything record =nix eval --raw .#checks.x86_64-linux.<attr>.drvPath= for all twelve =rust-*= attributes before and after the edit, so the table says which derivations changed.
+- [X] *Step 1: Measure per derivation, for two cases.* The Rust derivations see only their own sources and declared libraries (=nix/builders/rust.nix=), so one edit does not invalidate all twelve: =rust-unix= and =rust-jsonrpc=, for example, do not contain =libs/api=. Measure both cases on a scratch branch, and before timing anything record =nix eval --raw .#checks.x86_64-linux.<attr>.drvPath= for all twelve =rust-*= attributes before and after the edit, so the table says which derivations changed.
   1. Full rebuild: add a comment line to the root =Cargo.toml=, which every derivation's source includes. All twelve derivation paths must differ; if any does not, find an edit that changes all of them before going on.
   2. API-change rebuild, the common case: add a one-line doc comment to =libs/api/src/lib.rs= instead. List which derivations changed and which stayed cached.
   For each case, build every changed attribute under =time=, for example =time nix develop -c nix build --max-jobs 1 --cores 2 --print-build-logs .#checks.x86_64-linux.rust-daemon=, and record the build time and, from the log, how much of it is =cargo test=. Report the two cases separately; never add a cached derivation's time to a rebuild total. Discard the scratch branch afterwards.
-- [ ] *Step 2: Present these options with the numbers, and stop:*
+- [X] *Step 2: Present these options with the numbers, and stop:*
   1. Raise =test-nix= to =--max-jobs 4 --cores 4=. It runs after the test workers have finished, so it does not compete with them; this reads the constraint in =AGENTS.md= narrowly. Expected: close to a fourfold cut for a full rebuild.
   2. Split build from test: the package derivations used by fixtures get ~doCheck = false~, and =checks.rust-*= become ~package.overrideAttrs { doCheck = true; }~. Fixtures stop waiting for crate tests, so the first Python run after a Rust change starts sooner; the gate compiles some crates twice.
   3. Share compiled dependencies between the twelve derivations (one dependency-only derivation used as a Cargo target seed). Largest gain, largest change to =nix/builders/rust.nix=; it must keep the property the comments there describe, that a package's source contains only itself and its declared libraries.
-- [ ] *Step 3 (after the user chooses): Implement the chosen option* as its own change, run =just test-merge=, review, and commit.
+- [X] *Step 3 (after the user chooses): Implement the chosen option* as its own change, run =just test-merge=, review, and commit.
+
+The user chose option 1, with option 3 recorded as a follow-up in [[file:TODO.org][TODO.org]].
 
 * Expected result
 
