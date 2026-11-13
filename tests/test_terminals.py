@@ -390,18 +390,26 @@ class FishTerminalTests(unittest.TestCase):
         self.addCleanup(lambda: self.d.rpc.call("sessions.stop", {"session": agent["session"]}))
         # The goblin's $SHELL is not fish, so ask for it.
         self.d.rpc.call("terminals.create", {"session": "gribble", "name": "fish", "argv": ["fish"]})
-        # Fish gives up on a query after ten seconds, then says so on screen.
-        time.sleep(13)
+        # Fish reads no input until its device-attributes query is answered or
+        # it gives up after ten seconds and warns. A command typed at once is
+        # therefore answered quickly only if the terminal answered the query,
+        # and any warning is on screen before that command's output.
+        started = time.monotonic()
+        self.d.rpc.call("terminals.send", {"session": "gribble", "terminal": "fish",
+                                           "text": "echo ready", "keys": ["enter"]})
+        # Eight seconds is below fish's ten-second give-up and far above a
+        # normal start. Each wait stays under the RPC client's 5 s timeout.
+        while (left := started + 8 - time.monotonic()) > 0:
+            result = self.d.rpc.call("terminals.wait", {"session": "gribble", "terminal": "fish",
+                                                        "regex": "^ready$", "timeout": int(min(left, 4) * 1000) + 1})
+            if result["status"] != "timeout":
+                break
+        self.assertEqual(result["status"], "matched", result)
+        self.assertLess(time.monotonic() - started, 8, "fish waited for a terminal answer")
         text = self.d.rpc.call("terminals.read", {"session": "gribble", "terminal": "fish",
                                                   "source": "recent"})["text"]
         self.assertNotIn("could not read response", text)
         self.assertNotIn("warning", text)
-        # It is up and answers a command typed into it.
-        self.d.rpc.call("terminals.send", {"session": "gribble", "terminal": "fish",
-                                           "text": "echo ready", "keys": ["enter"]})
-        result = self.d.rpc.call("terminals.wait", {"session": "gribble", "terminal": "fish",
-                                                    "regex": "^ready$", "timeout": 20000})
-        self.assertEqual(result["status"], "matched", text)
 
 
 if __name__ == "__main__":

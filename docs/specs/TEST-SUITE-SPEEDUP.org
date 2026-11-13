@@ -179,7 +179,7 @@ Steps:
 - [X] *Step 3: Run* =nix develop -c just test-feature-check= and =nix develop -c just test-feature devshell=. Expected: PASS; the feature map still covers every test (the removed ID no longer exists, so nothing is unmapped).
 - [X] *Step 4: Review, then commit* as "Run the refresh-preview test once, not again in the subdirectory class". Say in the review request that the removed case is an exact duplicate that still runs in =DevShellRefreshTests=.
 
-** TODO Task 3: Remove the 13 s sleep from the fish terminal test
+** DONE Task 3: Remove the 13 s sleep from the fish terminal test
 
 =tests/test_terminals.py= =FishTerminalTests.test_fish_in_a_terminal_nobody_attached_to_is_not_left_waiting_for_an_answer= sleeps 13 s and then checks that fish printed no warning. Fish asks its terminal for device attributes at startup; with no answer it blocks for ten seconds, prints "could not read response", and only then reads input. So the same thing can be observed without a fixed wait: a command typed at once is answered quickly only if the query was answered, and the warning, if any, is on screen before that command's output.
 
@@ -189,14 +189,14 @@ Files:
 
 Steps:
 
-- [ ] *Step 1: Rewrite the test body* to this order, keeping the two existing =assertNotIn= checks and the final status check:
+- [X] *Step 1: Rewrite the test body* to this order, keeping the two existing =assertNotIn= checks and the final status check:
   1. =terminals.create= as now.
   2. ~started = time.monotonic()~, then =terminals.send= with ="echo ready"= and =terminals.wait= for =^ready$= with ="timeout": 20000=, and =assertEqual(result["status"], "matched")=.
   3. =self.assertLess(time.monotonic() - started, 8, "fish waited for a terminal answer")=. Eight seconds is below fish's ten-second give-up and far above a normal start.
   4. =terminals.read= with ="source": "recent"=, then the two =assertNotIn= checks on that text.
-- [ ] *Step 2: Prove the test still detects the fault.* Find where the supervisor's emulated terminal answers the device-attributes query (in =libs/supervisor/src/terminals.rs=; search for the reply =62;22c=, which the unit test near line 931 expects). Temporarily disable that answer, rebuild, and run =nix develop -c python3 tests/run.py -j 1 test_terminals.FishTerminalTests=. Expected: FAIL, either on the 8 s bound or on the warning text. Restore the code and state in the review request that this check was done. If the test passes with the answer disabled, stop: the rewrite is not equivalent, keep the sleep and report that.
-- [ ] *Step 3: Run* =nix develop -c just test-feature terminals=. Expected: PASS, with the fish test under 2 s.
-- [ ] *Step 4: Review, then commit* as "Observe fish's terminal answer by its response time instead of a fixed wait".
+- [X] *Step 2: Prove the test still detects the fault.* Find where the supervisor's emulated terminal answers the device-attributes query (in =libs/supervisor/src/terminals.rs=; search for the reply =62;22c=, which the unit test near line 931 expects). Temporarily disable that answer, rebuild, and run =nix develop -c python3 tests/run.py -j 1 test_terminals.FishTerminalTests=. Expected: FAIL, either on the 8 s bound or on the warning text. Restore the code and state in the review request that this check was done. If the test passes with the answer disabled, stop: the rewrite is not equivalent, keep the sleep and report that.
+- [X] *Step 3: Run* =nix develop -c just test-feature terminals=. Expected: PASS, with the fish test under 2 s.
+- [X] *Step 4: Review, then commit* as "Observe fish's terminal answer by its response time instead of a fixed wait".
 
 ** TODO Task 4: Make the activity expiry configurable for tests
 
