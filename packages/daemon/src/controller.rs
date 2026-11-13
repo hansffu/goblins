@@ -1003,6 +1003,23 @@ pub struct Controller {
     // history store and manifest lease being released, including on errors.
     _lock: File,
 }
+
+/// How long a reported activity lasts without a new report: 30 seconds, or
+/// `GOBLINS_ACTIVITY_EXPIRY` seconds in the daemon's environment. Read once,
+/// since expiry is checked on every tick.
+fn activity_expiry() -> std::time::Duration {
+    static EXPIRY: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
+    *EXPIRY.get_or_init(|| {
+        std::env::var("GOBLINS_ACTIVITY_EXPIRY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map_or(
+                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs,
+            )
+    })
+}
+
 impl Controller {
     pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
         unix::private_directory(state)?;
@@ -3413,11 +3430,11 @@ impl Controller {
         }
     }
     fn expire_activity(&mut self, now: Instant) {
+        let expiry = activity_expiry();
         for a in self.sessions.values_mut() {
             if a.record.state != "running"
-                || a.activity_at.is_none_or(|at| {
-                    now.saturating_duration_since(at) >= std::time::Duration::from_secs(30)
-                })
+                || a.activity_at
+                    .is_none_or(|at| now.saturating_duration_since(at) >= expiry)
             {
                 a.activity_at = None;
                 self.dirty |= a.record.set_agent_state(Default::default());

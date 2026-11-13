@@ -1,11 +1,12 @@
 """Activity reports use endpoint identity and publish through real subscriptions."""
+import os
 import select
 import unittest
 from daemon_support import Daemon, RPC, receive
 
 class ActivityTests(unittest.TestCase):
     def test_authority_freshness_recovery_and_lifecycle(self):
-        d = Daemon(); self.addCleanup(d.close)
+        d = Daemon(env={**os.environ, 'GOBLINS_ACTIVITY_EXPIRY': '2'}); self.addCleanup(d.close)
         a = d.start()['session']; b = d.start()['session']
         peer = RPC(d.state/a/'resources/request.sock'); self.addCleanup(peer.close)
         with self.assertRaises(ValueError): d.rpc.call('sessions.set-state', {'state':'working'})
@@ -26,7 +27,7 @@ class ActivityTests(unittest.TestCase):
         p = RPC(d.state/a/'resources/request.sock')
         p.call('sessions.set-state',{'state':'working'}); p.close()
         self.assertFalse(select.select([sub.peer],[],[],.2)[0], 'heartbeat published unchanged activity')
-        sub.peer.settimeout(35)
+        sub.peer.settimeout(10)
         self.assertEqual(event_state('unknown')['state'],'running')
         p = RPC(d.state/a/'resources/request.sock')
         p.call('sessions.set-state',{'state':'waiting-approval'}); p.close()

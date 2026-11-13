@@ -198,7 +198,7 @@ Steps:
 - [X] *Step 3: Run* =nix develop -c just test-feature terminals=. Expected: PASS, with the fish test under 2 s.
 - [X] *Step 4: Review, then commit* as "Observe fish's terminal answer by its response time instead of a fixed wait".
 
-** TODO Task 4: Make the activity expiry configurable for tests
+** DONE Task 4: Make the activity expiry configurable for tests
 
 =tests/test_activity.py= waits for the daemon to expire a goblin's reported activity, which takes the real 30 s (=packages/daemon/src/controller.rs:3415=, =expire_activity=). The expiry logic already has a Rust unit test (in =controller.rs=, the test that calls =d.expire_activity(at + Duration::from_secs(31))=). What the Python test adds is that the expiry is published to subscribers. That does not need thirty seconds.
 
@@ -214,11 +214,11 @@ Interfaces:
 
 Steps:
 
-- [ ] *Step 1: Add* =fn activity_expiry() -> std::time::Duration= to =controller.rs=, reading the variable once (a =std::sync::OnceLock<Duration>=, since =expire_activity= runs on every tick), and use it in =expire_activity= in place of =Duration::from_secs(30)=. The existing Rust unit test passes 31 s and must keep passing unchanged.
-- [ ] *Step 2: Change the Python test* to start its daemon with ~Daemon(env={**os.environ, "GOBLINS_ACTIVITY_EXPIRY": "2"})~ (add =import os=), and change =sub.peer.settimeout(35)= to =sub.peer.settimeout(10)=. Change nothing else. The =select(..., .2)= check that a heartbeat publishes nothing stays valid with a 2 s expiry.
-- [ ] *Step 3: Run* =nix develop -c just test-rust= and =nix develop -c python3 tests/run.py -j 1 test_activity=. Expected: PASS, the Python test in about 3 s instead of 31 s.
-- [ ] *Step 4: Run* =nix develop -c just test-plan --changed master=, then the recommended tasks (expect =full=, because =controller.rs= is broad).
-- [ ] *Step 5: Review, then commit* as "Let tests shorten the activity expiry".
+- [X] *Step 1: Add* =fn activity_expiry() -> std::time::Duration= to =controller.rs=, reading the variable once (a =std::sync::OnceLock<Duration>=, since =expire_activity= runs on every tick), and use it in =expire_activity= in place of =Duration::from_secs(30)=. The existing Rust unit test passes 31 s and must keep passing unchanged.
+- [X] *Step 2: Change the Python test* to start its daemon with ~Daemon(env={**os.environ, "GOBLINS_ACTIVITY_EXPIRY": "2"})~ (add =import os=), and change =sub.peer.settimeout(35)= to =sub.peer.settimeout(10)=. Change nothing else. The =select(..., .2)= check that a heartbeat publishes nothing stays valid with a 2 s expiry.
+- [X] *Step 3: Run* =nix develop -c just test-rust= and =nix develop -c python3 tests/run.py -j 1 test_activity=. Expected: PASS, the Python test in about 3 s instead of 31 s.
+- [X] *Step 4: Run* =nix develop -c just test-plan --changed master=, then the recommended tasks (expect =full=, because =controller.rs= is broad).
+- [X] *Step 5: Review, then commit* as "Let tests shorten the activity expiry".
 
 ** TODO Task 5: Let raid-member tests run in the parallel pool, and schedule long groups first
 

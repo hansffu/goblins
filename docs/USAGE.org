@@ -1189,12 +1189,7 @@ submission ownership suspends new submissions until reconciliation finds proof;
 resume never discards that record. Status and logs live in the sandbox's private
 =/tmp/goblins-codex= directory. Manual inbox commands remain available.
 
-Activity appears in =goblin status= and the Emacs overview, sidebar and details.
-Any provider may report it inside its own sandbox using =goblin set-state
-working= (also =unknown=, =idle=, =waiting-input=, =waiting-approval=). Reports
-expire after 30 seconds. Codex reports native transitions and ten-second
-heartbeats automatically. Activity is separate from sandbox lifecycle and
-Goblins-owned permission requests.
+Activity appears in =goblin status= and the Emacs overview, sidebar and details. Any provider may report it inside its own sandbox using =goblin set-state working= (also =unknown=, =idle=, =waiting-input=, =waiting-approval=). Reports expire after 30 seconds; set =GOBLINS_ACTIVITY_EXPIRY= (seconds) in the daemon's environment to change it. Codex reports native transitions and ten-second heartbeats automatically. Activity is separate from sandbox lifecycle and Goblins-owned permission requests.
 
 Claude goblins report activity automatically through their Goblins hooks: working during a turn, waiting-input on AskUserQuestion, plan approval or MCP elicitation, and idle after the turn. Claude fires no hook when you interrupt it with Esc, so an interrupted Claude shows working until its idle reminder about a minute later.
 
