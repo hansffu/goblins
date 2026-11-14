@@ -391,6 +391,49 @@ mod tests {
         );
     }
     #[test]
+    fn a_docker_request_names_only_a_reason_and_needs_a_docker_scope() {
+        let mut policy = policy();
+        let support = Support::linux();
+        let name = contract::sandbox::PermissionsRequest::NAME;
+        let gate = |policy: &Policy, params: Value| {
+            let caps = Capabilities {
+                policy,
+                support: &support,
+            };
+            check(&caps, &call(name, params), 100, true, false, false).map_err(fault)
+        };
+        assert!(gate(&policy, json!({"kind":"docker","reason":"tests"})).is_ok());
+        // The scope is chosen at launch and the engine by the host: a request
+        // names neither, nor a package or another goblin.
+        for bad in [
+            json!({"kind":"docker","package":"hello","reason":"tests"}),
+            json!({"kind":"docker","reason":""}),
+            json!({"kind":"docker","reason":"tests","daemon":"/bin/true"}),
+            json!({"kind":"docker","reason":"tests","session":"other"}),
+            json!({"kind":"docker","reason":"tests","scope":"work"}),
+            json!({"kind":"docker","reason":"tests","anonymous":true}),
+            json!({"kind":"docker","reason":"tests","lock":true}),
+            json!({"kind":"docker","reason":"tests","host":{"argv":["true"],"cwd":"/p"}}),
+        ] {
+            assert_eq!(gate(&policy, bad.clone()).unwrap_err().0, -32602, "{bad}");
+        }
+        // A scope without an engine, or no scope, has nothing to ask for.
+        policy.scope.as_mut().unwrap().docker = false;
+        let refused = (
+            -32602,
+            "Docker requires a scope with docker.enable".to_string(),
+        );
+        assert_eq!(
+            gate(&policy, json!({"kind":"docker","reason":"tests"})).unwrap_err(),
+            refused
+        );
+        policy.scope = None;
+        assert_eq!(
+            gate(&policy, json!({"kind":"docker","reason":"tests"})).unwrap_err(),
+            refused
+        );
+    }
+    #[test]
     fn permission_requests_keep_nested_forms_name_diagnostics_and_policy_order() {
         let mut policy = policy();
         policy.host_commands = false;

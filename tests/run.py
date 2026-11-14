@@ -26,7 +26,7 @@ EXCLUSIVE_MODULES = {
     "test_emacs",
 }
 EXCLUSIVE_CLASSES = {
-    "test_devshell.DevShellDockerTests", "test_host_commands.HostDockerAcceptance",
+    "test_devshell.DevShellDockerWorkflow", "test_host_commands.HostDockerAcceptance",
     "test_run_targets.RunTargetTests", "test_run_targets.RunTargetDockerTests",
 }
 CLASS_GROUPED_MODULES = {"test_devshell", "test_run_targets"}

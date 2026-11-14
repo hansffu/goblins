@@ -51,37 +51,7 @@ impl Storage {
             return Err("Docker storage must be disk-backed; set XDG_CACHE_HOME to a disk filesystem before starting Goblins".into());
         }
         if let Some(name) = name {
-            if !goblins_protocol::scope_name(name) {
-                return Err("invalid scope name".into());
-            }
-            let locks = root.join("locks");
-            unix::private_directory(&locks)?;
-            let lock = File::options()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(locks.join(name))?;
-            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                return Err(
-                    format!("Docker scope '{name}' is in use by another controller").into(),
-                );
-            }
-            let path = root.join(format!("scope-{name}"));
-            // Dockerd changes its data root to 0710/0711. Its parent remains
-            // host-private; do not mistake Docker's normal mode for corruption.
-            match fs::symlink_metadata(&path) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    unix::private_directory(&path)?
-                }
-                Ok(meta) => {
-                    use std::os::unix::fs::MetadataExt;
-                    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
-                        return Err("unsafe named Docker data directory".into());
-                    }
-                }
-                Err(e) => return Err(e.into()),
-            }
+            let (path, lock) = named(root, name)?;
             let directory = File::open(&path)?;
             return Ok(Self {
                 path,
@@ -108,6 +78,38 @@ impl Storage {
             persistent: false,
         })
     }
+}
+/// A persistent scope's engine data directory, locked for this controller:
+/// one engine per scope, whichever server starts it.
+fn named(root: &Path, name: &str) -> Result<(PathBuf, File)> {
+    if !goblins_protocol::scope_name(name) {
+        return Err("invalid scope name".into());
+    }
+    let locks = root.join("locks");
+    unix::private_directory(&locks)?;
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(locks.join(name))?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(format!("Docker scope '{name}' is in use by another controller").into());
+    }
+    let path = root.join(format!("scope-{name}"));
+    // Dockerd changes its data root to 0710/0711. Its parent remains
+    // host-private; do not mistake Docker's normal mode for corruption.
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => unix::private_directory(&path)?,
+        Ok(meta) => {
+            use std::os::unix::fs::MetadataExt;
+            if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
+                return Err("unsafe named Docker data directory".into());
+            }
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok((path, lock))
 }
 impl Drop for Storage {
     fn drop(&mut self) {

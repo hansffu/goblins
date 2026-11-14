@@ -447,12 +447,7 @@ Run the local-image tests from the host (no registry or host Docker required):
 PYTHONPATH=tests python -m unittest test_docker -v
 #+end_src
 
-An opt-in Java test additionally verifies Postgres startup, published-port
-access, SQL and Ryuk cleanup after JVM halt. Set
-=GOBLINS_TESTCONTAINERS_CLASSPATH= to a colon-separated list of Testcontainers
-Java dependency JAR paths (verified with 2.0.5), then run
-=PYTHONPATH=tests python -m unittest test_docker.DockerTests.test_testcontainers_postgres_and_ryuk -v=.
-This check uses registry access to pull =postgres:16-alpine= and Ryuk.
+An opt-in slow tier runs the real tools with online networking: Docker Compose, and a Java Testcontainers test that verifies Postgres startup, published-port access, SQL and Ryuk cleanup after JVM halt. The default suite checks what they rely on in a faster form. Run the slow tier with =just test-feature slow= (it sets =GOBLINS_TEST_SLOW=1=). For the Testcontainers test, also set =GOBLINS_TESTCONTAINERS_CLASSPATH= to a colon-separated list of Testcontainers Java dependency JAR paths (verified with 2.0.5). It uses registry access to pull =postgres:16-alpine= and Ryuk.
 
 * Server commands, help and completion
 

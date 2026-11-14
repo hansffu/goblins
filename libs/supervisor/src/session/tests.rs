@@ -538,3 +538,83 @@ fn a_member_asked_for_a_worktree_must_find_it_directly_in_the_owners_folder() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn a_resumed_goblin_attaches_docker_at_start_only_in_a_scope_that_enables_it() {
+    let launch = |scope: Option<bool>| {
+        let mut launch: Launch = serde_json::from_value(json!({"shell":"/unused", "posix_shell":"/unused", "helper":"/unused", "bwrap":"/unused", "flake":"unused", "client_package":"/unused"})).unwrap();
+        launch.docker = Some(goblins_runtime::config::Docker {
+            daemon: "/nix/store/engine/bin/dockerd".into(),
+            client: Some("/nix/store/client".into()),
+            enabled: false,
+        });
+        launch.scope = scope.map(|docker| goblins_runtime::config::Scope {
+            name: "work".into(),
+            definition: goblins_runtime::config::ScopeDefinition {
+                persistent: true,
+                pid: false,
+                docker,
+                storage: vec![],
+            },
+            mounts: BTreeMap::new(),
+        });
+        launch
+    };
+    for (scope, reason) in [
+        (
+            None,
+            "the configuration runs without a scope, so without Docker",
+        ),
+        (Some(false), "scope 'work' does not enable Docker"),
+    ] {
+        let mut session = Session::new(launch(scope), None, Cancel::default()).unwrap();
+        assert_eq!(
+            session.attach_docker_at_start().unwrap_err().to_string(),
+            reason
+        );
+        assert!(!session.docker_at_start());
+        assert!(session.launch.initial_packages.is_empty());
+    }
+    // In a Docker scope the client is an initial package, so the engine is
+    // there before the first command, with no live grant.
+    let mut session = Session::new(launch(Some(true)), None, Cancel::default()).unwrap();
+    session.attach_docker_at_start().unwrap();
+    assert!(session.docker_at_start());
+    assert_eq!(
+        session.launch.initial_packages,
+        [PathBuf::from("/nix/store/client")]
+    );
+}
+
+#[test]
+fn goblins_storage_cannot_be_snapshotted_or_bound() {
+    let root = std::fs::canonicalize(unix::temp_directory().unwrap()).unwrap();
+    let storage = root.join("cache/goblins/docker");
+    std::fs::create_dir_all(storage.join("session-abc")).unwrap();
+    std::fs::create_dir(root.join("project")).unwrap();
+    std::os::unix::fs::symlink(&storage, root.join("project-link")).unwrap();
+    let protected = [storage.clone()];
+    assert!(snapshot_source(&root.join("project"), &protected).is_ok());
+    for source in [
+        root.clone(),
+        storage.clone(),
+        storage.join("session-abc"),
+        root.join("project-link"),
+    ] {
+        assert_eq!(
+            snapshot_source(&source, &protected)
+                .unwrap_err()
+                .to_string(),
+            "workspace snapshot overlaps protected Goblins storage",
+            "{}",
+            source.display()
+        );
+    }
+    // A startup grant may not cover Docker or scope storage either.
+    let launch: Launch = serde_json::from_value(json!({"shell":"/unused", "posix_shell":"/unused", "helper":"/unused", "bwrap":"/unused", "flake":"unused", "client_package":"/unused"})).unwrap();
+    let session = Session::new(launch, None, Cancel::default()).unwrap();
+    let private = session.private_paths().unwrap();
+    assert!(private.contains(&crate::docker::storage_root(false).unwrap()));
+    assert!(private.contains(&crate::scope_storage::root(false).unwrap()));
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -182,6 +182,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_persistent_scope_held_by_another_controller_is_refused_until_it_lets_go() {
+        let cache = goblins_unix::temp_directory().unwrap();
+        let definition = ScopeDefinition {
+            persistent: true,
+            pid: false,
+            docker: false,
+            storage: vec!["data".into()],
+        };
+        // Another server holds the scope's lock.
+        let locks = cache.join("scopes/locks");
+        for directory in [cache.join("scopes"), locks.clone()] {
+            unix::private_directory(&directory).unwrap();
+        }
+        let other = unix::lock(&locks.join("held-elsewhere")).unwrap();
+        let error = Storage::open_in(&cache, "held-elsewhere", &definition)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            error,
+            "scope 'held-elsewhere' is in use by another controller"
+        );
+        drop(other);
+        let storage = Storage::open_in(&cache, "held-elsewhere", &definition)
+            .unwrap()
+            .unwrap();
+        // This controller's own stopping instance makes a relaunch wait.
+        assert!(
+            Storage::open_in(&cache, "held-elsewhere", &definition)
+                .unwrap()
+                .is_none()
+        );
+        fs::write(cache.join("scopes/scope-held-elsewhere/data/kept"), "x").unwrap();
+        drop(storage);
+        Storage::open_in(&cache, "held-elsewhere", &definition)
+            .unwrap()
+            .unwrap();
+        assert!(cache.join("scopes/scope-held-elsewhere/data/kept").exists());
+        fs::remove_dir_all(cache).unwrap();
+    }
+    #[test]
     fn temporary_storage_is_removed_even_without_owner_permissions() {
         let temp = std::env::temp_dir().join(format!("goblins-storage-{}", std::process::id()));
         fs::create_dir_all(temp.join("a/b")).unwrap();

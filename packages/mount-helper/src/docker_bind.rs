@@ -138,6 +138,24 @@ pub fn run() -> io::Result<i32> {
         ) as i32
     })?;
     cvt(unsafe { libc::setns(target.as_raw_fd(), libc::CLONE_NEWNS) })?;
+    let parent = mount_point(root, destination, directory)?;
+    cvt(unsafe {
+        libc::syscall(
+            libc::SYS_move_mount,
+            tree.as_raw_fd(),
+            c("").as_ptr(),
+            parent.as_raw_fd(),
+            c("").as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH,
+        ) as i32
+    })?;
+    Ok(0)
+}
+
+/// Create the grant's mount point at `destination` (relative, already
+/// checked) beneath the engine root, never through a symlink: a container
+/// may have planted one to redirect a later member's grant.
+fn mount_point(root: &OwnedFd, destination: &str, directory: bool) -> io::Result<OwnedFd> {
     let mut parent = root.try_clone()?;
     let parts: Vec<_> = destination.split('/').collect();
     for (i, part) in parts.iter().enumerate() {
@@ -162,15 +180,49 @@ pub fn run() -> io::Result<i32> {
         }
         parent = beneath(parent.as_raw_fd(), part)?;
     }
-    cvt(unsafe {
-        libc::syscall(
-            libc::SYS_move_mount,
-            tree.as_raw_fd(),
-            c("").as_ptr(),
-            parent.as_raw_fd(),
-            c("").as_ptr(),
-            MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH,
-        ) as i32
-    })?;
-    Ok(0)
+    Ok(parent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn a_grant_never_lands_through_a_link_a_container_planted() {
+        let root = env::temp_dir().join(format!("goblins-landing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (engine, outside) = (root.join("engine"), root.join("outside"));
+        fs::create_dir_all(engine.join("home")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let handle = open(engine.to_str().unwrap(), libc::O_PATH | libc::O_DIRECTORY).unwrap();
+        let path =
+            |fd: &OwnedFd| fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).unwrap();
+        // An ordinary grant creates its mount point inside the engine.
+        assert_eq!(
+            path(&mount_point(&handle, "home/u/work", true).unwrap()),
+            engine.join("home/u/work")
+        );
+        assert_eq!(
+            path(&mount_point(&handle, "home/u/file", false).unwrap()),
+            engine.join("home/u/file")
+        );
+        assert!(engine.join("home/u/file").is_file());
+        // A link at any component, or as the file itself, is refused.
+        symlink(&outside, engine.join("home/linked")).unwrap();
+        symlink(&outside, engine.join("linked-file")).unwrap();
+        for (destination, directory) in [
+            ("home/linked", true),
+            ("home/linked/work", true),
+            ("home/linked/file", false),
+            ("linked-file", false),
+        ] {
+            assert!(
+                mount_point(&handle, destination, directory).is_err(),
+                "{destination}"
+            );
+        }
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

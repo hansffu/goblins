@@ -1,28 +1,72 @@
-"""Real per-shell Docker engines: local images, bind authority and lifecycle.
+"""Docker in goblins, as a person and an agent use it: local images, scope engines and their lifecycle.
 
 Run on the host as a regular user with newuidmap/newgidmap and subuid/subgid.
 The default suite uses no host Docker socket, registry credentials or remote
-images. The opt-in Testcontainers check pulls Postgres and Ryuk from Docker Hub.
+images. The opt-in slow tier (GOBLINS_TEST_SLOW=1, `just test-feature slow`)
+runs Docker Compose with online networking and, with
+GOBLINS_TESTCONTAINERS_CLASSPATH, Testcontainers, which pulls Postgres and
+Ryuk from Docker Hub.
 """
-import os
+import contextlib
+import fcntl
 import http.server
 import json
+import os
 from pathlib import Path
+import resource
 import shlex
 import shutil
 import signal
-import tempfile
 import socket
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+import uuid
 
 from build_support import fixture_app, fixture_path
-from daemon_support import Daemon, ROOT, RPC, receive
+from daemon_support import Daemon, ROOT
 from terminal_support import Terminal
 
+SOCKET = "/run/goblins/docker-socket/docker.sock"
 
-class DockerTests(unittest.TestCase):
+
+@contextlib.contextmanager
+def step(name):
+    """Name the workflow step in a failure, so one long test still says where it broke."""
+    try:
+        yield
+    except AssertionError as error:
+        raise AssertionError(f"step '{name}': {error}") from error
+
+
+class HostServer:
+    """An HTTP server on the host's own address, which only online goblins reach."""
+
+    def __init__(self, test):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))  # Route lookup only; sends no packet.
+            address = probe.getsockname()[0]
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"network-ok\n")
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.ThreadingHTTPServer((address, 0), Handler)
+        test.addCleanup(server.server_close)
+        test.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.url = f"http://{address}:{server.server_port}"
+
+
+class DockerWorkflow(unittest.TestCase):
+    """Helpers for driving goblins of the docker-goblins fixture through their terminals."""
+
     @classmethod
     def setUpClass(cls):
         cls.app = fixture_app("docker-goblins")
@@ -41,235 +85,80 @@ class DockerTests(unittest.TestCase):
         shutil.copyfile(self.image, self.rw / "image.tar.gz")
         self.env = {**os.environ, "GOBLINS_TEST_ROOT": str(self.root), "XDG_CACHE_HOME": str(self.root / "cache")}
         self.storage = self.root / "cache/goblins/docker"
-        self.named_storage = False
-        self.addCleanup(self.assert_storage_empty)
-        self.d = Daemon(self.app, env=self.env)
+        self.counter = 0
+
+    def start_daemon(self, **options):
+        self.d = Daemon(self.app, env=self.env, **options)
         self.addCleanup(self.d.close)
+        return self.d
 
-    def assert_storage_empty(self):
-        if self.storage.exists():
-            paths = list(self.storage.glob("session-*")) if self.named_storage else list(self.storage.iterdir())
-            self.assertEqual(paths, [], "Anonymous Docker storage survived session cleanup")
-
-    def shell(self, name="offline", cwd=None, scope=None):
-        if cwd is None and scope is None:
-            session = self.d.start(name, wait=False)["session"]
-        else:
-            import uuid
-            params = {"name": name, "configuration": self.d.manifest, "key": uuid.uuid4().hex,
-                      "rows": 24, "cols": 100}
-            if cwd is not None:
-                params["cwd"] = str(cwd)
-            if scope is not None:
-                params["scope"] = scope
-            session = self.d.rpc.call("sessions.start", params)["session"]
+    def attach(self, session):
         terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", session])
         self.addCleanup(terminal.close)
         try:
-            terminal.expect("docker-test>", timeout=60)
+            terminal.expect("docker-test>", timeout=120)
         except AssertionError as error:
             raise AssertionError(self.d.get(session).get("detail") or str(error)) from error
-        return session, terminal
+        return terminal
 
-    def run_ok(self, terminal, text, timeout=40):
-        terminal.send(text + "; printf '\\nDOCKER_TEST_STATUS=%s\\n' \"$?\"\n")
-        result = terminal.expect(r"([\s\S]*?)\nDOCKER_TEST_STATUS=(\d+)\n", timeout=timeout)
-        self.assertEqual(result[2], b"0", result[1].decode(errors="replace"))
-        terminal.expect("docker-test>")
+    def shell(self, name, cwd=None, scope=None, **params):
+        params = {"name": name, "configuration": self.d.manifest, "key": uuid.uuid4().hex,
+                  "rows": 24, "cols": 100, **params}
+        if name is None:
+            del params["name"]  # a resumed goblin's configuration is recorded
+        if cwd is not None:
+            params["cwd"] = str(cwd)
+        if scope is not None:
+            params["scope"] = scope
+        session = self.d.rpc.call("sessions.start", params)["session"]
+        return session, self.attach(session)
+
+    def member(self, owner, name, agent_name=None):
+        """A goblin the raid owner runs (`goblin run`), attached from the host."""
+        session = self.d.member(owner, name, agent_name=agent_name)["session"]
+        return session, self.attach(session)
+
+    def send(self, terminal, script):
+        """Start a command; return the marker that end() waits for."""
+        self.counter += 1
+        terminal.send(f"printf 'BEGIN%s\\n' {self.counter}; {script}; printf '\\nEND{self.counter}=%s\\n' \"$?\"\n")
+        return self.counter
+
+    def end(self, terminal, n, timeout=60):
+        match = terminal.expect(rf"BEGIN{n}\n([\s\S]*?)\nEND{n}=(\d+)\n", timeout=timeout)
+        return match.group(1).decode(errors="replace"), int(match.group(2))
+
+    def ok(self, terminal, script, timeout=60):
+        output, code = self.end(terminal, self.send(terminal, script), timeout)
+        self.assertEqual(code, 0, f"{script}\n{output}")
+        return output
 
     def load(self, terminal):
-        self.run_ok(terminal, f"docker load -i {shlex.quote(str(self.rw / 'image.tar.gz'))}")
+        self.ok(terminal, f"docker load -i {shlex.quote(str(self.rw / 'image.tar.gz'))}")
 
-    def enable(self, session, terminal, approved=True, options=""):
-        terminal.send("goblin enable-docker --reason 'integration test' " + options + "\n")
+    def enable(self, session, terminal, approved=True):
+        n = self.send(terminal, "goblin enable-docker --reason 'integration test'")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
         self.assertEqual(request["kind"], "docker")
         self.d.decide(request, approved)
-        result = terminal.expect('"status":"(ready|denied|error)"', timeout=60)
-        self.assertEqual(result[1].decode(), "ready" if approved else "denied", self.d.get(session).get("detail"))
-        terminal.expect("docker-test>")
+        output, code = self.end(terminal, n)
+        self.assertEqual(code, 0 if approved else 1, self.d.get(session).get("detail") or output)
+        self.assertIn('"status":"ready"' if approved else '"status":"denied"', output)
 
-    def test_enable_docker_on_demand(self):
-        session, terminal = self.shell("ondemand")
-        resources = self.d.state / session / "resources"
-        self.assertFalse((resources / "docker.log").exists())
-        self.assertFalse((resources / "docker-socket/docker.sock").exists())
-        self.assert_storage_empty()
-        self.run_ok(terminal, "! command -v docker; readlink /proc/self/ns/net > /workspace/network-before")
-        self.enable(session, terminal, approved=False)
-        self.assert_storage_empty()
-        self.assertFalse(self.d.get(session)["docker_enabled"])
-        self.assertFalse(self.d.record(session)["docker_enabled"])
-        # A server already running in the shell must remain reachable after activation.
-        self.run_ok(terminal, "(python -m http.server 18081 --bind 127.0.0.1 --directory /workspace >/tmp/http.log 2>&1 &)")
-        self.enable(session, terminal)
-        self.assertTrue(self.d.get(session)["docker_enabled"])
-        # Recorded, so a recreated goblin attaches before its first command.
-        self.d.wait(lambda: self.d.record(session)["docker_enabled"])
-        self.assertNotIn("Docker engine", self.d.get(session)["packages"])
-        self.run_ok(terminal, "test \"$(readlink /proc/self/ns/net)\" = \"$(cat /workspace/network-before)\"")
-        self.load(terminal)
-        self.run_ok(terminal, "docker run --rm --network host goblins-test wget -q -O - -T 5 http://127.0.0.1:18081/network-before")
-        store, = self.storage.iterdir()
-        self.run_ok(terminal, "goblin enable-docker")
-        self.assertEqual(list(self.storage.iterdir()), [store])
-        terminal.send("exit\n")
-        self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
-        self.assertFalse(store.exists())
-
-    def test_recreate_attaches_recorded_docker_before_the_first_command(self):
-        import uuid
-        # 'ondemand' does not enable Docker itself; only its record does.
-        session, terminal = self.shell("ondemand")
-        self.enable(session, terminal)
-        terminal.send("exit\n")
-        self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
-        self.d.wait_record_released(self.d.record(session)["id"])
-        self.assertTrue(self.d.record(session)["docker_enabled"])
-        launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
-                                                    "recreate": session, "rows": 24, "cols": 100})
-        recreated = launch["session"]
-        terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", recreated])
-        self.addCleanup(terminal.close)
-        terminal.expect("docker-test>", timeout=120)
-        record = self.d.get(recreated)
-        self.assertTrue(record["docker_enabled"], record.get("detail"))
-        self.assertTrue(any(p.startswith("docker") for p in record["initial_packages"]), record)
-        self.run_ok(terminal, "test -S /run/goblins/docker-socket/docker.sock && docker info >/dev/null")
-        self.load(terminal)
-        self.run_ok(terminal, "docker run --rm goblins-test true")
-        self.d.wait(lambda: recreated in self.d.record(session)["sessions"])
-        self.assertTrue(self.d.record(session)["docker_enabled"])
-        terminal.send("exit\n")
-        self.d.wait(lambda: self.d.get(recreated)["state"] == "stopped")
-
-    def test_recreate_in_a_scope_without_docker_starts_without_it(self):
-        import uuid
-        home = Path(tempfile.mkdtemp(prefix="goblins-docker-home-", dir=self.root))
-        store = home / "goblins/sessions"
-        store.mkdir(parents=True, mode=0o700)
-        (store / "rec-nodocker.json").write_text(json.dumps({
-            "version": 1, "id": "rec-nodocker", "configuration": "nodocker", "agent_name": "dockless",
-            "cwd": None, "scope": "nodocker", "dev_shell": None, "docker_enabled": True,
-            "packages": {"approved": [], "denied": []}, "variables": {}, "sessions": ["rec-nodocker"],
-            "skipped": [], "created": 1, "updated": 1, "stopped": 2}))
-        d = Daemon(self.app, env=self.env, state_home=home)
-        self.addCleanup(d.close)
-        launch = d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": d.manifest,
-                                               "recreate": "rec-nodocker", "rows": 24, "cols": 100, "detached": True})
-        record = d.wait(lambda: (r if (r := d.get(launch["session"]))["state"] != "starting" else None), timeout=120)
-        self.assertEqual(record["state"], "running", record)
-        self.assertFalse(record["docker_enabled"])
-        self.assertEqual(record["skipped"], [{"name": "docker", "reason": "scope 'nodocker' does not enable Docker"}])
-        d.wait(lambda: launch["session"] in d.record("rec-nodocker")["sessions"])
-        self.assertTrue(d.record("rec-nodocker")["docker_enabled"])
-
-    def test_on_demand_offline_and_independent_scopes(self):
-        first, terminal = self.shell("plain")
-        second, other = self.shell("plain", scope="offline-b")
-        self.enable(first, terminal)
-        self.load(terminal)
-        self.assertFalse(self.d.get(second)["docker_enabled"])
-        self.run_ok(other, "! command -v docker")
-        self.enable(second, other)
-        self.run_ok(other, "test -z \"$(docker image ls -q)\"")
-        self.run_ok(terminal, "docker run --rm --network host goblins-test sh -c '! ip route | grep default'")
-        self.run_ok(terminal, f"! docker run --rm --mount type=bind,src={self.root}/secret,dst=/secret goblins-test true")
-
-    def test_docker_request_authority_and_withdrawal(self):
-        session, terminal = self.shell("plain")
-        endpoint = self.d.state / session / "resources/request.sock"
-        for params in (
-            {"kind": "docker", "package": "hello", "reason": "test"},
-            {"kind": "docker", "reason": ""},
-            {"kind": "docker", "reason": "test", "daemon": "/bin/true"},
-            {"kind": "docker", "reason": "test", "session": "other"},
-            # Scope selection happens at launch; requests cannot name one.
-            {"kind": "docker", "reason": "test", "scope": "work"},
-            {"kind": "docker", "reason": "test", "anonymous": True},
-        ):
-            peer = RPC(endpoint)
-            try:
-                with self.assertRaises(ValueError):
-                    peer.call("permissions.request", params)
-            finally:
-                peer.close()
-        peer = RPC(endpoint)
-        self.assertIn("docker-enable", peer.init["features"])
-        self.assertIn("scopes", peer.init["features"])
-        peer.send("permissions.request", {"kind": "docker", "reason": "test"})
+    def grant(self, session, terminal, package):
+        n = self.send(terminal, f"goblin request-package {package} --reason 'integration test'")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
-        self.assertIn("shared Docker engine of scope 'offline-a'", request["preview"]["description"])
-        self.assert_storage_empty()
-        concurrent = RPC(endpoint)
-        try:
-            with self.assertRaises(ValueError):
-                concurrent.call("permissions.request", {"kind": "docker", "reason": "duplicate"})
-        finally:
-            concurrent.close()
-        peer.close()
-        self.d.wait(lambda: not self.d.permissions(session=session, state="pending"))
-        with self.assertRaises(ValueError):
-            self.d.decide(request, True)
-        self.assertFalse(self.d.get(session)["docker_enabled"])
-        self.assert_storage_empty()
-        self.run_ok(terminal, "! command -v docker")
-        # A new, explicitly approved request can still succeed after withdrawal.
-        self.enable(session, terminal)
-        self.run_ok(terminal, 'case "$(goblin status)" in *"Docker: enabled"*) true;; *) false;; esac')
+        self.d.decide(request, True)
+        output, code = self.end(terminal, n, timeout=120)
+        self.assertEqual(code, 0, output)
 
-    def test_members_inherit_scope_and_activation(self):
-        self.named_storage = True
-        owner, terminal = self.shell("scoped")
-        self.enable(owner, terminal)
-        self.load(terminal)
-        member = self.d.member(owner, "scoped", agent_name="helper")["session"]
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
-        self.addCleanup(other.close)
-        other.expect("docker-test>", timeout=60)
-        self.assertTrue(self.d.get(member)["docker_enabled"])
-        self.assertEqual(self.d.get(member)["scope"], "work")
-        self.assertFalse(self.d.permissions(session=member, state="pending"))
-        self.run_ok(other, "docker image inspect goblins-test >/dev/null")
-
-    def test_inactive_owner_joins_member_started_engine(self):
-        owner, terminal = self.shell("plain")
-        member = self.d.member(owner, "plain")["session"]
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
-        self.addCleanup(other.close)
-        other.expect("docker-test>", timeout=60)
-        self.assertFalse(self.d.get(member)["docker_enabled"])
-        self.enable(member, other); self.load(other)
-        self.assertFalse(self.d.get(owner)["docker_enabled"])
-        self.run_ok(terminal, "test ! -S /run/goblins/docker-socket/docker.sock")
-        self.enable(owner, terminal)
-        self.assertEqual(len(self.engines()), 1)
-        self.run_ok(terminal, "docker image inspect goblins-test >/dev/null")
-
-    def test_activation_failure_preserves_shell_and_cleans_storage(self):
-        manifest = json.loads(Path(self.d.manifest).read_text())
-        # A trusted host manifest with a deliberately invalid engine executable.
-        config = manifest["goblins"]["plain"]["scopes"]["offline-a"]
-        config["docker"]["daemon"] = config["docker"]["client"] + "/bin/docker"
-        path = self.root / "broken-engine.json"
-        path.write_text(json.dumps(manifest))
-        session = self.d.start("plain", manifest=path)["session"]
-        terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", session])
-        self.addCleanup(terminal.close)
-        terminal.expect("docker-test>", timeout=60)
-        for _ in range(2):
-            terminal.send("goblin enable-docker\n")
-            request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
-            self.d.decide(request, True)
-            terminal.expect('"status":"error"', timeout=60)
-            terminal.expect("docker-test>")
-            self.assert_storage_empty()
-            self.assertFalse(self.d.get(session)["docker_enabled"])
-            self.run_ok(terminal, "test -d /workspace")
+    def exit(self, session, terminal):
+        terminal.send("exit\n")
+        return self.d.wait(lambda: (r if (r := self.d.get(session))["state"] == "stopped" else None))
 
     def engines(self):
-        pending = [str(self.d.process.pid)]
-        engines = set()
+        """The dockerd processes the server runs."""
+        pending, engines = [str(self.d.process.pid)], set()
         while pending:
             pid = pending.pop()
             try:
@@ -281,473 +170,424 @@ class DockerTests(unittest.TestCase):
                 pass
         return engines
 
-    def test_named_scope_lazy_sharing_idle_and_reuse(self):
-        self.named_storage = True
-        first, one = self.shell("scoped", cwd=self.rw)
-        second, two = self.shell("scoped", cwd=self.rw)
-        idle, three = self.shell("scoped", cwd=self.rw)
-        self.assertEqual(self.engines(), set())
-        self.assertFalse(self.storage.exists())
-        self.assertEqual(self.d.get(first)["scope"], "work")
-        self.enable(first, one)
-        self.load(one)
-        self.run_ok(one, "docker run --rm -v shared:/data goblins-test sh -c 'echo shared-value > /data/value'")
-        self.enable(second, two)
-        self.assertEqual(len(self.engines()), 1)
-        a = self.d.state / first / "resources/docker-socket/docker.sock"
-        b = self.d.state / second / "resources/docker-socket/docker.sock"
-        self.assertEqual(a.stat().st_ino, b.stat().st_ino)
-        self.run_ok(two, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
-        one.send("exit\n")
-        self.d.wait(lambda: self.d.get(first)["state"] == "stopped")
-        self.assertEqual(len(self.engines()), 1)
-        self.run_ok(two, "docker info >/dev/null")
-        two.send("exit\n")
-        self.d.wait(lambda: self.d.get(second)["state"] == "stopped")
-        self.d.wait(lambda: not self.engines())
-        self.assertTrue((self.storage / "scope-work").exists())
-        self.assertFalse(self.d.get(idle)["docker_enabled"])
-        self.enable(idle, three)
-        self.run_ok(three, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
-        three.send("exit\n")
-        self.d.wait(lambda: self.d.get(idle)["state"] == "stopped")
-        self.d.wait(lambda: not self.engines())
-        fresh, four = self.shell("scoped", cwd=self.rw)
-        self.enable(fresh, four)
-        self.run_ok(four, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
+    def temporary_stores(self):
+        return set(self.storage.glob("session-*"))
 
-    def test_unexpected_engine_death_stops_docker_and_non_docker_scope_members(self):
-        self.named_storage = True
-        docker, one = self.shell("scoped", cwd=self.rw)
-        idle, two = self.shell("scoped", cwd=self.rw)
-        other, three = self.shell("member", cwd=self.rw)
-        self.enable(docker, one)
-        self.assertFalse(self.d.get(idle)["docker_enabled"])
-        self.assertFalse(self.d.get(other)["docker_enabled"])
+
+class DockerOnDemandWorkflow(DockerWorkflow):
+    """A goblin asks for Docker, builds and runs local images, and gives it up when it exits."""
+
+    def test_ask_for_docker_and_work_with_containers(self):
+        # Match nix develop's nested TMPDIR: the host-side Docker socket path
+        # exceeds sockaddr_un even though the engine's internal path is short.
+        temp = tempfile.TemporaryDirectory(prefix="nix-shell-", dir="/tmp")
+        self.addCleanup(temp.cleanup)
+        with patch("tempfile.tempdir", temp.name):
+            self.start_daemon()
+        host = HostServer(self)
+
+        with step("a goblin has no Docker until it asks"):
+            # 'ondemand' is online and does not enable Docker itself.
+            session, shell = self.shell("ondemand")
+            resources = self.d.state / session / "resources"
+            self.assertFalse((resources / "docker-socket/docker.sock").exists())
+            self.assertFalse((resources / "docker.log").exists())
+            self.assertEqual(self.temporary_stores(), set())
+            self.ok(shell, "! command -v docker; readlink /proc/self/ns/net > /workspace/network-before")
+            self.ok(shell, "(python -m http.server 18081 --bind 127.0.0.1 --directory /workspace >/tmp/http.log 2>&1 &)")
+
+        with step("a denied request changes nothing"):
+            self.enable(session, shell, approved=False)
+            self.assertEqual(self.temporary_stores(), set())
+            self.assertFalse(self.d.get(session)["docker_enabled"])
+            self.assertFalse(self.d.record(session)["docker_enabled"])
+            self.ok(shell, "! command -v docker")
+
+        with step("an approved request attaches the running shell, whose server stays reachable"):
+            self.enable(session, shell)
+            record = self.d.get(session)
+            self.assertTrue(record["docker_enabled"])
+            self.assertNotIn("Docker engine", record["packages"])
+            self.d.wait(lambda: self.d.record(session)["docker_enabled"])
+            self.assertGreaterEqual(len(os.fsencode(resources / "docker-socket/docker.sock")), 108)
+            self.ok(shell, 'test "$(readlink /proc/self/ns/net)" = "$(cat /workspace/network-before)"; '
+                           'case "$(goblin status)" in *"Docker: enabled"*) true;; *) false;; esac')
+            self.load(shell)
+            self.ok(shell, "docker run --rm --network host goblins-test wget -q -O - -T 5 http://127.0.0.1:18081/network-before")
+            store, = self.temporary_stores()
+            # Asking again needs no approval and starts nothing new.
+            self.ok(shell, "goblin enable-docker")
+            self.assertEqual(self.temporary_stores(), {store})
+
+        with step("build and run local images in a confined engine"):
+            self.ok(shell, "test \"$(docker info --format '{{.Driver}}')\" = overlay2")
+            self.ok(shell, f"mkdir /tmp/build && printf 'FROM goblins-test:latest\\nRUN echo built-ok > /proof\\n' > /tmp/build/Dockerfile && "
+                           f"docker build --pull=false -t goblins-built /tmp/build")
+            self.ok(shell, "docker run --rm --network none goblins-built sh -c 'test \"$(cat /proof)\" = built-ok'")
+            self.ok(shell, "docker run --rm --network none --user 1234:1234 goblins-test sh -c 'test \"$(id -u)\" = 1234'")
+            # Like the Postgres entrypoint: start as root, initialize a volume,
+            # then drop supplementary groups, GID and UID before serving.
+            as_postgres = 'test "$(id -u)" = 70 && test "$(id -g)" = 70 && echo written > /data/proof'
+            entrypoint = ("mkdir -p /etc; echo postgres:x:70:70:postgres:/data:/bin/sh > /etc/passwd; "
+                          "echo postgres:x:70: > /etc/group; chown 70:70 /data; "
+                          f"su -s /bin/sh postgres -c {shlex.quote(as_postgres)}")
+            self.ok(shell, f"docker run --rm --network none -v user-data:/data goblins-test sh -c {shlex.quote(entrypoint)}")
+            self.ok(shell, "docker run --rm --network none --user 70:70 -v user-data:/data goblins-test sh -c 'test \"$(cat /data/proof)\" = written'")
+            self.ok(shell, "docker run --rm --network none --user 70:70 --group-add 2345 goblins-test sh -c 'test \"$(id -G)\" = \"70 2345\"'")
+            self.ok(shell, "! docker run --rm --network none --group-add 65537 goblins-test true")
+
+        with step("containers get the goblin's binds and nothing else"):
+            self.ok(shell, f"docker run --rm --network none -v {self.rw}:/work -v {self.ro}:/ro:ro goblins-test "
+                           "sh -c 'cat /ro/marker && echo written > /work/result && ! echo bad > /ro/marker'")
+            self.assertEqual((self.rw / "result").read_text(), "written\n")
+            # Bind resolution happens in the confined engine, not in the host.
+            self.ok(shell, f"! docker run --rm --network none --mount type=bind,src={self.root}/secret,dst=/secret goblins-test cat /secret")
+            # Even a privileged container cannot remount a read-only grant or the cgroup tree.
+            self.ok(shell, f"docker run --rm --privileged --network none -v /sys:/sys:ro -v {self.ro}:/ro:ro goblins-test "
+                           "sh -c '! mount -o remount,rw /ro && ! echo bad > /ro/marker'")
+            self.ok(shell, f"! docker run --rm --privileged --network none -v /sys:/sys:ro -v {self.ro}:/ro goblins-test sh -c 'echo bad > /ro/marker'")
+            self.assertEqual((self.ro / "marker").read_text(), "readonly-ok\n")
+            self.ok(shell, "docker run --rm --privileged --network none -v /sys:/sys:ro goblins-test sh -c '! mount -o remount,rw /sys/fs/cgroup'")
+            self.ok(shell, "docker run --rm --privileged --network none -v /sys:/sys:ro goblins-test sh -c 'mkdir /cgroup-probe; ! mount -t cgroup2 none /cgroup-probe'")
+            self.ok(shell, "! docker run --rm --cgroupns private --network none goblins-test true")
+            # The engine's storage is hidden even from privileged containers.
+            self.ok(shell, "docker run --rm --privileged --network none -v /sys:/sys:ro -v /run/goblins/docker-storage-parent:/probe:ro "
+                           "goblins-test sh -c 'test -z \"$(ls -A /probe)\"'")
+            self.ok(shell, f"! docker run --rm --network none --mount type=bind,src={self.storage},dst=/probe goblins-test true")
+            self.ok(shell, "echo workspace-ok > /workspace/shell-file; docker run --rm --network none -v /workspace:/work goblins-test "
+                           "sh -c 'test \"$(cat /work/shell-file)\" = workspace-ok'")
+
+        with step("services find each other by name and publish ports to the goblin, as Compose uses them"):
+            self.ok(shell, "docker network create services >/dev/null && "
+                           "docker run -d --network services --name web -p 127.0.0.1::8080 goblins-test httpd -f -p 8080 -h /bin >/dev/null")
+            self.ok(shell, "docker run --rm --network services goblins-test sh -c "
+                           "'for i in $(seq 50); do wget -q -O /dev/null -T 2 http://web:8080/sh && exit 0; sleep .1; done; exit 1'")
+            # Testcontainers asks the engine for the mapped port and connects to it.
+            self.ok(shell, 'curl --retry 10 --retry-connrefused --retry-delay 1 --fail -o /dev/null "http://$(docker port web 8080/tcp | head -1)/sh"')
+            # An online goblin's containers reach the network on both networks.
+            self.ok(shell, f"docker run --rm goblins-test sh -c 'test \"$(wget -q -O - -T 5 {host.url})\" = network-ok'")
+            self.ok(shell, f"docker run --rm --network services goblins-test sh -c 'test \"$(wget -q -O - -T 5 {host.url})\" = network-ok'")
+
+        with step("a Testcontainers-style client drives the engine through its socket"):
+            self.ok(shell, f'test "$DOCKER_HOST" = unix://{SOCKET} && test "$TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED" = false')
+            self.ok(shell, f'case "$(curl --fail --silent --unix-socket {SOCKET} http://docker/version)" in *ApiVersion*) true;; *) false;; esac')
+            # Like Ryuk: an unprivileged container given the socket removes the
+            # client's labelled containers through it.
+            self.ok(shell, "docker run -d --network none --label goblins.reaper=test goblins-test sleep 300 >/dev/null")
+            self.ok(shell, f'docker run --rm --network none -v {SOCKET}:/var/run/docker.sock -v /nix/store:/nix/store:ro goblins-test '
+                           '"$(readlink -f "$(command -v docker)")" rm -f $(docker ps -aq --filter label=goblins.reaper=test)')
+            self.ok(shell, 'test -z "$(docker ps -aq --filter label=goblins.reaper=test)"')
+
+        with step("goblins gc leaves a running engine alone"):
+            self.d.cli("gc")
+            self.assertEqual(self.temporary_stores(), {store})
+            self.ok(shell, "docker run --rm --network none goblins-test true")
+
+        with step("a package granted later runs in a container"):
+            self.grant(session, shell, "hello")
+            self.ok(shell, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm --network none -v /nix/store:/nix/store:ro goblins-test "$hello"')
+            self.ok(shell, 'package=$(dirname "$(dirname "$(readlink -f "$(command -v hello)")")"); '
+                           'docker run --rm --network none -v "$package:/granted:ro" goblins-test test -x /granted/bin/hello')
+
+        with step("an offline goblin in another scope has its own engine and reaches nothing"):
+            # 'offline' attaches at launch.
+            other, offline = self.shell("offline", scope="offline-b")
+            other_store, = self.temporary_stores() - {store}
+            self.ok(offline, 'test -z "$(docker image ls -q)"')
+            self.load(offline)
+            self.ok(offline, "docker run --rm --network none -v keep:/data goblins-test sh -c 'echo keep > /data/marker'")
+            # 'host' means this goblin's network, never the real host network.
+            self.ok(offline, f"! docker run --rm --network host goblins-test wget -q -O - -T 1 {host.url}")
+            self.ok(offline, f"! docker run --rm goblins-test wget -q -O - -T 1 {host.url}")
+            self.ok(offline, f"mkdir /tmp/fetch && printf 'FROM goblins-test:latest\\nRUN wget -q -O /proof -T 1 {host.url}\\n' > /tmp/fetch/Dockerfile && "
+                             "! docker build --pull=false /tmp/fetch")
+
+        with step("exiting removes the engine's data, even what containers made hard to delete"):
+            (self.rw / "persistent").write_text("host-data\n")
+            self.ok(shell, "docker run --rm --network none -v disposable:/data goblins-test sh -c "
+                           "'mkdir /data/locked; echo secret > /data/locked/file; chown -R 1234:1234 /data/locked; chmod 000 /data/locked; "
+                           f"ln -s /run/goblins/docker-storage-parent/{other_store.name} /data/sibling; ln -s {self.rw} /data/host'")
+            locked = store / "volumes/disposable/_data/locked"
+            self.assertNotEqual(locked.stat().st_uid, os.getuid())
+            self.assertEqual(locked.stat().st_mode & 0o777, 0)
+            self.ok(shell, "docker run -d --network none goblins-test sleep 300 >/dev/null")
+            self.exit(session, shell)
+            self.assertFalse(store.exists())
+            self.assertFalse((resources / "docker-socket/docker.sock").exists())
+            self.assertEqual((self.rw / "persistent").read_text(), "host-data\n")
+            self.assertTrue(other_store.exists())
+            self.ok(offline, "docker run --rm --network none -v keep:/data goblins-test sh -c 'test \"$(cat /data/marker)\" = keep'")
+
+        with step("a resumed goblin has Docker before its first command"):
+            self.d.wait_record_released(self.d.record(session)["id"])
+            self.assertTrue(self.d.record(session)["docker_enabled"])
+            resumed, shell = self.shell(None, recreate=session)
+            record = self.d.get(resumed)
+            self.assertTrue(record["docker_enabled"], record.get("detail"))
+            self.ok(shell, f"test -S {SOCKET} && docker info >/dev/null")
+            self.load(shell)
+            self.ok(shell, "docker run --rm --network none goblins-test true")
+            self.exit(resumed, shell)
+            self.d.wait(lambda: resumed in self.d.record(session)["sessions"])
+            self.assertTrue(self.d.record(session)["docker_enabled"])
+
+        with step("when every goblin has exited no engine data is left"):
+            self.exit(other, offline)
+            self.d.wait(lambda: not self.temporary_stores())
+
+
+class DockerSharedScopeWorkflow(DockerWorkflow):
+    """Goblins in one scope share its engine; another scope's goblins see none of it."""
+
+    def test_goblins_share_their_scope_engine(self):
+        extra_ro, extra_rw = self.root / "extra-ro", self.root / "extra-rw"
+        extra_ro.mkdir()
+        extra_rw.mkdir()
+        (extra_ro / "marker").write_text("scope-shared\n")
+        # Joining an engine grants each member's store closure. A server
+        # started with a small soft limit must neither run out of descriptors
+        # nor pass its raised limit on to sandbox payloads.
+        _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        self.start_daemon(preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (128, hard)))
+
+        with step("a goblin without a Docker scope cannot ask for Docker"):
+            loner, alone = self.shell("unscoped")
+            self.ok(alone, "! command -v docker; ! goblin enable-docker")
+            self.assertFalse(self.d.permissions(session=loner, state="pending"))
+            self.assertFalse(self.d.get(loner)["docker_enabled"])
+
+        with step("A starts the scope's engine and makes an image, a volume and a published port"):
+            a, shell_a = self.shell("scoped")
+            self.assertEqual(self.d.get(a)["scope"], "work")
+            self.assertEqual(self.engines(), set())
+            self.assertFalse(self.storage.exists())
+            self.ok(shell_a, "echo inherited > /workspace/marker")
+            self.enable(a, shell_a)
+            self.load(shell_a)
+            self.ok(shell_a, "mkdir /tmp/build && printf 'FROM goblins-test:latest\\nRUN echo made-by-a > /made-by\\n' > /tmp/build/Dockerfile && "
+                             "docker build --pull=false -t made-by-a /tmp/build")
+            self.ok(shell_a, "docker run --rm --network none -v shared:/data goblins-test sh -c 'echo shared-value > /data/value'")
+            self.ok(shell_a, "docker run -d --name shared-web -p 18082:8080 goblins-test httpd -f -p 8080 -h /bin >/dev/null")
+            engine, = self.engines()
+
+        with step("a goblin A runs starts attached, without asking"):
+            helper, shell_m = self.member(a, "scoped", agent_name="helper")
+            record = self.d.get(helper)
+            self.assertTrue(record["docker_enabled"])
+            self.assertEqual(record["scope"], "work")
+            self.assertFalse(self.d.permissions(session=helper, state="pending"))
+            self.ok(shell_m, "docker run --rm --network none made-by-a cat /made-by")
+
+        with step("B in the same scope asks and sees A's image, volume and port"):
+            b, shell_b = self.shell("scoped", cwd=self.rw)
+            self.enable(b, shell_b)
+            sockets = [self.d.state / s / "resources/docker-socket/docker.sock" for s in (a, b)]
+            self.assertEqual(sockets[0].stat().st_ino, sockets[1].stat().st_ino)
+            self.assertEqual(self.engines(), {engine})
+            self.ok(shell_b, "docker run --rm --network none made-by-a sh -c 'test \"$(cat /made-by)\" = made-by-a'")
+            self.ok(shell_b, "docker run --rm --network none -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
+            # Members share the scope network: published ports need no forwarding.
+            self.ok(shell_b, "curl --retry 10 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:18082/sh -o /dev/null")
+            self.ok(shell_b, 'test "$(ulimit -n)" = 128')
+
+        with step("a goblin that attaches at launch brings its package and its binds, read-only kept read-only"):
+            eager, shell_e = self.shell("eager-extra", cwd=self.rw)
+            record = self.d.get(eager)
+            self.assertTrue(record["docker_enabled"])
+            self.assertEqual(record["scope"], "work")
+            self.assertEqual(self.engines(), {engine})
+            self.ok(shell_e, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm --network none -v /nix/store:/nix/store:ro goblins-test "$hello"')
+            # Its grants join the engine, for every member.
+            self.ok(shell_a, f"docker run --rm --network none -v {extra_ro}:/ro:ro -v {extra_rw}:/rw goblins-test "
+                             "sh -c 'test \"$(cat /ro/marker)\" = scope-shared; echo shared > /rw/marker'")
+            self.assertEqual((extra_rw / "marker").read_text(), "shared\n")
+            self.ok(shell_a, f"docker run --rm --privileged --network none -v /sys:/sys:ro -v {extra_ro}:/ro:ro goblins-test "
+                             "sh -c '! mount -o remount,rw /ro && ! echo bad > /ro/marker'")
+            self.ok(shell_a, f"! docker run --rm --privileged --network none -v /sys:/sys:ro -v {extra_ro}:/ro goblins-test sh -c 'echo bad > /ro/marker'")
+            self.exit(eager, shell_e)
+            self.ok(shell_a, f"docker run --rm --network none -v {extra_ro}:/ro:ro goblins-test cat /ro/marker")
+            self.assertEqual((extra_ro / "marker").read_text(), "scope-shared\n")
+
+        with step("C in another scope sees none of it; its member started that scope's engine"):
+            c, shell_c = self.shell("member", cwd=self.rw)
+            self.assertEqual(self.d.get(c)["scope"], "other")
+            worker, shell_w = self.member(c, "member")
+            self.assertFalse(self.d.get(worker)["docker_enabled"])
+            self.enable(worker, shell_w)
+            self.load(shell_w)
+            self.assertFalse(self.d.get(c)["docker_enabled"])
+            self.ok(shell_c, f"test ! -S {SOCKET}")
+            self.enable(c, shell_c)
+            self.assertEqual(len(self.engines()), 2)
+            self.ok(shell_c, "docker image inspect goblins-test >/dev/null; ! docker image inspect made-by-a")
+            self.ok(shell_c, '! docker volume inspect shared; ! curl --fail --max-time 2 http://127.0.0.1:18082/sh -o /dev/null')
+            self.exit(worker, shell_w)
+            self.exit(c, shell_c)
+            self.d.wait(lambda: self.engines() == {engine})
+
+        with step("A exits and its member's agent crashes; the engine keeps their workspace for the others"):
+            workspace = self.d.state / a / "resources/workspace"
+            self.exit(a, shell_a)
+            # The member's payload dies by SIGKILL while the engine stays up.
+            shell_m.send("kill -KILL $$\n")
+            crashed = self.d.wait(lambda: (r if (r := self.d.get(helper))["state"] == "stopped" else None))
+            self.assertNotEqual(crashed["exit_code"], 0, crashed)
+            self.d.cli("gc")
+            self.assertEqual(self.engines(), {engine})
+            # gc kept both donors' resources: the engine still holds their leases.
+            for donor in (a, helper):
+                resources = self.d.state / donor / "resources"
+                self.assertTrue(resources.exists(), donor)
+                with open(resources / ".gc-lease", "rb") as lease:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.ok(shell_b, "docker run --rm --network none -v /workspace:/inherited goblins-test "
+                             "sh -c 'test \"$(cat /inherited/marker)\" = inherited; echo container-write > /inherited/after'")
+            self.assertEqual((workspace / "after").read_text(), "container-write\n")
+
+        with step("a package granted after they left still reaches the engine"):
+            self.grant(b, shell_b, "hello")
+            self.ok(shell_b, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm --network none -v /nix/store:/nix/store:ro goblins-test "$hello"')
+            self.assertEqual(self.engines(), {engine})
+
+        with step("when the last member leaves the engine stops; the scope keeps its data"):
+            self.exit(b, shell_b)
+            self.d.wait(lambda: not self.engines())
+            for donor in (a, helper):
+                self.d.wait(lambda donor=donor: not (self.d.state / donor / "resources").exists())
+            self.assertTrue((self.storage / "scope-work").exists())
+            fresh, shell_f = self.shell("scoped", cwd=self.rw)
+            self.enable(fresh, shell_f)
+            self.ok(shell_f, "docker run --rm --network none -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
+            self.ok(shell_f, "docker image inspect made-by-a >/dev/null")
+
+        with step("scope clear waits for the scope to be unused, then empties it"):
+            self.ok(shell_f, "docker run --rm --network none -v database:/data goblins-test sh -c "
+                             "'mkdir /data/private; echo database > /data/private/value; chown -R 1234:1234 /data/private; chmod 000 /data/private'")
+            (self.rw / "keep").write_text("host-side effect")
+            refused = self.d.cli("scope", "clear", "work", check=False)
+            self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+            self.assertIn("in use", refused.stderr)
+            self.d.cli("gc")
+            self.ok(shell_f, "docker image inspect made-by-a >/dev/null")
+            self.exit(fresh, shell_f)
+            self.d.wait(lambda: not (self.d.state / fresh / "resources").exists())
+            self.d.cli("scope", "clear", "work")
+            self.assertFalse((self.storage / "scope-work").exists())
+            self.assertEqual((self.rw / "keep").read_text(), "host-side effect")
+            again, shell_g = self.shell("scoped", cwd=self.rw)
+            self.enable(again, shell_g)
+            self.ok(shell_g, 'test -z "$(docker image ls -q)"; test -z "$(docker volume ls -q)"')
+            self.exit(again, shell_g)
+            self.d.wait(lambda: not (self.d.state / again / "resources").exists())
+            self.d.process.terminate()
+            self.d.process.wait(timeout=10)
+            self.assertTrue(all(not (self.d.state / s).exists() for s in (a, b, fresh, again)))
+
+
+class DockerFailureWorkflow(DockerWorkflow):
+    """When an engine or the server fails, goblins and their data are not left behind."""
+
+    def test_an_engine_that_cannot_start_leaves_the_goblin_working(self):
+        self.start_daemon()
+        manifest = json.loads(Path(self.d.manifest).read_text())
+        # A trusted host manifest with a deliberately invalid engine executable.
+        config = manifest["goblins"]["plain"]["scopes"]["offline-a"]
+        config["docker"]["daemon"] = config["docker"]["client"] + "/bin/docker"
+        path = self.root / "broken-engine.json"
+        path.write_text(json.dumps(manifest))
+        session, shell = self.shell("plain", configuration=str(path))
+        for _ in range(2):
+            n = self.send(shell, "goblin enable-docker")
+            request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
+            self.d.decide(request, True)
+            output, code = self.end(shell, n)
+            self.assertEqual(code, 1, output)
+            self.assertIn('"status":"error"', output)
+            self.assertEqual(self.temporary_stores(), set())
+            self.assertFalse(self.d.get(session)["docker_enabled"])
+            self.ok(shell, "test -d /workspace")
+
+    def test_an_engine_crash_stops_the_goblins_of_its_scope(self):
+        self.start_daemon()
+        user, shell = self.shell("scoped", cwd=self.rw)
+        idle, _ = self.shell("scoped", cwd=self.rw)
+        elsewhere, other = self.shell("member", cwd=self.rw)
+        self.enable(user, shell)
         engine, = self.engines()
         engine_fd = os.pidfd_open(int(engine))
         try:
             signal.pidfd_send_signal(engine_fd, signal.SIGKILL)
         finally:
             os.close(engine_fd)
-        for member in (docker, idle):
+        for member in (user, idle):
             record = self.d.wait(lambda: (r if (r := self.d.get(member))["state"] == "stopped" else None))
             self.assertEqual(record["exit_code"], 1, record)
             self.assertIsNone(record["stop_reason"], record)
-        self.assertEqual(self.d.get(other)["state"], "running")
-        self.run_ok(three, "test -d /workspace")
+        self.assertEqual(self.d.get(elsewhere)["state"], "running")
+        self.ok(other, "test -d /workspace")
 
-    def test_scope_clear_removes_subordinate_owned_volumes_and_restarts_empty(self):
-        self.named_storage = True
-        session, terminal = self.shell("scoped", cwd=self.rw)
-        self.enable(session, terminal)
-        self.load(terminal)
-        self.run_ok(terminal, "docker run --rm -v database:/data goblins-test sh -c 'mkdir /data/private; echo database > /data/private/value; chown -R 1234:1234 /data/private; chmod 000 /data/private'")
-        (self.rw / "keep").write_text("host-side effect")
-        refused = self.d.cli("scope", "clear", "work", check=False)
-        self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
-        self.assertIn("in use", refused.stderr)
+    def test_containers_and_engine_data_go_when_the_server_dies(self):
+        self.start_daemon()
+        # 'offline' attaches at launch, to an engine of its own.
+        session, shell = self.shell("offline")
+        self.load(shell)
+        self.ok(shell, "docker run --rm --network none -v crash-data:/data goblins-test sh -c "
+                       "'mkdir /data/locked; echo saved > /data/locked/file; chown -R 1234:1234 /data/locked; chmod 000 /data/locked'")
+        self.ok(shell, "docker run -d --network none goblins-test sleep 300 >/dev/null")
+        self.assertTrue(self.temporary_stores())
+        descendants = {}
+        pending = [str(self.d.process.pid)]
+        while pending:
+            for task in Path(f"/proc/{pending.pop()}/task").iterdir():
+                with contextlib.suppress(FileNotFoundError):
+                    for child in (task / "children").read_text().split():
+                        if child not in descendants:
+                            descendants[child] = Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[19]
+                            pending.append(child)
+        self.assertTrue(any(Path(f"/proc/{pid}/comm").read_text().strip() == "dockerd" for pid in descendants))
+        self.d.process.kill()
+        self.d.process.wait(timeout=5)
+
+        def dead(pid, start):
+            try:
+                fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                return fields[0] == "Z" or fields[19] != start
+            except FileNotFoundError:
+                return True
+
+        self.d.wait(lambda: all(dead(pid, start) for pid, start in descendants.items()))
+        self.d.wait(lambda: not list(self.storage.iterdir()))
         self.d.cli("gc")
-        self.run_ok(terminal, "docker image inspect goblins-test >/dev/null")
-        terminal.send("exit\n")
-        self.d.wait(lambda: not (self.d.state / session / "resources").exists())
-        self.assertTrue((self.storage / "scope-work").exists())
-        self.d.cli("scope", "clear", "work")
-        self.assertFalse((self.storage / "scope-work").exists())
-        self.assertEqual((self.rw / "keep").read_text(), "host-side effect")
-        fresh, other = self.shell("scoped", cwd=self.rw)
-        self.enable(fresh, other)
-        self.run_ok(other, 'test -z "$(docker image ls -q)"; test -z "$(docker volume ls -q)"')
-        other.send("exit\n")
-        self.d.wait(lambda: not (self.d.state / fresh / "resources").exists())
-        self.d.process.terminate()
-        self.d.process.wait(timeout=10)
-        self.assertTrue(all(not (self.d.state / sid).exists() for sid in (session, fresh)))
+        self.assertFalse((self.d.state / session).exists())
 
-    def test_gc_keeps_a_running_temporary_engine_and_its_storage(self):
-        session, terminal = self.shell()
-        self.load(terminal)
-        stores = list(self.storage.glob("session-*"))
-        self.assertEqual(len(stores), 1)
-        self.d.cli("gc")
-        self.assertTrue(stores[0].exists())
-        self.run_ok(terminal, "docker run --rm goblins-test true")
 
-    def test_scope_selection_inheritance_and_published_ports(self):
-        self.named_storage = True
-        first, one = self.shell("scoped", cwd=self.rw)
-        self.enable(first, one)
-        self.load(one)
-        # Members share the scope network: published ports need no forwarding.
-        second, two = self.shell("member", cwd=self.rw, scope="work")
-        self.assertEqual(self.d.get(second)["scope"], "work")
-        self.enable(second, two)
-        self.run_ok(one, "docker run -d --name shared-web -p 18082:8080 goblins-test httpd -f -p 8080 -h /bin")
-        self.run_ok(two, "curl --retry 10 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:18082/sh -o /dev/null")
-        # A goblin it runs inherits the selected scope and its attachment.
-        created = self.d.member(second, "member", key="inherited-work")["session"]
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", created])
-        self.addCleanup(other.close)
-        other.expect("docker-test>", timeout=60)
-        self.assertEqual(self.d.get(created)["scope"], "work")
-        self.assertTrue(self.d.get(created)["docker_enabled"])
-        self.run_ok(other, "docker image inspect goblins-test >/dev/null; curl --fail http://127.0.0.1:18082/sh -o /dev/null")
-        # The member's default scope has its own engine and network.
-        third, three = self.shell("member", cwd=self.rw)
-        self.assertEqual(self.d.get(third)["scope"], "other")
-        self.enable(third, three)
-        self.run_ok(three, "test -z \"$(docker image ls -q)\"")
-        self.run_ok(three, "! curl --fail --max-time 2 http://127.0.0.1:18082/sh -o /dev/null")
+@unittest.skipUnless(os.environ.get("GOBLINS_TEST_SLOW"),
+                     "slow tier: set GOBLINS_TEST_SLOW=1 or run `just test-feature slow`")
+class DockerSlowTier(DockerWorkflow):
+    """Real tools with online networking. The behaviour they rely on is also
+    checked, faster, in DockerOnDemandWorkflow and DockerSharedScopeWorkflow."""
 
-    def test_members_join_engine_under_low_descriptor_limit(self):
-        # Joining an engine grants each member's store closure. A server
-        # started with a small soft limit must neither run out of descriptors
-        # nor pass its raised limit on to sandbox payloads.
-        import resource
-        self.named_storage = True
-        (self.root / "extra-ro").mkdir()
-        (self.root / "extra-rw").mkdir()
-        _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        self.d.close()
-        self.d = Daemon(self.app, env=self.env,
-                        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (128, hard)))
-        self.addCleanup(self.d.close)
-        first, one = self.shell("scoped", cwd=self.rw)
-        self.enable(first, one); self.load(one)
-        second, two = self.shell("extra", cwd=self.rw)
-        self.enable(second, two)
-        self.run_ok(two, "docker image inspect goblins-test >/dev/null")
-        self.run_ok(two, "test \"$(ulimit -n)\" = 128")
-
-    def test_named_scope_live_grant_union_keeps_readonly(self):
-        self.named_storage = True
-        extra_ro = self.root / "extra-ro"; extra_ro.mkdir()
-        extra_rw = self.root / "extra-rw"; extra_rw.mkdir()
-        (extra_ro / "marker").write_text("scope-shared\n")
-        first, one = self.shell("scoped", cwd=self.rw)
-        self.enable(first, one); self.load(one)
-        second, two = self.shell("extra", cwd=self.rw)
-        self.enable(second, two)
-        self.run_ok(one, f"docker run --rm -v {extra_ro}:/ro:ro -v {extra_rw}:/rw goblins-test sh -c 'test \"$(cat /ro/marker)\" = scope-shared; echo shared > /rw/marker'")
-        self.assertEqual((extra_rw / "marker").read_text(), "shared\n")
-        self.run_ok(one, f"docker run --rm --privileged -v /sys:/sys:ro -v {extra_ro}:/ro:ro goblins-test sh -c '! mount -o remount,rw /ro && ! echo bad > /ro/marker'")
-        self.run_ok(one, f"! docker run --rm --privileged -v /sys:/sys:ro -v {extra_ro}:/ro goblins-test sh -c 'echo bad > /ro/marker'")
-        two.send("exit\n")
-        self.d.wait(lambda: self.d.get(second)["state"] == "stopped")
-        self.run_ok(one, f"docker run --rm -v {extra_ro}:/ro:ro goblins-test cat /ro/marker")
-
-    def test_eager_member_joins_with_initial_packages(self):
-        self.named_storage = True
-        (self.root / "extra-ro").mkdir()
-        (self.root / "extra-rw").mkdir()
-        first, one = self.shell("scoped", cwd=self.rw)
-        self.enable(first, one); self.load(one)
-        second, two = self.shell("eager-extra", cwd=self.rw)
-        self.assertTrue(self.d.get(second)["docker_enabled"])
-        self.assertEqual(self.d.get(second)["scope"], "work")
-        self.assertEqual(len(self.engines()), 1)
-        self.run_ok(two, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm -v /nix/store:/nix/store:ro goblins-test "$hello"')
-
-    def test_engine_sees_store_paths_granted_after_attach(self):
-        self.named_storage = True
-        session, terminal = self.shell("scoped", cwd=self.rw)
-        self.enable(session, terminal); self.load(terminal)
-        # The grant's closure is mounted after the engine attached, as a dev
-        # shell refresh or flake app's is.
-        peer, request = self.d.pending(session, "hello")
-        self.addCleanup(peer.close)
-        self.d.decide(request, True)
-        peer.peer.settimeout(60)
-        self.assertEqual(receive(peer.peer)["result"]["status"], "ready")
-        self.run_ok(terminal, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm -v /nix/store:/nix/store:ro goblins-test "$hello"')
-        self.run_ok(terminal, 'package=$(dirname "$(dirname "$(readlink -f "$(command -v hello)")")"); docker run --rm -v "$package:/granted:ro" goblins-test test -x /granted/bin/hello')
-
-    def inherited_donor_chain_survives(self, crash):
-        import fcntl
-        self.named_storage = True
-        a, one = self.shell("scoped")
-        b = self.d.member(a, "scoped", agent_name="donor")["session"]
-        two = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", b])
-        self.addCleanup(two.close)
-        two.expect("docker-test>", timeout=60)
-        self.enable(b, two)
-        self.load(two)
-        self.run_ok(two, "echo inherited > /workspace/marker")
-        a_resources = self.d.state / a / "resources"
-        b_resources = self.d.state / b / "resources"
-        self.assertEqual((a_resources / "workspace/marker").read_text(), "inherited\n")
-        # This independent member has an explicit working directory and no
-        # lease on A's snapshot. Only Docker retains the whole A -> B chain.
-        survivor, three = self.shell("scoped", cwd=self.rw)
-        self.enable(survivor, three)
-        engine, = self.engines()
-        self.assertTrue((self.d.state / "scopes/work/store").is_dir())
-        one.send("exit\n")
-        self.d.wait(lambda: self.d.get(a)["state"] == "stopped")
-        two.send("kill -KILL $$\n" if crash else "exit\n")
-        self.d.wait(lambda: self.d.get(b)["state"] == "stopped")
-        if crash:
-            self.assertNotEqual(self.d.get(b)["exit_code"], 0)
-        for resources in (a_resources, b_resources):
-            with open(resources / ".gc-lease", "rb") as lease:
-                with self.assertRaises(BlockingIOError):
-                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.d.cli("gc")
-        self.assertEqual(self.engines(), {engine})
-        self.run_ok(three, "docker run --rm -v /workspace:/inherited goblins-test sh -c 'test \"$(cat /inherited/marker)\" = inherited; echo container-write > /inherited/after'")
-        self.assertEqual((a_resources / "workspace/after").read_text(), "container-write\n")
-        # A new store mount must use the scope-owned skeleton after its first
-        # donor stopped. Both package roots and the original workspace stay.
-        peer, request = self.d.pending(survivor, "hello")
-        self.addCleanup(peer.close)
-        self.d.decide(request, True)
-        peer.peer.settimeout(60)
-        self.assertEqual(receive(peer.peer)["result"]["status"], "ready")
-        self.run_ok(three, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm -v /nix/store:/nix/store:ro goblins-test "$hello"')
-        self.assertEqual(self.engines(), {engine})
-        three.send("exit\n")
-        self.d.wait(lambda: self.d.get(survivor)["state"] == "stopped")
-        for resources in (a_resources, b_resources):
-            self.d.wait(lambda resources=resources: not resources.exists())
-
-    def test_inherited_docker_donors_keep_their_chain_and_new_grants_after_stop(self):
-        self.inherited_donor_chain_survives(crash=False)
-
-    def test_inherited_docker_donors_keep_their_chain_and_new_grants_after_payload_crash(self):
-        self.inherited_donor_chain_survives(crash=True)
-
-    def test_docker_requires_a_docker_scope(self):
-        for name in ("unscoped", "nodocker"):
-            session, terminal = self.shell(name)
-            self.run_ok(terminal, "! command -v docker; ! goblin enable-docker")
-            self.assertFalse(self.d.permissions(session=session, state="pending"))
-            self.assertFalse(self.d.get(session)["docker_enabled"])
-
-    def test_named_store_lock_and_reuse_between_controllers(self):
-        self.named_storage = True
-        first, one = self.shell("scoped", cwd=self.rw)
-        self.enable(first, one)
-        self.load(one)
-        original = self.d
-        self.d = Daemon(self.app, env=self.env)
-        self.addCleanup(self.d.close)
-        blocked = self.d.start("scoped", wait=False)["session"]
-        record = self.d.wait(lambda: (r if (r := self.d.get(blocked))["state"] == "failed" else None))
-        self.assertIn("another controller", record["detail"])
-        self.run_ok(one, "docker image inspect goblins-test >/dev/null")
-        one.send("exit\n")
-        original.wait(lambda: original.get(first)["state"] == "stopped")
-        second, two = self.shell("scoped", cwd=self.rw)
-        self.enable(second, two)
-        self.run_ok(two, "docker image inspect goblins-test >/dev/null")
-
-    def test_shared_scope_rejects_private_workspace_conflict(self):
-        self.named_storage = True
-        first, one = self.shell("scoped")
-        self.enable(first, one)
-        second, two = self.shell("scoped")
-        two.send("goblin enable-docker\n")
-        request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
-        self.d.decide(request, True)
-        two.expect('"status":"error"', timeout=60)
-        two.expect("docker-test>")
-        self.assertIn("mount conflict at /workspace", self.d.get(second)["detail"])
-        self.run_ok(one, "docker info >/dev/null")
-
-    def test_live_grant_rejects_engine_destination_symlink(self):
-        self.named_storage = True
-        extra_ro = self.root / "extra-ro"; extra_ro.mkdir()
-        (self.root / "extra-rw").mkdir()
-        (extra_ro / "marker").write_text("not-replaced\n")
-        first, one = self.shell("scoped", cwd=self.rw)
-        self.enable(first, one); self.load(one)
-        self.run_ok(one, f"docker run --rm -v /:/engine goblins-test ln -s {self.rw} /engine{extra_ro}")
-        second, two = self.shell("extra", cwd=self.rw)
-        two.send("goblin enable-docker\n")
-        request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
-        self.d.decide(request, True)
-        two.expect('"status":"error"', timeout=60)
-        two.expect("docker-test>")
-        self.assertFalse(self.d.get(second)["docker_enabled"])
-        self.assertEqual((extra_ro / "marker").read_text(), "not-replaced\n")
-        self.run_ok(one, "docker info >/dev/null")
-        self.run_ok(one, "! docker run --rm --mount type=bind,src=/run/goblins/request.sock,dst=/socket goblins-test true")
-
-    def test_long_socket_path(self):
-        # Match nix develop's nested TMPDIR: the host-side Docker socket path
-        # exceeds sockaddr_un even though the engine's internal path is short.
-        temp = tempfile.TemporaryDirectory(prefix="nix-shell-", dir="/tmp")
-        self.addCleanup(temp.cleanup)
-        with patch("tempfile.tempdir", temp.name):
-            self.d = Daemon(self.app, env=self.env)
-        self.addCleanup(self.d.close)
-        session, terminal = self.shell()
-        socket_path = self.d.state / session / "resources/docker-socket/docker.sock"
-        self.assertGreaterEqual(len(os.fsencode(socket_path)), 108)
-        self.run_ok(terminal, "docker info >/dev/null")
-
-    def test_local_image_and_bind_permissions(self):
-        session, terminal = self.shell()
-        self.run_ok(terminal, "docker info --format '{{json .SecurityOptions}}'")
-        self.run_ok(terminal, "test \"$(docker info --format '{{.Driver}}')\" = overlay2")
-        self.load(terminal)
-        self.run_ok(terminal, "docker run --rm --network none goblins-test sh -c 'echo container-ok'")
-        self.run_ok(terminal, "docker run --rm --network none --user 1234:1234 goblins-test sh -c 'test \"$(id -u)\" = 1234'")
-        self.run_ok(terminal, f"docker run --rm --network none -v {self.rw}:/work -v {self.ro}:/ro:ro goblins-test sh -c 'cat /ro/marker && echo written > /work/result && ! echo bad > /ro/marker'")
-        self.assertEqual((self.rw / "result").read_text(), "written\n")
-        self.assertEqual((self.ro / "marker").read_text(), "readonly-ok\n")
-        self.run_ok(terminal, "docker run --rm --privileged --network none -v /sys:/sys:ro goblins-test sh -c '! mount -o remount,rw /sys/fs/cgroup'")
-        self.run_ok(terminal, "docker run --rm --privileged --network none -v /sys:/sys:ro goblins-test sh -c 'mkdir /cgroup-probe; ! mount -t cgroup2 none /cgroup-probe'")
-        self.run_ok(terminal, "! docker run --rm --cgroupns private --network none goblins-test true")
-        # Bind resolution happens in the confined engine, not in the host.
-        self.run_ok(terminal, f"! docker run --rm --network none --mount type=bind,src={self.root}/secret,dst=/secret goblins-test cat /secret")
-        # Even a privileged container cannot remount an inherited readonly grant.
-        self.run_ok(terminal, f"docker run --rm --privileged --network none -v /sys:/sys:ro -v {self.ro}:/ro:ro goblins-test sh -c '! mount -o remount,rw /ro && ! echo bad > /ro/marker'")
-        self.run_ok(terminal, f"! docker run --rm --privileged --network none -v /sys:/sys:ro -v {self.ro}:/ro goblins-test sh -c 'echo bad > /ro/marker'")
-        self.assertEqual((self.ro / "marker").read_text(), "readonly-ok\n")
-        print("EVIDENCE Docker loaded local image, ran containers, wrote allowed bind, rejected host secret and readonly remount", flush=True)
-
-    def test_local_build(self):
-        _, terminal = self.shell()
-        self.load(terminal)
-        context = self.rw / "build"
-        context.mkdir()
-        (context / "Dockerfile").write_text("FROM goblins-test:latest\nRUN echo built-ok > /proof\n")
-        self.run_ok(terminal, f"docker build --pull=false -t goblins-built {context}", timeout=60)
-        self.run_ok(terminal, "docker run --rm --network none goblins-built sh -c 'test \"$(cat /proof)\" = built-ok'")
-
-    def test_entrypoint_switches_user(self):
-        _, terminal = self.shell()
-        self.load(terminal)
-        # Like the Postgres entrypoint: start as root, initialize a volume,
-        # then drop supplementary groups, GID and UID before serving.
-        as_postgres = 'test "$(id -u)" = 70 && test "$(id -g)" = 70 && echo written > /data/proof'
-        entrypoint = (
-            "mkdir -p /etc; "
-            "echo postgres:x:70:70:postgres:/data:/bin/sh > /etc/passwd; "
-            "echo postgres:x:70: > /etc/group; "
-            "chown 70:70 /data; "
-            f"su -s /bin/sh postgres -c {shlex.quote(as_postgres)}"
-        )
-        self.run_ok(terminal, f"docker run --rm --network none -v user-data:/data goblins-test sh -c {shlex.quote(entrypoint)}")
-        self.run_ok(terminal, "docker run --rm --network none --user 70:70 -v user-data:/data goblins-test sh -c 'test \"$(cat /data/proof)\" = written'")
-        self.run_ok(terminal, "docker run --rm --network none --user 70:70 --group-add 2345 goblins-test sh -c 'test \"$(id -G)\" = \"70 2345\"'")
-        self.run_ok(terminal, "! docker run --rm --network none --group-add 65537 goblins-test true")
-
-    @unittest.skipUnless(os.environ.get("GOBLINS_TESTCONTAINERS_CLASSPATH"),
-                         "requires Testcontainers Java jars and registry access")
-    def test_testcontainers_postgres_and_ryuk(self):
-        session, terminal = self.shell("java")
-        self.enable(session, terminal)
-        jars = self.rw / "jars"
-        jars.mkdir()
-        for source in os.environ["GOBLINS_TESTCONTAINERS_CLASSPATH"].split(os.pathsep):
-            shutil.copyfile(source, jars / Path(source).name)
-        source = self.rw / "TestcontainersSmoke.java"
-        shutil.copyfile(ROOT / "tests/TestcontainersSmoke.java", source)
-        self.run_ok(terminal, f"java -cp '{jars}/*' {source}", timeout=240)
-        # The JVM halts without shutdown hooks, leaving cleanup to Ryuk.
-        query = "docker ps -aq --filter label=goblins.testcontainers-smoke=true"
-        self.run_ok(terminal, f'for attempt in $(seq 1 45); do test -z "$({query})" && break; sleep 1; done; test -z "$({query})"', timeout=60)
-
-    def test_independent_engines_and_workspace(self):
-        one, first = self.shell()
-        two, second = self.shell(scope="offline-b")
-        self.load(first)
-        self.run_ok(second, "test -z \"$(docker image ls -q)\"")
-        self.run_ok(first, "echo workspace-ok > /workspace/shell-file; docker run --rm --network none -v /workspace:/work goblins-test sh -c 'test \"$(cat /work/shell-file)\" = workspace-ok'")
-        self.run_ok(first, "docker run -d --network none --name survivor goblins-test sleep 300")
-        first.send("exit\n")
-        self.d.wait(lambda: self.d.get(one)["state"] == "stopped")
-        self.run_ok(second, "docker info >/dev/null")
-        self.assertFalse((self.d.state / one / "resources/docker-socket/docker.sock").exists())
-        print("EVIDENCE isolated image stores, shell/container shared workspace, per-session engine cleanup", flush=True)
-
-    def test_disk_cleanup_subuids_symlinks_and_other_sessions(self):
-        one, first = self.shell()
-        first_store, = self.storage.iterdir()
-        _, second = self.shell(scope="offline-b")
-        second_store, = set(self.storage.iterdir()) - {first_store}
-        self.load(first)
-        self.load(second)
-        self.run_ok(second, "docker run --rm --network none -v keep:/data goblins-test sh -c 'echo keep > /data/marker'")
-        (self.rw / "persistent").write_text("host-data\n")
-        self.run_ok(first, f"docker run --rm --network none -v disposable:/data goblins-test sh -c 'mkdir /data/locked; echo secret > /data/locked/file; chown -R 1234:1234 /data/locked; chmod 000 /data/locked; ln -s /run/goblins/docker-storage-parent/{second_store.name} /data/sibling; ln -s {self.rw} /data/host; dd if=/dev/zero of=/data/bulk bs=1M count=128'")
-        locked = first_store / "volumes/disposable/_data/locked"
-        self.assertNotEqual(locked.stat().st_uid, os.getuid())
-        self.assertEqual(locked.stat().st_mode & 0o777, 0)
-        self.assertEqual(first_store.stat().st_dev, self.root.stat().st_dev)
-        self.assertGreater((first_store / "volumes/disposable/_data/bulk").stat().st_blocks, 200000)
-        # The cleanup parent is hidden even from privileged containers.
-        self.run_ok(first, "docker run --rm --privileged --network none -v /sys:/sys:ro -v /run/goblins/docker-storage-parent:/probe:ro goblins-test sh -c 'test -z \"$(ls -A /probe)\"'")
-        self.run_ok(first, f"! docker run --rm --network none --mount type=bind,src={self.storage},dst=/probe goblins-test true")
-        first.send("exit\n")
-        self.d.wait(lambda: self.d.get(one)["state"] == "stopped")
-        self.assertFalse(first_store.exists())
-        self.assertTrue(second_store.exists())
-        self.assertEqual((self.rw / "persistent").read_text(), "host-data\n")
-        self.run_ok(second, "docker run --rm --network none -v keep:/data goblins-test sh -c 'test \"$(cat /data/marker)\" = keep'")
-
-    def test_cancel_startup_cleans_storage(self):
-        session = self.d.start("offline", wait=False)["session"]
-        self.d.wait(lambda: self.storage.exists() and list(self.storage.iterdir()))
-        self.d.rpc.call("sessions.stop", {"session": session})
-        self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
-        self.assert_storage_empty()
-
-    def test_storage_cannot_be_granted_or_snapshotted(self):
-        self.storage.mkdir(mode=0o700, parents=True)
-        snapshot = Daemon(self.app, env=self.env, workspace=self.root)
-        self.addCleanup(snapshot.close)
-        for name in ("offline", "plain"):
-            session = snapshot.start(name, wait=False)["session"]
-            record = snapshot.wait(lambda: (r if (r := snapshot.get(session))["state"] == "failed" else None))
-            self.assertIn("protected Goblins storage", record["detail"])
-        self.rw.rename(self.root / "writable-original")
-        self.rw.symlink_to(self.storage, target_is_directory=True)
-        for name in ("offline", "plain"):
-            session = self.d.start(name, wait=False)["session"]
-            record = self.d.wait(lambda: (r if (r := self.d.get(session))["state"] == "failed" else None))
-            self.assertIn("protected path", record["detail"])
-
-    def test_shared_session_network(self):
-        _, terminal = self.shell("shell")
-        self.load(terminal)
-        # 'host' means this session's network, never the real host network.
-        self.run_ok(terminal, "docker run -d --network host --name web goblins-test httpd -f -p 8088 -h /bin")
-        self.run_ok(terminal, "curl --retry 10 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:8088/sh -o /dev/null")
-        _, offline = self.shell()
+    def test_compose_with_online_networking(self):
+        self.start_daemon()
+        _, shell = self.shell("shell")
+        self.load(shell)
+        # 'host' means this goblin's network, never the real host network.
+        self.ok(shell, "docker run -d --network host --name web goblins-test httpd -f -p 8088 -h /bin")
+        self.ok(shell, "curl --retry 10 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:8088/sh -o /dev/null")
+        _, offline = self.shell("offline")
         self.load(offline)
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(("192.0.2.1", 9))  # Route lookup only; sends no packet.
-            address = probe.getsockname()[0]
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"network-ok\n")
-
-            def log_message(self, *_):
-                pass
-
-        server = http.server.ThreadingHTTPServer((address, 0), Handler)
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        url = f"http://{address}:{server.server_port}"
-        self.run_ok(terminal, f"test \"$(curl --fail --max-time 5 {url})\" = network-ok")
-        self.run_ok(terminal, f"docker run --rm --network host goblins-test sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
-        self.run_ok(terminal, f"docker run --rm goblins-test sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
-        self.run_ok(offline, f"! docker run --rm --network host goblins-test wget -q -O - -T 2 {url}")
-        self.run_ok(offline, f"! docker run --rm goblins-test wget -q -O - -T 2 {url}")
-
+        url = HostServer(self).url
+        self.ok(shell, f"test \"$(curl --fail --max-time 5 {url})\" = network-ok")
+        self.ok(shell, f"docker run --rm --network host goblins-test sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
+        self.ok(shell, f"docker run --rm goblins-test sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
+        self.ok(offline, f"! docker run --rm --network host goblins-test wget -q -O - -T 2 {url}")
+        self.ok(offline, f"! docker run --rm goblins-test wget -q -O - -T 2 {url}")
         # Ordinary Compose builds use the default bridge; services use a
-        # user-defined bridge with embedded DNS and session-local published ports.
+        # user-defined bridge with embedded DNS and goblin-local published ports.
         context = self.rw / "compose"
         context.mkdir()
-        (context / "Dockerfile").write_text(
-            f"FROM goblins-test:latest\nRUN wget -q -O /proof -T 5 {url}\n")
+        (context / "Dockerfile").write_text(f"FROM goblins-test:latest\nRUN wget -q -O /proof -T 5 {url}\n")
         (context / "compose.yaml").write_text("""services:
   web:
     build: .
@@ -759,76 +599,32 @@ class DockerTests(unittest.TestCase):
     command: ["sleep", "300"]
 """)
         compose = f"docker compose -p network-test -f {context}/compose.yaml"
-        self.run_ok(terminal, f"{compose} build --progress plain", timeout=60)
-        self.run_ok(terminal, f"{compose} up -d --no-build", timeout=60)
-        self.run_ok(terminal, f"{compose} exec -T client sh -c 'test \"$(wget -q -O - -T 5 http://web:8080/proof)\" = network-ok'")
-        self.run_ok(terminal, f"{compose} exec -T client sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
-        self.run_ok(terminal, "test \"$(curl --retry 5 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:18080/proof)\" = network-ok")
-        self.run_ok(offline, "! curl --fail --max-time 2 http://127.0.0.1:18080/proof")
-        # Building must not give an offline session an upstream connection.
-        self.run_ok(offline, f"! docker build --pull=false {context}", timeout=60)
-        self.run_ok(terminal, f"{compose} down", timeout=60)
+        self.ok(shell, f"{compose} build --progress plain")
+        self.ok(shell, f"{compose} up -d --no-build")
+        self.ok(shell, f"{compose} exec -T client sh -c 'test \"$(wget -q -O - -T 5 http://web:8080/proof)\" = network-ok'")
+        self.ok(shell, f"{compose} exec -T client sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
+        self.ok(shell, "test \"$(curl --retry 5 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:18080/proof)\" = network-ok")
+        self.ok(offline, "! curl --fail --max-time 2 http://127.0.0.1:18080/proof")
+        # Building must not give an offline goblin an upstream connection.
+        self.ok(offline, f"! docker build --pull=false {context}")
+        self.ok(shell, f"{compose} down")
 
-    def test_server_death_reaps_containers(self):
-        session, terminal = self.shell()
-        self.load(terminal)
-        self.run_ok(terminal, "docker run --rm --network none -v crash-data:/data goblins-test sh -c 'mkdir /data/locked; echo saved > /data/locked/file; chown -R 1234:1234 /data/locked; chmod 000 /data/locked'")
-        self.run_ok(terminal, "docker run -d --network none goblins-test sleep 300")
-        descendants = set()
-
-        def children(pid):
-            for task in Path(f"/proc/{pid}/task").iterdir():
-                try:
-                    ids = (task / "children").read_text().split()
-                except FileNotFoundError:
-                    continue
-                for child in ids:
-                    if child not in descendants:
-                        descendants.add(child)
-                        children(child)
-
-        children(self.d.process.pid)
-        self.assertTrue(any(Path(f"/proc/{pid}/comm").read_text().strip() == "dockerd" for pid in descendants))
-        identities = {pid: Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19] for pid in descendants}
-        bootstraps = {pid for pid in descendants
-                      if Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[1:2] == [b"--docker-init"]}
-        # The bootstrap's forked namespace supervisors retain its argv. The
-        # outermost one alone retains cleanup authority and the lifetime leases.
-        guardians = [pid for pid in bootstraps
-                     if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1] not in bootstraps]
-        self.assertEqual(len(guardians), 1)
-        guardian = guardians[0]
-        guardian_fd = os.pidfd_open(int(guardian))
-        try:
-            # Hold teardown in place so GC runs after daemon death while the
-            # real guardian still owns both storage and session-resource leases.
-            signal.pidfd_send_signal(guardian_fd, signal.SIGSTOP)
-            self.d.wait(lambda: Path(f"/proc/{guardian}/stat").read_text().rsplit(")", 1)[1].split()[0] == "T")
-            self.d.process.kill()
-            self.d.process.wait(timeout=5)
-            result = self.d.cli("gc")
-            self.assertIn("Keeping active storage", result.stdout)
-            self.assertIn("Keeping active session resources", result.stdout)
-            self.assertTrue((self.d.state / session / "resources").exists())
-            self.assertTrue(list(self.storage.glob("session-*")))
-        finally:
-            try:
-                signal.pidfd_send_signal(guardian_fd, signal.SIGCONT)
-            except ProcessLookupError:
-                pass
-            os.close(guardian_fd)
-
-        def dead(pid, start):
-            try:
-                fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-                return fields[0] == "Z" or fields[19] != start
-            except FileNotFoundError:
-                return True
-
-        self.d.wait(lambda: all(dead(pid, start) for pid, start in identities.items()))
-        self.d.wait(lambda: not list(self.storage.iterdir()))
-        self.d.cli("gc")
-        self.assertFalse((self.d.state / session).exists())
+    @unittest.skipUnless(os.environ.get("GOBLINS_TESTCONTAINERS_CLASSPATH"),
+                         "requires Testcontainers Java jars and registry access")
+    def test_testcontainers_postgres_and_ryuk(self):
+        self.start_daemon()
+        session, shell = self.shell("java")
+        self.enable(session, shell)
+        jars = self.rw / "jars"
+        jars.mkdir()
+        for source in os.environ["GOBLINS_TESTCONTAINERS_CLASSPATH"].split(os.pathsep):
+            shutil.copyfile(source, jars / Path(source).name)
+        source = self.rw / "TestcontainersSmoke.java"
+        shutil.copyfile(ROOT / "tests/TestcontainersSmoke.java", source)
+        self.ok(shell, f"java -cp '{jars}/*' {source}", timeout=240)
+        # The JVM halts without shutdown hooks, leaving cleanup to Ryuk.
+        query = "docker ps -aq --filter label=goblins.testcontainers-smoke=true"
+        self.ok(shell, f'for attempt in $(seq 1 45); do test -z "$({query})" && break; sleep 1; done; test -z "$({query})"')
 
 
 if __name__ == "__main__":

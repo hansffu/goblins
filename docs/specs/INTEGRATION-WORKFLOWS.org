@@ -1,7 +1,7 @@
 #+title: Plan: integration tests as user workflows
 #+date: 2026-11-14
 
-Status: in progress. Phase 1 (dev shells) is implemented; the others are not. It follows [[file:TEST-SUITE-SPEEDUP.org][TEST-SUITE-SPEEDUP.org]], whose tasks are done, and reverses one of its conclusions: that plan found no assertions worth moving to unit tests because it judged tests by why they were slow. This plan judges them by what they test.
+Status: in progress. Phases 1 (dev shells) and 2 (Docker) are implemented; the others are not. It follows [[file:TEST-SUITE-SPEEDUP.org][TEST-SUITE-SPEEDUP.org]], whose tasks are done, and reverses one of its conclusions: that plan found no assertions worth moving to unit tests because it judged tests by why they were slow. This plan judges them by what they test.
 
 * Goal
 
@@ -161,7 +161,7 @@ These are not integration tests and cost about 50 s in total; they move to a fas
 One area per phase, each its own reviewed change: write the missing unit tests, write the workflow tests, delete the replaced tests, update =tests/features.toml=, and compare =timings.json= before and after. Suggested order:
 
 1. Dev shells: the user's first example. Done: 29 tests became three workflow tests, and the checks they dropped are Rust unit tests.
-2. Docker: the user's second example, and the largest remaining group.
+2. Docker: the user's second example, and the largest remaining group. Done: 36 tests (34 in =test_docker=, 2 dev-shell Docker tests) became six workflow tests: a goblin asks for Docker and works with containers (including the fast forms of Compose and Testcontainers), goblins share their scope's engine, three failure stories (an engine that cannot start, an engine crash, the server dying) and the dev-shell Docker workflow. Their implementation checks are Rust unit tests. Compose with online networking and Testcontainers are the opt-in slow tier (=just test-feature slow=, which sets =GOBLINS_TEST_SLOW=1=). The group drops from about 115 s to about 50 s.
 3. Contract and tooling cleanup, with the removal of backward compatibility: little time saved, but it removes over 100 tests and is independent.
 4. Raids, history and host tools.
 5. Sandbox, exec and terminals.

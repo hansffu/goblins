@@ -195,8 +195,8 @@ attached engine each newly mounted store path (=scope::Lease::extend=, which
 shares the conflict check and =--docker-bind= step with a joining member in
 =Shared::acquire=), so all three callers are covered. A failure is a mount
 failure and stops the sandbox. Tests:
-=test_engine_sees_store_paths_granted_after_attach= in =tests/test_docker.py=
-and =DevShellDockerTests= (refresh and =flake run=) in
+the "a package granted later" steps of the Docker workflows in =tests/test_docker.py=
+and =DevShellDockerWorkflow= (refresh and =flake run=) in
 =tests/test_devshell.py=.
 
 

@@ -430,6 +430,14 @@ mod tests {
             assert!(check(&grants, source, Path::new(dest), ro).is_err());
         }
         assert!(check(&grants, (1, 2), Path::new("/shared-other"), true).is_ok());
+        // Two goblins with private workspaces cannot both give it to one engine.
+        let error = check(&grants, (1, 3), Path::new("/shared"), true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("scope Docker mount conflict at /shared:"),
+            "{error}"
+        );
     }
     #[test]
     fn scope_store_keeps_nested_store_symlink_destinations() {

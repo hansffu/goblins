@@ -13,7 +13,7 @@ from build_support import fixture_path
 from daemon_support import Daemon
 from support import FLAKE, command, lock_flake, pinned_nixpkgs
 from terminal_support import Terminal
-# A module import, so its DockerTests are not collected here as well.
+# A module import, so its workflows are not collected here as well.
 import test_docker
 
 TEMPLATE = """{
@@ -438,16 +438,25 @@ DOCKER_FLAKE = """{
 """
 
 
-class DevShellDockerTests(test_docker.DockerTests):
-    """Store paths a dev shell mounts after Docker is attached reach the engine."""
+class DevShellDockerWorkflow(test_docker.DockerWorkflow):
+    """Programs a dev shell gains after Docker is attached run in containers."""
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         DevShellWorkflow.setUpClass.__func__(cls)
 
-    def setUp(self):
-        super().setUp()
+    def write_flake(self, added):
+        (self.project / "flake.nix").write_text(
+            DOCKER_FLAKE.replace("NIXPKGS", self.nixpkgs_url).replace("@MARKER@", self.marker)
+            .replace("@ADDED@", "true" if added else "false"))
+
+    def program(self, output, name):
+        match = re.search(rf"{name}:{self.marker}:(/nix/store/\S+)", output)
+        self.assertIsNotNone(match, output)
+        return match[1]
+
+    def test_flake_apps_and_refreshed_tools_run_in_containers(self):
         self.marker = uuid.uuid4().hex[:12]
         self.project = self.root / "project"
         self.project.mkdir()
@@ -455,57 +464,29 @@ class DevShellDockerTests(test_docker.DockerTests):
         lock_flake(self.project)
         command(["git", "-C", str(self.project), "init", "-q"])
         command(["git", "-C", str(self.project), "add", "flake.nix", "flake.lock"])
-        params = {"name": "plain", "configuration": self.d.manifest, "key": uuid.uuid4().hex,
-                  "rows": 24, "cols": 100, "cwd": str(self.project), "dev_shell": str(self.project)}
-        self.session = self.d.rpc.call("sessions.start", params)["session"]
-        self.terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", self.session])
-        self.addCleanup(self.terminal.close)
-        try:
-            self.terminal.expect("docker-test>", timeout=120)
-        except AssertionError as error:
-            raise AssertionError(self.d.get(self.session).get("detail") or str(error)) from error
-        self.enable(self.session, self.terminal)
-        self.load(self.terminal)
+        self.start_daemon()
+        session, shell = self.shell("plain", cwd=self.project, dev_shell=str(self.project))
+        self.enable(session, shell)
+        self.load(shell)
 
-    def write_flake(self, added):
-        (self.project / "flake.nix").write_text(
-            DOCKER_FLAKE.replace("NIXPKGS", self.nixpkgs_url).replace("@MARKER@", self.marker)
-            .replace("@ADDED@", "true" if added else "false"))
+        with step("a flake app runs in a container"):
+            program = self.program(self.ok(shell, "goblin flake run .#greet", timeout=300), "greet")
+            output = self.ok(shell, f"docker run --rm --network none -v /nix/store:/nix/store:ro goblins-test {program}")
+            self.assertIn(f"greet:{self.marker}:{program}", output)
 
-    def output(self, text, timeout=300):
-        self.terminal.send(text + "; printf '\\nDOCKER_TEST_STATUS=%s\\n' \"$?\"\n")
-        result = self.terminal.expect(r"([\s\S]*?)\nDOCKER_TEST_STATUS=(\d+)\n", timeout=timeout)
-        output = result[1].decode(errors="replace")
-        self.assertEqual(result[2], b"0", output)
-        self.terminal.expect("docker-test>")
-        return output
+        with step("a tool a refresh adds runs in a container"):
+            self.write_flake(added=True)
+            n = self.send(shell, "goblin devshell refresh --reason 'add a tool'")
+            record = self.d.wait(lambda: next((r for r in self.d.permissions(session=session, state="pending")
+                                               if r["kind"] == "devshell" and r.get("preview")), None), timeout=180)
+            self.d.decide(record, True)
+            output, code = self.end(shell, n, timeout=300)
+            self.assertEqual(code, 0, output)
+            self.assertIn("Dev shell generation 2 is active", output)
+            program = self.program(self.ok(shell, "bash -c '. /run/goblins/devshell/env.sh >/dev/null; added'"), "added")
+            output = self.ok(shell, f"docker run --rm --network none -v /nix/store:/nix/store:ro goblins-test {program}")
+            self.assertIn(f"added:{self.marker}:{program}", output)
 
-    def program(self, output, name):
-        match = re.search(rf"{name}:{self.marker}:(/nix/store/\S+)", output)
-        self.assertIsNotNone(match, output)
-        return match[1]
-
-    def test_engine_sees_a_refreshed_dev_shell(self):
-        self.write_flake(added=True)
-        self.terminal.send("goblin devshell refresh --reason 'add a tool'\n")
-        record = self.d.wait(lambda: next((r for r in self.d.permissions(session=self.session, state="pending")
-                                           if r["kind"] == "devshell" and r.get("preview")), None), timeout=180)
-        self.d.decide(record, True)
-        self.terminal.expect("Dev shell generation 2 is active", timeout=300)
-        self.terminal.expect("docker-test>")
-        program = self.program(self.output("bash -c '. /run/goblins/devshell/env.sh >/dev/null; added'"), "added")
-        output = self.output(f"docker run --rm -v /nix/store:/nix/store:ro goblins-test {program}")
-        self.assertIn(f"added:{self.marker}:{program}", output)
-
-    def test_engine_sees_a_flake_app(self):
-        program = self.program(self.output("goblin flake run .#greet"), "greet")
-        output = self.output(f"docker run --rm -v /nix/store:/nix/store:ro goblins-test {program}")
-        self.assertIn(f"greet:{self.marker}:{program}", output)
-
-
-for _name in dir(test_docker.DockerTests):
-    if _name.startswith("test_") and _name not in DevShellDockerTests.__dict__:
-        setattr(DevShellDockerTests, _name, None)
 
 if __name__ == "__main__":
     unittest.main()

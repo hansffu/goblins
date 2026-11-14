@@ -25,7 +25,7 @@ class FeatureTests(unittest.TestCase):
         suite = unique_suite(load_suite(plan.selectors))
         ids = [test.id() for test in cases(suite)]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(sum(name.startswith("test_devshell.DevShellDockerTests.") for name in ids), 2)
+        self.assertEqual(sum(name.startswith("test_devshell.DevShellDockerWorkflow.") for name in ids), 1)
         self.assertEqual(sum(name.startswith("test_run_targets.RunTargetDockerTests.") for name in ids), 1)
         self.assertEqual(plan.features, ("docker", "devshell", "raids"))
 

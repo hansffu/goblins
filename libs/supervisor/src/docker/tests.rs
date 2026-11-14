@@ -490,3 +490,29 @@ fn startup_leave_cancels_before_readiness_and_waits_for_guardian_cleanup() {
         goblins_runtime::scope::Message::Leave {}
     ));
 }
+
+#[test]
+fn a_scope_engine_store_belongs_to_one_controller_and_outlives_it() {
+    let root = unix::temp_directory().unwrap();
+    let (path, lock) = named(&root, "work").unwrap();
+    assert_eq!(path, root.join("scope-work"));
+    fs::write(path.join("image"), "kept").unwrap();
+    // A second server finds the scope's engine store in use.
+    let error = named(&root, "work").err().unwrap().to_string();
+    assert_eq!(error, "Docker scope 'work' is in use by another controller");
+    // Another scope is independent.
+    let (other, _other_lock) = named(&root, "other").unwrap();
+    assert_ne!(other, path);
+    // Once the first lets go, the next one reuses what it stored.
+    drop(lock);
+    let (again, _lock) = named(&root, "work").unwrap();
+    assert_eq!(fs::read_to_string(again.join("image")).unwrap(), "kept");
+    // Never a store reached through a link.
+    std::os::unix::fs::symlink(&other, root.join("scope-linked")).unwrap();
+    assert_eq!(
+        named(&root, "linked").err().unwrap().to_string(),
+        "unsafe named Docker data directory"
+    );
+    assert!(named(&root, "../escape").is_err());
+    fs::remove_dir_all(root).unwrap();
+}

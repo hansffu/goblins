@@ -338,6 +338,18 @@ pub struct Session {
     /// the layout is read from and the one mounted.
     pinned_cwd: Option<(File, PathBuf)>,
 }
+/// A workspace snapshot may neither contain nor lie in Goblins' Docker and
+/// scope storage, however its path reaches them.
+fn snapshot_source(source: &Path, storage: &[PathBuf]) -> Result<()> {
+    let resolved = fs::canonicalize(source)?;
+    if storage
+        .iter()
+        .any(|storage| resolved.starts_with(storage) || storage.starts_with(&resolved))
+    {
+        return Err("workspace snapshot overlaps protected Goblins storage".into());
+    }
+    Ok(())
+}
 impl Session {
     #[cfg(test)]
     pub(crate) fn fixture_scope(&mut self, scope: crate::scope_client::Client) {
@@ -402,15 +414,13 @@ impl Session {
             fs::create_dir(session.directory.join(name))?;
         }
         if let Some(source) = workspace {
-            let resolved = fs::canonicalize(source)?;
-            for storage in [
-                crate::docker::storage_root(false)?,
-                crate::scope_storage::root(false)?,
-            ] {
-                if resolved.starts_with(&storage) || storage.starts_with(&resolved) {
-                    return Err("workspace snapshot overlaps protected Goblins storage".into());
-                }
-            }
+            snapshot_source(
+                source,
+                &[
+                    crate::docker::storage_root(false)?,
+                    crate::scope_storage::root(false)?,
+                ],
+            )?;
             snapshot::snapshot(
                 source,
                 &session.directory.join("workspace"),

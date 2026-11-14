@@ -473,6 +473,33 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn a_bind_that_reaches_protected_storage_through_a_link_is_refused() {
+        let root = std::fs::canonicalize(unix::temp_directory().unwrap()).unwrap();
+        let storage = root.join("cache/goblins/docker");
+        fs::create_dir_all(&storage).unwrap();
+        // The declared path looks harmless; what it opens is Goblins storage.
+        let link = root.join("writable");
+        std::os::unix::fs::symlink(&storage, &link).unwrap();
+        let cancel = Cancellation::default();
+        for declarations in [
+            Declarations {
+                rw_dirs: vec![link.display().to_string()],
+                ..Default::default()
+            },
+            Declarations {
+                ro_dirs: vec![root.display().to_string()],
+                ..Default::default()
+            },
+        ] {
+            let error = plan(&declarations, std::slice::from_ref(&storage), &cancel)
+                .err()
+                .expect("a bind into protected storage")
+                .to_string();
+            assert!(error.contains("overlaps protected path"), "{error}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn shared_working_directory_stays_first_and_pinned() {
         let root = unix::temp_directory().unwrap();
         let (work, declared) = (root.join("work"), root.join("declared"));

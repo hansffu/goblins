@@ -6455,6 +6455,96 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn a_docker_request_waits_alone_and_is_withdrawn_with_its_caller() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        // Each sandbox call is its own relayed connection.
+        let call = |d: &mut Controller, connection: u64, params: Value| -> Value {
+            events.send(Event::SandboxOpened { connection }).unwrap();
+            events
+                .send(sandbox_event(connection, 1, "initialize", json!({"api":1})))
+                .unwrap();
+            d.tick().unwrap();
+            events
+                .send(sandbox_event(connection, 2, "permissions.request", params))
+                .unwrap();
+            d.tick().unwrap();
+            received
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|c| match c {
+                    Command::SandboxSend {
+                        connection: to,
+                        message,
+                    } if *to == connection && message["id"] == 2 => Some(message.clone()),
+                    _ => None,
+                })
+                .unwrap_or(Value::Null)
+        };
+        let docker = |d: &Controller| d.permissions.iter().filter(|r| r.kind == "docker").count();
+        // The approver is told what the shared engine gives this goblin.
+        assert_eq!(
+            call(&mut d, 1, json!({"kind":"docker","reason":"t"})),
+            Value::Null
+        );
+        let request = d.permissions.back().unwrap().clone();
+        assert_eq!(
+            (
+                request.kind.as_str(),
+                request.state.as_str(),
+                request.package.as_str()
+            ),
+            ("docker", "pending", "Docker scope: net")
+        );
+        assert!(
+            request.preview.as_ref().unwrap()["description"]
+                .as_str()
+                .unwrap()
+                .starts_with("Attach to the shared Docker engine of scope 'net'")
+        );
+        // One request at a time.
+        let reply = call(&mut d, 2, json!({"kind":"docker","reason":"again"}));
+        assert_eq!(reply["error"]["code"], conflict().0, "{reply}");
+        assert_eq!(docker(&d), 1);
+        // The caller gives up: the request is withdrawn and cannot be decided.
+        events.send(Event::SandboxClosed { connection: 1 }).unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.permissions.back().unwrap().state, "withdrawn");
+        assert!(d.sessions["a"].pending.is_none());
+        let decision = Decision {
+            session: "a".into(),
+            request: request.id.clone(),
+            approval: request.approval.clone(),
+            approved: true,
+        };
+        assert_eq!(d.decide(decision, "host").unwrap_err(), conflict());
+        assert!(!d.sessions["a"].record.docker_enabled);
+        // A new request can still be approved.
+        assert_eq!(
+            call(&mut d, 3, json!({"kind":"docker","reason":"t"})),
+            Value::Null
+        );
+        let again = d.permissions.back().unwrap().clone();
+        assert_eq!(again.state, "pending");
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: again.id,
+                approval: again.approval,
+                approved: true,
+            },
+            "host",
+        )
+        .unwrap();
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn interactive_exec_records_typed_events_without_daemon_resource_writes() {
         let _no_forks = unix::no_forks();
         let mut d = daemon();
