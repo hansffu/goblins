@@ -4193,6 +4193,8 @@ impl Drop for Controller {
 
 #[cfg(test)]
 mod tests {
+    mod attachment;
+    mod pinning;
     mod supervised;
     mod terminals;
     use super::*;
@@ -8902,51 +8904,6 @@ mod tests {
             rpc::read(&mut wrong).unwrap()["error"]["message"],
             "unsupported attach.hello version"
         );
-        drop(d);
-        fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
-    fn an_attach_fails_when_its_variables_are_not_set_in_time() {
-        let mut d = daemon();
-        let path = d.state.clone();
-        let _results = live(&mut d, "a");
-        d.sessions.get_mut("a").unwrap().handlers = Some(goblins_runtime::config::Handlers {
-            on_attach: goblins_runtime::config::OnAttach {
-                command: vec!["client".into(), "{session_id}".into()],
-                timeout: 1,
-                wait_for: vec!["ready".into()],
-            },
-            on_detach: None,
-        });
-        let mut frontend =
-            UnixStream::connect(d.sessions["a"].directory.join("attach.sock")).unwrap();
-        frontend
-            .write_all(
-                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
-                    "params":{"version":1,"rows":24,"cols":80}}))
-                .unwrap(),
-            )
-            .unwrap();
-        let step = |d: &mut Controller| {
-            let mut a = d.sessions.remove("a").unwrap();
-            d.attach_tick(&mut a);
-            d.sessions.insert("a".into(), a);
-        };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let reply = loop {
-            step(&mut d);
-            assert!(std::time::Instant::now() < deadline);
-            if !unix::readable(frontend.as_raw_fd(), 50).unwrap() {
-                continue;
-            }
-            let frame = rpc::read(&mut frontend).unwrap();
-            if frame["method"] != "attach.waiting" {
-                break frame;
-            }
-            assert_eq!(frame["params"]["missing"], json!(["ready", "session_id"]));
-        };
-        let message = reply["error"]["message"].as_str().unwrap();
-        assert!(message.contains("ready, session_id") && message.contains("restart the goblin"));
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

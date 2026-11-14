@@ -1,5 +1,6 @@
 //! A fake daemon on a temporary `host.sock`, for host CLI tests: it answers
-//! `initialize`, then records the one call that follows and answers it.
+//! `initialize`, then records the one call that follows and answers it, or
+//! null when the CLI closed without one.
 use goblins_jsonrpc as rpc;
 use serde_json::Value;
 use std::{
@@ -38,7 +39,10 @@ impl Daemon {
             assert_eq!(request["method"], "initialize");
             peer.write_all(&rpc::encode(&rpc::result(request["id"].clone(), init)).unwrap())
                 .unwrap();
-            let call = rpc::read(&mut peer).unwrap();
+            // A CLI that refuses before calling just closes: no call.
+            let Ok(call) = rpc::read(&mut peer) else {
+                return Value::Null;
+            };
             peer.write_all(&rpc::encode(&rpc::result(call["id"].clone(), result)).unwrap())
                 .unwrap();
             call
@@ -49,7 +53,7 @@ impl Daemon {
         }
     }
 
-    /// The call the CLI made.
+    /// The call the CLI made, or null for none.
     pub fn call(mut self) -> Value {
         self.server.take().unwrap().join().unwrap()
     }

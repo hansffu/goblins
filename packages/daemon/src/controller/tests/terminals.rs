@@ -138,7 +138,7 @@ fn creation_refuses_bad_names_sizes_programs_and_a_seventeenth_terminal() {
         assert!(received.lock().unwrap().is_empty(), "{reply}");
         reply["error"].clone()
     };
-    for name in ["t1", "t22", "Name", "1a", "", "has space", "x".repeat(33).as_str()] {
+    for name in ["t1", "t22", "T", "Name", "1a", "9a", "", "a b", "has space", "x".repeat(33).as_str()] {
         let error = refused(&mut d, json!({"session":"a","name":name}));
         assert_eq!(error["code"], -32602, "{name}");
     }
@@ -164,6 +164,7 @@ fn names_are_unique_and_a_goblin_has_sixteen_terminals() {
     create(&mut d, &received, json!({"session":"a","name":"app"}));
     let error = ask(&mut d, "terminals.create", json!({"session":"a","name":"app"}));
     assert_eq!(error["error"]["code"], -32009);
+    assert_eq!(error["error"]["message"], "a terminal named app exists");
     for _ in 1..16 {
         create(&mut d, &received, json!({"session":"a"}));
     }
@@ -171,6 +172,46 @@ fn names_are_unique_and_a_goblin_has_sixteen_terminals() {
     assert_eq!(error["error"]["code"], -32010);
     assert!(error["error"]["message"].as_str().unwrap().contains("16"));
     assert!(received.lock().unwrap().is_empty());
+    // One ends: there is room again, and IDs still count up.
+    let exec = d.sessions["a"].terminals.entries[0].exec;
+    d.process_event("a", Event::Exited { id: exec, code: Some(0), signal: None });
+    let next = create(&mut d, &received, json!({"session":"a"}));
+    assert_eq!(next["id"], "t17");
+}
+
+#[test]
+fn every_goblins_terminals_are_its_own() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    live(&mut d, "b");
+    capable(&mut d, "b", Support::linux());
+    let (runtime, _other_events, other) = goblins_runtime::Fake::new();
+    let b = d.sessions.get_mut("b").unwrap();
+    b.runtime = Some(Box::new(runtime));
+    b.init = true;
+    let mine = create(&mut d, &received, json!({"session":"a","name":"mine"}));
+    assert_eq!(mine["id"], "t1");
+    // Another goblin has none of them, and their names mean nothing there.
+    let list = ask(&mut d, "terminals.list", json!({"session":"b"}));
+    assert_eq!(list["result"]["terminals"], json!([]));
+    let read = ask(&mut d, "terminals.read", json!({"session":"b","terminal":"mine"}));
+    assert_eq!(read["error"]["code"], -32004, "{read}");
+    assert!(other.lock().unwrap().is_empty());
+    // The same name may exist in each, with IDs of its own.
+    let (mut c, _peer) = connection(Role::Host);
+    c.id = d.number();
+    c.initialized = true;
+    call(&mut d, &mut c, "terminals.create", json!({"session":"b","name":"mine"}));
+    d.connections.push(c);
+    let Command::Spawn { id, .. } = take(&other) else {
+        panic!("expected a spawn")
+    };
+    d.process_event("b", Event::Spawned { id, pid: 7 });
+    let mut c = d.connections.pop().unwrap();
+    let theirs = frame(&mut c)["result"].clone();
+    assert_eq!((theirs["id"].as_str(), theirs["name"].as_str()), (Some("t1"), Some("mine")));
+    let list = ask(&mut d, "terminals.list", json!({"session":"a"}));
+    assert_eq!(list["result"]["terminals"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -764,8 +805,10 @@ fn closing_a_terminal_or_stopping_its_goblin_is_no_exit_notice() {
     );
     assert!(d.operation_outbox.is_empty());
     // The goblin stops: its terminals end with it, and the report is not awaited.
-    d.end_terminals("a", "goblin a has stopped");
+    d.stop("a", None).unwrap();
     assert!(d.terminal_calls.is_empty());
+    assert!(d.sessions["a"].record.terminals.is_empty());
+    assert!(d.sessions["a"].terminals.is_empty());
     d.process_event(
         "a",
         Event::TerminalResult {

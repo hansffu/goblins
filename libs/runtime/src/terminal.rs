@@ -246,7 +246,10 @@ mod tests {
         assert!(validate(&send(Some("ls"), &["enter"])).is_ok());
         assert!(validate(&send(None, &["nope"])).is_err());
         assert!(validate(&send(None, &["g", "g", "A", ":", "enter"])).is_ok());
-        assert!(validate(&send(None, &["gg"])).is_err());
+        assert_eq!(
+            validate(&send(None, &["gg"])).unwrap_err(),
+            r#"unknown key "gg""#
+        );
         assert!(validate(&send(Some("ls"), &["enter", "nope"])).is_err());
         assert!(validate(&send(None, &[])).is_err());
         assert!(validate(&send(Some(&"x".repeat(MAX_TEXT + 1)), &[])).is_err());

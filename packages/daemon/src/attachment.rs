@@ -152,10 +152,22 @@ pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Resu
         return Err("goblins attach requires terminal input".into());
     }
     let mut control = Client::connect(&state)?;
-    if instance
-        .as_ref()
-        .is_some_and(|expected| control.instance != *expected)
-    {
+    let record = target(&mut control, &session, instance.as_deref())?;
+    let session = record.id.as_str();
+    // Apply the Ghostel window's actual dimensions once the PTY is ready.
+    RESIZE.store(true, Ordering::Relaxed);
+    relay(control, session, &serde_json::to_value(record.clone())?)
+}
+
+/// The record of the goblin `attach` relays to. With `instance`, the attach
+/// is pinned: the daemon must be that instance and `session` the goblin's
+/// exact ID, never a reusable agent name.
+fn target(
+    control: &mut Client,
+    session: &str,
+    instance: Option<&str>,
+) -> Result<<contract::host::SessionsGet as contract::Method>::Result> {
+    if instance.is_some_and(|expected| control.instance != expected) {
         return Err("daemon instance changed; cannot attach".into());
     }
     let record =
@@ -166,10 +178,7 @@ pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Resu
     if instance.is_some() && record.id != session {
         return Err("session identity mismatch".into());
     }
-    let session = record.id.as_str();
-    // Apply the Ghostel window's actual dimensions once the PTY is ready.
-    RESIZE.store(true, Ordering::Relaxed);
-    relay(control, session, &serde_json::to_value(record.clone())?)
+    Ok(record)
 }
 
 /// Attach to the goblin whose launch or record is `record`: a hello with this
@@ -200,14 +209,18 @@ pub fn handshake(
         session,
         (d.ws_row.max(1), d.ws_col.max(1)),
         terminal,
+        rpc::TIMEOUT,
         || eprintln!("Starting…"),
     )
 }
+/// Send the hello and read its completion; `bound` limits the wait for
+/// each frame of the answer.
 fn greet(
     mut stream: UnixStream,
     session: &str,
     (rows, cols): (u16, u16),
     terminal: Option<&str>,
+    bound: std::time::Duration,
     starting: impl FnMut(),
 ) -> Result<UnixStream> {
     let params = contract::AttachHelloParams {
@@ -219,7 +232,7 @@ fn greet(
     stream.write_all(&rpc::encode(&contract::notification::<
         contract::attach_notifications::AttachHello,
     >(params)?)?)?;
-    let hello = completion(&mut stream, session, starting)?;
+    let hello = completion(&mut stream, session, bound, starting)?;
     contract::decode_completion::<contract::attach_exchanges::Reply>(hello)?;
     Ok(stream)
 }
@@ -229,6 +242,7 @@ fn greet(
 fn completion(
     stream: &mut UnixStream,
     session: &str,
+    bound: std::time::Duration,
     mut starting: impl FnMut(),
 ) -> Result<serde_json::Value> {
     let mut started = false;
@@ -237,7 +251,7 @@ fn completion(
         // Bound each handshake frame's first byte separately; a waiting
         // notification extends the deadline to the next one. A resize's
         // SIGWINCH interrupts the wait without ending it; Ctrl-C ends it.
-        let deadline = std::time::Instant::now() + rpc::TIMEOUT;
+        let deadline = std::time::Instant::now() + bound;
         loop {
             if STOP.load(Ordering::Relaxed) {
                 return Err(format!("interrupted before {session} was attached").into());
@@ -285,9 +299,24 @@ mod tests {
         let cases = [
             (&waiting[..], success.clone(), None, 1),
             (&waiting[..1], success.clone(), None, 0),
-            (&malformed[..1], success.clone(), Some("invalid waiting notification"), 0),
-            (&malformed[1..2], success.clone(), Some("invalid waiting notification"), 0),
-            (&malformed[2..], success.clone(), Some("invalid waiting notification"), 0),
+            (
+                &malformed[..1],
+                success.clone(),
+                Some("invalid waiting notification"),
+                0,
+            ),
+            (
+                &malformed[1..2],
+                success.clone(),
+                Some("invalid waiting notification"),
+                0,
+            ),
+            (
+                &malformed[2..],
+                success.clone(),
+                Some("invalid waiting notification"),
+                0,
+            ),
             (&[], success, None, 0),
             (
                 &[],
@@ -319,7 +348,7 @@ mod tests {
             goblin.write_all(payload).unwrap();
             goblin.shutdown(std::net::Shutdown::Write).unwrap();
             let mut starting = 0;
-            let accepted = greet(stream, "a", (24, 100), None, || starting += 1);
+            let accepted = greet(stream, "a", (24, 100), None, rpc::TIMEOUT, || starting += 1);
             assert_eq!(
                 rpc::read(&mut goblin).unwrap(),
                 json!({"jsonrpc":"2.0","method":"attach.hello","params":{"version":1,"rows":24,"cols":100}})
@@ -353,7 +382,7 @@ mod tests {
                 &rpc::encode(&json!({"jsonrpc":"2.0","id":0,"result":{"attached":true}})).unwrap(),
             )
             .unwrap();
-        greet(stream, "a", (30, 120), Some("t1"), || {
+        greet(stream, "a", (30, 120), Some("t1"), rpc::TIMEOUT, || {
             panic!("not starting")
         })
         .unwrap();
@@ -361,6 +390,136 @@ mod tests {
             rpc::read(&mut goblin).unwrap()["params"],
             json!({"version":1,"rows":30,"cols":120,"terminal":"t1"})
         );
+    }
+
+    #[test]
+    fn a_pinned_attach_needs_this_daemon_and_the_exact_session() {
+        let _no_forks = unix::no_forks();
+        let record = fixtures()["host_session"].clone();
+        let instance = fixtures()["host_initialize"]["instance"].clone();
+        let instance = instance.as_str().unwrap();
+        assert_eq!(
+            (record["id"].as_str(), record["agent_name"].as_str()),
+            (Some("session-id"), Some("goblin"))
+        );
+        let cases = [
+            (
+                "session-id",
+                Some("wrong-instance"),
+                Err("daemon instance changed; cannot attach"),
+            ),
+            // A pinned attach never resolves a reusable agent name.
+            ("goblin", Some(instance), Err("session identity mismatch")),
+            ("session-id", Some(instance), Ok(())),
+            // Unpinned, the name means whichever goblin has it now.
+            ("goblin", None, Ok(())),
+        ];
+        for (session, pin, expected) in cases {
+            let daemon = Daemon::start(&[], record.clone());
+            let mut control = Client::connect(&daemon.state).unwrap();
+            let found = target(&mut control, session, pin);
+            drop(control);
+            let call = daemon.call();
+            match (found, expected) {
+                (Ok(found), Ok(())) => assert_eq!(found.id, "session-id"),
+                (Err(e), Err(message)) => assert_eq!(e.to_string(), message),
+                (found, _) => panic!("{session} {pin:?}: {:?}", found.map(|r| r.id)),
+            }
+            // Another daemon is not asked about the session at all.
+            if pin == Some("wrong-instance") {
+                assert_eq!(call, Value::Null);
+            } else {
+                assert_eq!(call["method"], "sessions.get");
+                assert_eq!(call["params"], json!({"session":session}));
+            }
+        }
+    }
+
+    #[test]
+    fn resizes_while_attaching_do_not_end_the_handshake() {
+        use std::sync::atomic::AtomicUsize;
+        static RESIZES: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn resized(_: i32) {
+            RESIZES.fetch_add(1, Ordering::SeqCst);
+        }
+        let _no_forks = unix::no_forks();
+        // As the CLI's own handler: without SA_RESTART, so each SIGWINCH
+        // interrupts whatever the greeting thread waits in.
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = resized as *const () as libc::sighandler_t;
+        let mut previous: libc::sigaction = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut action.sa_mask);
+            assert_eq!(libc::sigaction(libc::SIGWINCH, &action, &mut previous), 0);
+        }
+        let (stream, mut goblin) = UnixStream::pair().unwrap();
+        goblin.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let greeter = std::thread::spawn(move || {
+            sender.send(unsafe { libc::pthread_self() }).unwrap();
+            greet(stream, "a", (24, 80), None, rpc::TIMEOUT, || ())
+                .map(drop)
+                .map_err(|e| e.to_string())
+        });
+        let thread = receiver.recv().unwrap();
+        let resize = |times| {
+            for _ in 0..times {
+                let before = RESIZES.load(Ordering::SeqCst);
+                assert_eq!(unsafe { libc::pthread_kill(thread, libc::SIGWINCH) }, 0);
+                while RESIZES.load(Ordering::SeqCst) == before {
+                    std::thread::yield_now();
+                }
+                // Let the greeter return to its wait before the next one.
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        // The hello is out: the greeter waits for its answer.
+        assert_eq!(rpc::read(&mut goblin).unwrap()["method"], "attach.hello");
+        resize(20);
+        let waiting = json!({"jsonrpc":"2.0","method":"attach.waiting","params":{"missing":[]}});
+        goblin.write_all(&rpc::encode(&waiting).unwrap()).unwrap();
+        resize(20);
+        let completion = json!({"jsonrpc":"2.0","id":0,"result":{"attached":true}});
+        goblin
+            .write_all(&rpc::encode(&completion).unwrap())
+            .unwrap();
+        let attached = greeter.join().unwrap();
+        unsafe { libc::sigaction(libc::SIGWINCH, &previous, std::ptr::null_mut()) };
+        attached.unwrap();
+    }
+
+    #[test]
+    fn a_silent_handshake_times_out_and_each_waiting_notice_extends_it() {
+        use std::time::{Duration, Instant};
+        let _no_forks = unix::no_forks();
+        let bound = Duration::from_millis(300);
+        // Nothing comes back: the attach gives up after the bound.
+        let (stream, _goblin) = UnixStream::pair().unwrap();
+        let started = Instant::now();
+        let error = greet(stream, "a", (24, 80), None, bound, || ()).unwrap_err();
+        assert_eq!(error.to_string(), "terminal attachment timed out");
+        assert!(started.elapsed() >= bound);
+        // A slow readiness: notices well within the bound, for twice as
+        // long as it, then the completion.
+        let (stream, mut goblin) = UnixStream::pair().unwrap();
+        let goblin = std::thread::spawn(move || {
+            let waiting = json!({"jsonrpc":"2.0","method":"attach.waiting","params":{"missing":["session_id"]}});
+            for _ in 0..6 {
+                std::thread::sleep(bound / 3);
+                goblin.write_all(&rpc::encode(&waiting).unwrap()).unwrap();
+            }
+            let completion = json!({"jsonrpc":"2.0","id":0,"result":{"attached":true}});
+            goblin
+                .write_all(&rpc::encode(&completion).unwrap())
+                .unwrap();
+            goblin
+        });
+        let started = Instant::now();
+        let mut starting = 0;
+        greet(stream, "a", (24, 80), None, bound, || starting += 1).unwrap();
+        assert!(started.elapsed() >= bound * 2, "{:?}", started.elapsed());
+        assert_eq!(starting, 1);
+        goblin.join().unwrap();
     }
 
     /// The `sessions.start` request a detached launch sends.

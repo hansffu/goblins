@@ -98,8 +98,23 @@ class Terminal:
         if not self.reaped:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(self.pid, signal.SIGTERM)
+            # A program blocked writing to this pty may never act on SIGTERM:
+            # drain its output for a while, then kill it, so a failed test's
+            # cleanup cannot hang the runner.
+            deadline = time.monotonic() + 5
             with contextlib.suppress(ChildProcessError):
-                os.waitpid(self.pid, 0)
+                while not os.waitpid(self.pid, os.WNOHANG)[0]:
+                    if time.monotonic() >= deadline:
+                        with contextlib.suppress(ProcessLookupError):
+                            os.kill(self.pid, signal.SIGKILL)
+                        os.waitpid(self.pid, 0)
+                        break
+                    if select.select([self.fd], [], [], .05)[0]:
+                        try:
+                            if not os.read(self.fd, 65536):
+                                time.sleep(.05)
+                        except OSError:
+                            time.sleep(.05)
             self.reaped = True
         os.close(self.fd)
         self.fd = None

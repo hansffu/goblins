@@ -1350,6 +1350,7 @@ These are protocol resource bounds, not payload CPU/process/memory/disk quotas.
 #+begin_src sh
 nix develop                       # enter once; pinned Rust and Python/pyte, your configured Emacs
 just test                         # Rust, Python integration and Emacs ERT, serially
+just test-rust-host               # Rust tests that need the host kernel and Nix store
 just test-python test_exec         # or a module, class, or individual method
 just test-python -j 1 test_exec    # serial execution with live output
 just test-python -j 2              # fewer integration-test workers (default 8)

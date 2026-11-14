@@ -1742,6 +1742,51 @@ mod tests {
     }
 
     #[test]
+    fn the_legacy_terminal_socket_answers_at_the_workers_mode_before_started() {
+        use std::os::unix::net::UnixStream;
+        for server in [false, true] {
+            let directory = unix::temp_directory().unwrap();
+            let (worker, _, results) = worker();
+            // An engine whose worker has not reported Started.
+            let mut local = Engine::new(worker, directory.join("host-jobs"));
+            local.terminals = terminals::Terminals::new(&directory, false).unwrap();
+            let mut frontend = UnixStream::connect(directory.join("terminal.sock")).unwrap();
+            frontend
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            // Held while the configuration is not known.
+            while local.poll().is_some() {}
+            assert!(!unix::readable(frontend.as_raw_fd(), 0).unwrap());
+            // The worker reports its mode before it roots the manifest.
+            results
+                .try_send(Event::Mode { server })
+                .unwrap_or_else(|_| panic!());
+            let mut round = vec![];
+            while let Some(event) = local.poll() {
+                round.push(event);
+            }
+            assert!(
+                round
+                    .iter()
+                    .any(|e| matches!(e, Event::Mode { server: s } if *s == server))
+            );
+            let answer = goblins_jsonrpc::read(&mut frontend).unwrap();
+            if server {
+                assert_eq!(answer["error"]["message"], terminals::UPGRADE, "{answer}");
+            } else {
+                assert_eq!(answer["result"]["attached"], true, "{answer}");
+            }
+            assert!(local.capabilities.is_none(), "answered without Started");
+            assert!(
+                !round.iter().any(|e| matches!(e, Event::Started { .. })),
+                "answered without Started"
+            );
+            drop(local);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
     fn relay_endpoints_wait_for_started_and_survive_stop_until_stopped() {
         use std::io::Write;
         let directory = unix::temp_directory().unwrap();

@@ -46,6 +46,11 @@ test: test-rust test-python test-emacs
 test-rust:
     python3 tests/rust_tests.py
 
+# Rust tests that need the host kernel (user and mount namespaces) and its Nix
+# store: the ignored tests of `host` modules. Never in the Nix build sandbox.
+test-rust-host:
+    python3 tests/rust_tests.py --host
+
 [positional-arguments]
 test-python *args:
     python3 tests/run.py "$@"

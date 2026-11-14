@@ -2,8 +2,8 @@
 # A test may belong to several features; the runner deduplicates test IDs.
 
 [merge]
-checks = ["rust", "emacs", "nix", "packaged"]
-packaged = ["test_server", "test_exec", "test_roots"]
+checks = ["rust", "rust-host", "emacs", "nix", "packaged"]
+packaged = ["test_server", "test_exec", "test_isolation"]
 env = { GOBLINS_TEST_CODEX = "1" }
 
 [routing]
@@ -28,9 +28,9 @@ broad = [
 docs = ["docs/*", "README.org", "emacs/README.org", "AGENTS.md", "CLAUDE.md"]
 
 [features.sandbox]
-description = "Filesystem isolation, binds, snapshots and GC retention"
-python = ["test_integration", "test_binds", "test_bind_race", "test_workspace", "test_roots"]
-checks = ["rust"]
+description = "Filesystem isolation, binds, snapshots, GC retention and live package grants; kernel backstops are Rust host tests"
+python = ["test_isolation", "test_binds", "test_workspace", "test_packages"]
+checks = ["rust", "rust-host"]
 paths = ["libs/supervisor/src/binds.rs", "libs/supervisor/src/snapshot.rs", "libs/supervisor/src/session/*"]
 
 [features.lifecycle]
@@ -41,7 +41,7 @@ paths = ["packages/daemon/src/server.rs", "libs/supervisor/src/cleanup.rs", "pac
 
 [features.exec]
 description = "Command execution, signals, terminals and attachment"
-python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected", "test_terminal_support"]
+python = ["test_exec", "test_attachment", "test_attach_handlers", "test_terminal_support"]
 checks = ["rust"]
 paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs", "packages/daemon/src/host.rs", "libs/runtime/src/exec.rs", "libs/api/src/init.rs", "libs/unix/src/ancillary.rs"]
 
@@ -114,7 +114,7 @@ paths = ["packages/daemon/src/controller/host.rs", "packages/daemon/src/controll
 
 [features.tui]
 description = "Terminal UI, approval rendering and navigation"
-python = ["test_tui"]
+python = ["test_packages"]
 checks = ["rust"]
 paths = ["packages/daemon/src/tui.rs", "packages/daemon/src/plain.rs", "packages/sandbox-cli/src/preview.rs"]
 

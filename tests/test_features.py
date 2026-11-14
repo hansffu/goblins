@@ -81,7 +81,7 @@ class FeatureTests(unittest.TestCase):
         plan = make_plan(("exec", "full"), data)
         self.assertIsNone(plan.selectors)
         self.assertEqual([label for label, _ in commands(plan, 4, data)],
-                         ["Rust", "Python", "emacs", "nix", "Packaged smoke"])
+                         ["Rust", "Rust host", "Python", "emacs", "nix", "Packaged smoke"])
         self.assertEqual(plan.env["GOBLINS_TEST_CODEX"], "1")
         self.assertEqual(make_plan(("codex",), data).env["GOBLINS_TEST_CODEX"], "1")
         with self.assertRaisesRegex(ValueError, "Unknown features"):

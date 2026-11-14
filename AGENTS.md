@@ -10,7 +10,7 @@ Pick the feature tasks a change touches with `just test-plan --changed BASE`, us
 
 Before presenting work, run those tasks in one invocation with `just test-feature FEATURE...`, and state what passed, what failed or was skipped, and whether the merge gate has passed, failed or is still pending.
 
-Before merge, run `just test-merge` on the final candidate. It is required and runs every Rust, Python and Emacs test, the Nix checks and the packaged smoke tests. Targeted passes do not count, and any change after the run needs a new run.
+Before merge, run `just test-merge` on the final candidate. It is required and runs every Rust test (including the Rust host tests), every Python and Emacs test, the Nix checks and the packaged smoke tests. Targeted passes do not count, and any change after the run needs a new run.
 
 Documentation-only changes are exempt from both: a change that touches only documentation (the `docs` paths in `tests/features.toml`, such as `docs/`, `README.org`, `AGENTS.md` and `CLAUDE.md`) needs no feature tasks before review and no `just test-merge` before merge. Say that no tests were run because the change is documentation only. This exception takes precedence over the older wording in the `docs` task description and `just test-plan` output, which still say the full gate is required before merge.
 

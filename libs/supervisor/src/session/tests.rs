@@ -5,6 +5,8 @@ use super::*;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 
+mod host;
+
 #[test]
 fn post_fork_scope_failure_keeps_exit_one_after_helper_sigkill_status() {
     let _forking = unix::forking();
@@ -188,7 +190,7 @@ fn profiles_preserve_path_precedence_across_duplicate_commands() {
 }
 
 #[test]
-#[ignore = "host integration driver; run through tests/test_integration.py"]
+#[ignore = "host integration driver; run through tests/test_scope_cleanup.py"]
 fn host_driver() {
     // The Python harness is the driver owner; its crash must also kill this
     // controller so the real helper's parent-death teardown is exercised.

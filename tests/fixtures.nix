@@ -3,9 +3,6 @@
   sandbox,
   helper,
 }:
-let
-  data = pkgs.writeText "goblins-runtime-data" "runtime-data-ok\n";
-in
 {
   # Retain the already-realized mount gate and runtime-dependency fixtures.
   runtime = pkgs.writeText "goblins-runtime.json" (
@@ -33,16 +30,6 @@ in
     tree
     cowsay
     ;
-  script-tool = pkgs.writeScriptBin "script-tool" ''
-    #!${pkgs.dash}/bin/dash
-    printf '%s\n' script-interpreter-ok
-  '';
-  data-tool = pkgs.writeScriptBin "data-tool" ''
-    #!${pkgs.dash}/bin/dash
-    read -r message < ${data}
-    printf '%s\n' "$message"
-  '';
-  collision = pkgs.writeScriptBin "jq" "#!${pkgs.dash}/bin/dash\nexit 0\n";
   # Its closure holds an output that is itself a symlink to a directory,
   # as Chromium's sandbox output is in mermaid-cli's closure.
   symlink-tool =

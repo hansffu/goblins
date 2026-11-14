@@ -499,6 +499,189 @@ mod tests {
         }
         fs::remove_dir_all(root).unwrap();
     }
+    /// The startup-bind race: after `plan()` pinned a declared source, a
+    /// sandbox that can write its parent replaces the source, or one of its
+    /// ancestors, with a link into private storage. The plan still holds the
+    /// object it validated and passes bubblewrap that descriptor, never a path.
+    fn exercise_replacement(directory: bool, readonly: bool, ancestor: bool) {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let case = format!("directory={directory} readonly={readonly} ancestor={ancestor}");
+        let root = fs::canonicalize(unix::temp_directory().unwrap()).unwrap();
+        let private = root.join("private");
+        fs::create_dir(&private).unwrap();
+        fs::write(private.join("sentinel"), "PRIVATE-CONTROL-DATA").unwrap();
+        let shared = root.join("shared");
+        fs::create_dir(&shared).unwrap();
+        // The private object the declared path names after the swap.
+        let lands = if directory {
+            private.clone()
+        } else {
+            private.join("sentinel")
+        };
+        // What the attacker renames away, the declared path, and the link
+        // target that puts it.
+        let (swap, source, replacement) = if ancestor {
+            let parent = shared.join("parent");
+            fs::create_dir(&parent).unwrap();
+            let name = lands.file_name().unwrap();
+            (
+                parent.clone(),
+                parent.join(name),
+                lands.parent().unwrap().to_path_buf(),
+            )
+        } else {
+            let source = shared.join("child");
+            (source.clone(), source, lands.clone())
+        };
+        if directory {
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("original"), "ORIGINAL-GRANT").unwrap();
+        } else {
+            fs::write(&source, "ORIGINAL-GRANT").unwrap();
+        }
+        let identity = |m: fs::Metadata| (m.dev(), m.ino());
+        let original = identity(fs::metadata(&source).unwrap());
+        let declared = vec![source.display().to_string()];
+        let declarations = match (directory, readonly) {
+            (true, true) => Declarations {
+                ro_dirs: declared,
+                ..Default::default()
+            },
+            (true, false) => Declarations {
+                rw_dirs: declared,
+                ..Default::default()
+            },
+            (false, true) => Declarations {
+                ro_files: declared,
+                ..Default::default()
+            },
+            (false, false) => Declarations {
+                rw_files: declared,
+                ..Default::default()
+            },
+        };
+        let plan = plan(
+            &declarations,
+            std::slice::from_ref(&private),
+            &Cancellation::default(),
+        )
+        .unwrap_or_else(|e| panic!("{case}: {e}"));
+        // The attacker's move.
+        let saved = shared.join("saved");
+        fs::rename(&swap, &saved).unwrap();
+        symlink(&replacement, &swap).unwrap();
+        assert_eq!(
+            fs::canonicalize(&source).unwrap(),
+            fs::canonicalize(&lands).unwrap(),
+            "{case}"
+        );
+        let moved = if ancestor {
+            saved.join(source.file_name().unwrap())
+        } else {
+            saved
+        };
+        let fds: Vec<_> = plan.source_fds().collect();
+        assert_eq!(fds.len(), 1, "{case}");
+        let pinned = format!("/proc/self/fd/{}", fds[0]);
+        let held = identity(fs::metadata(&pinned).unwrap());
+        assert_eq!(held, original, "{case}");
+        assert_ne!(held, identity(fs::metadata(&lands).unwrap()), "{case}");
+        assert_ne!(
+            held,
+            identity(fs::metadata(private.join("sentinel")).unwrap()),
+            "{case}"
+        );
+        assert_eq!(fs::read_link(&pinned).unwrap(), moved, "{case}");
+        let content = if directory {
+            Path::new(&pinned).join("original")
+        } else {
+            PathBuf::from(&pinned)
+        };
+        assert_eq!(
+            fs::read_to_string(content).unwrap(),
+            "ORIGINAL-GRANT",
+            "{case}"
+        );
+        let mut args = vec![];
+        plan.append_args(&mut args, None, &BTreeSet::new()).unwrap();
+        assert_eq!(
+            args,
+            [
+                if readonly {
+                    "--ro-bind-fd"
+                } else {
+                    "--bind-fd"
+                }
+                .to_string(),
+                fds[0].to_string(),
+                source.display().to_string(),
+            ],
+            "{case}"
+        );
+        drop(plan);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_replaced_directory_source_keeps_the_pinned_object() {
+        for readonly in [true, false] {
+            for ancestor in [false, true] {
+                exercise_replacement(true, readonly, ancestor);
+            }
+        }
+    }
+    #[test]
+    fn a_replaced_file_source_keeps_the_pinned_object() {
+        for readonly in [true, false] {
+            for ancestor in [false, true] {
+                exercise_replacement(false, readonly, ancestor);
+            }
+        }
+    }
+    #[test]
+    fn a_configured_link_to_a_protected_path_is_refused() {
+        let root = fs::canonicalize(unix::temp_directory().unwrap()).unwrap();
+        let state = root.join("state");
+        fs::create_dir(&state).unwrap();
+        let link = root.join("readonly");
+        // The Nix build sandbox has no daemon socket directory to resolve a
+        // link to; `just test-rust` on the host checks that case.
+        for target in [
+            state.as_path(),
+            Path::new("/nix/var/nix/daemon-socket"),
+            Path::new("/proc"),
+        ]
+        .into_iter()
+        .filter(|target| target.exists())
+        {
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            for declarations in [
+                Declarations {
+                    ro_dirs: vec![link.display().to_string()],
+                    ..Default::default()
+                },
+                Declarations {
+                    rw_dirs: vec![link.display().to_string()],
+                    ..Default::default()
+                },
+            ] {
+                let error = plan(
+                    &declarations,
+                    std::slice::from_ref(&state),
+                    &Cancellation::default(),
+                )
+                .err()
+                .unwrap_or_else(|| panic!("a link to {} is accepted", target.display()))
+                .to_string();
+                assert!(
+                    error.contains("overlaps protected path"),
+                    "{}: {error}",
+                    target.display()
+                );
+            }
+            fs::remove_file(&link).unwrap();
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn shared_working_directory_stays_first_and_pinned() {
         let root = unix::temp_directory().unwrap();

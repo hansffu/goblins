@@ -630,7 +630,25 @@ mod tests {
             f.client.write_all(&bytes).unwrap();
             f.tick(false);
             assert_eq!(f.reply()["error"]["code"], -32600);
+            assert!(
+                !f.events
+                    .iter()
+                    .any(|e| matches!(e, Event::SandboxCall { .. }))
+            );
         }
+        // A line that is no frame, then the client goes away: nothing is
+        // asked of the daemon, so nothing can be decided.
+        let mut f = Fixture::new();
+        f.client.write_all(b"{bad}\n").unwrap();
+        f.client.shutdown(std::net::Shutdown::Write).unwrap();
+        for _ in 0..4 {
+            f.tick(false);
+        }
+        assert!(
+            !f.events
+                .iter()
+                .any(|e| matches!(e, Event::SandboxCall { .. }))
+        );
         let mut f = Fixture::new();
         f.relay.tick_at(
             &Capabilities {

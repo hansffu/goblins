@@ -1541,4 +1541,483 @@ mod tests {
         assert!(view.selected_session(&snapshot).is_none());
         assert_eq!(view.sessions.selected(), None);
     }
+
+    use crossterm::event::{KeyEvent, MouseEvent};
+    use goblins_jsonrpc as rpc;
+    use ratatui::backend::TestBackend;
+    use std::{io::Write, os::unix::net::UnixListener, sync::mpsc};
+
+    /// A daemon on a temporary `host.sock` that answers `initialize`, then
+    /// every `permissions.decide` the way the daemon does. Each call reaches
+    /// `calls` before its reply, so once `View::input` returns, an empty
+    /// channel means no decision was sent.
+    struct Host {
+        client: Client,
+        calls: mpsc::Receiver<serde_json::Value>,
+        state: PathBuf,
+    }
+    impl Host {
+        fn start() -> Self {
+            let state = goblins_unix::temp_directory().unwrap();
+            let listener = UnixListener::bind(state.join("host.sock")).unwrap();
+            let (sender, calls) = mpsc::channel();
+            std::thread::spawn(move || {
+                let (mut peer, _) = listener.accept().unwrap();
+                let init = rpc::read(&mut peer).unwrap();
+                assert_eq!(init["method"], "initialize");
+                let fixtures: serde_json::Value =
+                    serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json"))
+                        .unwrap();
+                peer.write_all(
+                    &rpc::encode(&rpc::result(
+                        init["id"].clone(),
+                        fixtures["host_initialize"].clone(),
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
+                // Ends when the client hangs up.
+                while let Ok(call) = rpc::read(&mut peer) {
+                    let reply = serde_json::json!({
+                        "accepted": true,
+                        "request": call["params"]["request"],
+                        "approved": call["params"]["approved"],
+                    });
+                    let id = call["id"].clone();
+                    sender.send(call).unwrap();
+                    peer.write_all(&rpc::encode(&rpc::result(id, reply)).unwrap())
+                        .unwrap();
+                }
+            });
+            let client = Client::connect(&state).unwrap();
+            Self {
+                client,
+                calls,
+                state,
+            }
+        }
+        /// The one decision sent since the last check, as (session,
+        /// request, approval, approved).
+        fn decided(&self) -> serde_json::Value {
+            let call = self.calls.try_recv().expect("no decision was sent");
+            assert_eq!(call["method"], "permissions.decide");
+            assert!(self.calls.try_recv().is_err(), "more than one decision");
+            call["params"].clone()
+        }
+        fn nothing_decided(&self) {
+            assert!(
+                matches!(self.calls.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                "a decision was sent"
+            );
+        }
+    }
+    impl Drop for Host {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.state);
+        }
+    }
+    fn press(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+    fn mouse(kind: MouseEventKind, (column, row): (u16, u16)) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+    /// Draw the view the way `serve` does and return the screen's rows.
+    fn draw(view: &mut View, snapshot: &Snapshot) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|f| view.draw(f, snapshot)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+    fn shows(screen: &[String], text: &str) -> bool {
+        screen.iter().any(|row| row.contains(text))
+    }
+    /// The (column, row) where `text` starts on the screen.
+    fn locate(screen: &[String], text: &str) -> (u16, u16) {
+        screen
+            .iter()
+            .enumerate()
+            .find_map(|(y, row)| {
+                row.find(text)
+                    .map(|i| (row[..i].chars().count() as u16, y as u16))
+            })
+            .unwrap_or_else(|| panic!("{text:?} not on screen:\n{}", screen.join("\n")))
+    }
+    /// A package request as the daemon records it for `session`, whose agent
+    /// name is the session's.
+    fn request(id: &str, session: &str, package: &str) -> PermissionRecord {
+        serde_json::from_value(serde_json::json!({
+            "kind": "package", "id": id, "session": session, "agent_name": session,
+            "approval": format!("{id}-approval"), "package": package, "reason": "test",
+            "state": "pending", "approved": null,
+            "preview": {"in_store": false, "download": null, "build_required": true},
+            "message": null,
+        }))
+        .unwrap()
+    }
+    fn snapshot(sessions: Vec<SessionRecord>, permissions: Vec<PermissionRecord>) -> Snapshot {
+        Snapshot {
+            instance: "fixture-instance".into(),
+            permissions,
+            raids: vec![],
+            sessions,
+            messaging: Default::default(),
+        }
+    }
+    /// Two goblins with a pending request each, as `test_tui.py` set up.
+    fn two_requests() -> Snapshot {
+        snapshot(
+            vec![session("zoggit"), session("snikk")],
+            vec![
+                request("ra", "zoggit", "hello"),
+                request("rb", "snikk", "tree"),
+            ],
+        )
+    }
+    fn decision(request: &str, session: &str, approved: bool) -> serde_json::Value {
+        serde_json::json!({
+            "session": session, "request": request,
+            "approval": format!("{request}-approval"), "approved": approved,
+        })
+    }
+    fn settle(snapshot: &mut Snapshot, id: &str, state: &str, approved: bool) {
+        let p = snapshot
+            .permissions
+            .iter_mut()
+            .find(|p| p.id == id)
+            .unwrap();
+        p.state = state.into();
+        p.approved = Some(approved);
+    }
+    /// A raid as the daemon reports it: `chief` owns it and ran `kid`;
+    /// `other` is unrelated and listed between them.
+    fn raid_snapshot() -> Snapshot {
+        let raid = serde_json::json!({"id": "raid-1", "name": "crew", "role": null,
+            "owner": "chief", "paused": false});
+        let mut chief = session("chief");
+        chief.raid = Some(serde_json::from_value(raid.clone()).unwrap());
+        let mut kid = session("kid");
+        kid.raid = Some(serde_json::from_value(raid).unwrap());
+        kid.created_by = Some(
+            serde_json::from_value(serde_json::json!({"id": "chief", "agent_name": "chief"}))
+                .unwrap(),
+        );
+        let member = |id: &str, owner: bool| {
+            serde_json::json!({"id": id, "agent_name": id, "name": "shell", "role": null,
+                "state": "running", "owner": owner,
+                "created_by": if owner { serde_json::Value::Null } else { "chief".into() },
+                "options": {}})
+        };
+        let mut s = snapshot(vec![chief, session("other"), kid], vec![]);
+        s.raids = vec![
+            serde_json::from_value(serde_json::json!({"id": "raid-1", "name": "crew",
+                "owner": "chief", "former_owner": null, "paused": false, "generation": 1,
+                "members": [member("chief", true), member("kid", false)]}))
+            .unwrap(),
+        ];
+        s
+    }
+
+    #[test]
+    fn popup_is_laid_out_beneath_both_lists_and_shows_the_request() {
+        let mut view = View::new();
+        let empty = draw(&mut view, &snapshot(vec![session("zoggit")], vec![]));
+        assert!(shows(&empty, "zoggit (shell)"));
+        assert!(!shows(&empty, "Permission request"));
+        let mut view = View::new();
+        let screen = draw(&mut view, &two_requests());
+        let (_, sandboxes) = locate(&screen, "Sandboxes [focused]");
+        let (_, sessions) = locate(&screen, "snikk (shell)");
+        let (_, requests) = locate(&screen, " Requests ");
+        let (_, listed) = locate(&screen, "tree");
+        let (_, popup) = locate(&screen, "Permission request");
+        assert!(sandboxes < sessions && sessions < requests);
+        assert!(requests < listed && listed < popup, "{}", screen.join("\n"));
+        for text in [
+            "Sandbox: zoggit",
+            "Package: hello",
+            "Reason: test",
+            "[ No ]",
+            "[ Yes ]",
+        ] {
+            let (_, row) = locate(&screen, text);
+            assert!(row > popup, "{text:?} is not inside the popup");
+        }
+    }
+    #[test]
+    fn tab_focuses_requests_and_up_down_change_the_shown_request() {
+        let mut host = Host::start();
+        let snapshot = two_requests();
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        assert!(view.input(press(KeyCode::Tab), &snapshot, &mut host.client));
+        assert!(shows(&draw(&mut view, &snapshot), "Requests [focused]"));
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        assert!(shows(&draw(&mut view, &snapshot), "Package: tree"));
+        view.input(press(KeyCode::Up), &snapshot, &mut host.client);
+        assert!(shows(&draw(&mut view, &snapshot), "Package: hello"));
+        host.nothing_decided();
+    }
+    #[test]
+    fn bracketed_paste_never_decides() {
+        let mut host = Host::start();
+        let snapshot = two_requests();
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Tab), &snapshot, &mut host.client);
+        draw(&mut view, &snapshot);
+        assert!(view.input(Event::Paste("y\r".into()), &snapshot, &mut host.client));
+        host.nothing_decided();
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "Package: hello") && shows(&screen, "Status: pending"));
+    }
+    #[test]
+    fn esc_hides_the_popup_and_enter_reopens_it_without_deciding() {
+        let mut host = Host::start();
+        let snapshot = two_requests();
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Tab), &snapshot, &mut host.client);
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Esc), &snapshot, &mut host.client);
+        assert!(!shows(&draw(&mut view, &snapshot), "Permission request"));
+        // A hidden popup cannot receive an approval.
+        view.input(press(KeyCode::Char('y')), &snapshot, &mut host.client);
+        host.nothing_decided();
+        view.input(press(KeyCode::Enter), &snapshot, &mut host.client);
+        host.nothing_decided();
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "Permission request") && shows(&screen, "Package: hello"));
+    }
+    #[test]
+    fn enter_denies_by_default_and_right_enter_or_y_approve_the_shown_request() {
+        let mut host = Host::start();
+        let mut snapshot = two_requests();
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Tab), &snapshot, &mut host.client);
+        draw(&mut view, &snapshot);
+        // The default button is No.
+        view.input(press(KeyCode::Enter), &snapshot, &mut host.client);
+        assert_eq!(host.decided(), decision("ra", "zoggit", false));
+        settle(&mut snapshot, "ra", "denied", false);
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "denied") && !shows(&screen, "Permission request"));
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        assert!(shows(&draw(&mut view, &snapshot), "Package: tree"));
+        view.input(press(KeyCode::Right), &snapshot, &mut host.client);
+        view.input(press(KeyCode::Enter), &snapshot, &mut host.client);
+        assert_eq!(host.decided(), decision("rb", "snikk", true));
+        settle(&mut snapshot, "rb", "ready", true);
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "ready") && !shows(&screen, "Permission request"));
+        snapshot.permissions.push(request("rc", "zoggit", "hello"));
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "Package: hello") && shows(&screen, "Status: pending"));
+        view.input(press(KeyCode::Up), &snapshot, &mut host.client);
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "Package: tree") && shows(&screen, "Status: ready"));
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Char('y')), &snapshot, &mut host.client);
+        assert_eq!(host.decided(), decision("rc", "zoggit", true));
+        view.input(press(KeyCode::Tab), &snapshot, &mut host.client);
+        assert!(shows(&draw(&mut view, &snapshot), "Sandboxes [focused]"));
+    }
+    #[test]
+    fn a_mouse_press_does_not_carry_over_to_a_replacement_request() {
+        let mut host = Host::start();
+        let mut snapshot = snapshot(
+            vec![session("zoggit")],
+            vec![request("ra", "zoggit", "hello")],
+        );
+        let mut view = View::new();
+        let yes = locate(&draw(&mut view, &snapshot), "[ Yes ]");
+        view.input(
+            mouse(MouseEventKind::Down(MouseButton::Left), yes),
+            &snapshot,
+            &mut host.client,
+        );
+        // The pressed request is withdrawn and a new one arrives.
+        snapshot.permissions[0].state = "withdrawn".into();
+        snapshot.permissions.push(request("rb", "zoggit", "tree"));
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "Status: withdrawn") && shows(&screen, "tree"));
+        view.input(
+            mouse(MouseEventKind::Up(MouseButton::Left), yes),
+            &snapshot,
+            &mut host.client,
+        );
+        host.nothing_decided();
+    }
+    #[test]
+    fn a_mouse_release_does_not_complete_a_press_on_another_request() {
+        // The selection moves between press and release, to a pending request
+        // whose [ Yes ] is drawn in the same place.
+        let mut host = Host::start();
+        let snapshot = two_requests();
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Tab), &snapshot, &mut host.client);
+        let yes = locate(&draw(&mut view, &snapshot), "[ Yes ]");
+        view.input(
+            mouse(MouseEventKind::Down(MouseButton::Left), yes),
+            &snapshot,
+            &mut host.client,
+        );
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "Package: tree"));
+        assert_eq!(locate(&screen, "[ Yes ]"), yes);
+        view.input(
+            mouse(MouseEventKind::Up(MouseButton::Left), yes),
+            &snapshot,
+            &mut host.client,
+        );
+        host.nothing_decided();
+    }
+    #[test]
+    fn clicking_no_denies_the_shown_pending_request() {
+        let mut host = Host::start();
+        let snapshot = two_requests();
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Tab), &snapshot, &mut host.client);
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "Package: tree"));
+        let no = locate(&screen, "[ No ]");
+        view.input(
+            mouse(MouseEventKind::Down(MouseButton::Left), no),
+            &snapshot,
+            &mut host.client,
+        );
+        host.nothing_decided();
+        view.input(
+            mouse(MouseEventKind::Up(MouseButton::Left), no),
+            &snapshot,
+            &mut host.client,
+        );
+        assert_eq!(host.decided(), decision("rb", "snikk", false));
+    }
+    #[test]
+    fn sessions_are_a_flat_list_in_snapshot_order() {
+        let snapshot = raid_snapshot();
+        let screen = draw(&mut View::new(), &snapshot);
+        assert!(shows(&screen, "host"));
+        let rows: Vec<u16> = ["chief", "other", "kid"]
+            .iter()
+            .map(|n| locate(&screen, &format!("{n} (shell)")).1)
+            .collect();
+        // One row each, in snapshot order: the member is not under its owner.
+        assert_eq!(rows, [rows[0], rows[0] + 1, rows[0] + 2]);
+        for mark in ["├─ ", "└─ ", "[-]", "[+]"] {
+            assert!(!shows(&screen, mark), "{mark:?} shown");
+        }
+    }
+    #[test]
+    fn enter_opens_the_selected_row_and_backspace_left_right_keep_the_list() {
+        let mut host = Host::start();
+        let snapshot = raid_snapshot();
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        view.input(press(KeyCode::Enter), &snapshot, &mut host.client);
+        assert!(shows(
+            &draw(&mut view, &snapshot),
+            "Packages [focused] · other (shell)"
+        ));
+        view.input(press(KeyCode::Backspace), &snapshot, &mut host.client);
+        // Left and Right fold nothing and keep the selection.
+        view.input(press(KeyCode::Left), &snapshot, &mut host.client);
+        view.input(press(KeyCode::Right), &snapshot, &mut host.client);
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "Sandboxes [focused]"));
+        for n in ["chief", "other", "kid"] {
+            assert!(shows(&screen, &format!("{n} (shell)")));
+        }
+        assert_eq!(view.sessions.selected(), Some(1));
+        view.input(press(KeyCode::Enter), &snapshot, &mut host.client);
+        assert!(shows(
+            &draw(&mut view, &snapshot),
+            "Packages [focused] · other (shell)"
+        ));
+        host.nothing_decided();
+    }
+    #[test]
+    fn a_member_request_is_labelled_by_its_agent_name() {
+        let mut snapshot = raid_snapshot();
+        snapshot.permissions.push(request("rk", "kid", "hello"));
+        assert_eq!(request_label(&snapshot, &snapshot.permissions[0]), "kid");
+        let screen = draw(&mut View::new(), &snapshot);
+        assert!(shows(&screen, "Sandbox: kid"));
+        assert!(!shows(&screen, "chief/kid"));
+    }
+    #[test]
+    fn a_stopped_session_keeps_its_row_and_the_selection() {
+        let mut host = Host::start();
+        let mut snapshot = raid_snapshot();
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        draw(&mut view, &snapshot);
+        let kid = snapshot
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == "kid")
+            .unwrap();
+        kid.state = "stopped".into();
+        kid.identity = None;
+        let screen = draw(&mut view, &snapshot);
+        let (_, row) = locate(&screen, "kid (shell)");
+        assert!(screen[row as usize].contains("stopped"));
+        view.input(press(KeyCode::Enter), &snapshot, &mut host.client);
+        assert!(shows(
+            &draw(&mut view, &snapshot),
+            "Packages [focused] · kid (shell)"
+        ));
+    }
+    #[test]
+    fn a_failed_request_shows_the_host_diagnostic_once_its_popup_closed() {
+        let mut host = Host::start();
+        let mut snapshot = snapshot(
+            vec![session("zoggit")],
+            vec![request("ra", "zoggit", "goblinsMissingPackageForTest")],
+        );
+        let mut view = View::new();
+        assert!(shows(
+            &draw(&mut view, &snapshot),
+            "Package: goblinsMissingPackageForTest"
+        ));
+        // Decided elsewhere: the popup of the selected request closes.
+        let message = "cannot resolve package 'goblinsMissingPackageForTest' from pinned nixpkgs: attribute missing";
+        settle(&mut snapshot, "ra", "failed", true);
+        snapshot.permissions[0].message = Some(message.into());
+        let screen = draw(&mut view, &snapshot);
+        assert!(shows(&screen, "failed") && !shows(&screen, "Permission request"));
+        view.input(press(KeyCode::Tab), &snapshot, &mut host.client);
+        view.input(press(KeyCode::Enter), &snapshot, &mut host.client);
+        let screen = draw(&mut view, &snapshot);
+        assert!(
+            shows(&screen, &format!("Status: failed · {message}")),
+            "{}",
+            screen.join("\n")
+        );
+        assert!(!shows(&screen, "see request details"));
+        host.nothing_decided();
+    }
 }

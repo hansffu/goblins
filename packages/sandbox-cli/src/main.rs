@@ -583,15 +583,22 @@ fn waiting_call_typed<M: contract::Method>(
 /// default waiting until it is done with all of them.
 fn editor_open(args: &[String]) -> Result<i32, String> {
     let open = editor_request(args, || std::env::current_dir().map_err(|e| e.to_string()))?;
-    match waiting_call_typed::<contract::sandbox::EditorOpen>(
+    let reply = waiting_call_typed::<contract::sandbox::EditorOpen>(
         goblins_protocol::editor::FEATURE,
         open,
-    )? {
-        Ok(result) => Ok(edited(&result).emit()),
-        Err(message) => {
-            eprintln!("goblins: {message}");
-            Ok(1)
-        }
+    )?;
+    Ok(opened(reply).emit())
+}
+/// What `editor open` shows for the daemon's answer: the editor's outcome,
+/// or the daemon's refusal with exit code 1.
+fn opened(reply: Result<contract::EditorOpenReply, String>) -> Output {
+    match reply {
+        Ok(result) => edited(&result),
+        Err(message) => Output {
+            stderr: format!("goblins: {message}\n"),
+            code: 1,
+            ..Output::default()
+        },
     }
 }
 /// The files to open, their paths relative to `cwd`.
@@ -737,31 +744,42 @@ fn request(
     params: contract::PermissionParams,
 ) -> Result<(i32, contract::PermissionRequestReply), String> {
     let id = random_key()?;
-    let exchange = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut socket = UnixStream::connect(REQUEST_SOCKET)?;
-        let init = contract::initialize(&mut socket, json!(0), contract::EndpointRole::Sandbox)?;
-        if params.kind == "docker"
-            && !init
-                .features
-                .iter()
-                .any(|feature| feature == "docker-enable")
-        {
-            return Err("daemon does not support on-demand Docker; start a new sandbox with an updated daemon".into());
-        }
-        socket.set_write_timeout(Some(rpc::TIMEOUT))?;
-        use std::io::Write;
-        socket.write_all(&rpc::encode(&rpc::request(
-            json!(id),
-            contract::sandbox::PermissionsRequest::NAME,
-            contract::params_value::<contract::sandbox::PermissionsRequest>(params.clone())?,
-        ))?)?;
-        let reply = rpc::read(&mut socket)?;
-        rpc::validate_response(&reply, &json!(id))?;
-        grant(&reply)
-    };
-    let (output, reply) = granted(exchange());
+    let outcome = UnixStream::connect(REQUEST_SOCKET)
+        .map_err(Into::into)
+        .and_then(|socket| exchange(socket, &id, &params));
+    let (output, reply) = granted(outcome);
     let code = output.emit();
     Ok((code, reply?))
+}
+/// A permission request with key `id` on a fresh connection to the daemon,
+/// and its outcome.
+fn exchange(
+    mut socket: UnixStream,
+    id: &str,
+    params: &contract::PermissionParams,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let init = contract::initialize(&mut socket, json!(0), contract::EndpointRole::Sandbox)?;
+    if params.kind == "docker"
+        && !init
+            .features
+            .iter()
+            .any(|feature| feature == "docker-enable")
+    {
+        return Err(
+            "daemon does not support on-demand Docker; start a new sandbox with an updated daemon"
+                .into(),
+        );
+    }
+    socket.set_write_timeout(Some(rpc::TIMEOUT))?;
+    use std::io::Write;
+    socket.write_all(&rpc::encode(&rpc::request(
+        json!(id),
+        contract::sandbox::PermissionsRequest::NAME,
+        contract::params_value::<contract::sandbox::PermissionsRequest>(params.clone())?,
+    ))?)?;
+    let reply = rpc::read(&mut socket)?;
+    rpc::validate_response(&reply, &json!(id))?;
+    grant(&reply)
 }
 /// The outcome a correlated reply frame to a permission request reports:
 /// the daemon's error, or the result read through the grant profile.
@@ -1001,6 +1019,40 @@ mod tests {
     }
 
     #[test]
+    fn a_request_whose_connection_is_lost_has_an_unknown_outcome() {
+        use std::io::Write;
+        let (socket, mut daemon) = UnixStream::pair().unwrap();
+        daemon.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+        let peer = std::thread::spawn(move || {
+            let init = rpc::read(&mut daemon).unwrap();
+            assert_eq!(init["method"], "initialize");
+            let result = fixtures()["sandbox_initialize"].clone();
+            daemon
+                .write_all(&rpc::encode(&rpc::result(init["id"].clone(), result)).unwrap())
+                .unwrap();
+            // The request arrives; the daemon goes away before answering.
+            let request = rpc::read(&mut daemon).unwrap();
+            assert_eq!(request["method"], "permissions.request");
+            assert_eq!(request["id"], "fixture-key");
+        });
+        let params = package_params(
+            false,
+            &strings(&["request-package", "hello", "--reason", "tests"]),
+        )
+        .unwrap();
+        let (output, _) = granted(exchange(socket, "fixture-key", &params));
+        peer.join().unwrap();
+        assert_eq!((output.code, output.stdout.as_str()), (2, ""));
+        assert!(
+            output
+                .stderr
+                .starts_with("goblins-request: outcome unknown; do not retry automatically: "),
+            "{}",
+            output.stderr
+        );
+    }
+
+    #[test]
     fn editor_open_sends_absolute_paths_and_exits_with_the_editor_code() {
         let cli::Command::Editor {
             command: cli::EditorCommand::Open { args },
@@ -1027,6 +1079,16 @@ mod tests {
         assert_eq!(
             wire(editor_request(&strings(&["/tmp/msg"]), || Ok("/root/work".into())).unwrap()),
             json!({"files":[{"path":"/tmp/msg"}],"wait":true})
+        );
+        // Without an editor the daemon refuses, and the CLI exits 1.
+        let message = "no editor is configured; enable editor.emacs in mkGoblins";
+        assert_eq!(
+            opened(Err(message.into())),
+            Output {
+                stdout: String::new(),
+                stderr: format!("goblins: {message}\n"),
+                code: 1
+            }
         );
         for (result, code, stderr) in [
             (Value::Null, 1, ""),

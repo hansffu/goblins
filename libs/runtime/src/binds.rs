@@ -134,10 +134,31 @@ mod tests {
             "/nix",
             "/nix/var/nix/daemon-socket",
             "/run/goblins",
+            "/proc",
             "/proc/self/root",
             "/workspace/subdir",
         ] {
-            assert!(validate(Path::new(input), &[]).is_err());
+            let error = validate(Path::new(input), &[]).unwrap_err().to_string();
+            assert!(
+                error.contains("overlaps protected path"),
+                "{input}: {error}"
+            );
+        }
+        // The daemon's state directory is private: itself, what is in it
+        // and what holds it.
+        let state = PathBuf::from("/home/test/.local/state/goblins");
+        for input in [
+            "/home/test/.local/state/goblins",
+            "/home/test/.local/state/goblins/host.sock",
+            "/home/test/.local",
+        ] {
+            let error = validate(Path::new(input), std::slice::from_ref(&state))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("overlaps protected path"),
+                "{input}: {error}"
+            );
         }
         assert!(validate(Path::new("/tmp"), &["/tmp/session-private".into()]).is_err());
         assert!(validate(Path::new("/home/test/.config/fish"), &[]).is_ok());

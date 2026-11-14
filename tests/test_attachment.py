@@ -1,217 +1,152 @@
-"""Editor terminal relay uses exact session and daemon identities."""
+"""A person works in an interactive goblin: runs it in a project, detaches and
+reattaches, interrupts and resizes it, and kills it, while another goblin
+carries on. Implementation checks (pinned attachments, signals during the
+handshake, detach validation) are Rust unit tests."""
 import json
 import os
-import signal
+from pathlib import Path
 import subprocess
+import tempfile
 import termios
-import threading
+import time
 import unittest
 
-from daemon_support import Daemon, RPC
+from daemon_support import Daemon
+from support import step
 from terminal_support import Terminal
 
 
-class AttachmentTests(unittest.TestCase):
-    def test_host_detach_by_name_and_id_leave_processes_running(self):
-        d = Daemon()
-        self.addCleanup(d.close)
-        a = d.start(agent_name="snikk")
-        b = d.start(agent_name="grub")
-        command = [str(d.app), "--state-dir", str(d.state)]
-        for target in ("missing-agent", "snikk"):
-            result = subprocess.run([*command, "detach", target], text=True, capture_output=True)
-            self.assertEqual(result.returncode, 1)
-        other = Terminal([*command, "attach", "grub"])
-        self.addCleanup(other.close)
-        other.send("echo OTHER_READY\n")
-        other.expect(r"(?:^|\n)OTHER_READY\n")
-        client = Terminal([*command, "attach", "snikk"])
-        self.addCleanup(client.close)
-        client.send("set -g saved_value retained; printf 'PID=%s\\n' $fish_pid\n")
-        pid = client.expect(r"(?:^|\n)PID=(\d+)\n").group(1)
-        identity = d.get(a["session"])["identity"]
-        for target in ("snikk", a["session"]):
-            # Detach from the host while the sandbox is busy in a foreground job.
-            client.send("echo BUSY; sleep 60\n")
-            client.expect(r"(?:^|\n)BUSY\n")
-            reply = json.loads(subprocess.check_output([*command, "detach", target], text=True))
-            self.assertTrue(reply["accepted"])
-            self.assertEqual(client.wait(), 0)
-            record = d.get(a["session"])
-            self.assertEqual(record["state"], "running")
-            self.assertEqual(record["identity"], identity)
-            self.assertTrue(record["terminal_detached"])
-            self.assertTrue(d.get(b["session"])["terminal_attached"])
-            result = subprocess.run([*command, "detach", target], text=True, capture_output=True)
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("terminal is not attached", result.stderr)
-            client = Terminal([*command, "attach", "snikk"])
-            self.addCleanup(client.close)
-            d.wait(lambda: d.get(a["session"])["terminal_attached"])
-            # Until the client makes its terminal raw, the line discipline
-            # turns Ctrl-C into SIGINT for the client instead of relaying it.
-            d.wait(lambda: not termios.tcgetattr(client.fd)[3] & termios.ISIG)
-            client.send("\x03")
-            client.send("printf 'STATE=%s,%s\\n' $fish_pid $saved_value\n")
-            client.expect(r"(?:^|\n)STATE=" + pid.decode() + r",retained\n")
-        other.send("echo OTHER_ALIVE; exit\n")
-        other.expect(r"(?:^|\n)OTHER_ALIVE\n")
-        self.assertEqual(other.wait(), 0)
-        client.send("exit 7\n")
-        self.assertEqual(client.wait(), 7)
+class InteractiveGoblinWorkflow(unittest.TestCase):
+    def setUp(self):
+        self.d = Daemon()
+        self.addCleanup(self.d.close)
+        temporary = tempfile.TemporaryDirectory(prefix="goblin-project-")
+        self.addCleanup(temporary.cleanup)
+        self.project = Path(temporary.name) / "first project"
+        (self.project / "deep/nested").mkdir(parents=True)
 
-    def test_configurations_and_exact_attachment(self):
-        daemon = Daemon()
-        self.addCleanup(daemon.close)
-        options = json.loads(subprocess.check_output(
-            [str(daemon.app), "configurations"], text=True))
-        self.assertEqual(options["configuration"], daemon.manifest)
-        self.assertIn("shell", options["names"])
-        self.assertEqual(
-            options["descriptions"]["shell"],
-            "fish running in a Goblins sandbox",
-        )
-        agent = daemon.start()
-        for session, instance, error in (
-            (agent["session"], "wrong-instance", "daemon instance changed"),
-            (agent["agent_name"], daemon.rpc.init["instance"], "session identity mismatch"),
-        ):
-            terminal = Terminal([str(daemon.app), "--state-dir", str(daemon.state),
-                                 "attach", session, "--instance", instance])
-            self.addCleanup(terminal.close)
-            terminal.expect(error)
-            self.assertEqual(terminal.wait(), 1)
-        # Rejected identities did not consume the terminal stream.
-        terminal = Terminal([str(daemon.app), "--state-dir", str(daemon.state),
-                             "attach", agent["session"], "--instance", daemon.rpc.init["instance"]])
+    def host(self, *args):
+        return [str(self.d.app), "--state-dir", str(self.d.state), *args]
+
+    def cli(self, *args):
+        return subprocess.run(self.host(*args), capture_output=True, text=True, timeout=60)
+
+    def terminal(self, *args, cwd=None):
+        terminal = Terminal(self.host(*args), cwd=cwd)
         self.addCleanup(terminal.close)
-        terminal.send("printf 'ATTACHED=%s\\n' yes; exit 7\n")
-        terminal.expect(r"(?:^|\n)ATTACHED=yes\n")
-        self.assertEqual(terminal.wait(), 7)
+        return terminal
 
-    def test_detach_and_reattach_keep_shell_state_and_exit_status(self):
-        d = Daemon()
-        self.addCleanup(d.close)
-        client = Terminal([str(d.app), "--state-dir", str(d.state),
-                           "run", "shell", "--name", "snikk"])
-        self.addCleanup(client.close)
-        client.send("set -g saved_value retained; cd /tmp; printf 'PID=%s\\n' $fish_pid\n")
-        pid = client.expect(r"(?:^|\n)PID=(\d+)\n").group(1)
-        session = d.rpc.call("sessions.list", {})[0]["id"]
-        identity = d.get(session)["identity"]
-        for _ in range(2):
-            client.send("goblin detach; printf 'DETACHED_CODE=%s\\n' $status\n")
+    def raw(self, terminal):
+        """Wait until the attached client made its terminal raw: from then on
+        Ctrl-C is relayed to the goblin instead of interrupting the client."""
+        self.d.wait(lambda: not termios.tcgetattr(terminal.fd)[3] & termios.ISIG)
+
+    def test_an_interactive_goblin(self):
+        d = self.d
+        with step("the configurations to choose from"):
+            options = json.loads(subprocess.check_output([str(d.app), "configurations"], text=True))
+            self.assertEqual(options["configuration"], d.manifest)
+            self.assertEqual(options["descriptions"]["shell"], "fish running in a Goblins sandbox")
+
+        with step("another goblin runs beside it"):
+            grub = d.start(agent_name="grub")["session"]
+            other = self.terminal("attach", "grub")
+            other.send("echo OTHER_READY\n")
+            other.expect(r"(?:^|\n)OTHER_READY\n")
+
+        with step("a goblin runs in the project and edits go both ways"):
+            (self.project / "deep/nested/input").write_text("initial\n")
+            client = self.terminal("run", "shell", "--name", "snikk", cwd=self.project)
+            client.send("printf 'CWD=%s\\n' $PWD; cat deep/nested/input; echo written > deep/nested/output\n")
+            self.assertEqual(client.expect(r"(?:^|\n)CWD=([^\n]+)\n").group(1).decode(), str(self.project))
+            client.expect(r"(?:^|\n)initial\n")
+            d.wait(lambda: (self.project / "deep/nested/output").exists())
+            self.assertEqual((self.project / "deep/nested/output").read_text(), "written\n")
+            (self.project / "deep/nested/input").write_text("host-update\n")
+            client.send("cat deep/nested/input\n")
+            client.expect(r"(?:^|\n)host-update\n")
+            snikk = next(s["id"] for s in d.rpc.call("sessions.list", {}) if s["agent_name"] == "snikk")
+            identity = d.get(snikk)["identity"]
+
+        with step("goblin detach leaves the shell running, also writing output, and reattach finds its state"):
+            client.send("set -g saved_value retained; cd /tmp; printf 'PID=%s\\n' $fish_pid\n")
+            pid = client.expect(r"(?:^|\n)PID=(\d+)\n").group(1).decode()
+            client.send("goblin detach; echo $status > /tmp/detached-code; string repeat -n 200000 x; "
+                        "touch /tmp/output-finished\n")
             self.assertEqual(client.wait(), 0)
-            self.assertEqual(d.get(session)["state"], "running")
-            self.assertEqual(d.get(session)["identity"], identity)
-            client = Terminal([str(d.app), "--state-dir", str(d.state), "attach", "snikk"])
-            self.addCleanup(client.close)
-            client.expect(r"(?:^|\n)DETACHED_CODE=0\n")
+            # /proc shows the sandbox's root without giving the goblin anything.
+            root = Path(f"/proc/{identity['pid']}/root/tmp")
+            d.wait(lambda: (root / "output-finished").exists())
+            self.assertEqual((root / "detached-code").read_text(), "0\n")
+            record = d.get(snikk)
+            self.assertEqual((record["state"], record["identity"]), ("running", identity))
+            self.assertTrue(record["terminal_detached"])
+            client = self.terminal("attach", "snikk")
             client.send("printf 'STATE=%s,%s,%s\\n' $fish_pid $saved_value $PWD\n")
-            client.expect(r"(?:^|\n)STATE=" + pid.decode() + r",retained,/tmp\n")
-        client.send("exit 7\n")
-        self.assertEqual(client.wait(), 7)
+            client.expect(rf"(?:^|\n)STATE={pid},retained,/tmp\n")
 
-    def test_competing_attachment_and_reconnect_after_client_loss(self):
-        d = Daemon()
-        self.addCleanup(d.close)
-        launch = d.start(agent_name="snikk")
-        first = Terminal([str(d.app), "--state-dir", str(d.state), "attach", "snikk"])
-        self.addCleanup(first.close)
-        first.send("echo FIRST_READY\n")
-        first.expect(r"(?:^|\n)FIRST_READY\n")
-        other = Terminal([str(d.app), "--state-dir", str(d.state), "attach", "snikk"])
-        self.addCleanup(other.close)
-        other.expect("terminal is already attached")
-        self.assertEqual(other.wait(), 1)
-        first.close()
-        d.wait(lambda: not d.get(launch["session"])["terminal_attached"])
-        again = Terminal([str(d.app), "--state-dir", str(d.state), "attach", "snikk"])
-        self.addCleanup(again.close)
-        again.send("echo RECONNECTED; exit 0\n")
-        again.expect(r"(?:^|\n)RECONNECTED\n")
-        self.assertEqual(again.wait(), 0)
+        with step("the host detaches a busy goblin, by name and by id"):
+            self.assertEqual(self.cli("detach", "missing-agent").returncode, 1)
+            for target in ("snikk", snikk):
+                client.send("echo BUSY; sleep 60\n")
+                client.expect(r"(?:^|\n)BUSY\n")
+                self.assertTrue(json.loads(self.cli("detach", target).stdout)["accepted"])
+                self.assertEqual(client.wait(), 0)
+                record = d.get(snikk)
+                self.assertEqual((record["state"], record["identity"]), ("running", identity))
+                self.assertTrue(d.get(grub)["terminal_attached"])
+                again = self.cli("detach", target)
+                self.assertEqual(again.returncode, 1)
+                self.assertIn("terminal is not attached", again.stderr)
+                client = self.terminal("attach", "snikk")
+                self.raw(client)
+                # Ctrl-C reaches the busy foreground job, not the client.
+                client.send("\x03")
+                client.send("printf 'STATE=%s,%s\\n' $fish_pid $saved_value\n")
+                client.expect(rf"(?:^|\n)STATE={pid},retained\n")
 
-    def test_resizes_while_attaching_do_not_end_the_attachment(self):
-        # Each resize sends the client SIGWINCH, which interrupts whatever
-        # system call it is waiting in. Editors resize their window as the
-        # client attaches, so the handshake must carry on.
-        d = Daemon()
-        self.addCleanup(d.close)
-        for attempt in range(3):
-            session = d.start()["session"]
-            client = Terminal([str(d.app), "--state-dir", str(d.state), "attach", session])
-            self.addCleanup(client.close)
-            stop = threading.Event()
+        with step("a second attachment is refused"):
+            second = self.terminal("attach", "snikk")
+            second.expect("terminal is already attached")
+            self.assertEqual(second.wait(), 1)
 
-            def resize():
-                # The client makes its terminal raw once it has attached.
-                while not stop.is_set() and termios.tcgetattr(client.fd)[3] & termios.ISIG:
-                    os.kill(client.pid, signal.SIGWINCH)
-                    stop.wait(.001)
-            resizer = threading.Thread(target=resize)
-            resizer.start()
-            try:
-                client.send(f"echo ATTACHED_{attempt}\n")
-                client.expect(rf"(?:^|\n)ATTACHED_{attempt}\n")
-            finally:
-                stop.set()
-                resizer.join()
+        with step("the goblin follows the terminal's size"):
+            client.resize(33, 91)
+            deadline = time.monotonic() + 10
+            while True:
+                client.send("stty size\n")
+                if client.expect(r"(?:^|\n)(\d+ \d+)\n").group(1) == b"33 91":
+                    break
+                self.assertLess(time.monotonic(), deadline, "the resize never reached the goblin")
 
-    def test_background_output_continues_while_detached_and_attached_kill(self):
-        d = Daemon()
-        self.addCleanup(d.close)
-        client = Terminal([str(d.app), "--state-dir", str(d.state),
-                           "run", "shell", "--name", "snikk"])
-        self.addCleanup(client.close)
-        client.send("echo READY\n")
-        client.expect(r"(?:^|\n)READY\n")
-        session = d.rpc.call("sessions.list", {})[0]["id"]
-        client.send("goblin detach; string repeat -n 200000 x; touch /tmp/output-finished\n")
-        self.assertEqual(client.wait(), 0)
-        # /proc sees the sandbox root without adding host authority to payloads.
-        from pathlib import Path
-        pid = d.get(session)["identity"]["pid"]
-        d.wait(lambda: Path(f"/proc/{pid}/root/tmp/output-finished").exists())
-        again = Terminal([str(d.app), "--state-dir", str(d.state), "attach", "snikk"])
-        self.addCleanup(again.close)
-        again.send("echo OUTPUT_FINISHED\n")
-        again.expect(r"(?:^|\n)OUTPUT_FINISHED\n")
-        subprocess.check_call([str(d.app), "--state-dir", str(d.state), "kill", "snikk"],
-                              stdout=subprocess.DEVNULL)
-        d.wait(lambda: d.get(session)["state"] == "stopped")
-        # A killed payload has no normal exit status; its relay must still exit.
-        self.assertNotEqual(again.wait(), 0)
+        with step("fish in a background terminal nobody attached to is not left waiting for a terminal answer"):
+            # Fish asks its terminal for the device attributes at startup and
+            # reads no input until it is answered or ten seconds passed.
+            started = time.monotonic()
+            created = self.cli("terminal", "create", "grub", "--name", "fish", "--", "fish")
+            self.assertEqual(created.returncode, 0, created.stderr)
+            self.cli("terminal", "send", "grub", "fish", "--text", "echo ready", "--keys", "enter")
+            waited = self.cli("terminal", "wait", "grub", "fish", "--regex", "^ready$", "--timeout", "8000")
+            self.assertEqual(waited.returncode, 0, waited.stderr)
+            self.assertLess(time.monotonic() - started, 8)
+            screen = self.cli("terminal", "read", "grub", "fish", "--source", "recent").stdout
+            self.assertNotIn("could not read response", screen)
+            self.assertNotIn("warning", screen)
 
-    def test_detach_is_session_local_and_kill_cleans_up_detached_session(self):
-        d = Daemon()
-        self.addCleanup(d.close)
-        a = d.start(agent_name="snikk")
-        b = d.start(agent_name="grub")
-        client = Terminal([str(d.app), "--state-dir", str(d.state), "attach", "snikk"])
-        self.addCleanup(client.close)
-        client.send("echo READY\n")
-        client.expect(r"(?:^|\n)READY\n")
-        endpoint = d.state / b["session"] / "resources/request.sock"
-        for params in ({"session": a["session"]}, {}):
-            rpc = RPC(endpoint)
-            self.addCleanup(rpc.close)
-            with self.assertRaises(ValueError):
-                rpc.call("sessions.detach", params)
-        self.assertTrue(d.get(a["session"])["terminal_attached"])
-        # Detach does not cancel a concurrent package approval.
-        pending, permission = d.pending(a["session"])
-        self.addCleanup(pending.close)
-        client.send("goblin detach\n")
-        self.assertEqual(client.wait(), 0)
-        self.assertEqual(d.rpc.call("permissions.get", {"request": permission["id"]})["state"], "pending")
-        killed = json.loads(subprocess.check_output(
-            [str(d.app), "--state-dir", str(d.state), "kill", "snikk"], text=True))
-        self.assertTrue(killed["accepted"])
-        d.wait(lambda: d.get(a["session"])["state"] == "stopped")
-        d.wait(lambda: not (d.state / a["session"] / "resources").exists())
-        self.assertEqual(d.get(b["session"])["state"], "running")
+        with step("killing an attached goblin ends its client and leaves the other running"):
+            killed = json.loads(self.cli("kill", "snikk").stdout)
+            self.assertTrue(killed["accepted"])
+            d.wait(lambda: d.get(snikk)["state"] == "stopped")
+            # A killed payload has no normal exit status; its client still ends.
+            self.assertNotEqual(client.wait(), 0)
+            d.wait(lambda: not (d.state / snikk / "resources").exists())
+            self.assertEqual(d.get(grub)["state"], "running")
+
+        with step("the other goblin's exit code reaches its client"):
+            other.send("echo OTHER_ALIVE; exit 7\n")
+            other.expect(r"(?:^|\n)OTHER_ALIVE\n")
+            self.assertEqual(other.wait(), 7)
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main()

@@ -477,6 +477,23 @@ in
       allowedDomains = [ ];
     };
   };
+  # Bash with Python, for the isolation audit's probe script.
+  audit-goblins = mkGoblins {
+    goblins.shell = mkGoblin {
+      pkg = pkgs.bashInteractive;
+      binName = "bash";
+      args = [
+        "--noprofile"
+        "--norc"
+        "-i"
+      ];
+      allowedPackages = [
+        pkgs.coreutils
+        pkgs.python3
+      ];
+      allowedDomains = [ ];
+    };
+  };
   # This output references jq without listing it in the sandbox's closure.
   # GC coverage of an output must not grant visibility to every reference.
   root-reference-fixture = pkgs.runCommand "goblins-root-reference-fixture" { } ''
@@ -1334,12 +1351,17 @@ in
         added = changed;
       };
     };
+  # Every kind of configured bind in one fish goblin: its fish configuration
+  # from the user's home, read-only and read-write directories and files under
+  # $GOBLINS_TEST_ROOT, and a startup package whose closure holds a symlink
+  # output.
   configured-shell = mkGoblins {
     goblins.shell = mkGoblin {
       pkg = pkgs.fish;
       binName = "fish";
       args = [ "--interactive" ];
       allowedPackages = [
+        pkgs.coreutils
         (pkgs.writeShellScriptBin "goblins-symlink-output-probe" ''
           test -x ${
             pkgs.runCommand "goblins-symlink-output" { } ''
@@ -1348,7 +1370,13 @@ in
           }
         '')
       ];
-      roDirs = [ "$HOME/.config/fish" ];
+      roDirs = [
+        "$HOME/.config/fish"
+        "$GOBLINS_TEST_ROOT/readonly"
+      ];
+      rwDirs = [ "\${GOBLINS_TEST_ROOT}/writable" ];
+      roFiles = [ "$GOBLINS_TEST_ROOT/ro-file" ];
+      rwFiles = [ "$GOBLINS_TEST_ROOT/rw-file" ];
     };
   };
   bind-targets = pkgs.runCommand "goblins-bind-targets" { } ''
@@ -1357,24 +1385,6 @@ in
     echo 'function config_probe; echo config-function-loaded; end' > $out/functions/config_probe.fish
     echo private-sibling > $out/unselected-secret
   '';
-  bound-goblins = mkGoblins {
-    goblins.bound = mkGoblin (
-      base
-      // {
-        args = [
-          "--noprofile"
-          "--norc"
-          "-i"
-        ];
-        allowedPackages = [ pkgs.coreutils ];
-        env.PS1 = "bind-test> ";
-        roDirs = [ "$GOBLINS_TEST_ROOT/readonly" ];
-        rwDirs = [ "\${GOBLINS_TEST_ROOT}/writable" ];
-        roFiles = [ "$GOBLINS_TEST_ROOT/ro-file" ];
-        rwFiles = [ "$GOBLINS_TEST_ROOT/rw-file" ];
-      }
-    );
-  };
   goblins-api =
     assert builtins.all rejected invalid;
     assert (mkGoblin (base // { scope = "work"; })).goblin.scope == "work";

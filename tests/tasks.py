@@ -16,7 +16,7 @@ from support import cases
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = Path(__file__).with_name("features.toml")
-CHECKS = ("rust", "emacs", "nix", "packaged")
+CHECKS = ("rust", "rust-host", "emacs", "nix", "packaged")
 
 
 def load_manifest(path=MANIFEST):
@@ -123,6 +123,8 @@ def commands(plan, jobs, data):
     steps = []
     if "rust" in plan.checks:
         steps.append(("Rust", ["just", "test-rust"]))
+    if "rust-host" in plan.checks:
+        steps.append(("Rust host", ["just", "test-rust-host"]))
     if plan.selectors is None or plan.selectors:
         steps.append(("Python", [sys.executable, "tests/run.py", "-j", str(jobs), *(plan.selectors or ())]))
     for check in ("emacs", "nix"):
@@ -147,7 +149,7 @@ def main(argv=None):
     try:
         data = load_manifest()
         if args.list:
-            print("full             Full merge gate: Rust, all Python, ERT, Nix and packaged smoke")
+            print("full             Full merge gate: Rust, Rust host, all Python, ERT, Nix and packaged smoke")
             for name, feature in data["features"].items():
                 print(f"{name:16} {feature['description']}")
             return 0

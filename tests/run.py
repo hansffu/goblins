@@ -256,7 +256,7 @@ def main():
         if args.jobs > 1 and not loader.errors:
             # Build the ignored Session test driver before workers start, so
             # they neither contend for Cargo nor each launch another build.
-            if any(type(test).__module__ in ("test_integration", "test_scope_cleanup") for test in cases(suite)):
+            if any(type(test).__module__ == "test_scope_cleanup" for test in cases(suite)):
                 rust_driver()
             started = time.monotonic()
             results = parallel_suite(suite, args.jobs, cache, args.failfast)

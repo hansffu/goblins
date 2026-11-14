@@ -423,6 +423,9 @@ mod tests {
         process::{Child, Command, Stdio},
     };
 
+    /// The signal flags are the process's: one relay reads them at a time.
+    static SIGNALS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// `goblins exec ARGS` as parsed.
     fn options(args: &[&str]) -> Options {
         use clap::Parser;
@@ -534,7 +537,70 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_terminate_and_hangup_reach_the_remote_process_group() {
+        let _signals = SIGNALS.lock().unwrap_or_else(|e| e.into_inner());
+        let _no_forks = unix::no_forks();
+        let (mut stream, mut daemon) = UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        daemon.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+        // Caught before the exit status: each is forwarded once, in order.
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            caught(signal);
+        }
+        let expected = rpc::result(json!(1), json!({"code":null,"signal":2}));
+        daemon.write_all(&rpc::encode(&expected).unwrap()).unwrap();
+        let mut pipes = [Pipe {
+            from: None,
+            to: None,
+            buffer: vec![],
+            close: None,
+        }];
+        let reply = relay(&mut stream, &json!(1), &mut pipes, None).unwrap();
+        assert_eq!(reply, expected);
+        for signal in [2, 15, 1] {
+            assert_eq!(
+                rpc::read(&mut daemon).unwrap(),
+                json!({"jsonrpc":"2.0","method":"exec.signal","params":{"signal":signal}})
+            );
+        }
+        // Nothing else was sent, and no flag is left for the next relay.
+        drop(stream);
+        let mut rest = vec![];
+        daemon.read_to_end(&mut rest).unwrap();
+        assert!(rest.is_empty());
+        assert!(
+            ![&INT, &TERM, &HUP]
+                .iter()
+                .any(|f| f.load(Ordering::Relaxed))
+        );
+    }
+
+    #[test]
+    fn an_instance_pin_refuses_another_daemon() {
+        let _no_forks = unix::no_forks();
+        let daemon = crate::fake_daemon::Daemon::start(&["exec"], Value::Null);
+        let error = exec(
+            daemon.state.clone(),
+            options(&[
+                "--instance",
+                "wrong-instance",
+                "--session",
+                "session-id",
+                "gribble",
+            ]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "daemon instance changed; goblin gribble is gone"
+        );
+        // Nothing was asked of the other daemon.
+        assert_eq!(daemon.call(), Value::Null);
+    }
+
+    #[test]
     fn finished_relay_stops_at_the_idle_bound_even_with_a_retained_writer() {
+        let _signals = SIGNALS.lock().unwrap_or_else(|e| e.into_inner());
         let _no_forks = unix::no_forks();
         let (mut stream, mut daemon) = UnixStream::pair().unwrap();
         stream.set_nonblocking(true).unwrap();
@@ -570,6 +636,7 @@ mod tests {
 
     #[test]
     fn finished_relay_stops_at_the_absolute_bound_despite_recent_output() {
+        let _signals = SIGNALS.lock().unwrap_or_else(|e| e.into_inner());
         let _no_forks = unix::no_forks();
         let (mut stream, mut daemon) = UnixStream::pair().unwrap();
         stream.set_nonblocking(true).unwrap();
@@ -617,6 +684,7 @@ mod tests {
 
     #[test]
     fn silent_command_status_does_not_discard_pty_output_ready_after_the_poll() {
+        let _signals = SIGNALS.lock().unwrap_or_else(|e| e.into_inner());
         let _fork = unix::forking();
         let (mut stream, mut daemon) = UnixStream::pair().unwrap();
         stream.set_nonblocking(true).unwrap();
