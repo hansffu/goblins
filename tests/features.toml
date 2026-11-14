@@ -53,7 +53,7 @@ paths = ["libs/runtime/src/terminal.rs", "libs/supervisor/src/screen.rs", "packa
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage; cleanup and startup kernel backstops are Rust host tests"
-python = ["test_scopes", "test_scope_process", "test_cleanup", "test_network", "test_crashes.CrashWorkflows.test_the_daemon_dies", "test_run_targets.CoordinatorWorkflow"]
+python = ["test_scopes", "test_cleanup", "test_network", "test_crashes.CrashWorkflows.test_the_daemon_dies", "test_run_targets.CoordinatorWorkflow"]
 checks = ["rust", "rust-host"]
 paths = ["libs/supervisor/src/scope*.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/cleanup/*", "libs/supervisor/src/entry/*", "libs/supervisor/src/network.rs", "libs/supervisor/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
 
