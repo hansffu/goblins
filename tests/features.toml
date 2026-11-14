@@ -52,10 +52,10 @@ checks = ["rust"]
 paths = ["libs/runtime/src/terminal.rs", "libs/supervisor/src/screen.rs", "packages/daemon/src/controller/terminals.rs", "packages/daemon/src/terminal.rs", "libs/api/src/terminal.rs", "packages/sandbox-cli/src/terminal.rs", "skills/goblins-terminals/*"]
 
 [features.scopes]
-description = "Shared namespaces, networking and scope storage"
-python = ["test_scopes", "test_scope_process", "test_scope_cleanup", "test_cleanup", "test_network", "test_run_targets.CoordinatorWorkflow"]
-checks = ["rust"]
-paths = ["libs/supervisor/src/scope*.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/network.rs", "libs/supervisor/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
+description = "Shared namespaces, networking and scope storage; cleanup and startup kernel backstops are Rust host tests"
+python = ["test_scopes", "test_scope_process", "test_cleanup", "test_network", "test_run_targets.CoordinatorWorkflow"]
+checks = ["rust", "rust-host"]
+paths = ["libs/supervisor/src/scope*.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/cleanup/*", "libs/supervisor/src/entry/*", "libs/supervisor/src/network.rs", "libs/supervisor/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
 
 [features.docker]
 description = "Sandbox Docker engines and their cross-feature integrations"

@@ -218,9 +218,8 @@ class RunnerTests(unittest.TestCase):
                          f"'--target-dir', {str(crate / 'target')!r}])\n")
         # The production entry points both consume JSON artifact paths. Compile
         # a real, dependency-free invalid crate through each, not a fake error.
-        self.env.pop("GOBLINS_TEST_DRIVER", None)
         for args in ([str(self.runner), "-j", "1", "probe_unused"],
-                     ["-c", "from support import rust_driver; rust_driver()"]):
+                     ["-c", "from support import cargo_artifacts; cargo_artifacts('test', '--locked', '--workspace', '--no-run')"]):
             with self.subTest(args=args):
                 result = subprocess.run([sys.executable, *args], env=self.env,
                                         capture_output=True, text=True, timeout=30)

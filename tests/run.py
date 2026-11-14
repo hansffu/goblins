@@ -14,7 +14,7 @@ import time
 import unittest
 
 from build_support import cache_directory, fixture_timings
-from support import HERE, cargo_artifacts, cases, rust_driver
+from support import HERE, cargo_artifacts, cases
 
 # Keep engines and Emacs exclusive; the Codex frontend modules share the pool
 # (five full runs at eight workers, docs/RESULTS.org). Ordinary modules stay intact;
@@ -254,10 +254,6 @@ def main():
                  loader.discover(str(HERE / "tests")))
         suite = unique_suite(suite)
         if args.jobs > 1 and not loader.errors:
-            # Build the ignored Session test driver before workers start, so
-            # they neither contend for Cargo nor each launch another build.
-            if any(type(test).__module__ == "test_scope_cleanup" for test in cases(suite)):
-                rust_driver()
             started = time.monotonic()
             results = parallel_suite(suite, args.jobs, cache, args.failfast)
             tests = sum(r["tests"] for r in results)

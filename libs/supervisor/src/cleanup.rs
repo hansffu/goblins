@@ -537,6 +537,9 @@ fn remove(
 }
 
 #[cfg(test)]
+mod host;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

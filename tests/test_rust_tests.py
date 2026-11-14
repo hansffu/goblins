@@ -72,10 +72,12 @@ class RustRunnerTests(unittest.TestCase):
     def test_the_host_stage_builds_its_fixtures_and_runs_only_ignored_host_tests(self):
         built = []
         with mock.patch("build_support.fixture_path", side_effect=lambda name: built.append(name) or Path("/nix/store", name.rsplit("#", 1)[1])), \
-                mock.patch.object(rust_tests, "cargo_artifacts") as build, \
+                mock.patch.object(rust_tests, "cargo_artifacts", return_value=[artifact(self.executable)]) as build, \
                 mock.patch.object(rust_tests.subprocess, "call", return_value=0) as test:
             self.assertEqual(rust_tests.main(["--host"]), 0)
-        build.assert_not_called()
+        # The supervisor executable is built first, for the startup host tests.
+        build.assert_called_once_with("build", "--locked", "-j", "2", "-p",
+                                      "goblins-supervisor-bwrap", "--bin", "goblins-supervisor-bwrap")
         self.assertEqual(built, [rust_tests.FLAKE + "#" + name for name in rust_tests.HOST_FIXTURES.values()])
         command = test.call_args.args[0]
         self.assertEqual(command[1:], ["test", "--locked", "--workspace", "-j", "2", "--", "--ignored", "host::",
@@ -83,3 +85,4 @@ class RustRunnerTests(unittest.TestCase):
         environment = test.call_args.kwargs["env"]
         for variable, name in rust_tests.HOST_FIXTURES.items():
             self.assertEqual(environment[variable], "/nix/store/" + name)
+        self.assertEqual(environment["GOBLINS_TEST_SUPERVISOR_EXECUTABLE"], str(self.executable))

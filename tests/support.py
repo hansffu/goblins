@@ -1,5 +1,5 @@
-"""Shared helpers for the Python suites: workflow steps, Cargo artifacts, the
-ignored Rust host driver test_scope_cleanup uses, and pinned test flakes."""
+"""Shared helpers for the Python suites: workflow steps, Cargo artifacts and
+pinned test flakes."""
 import contextlib
 import json
 import os
@@ -37,18 +37,6 @@ def cargo_artifacts(*args):
         os.environ.get("CARGO", "cargo"), *args, "--message-format=json-render-diagnostics",
     ], cwd=HERE, text=True)
     return [json.loads(line) for line in output.splitlines()]
-
-
-def rust_driver():
-    if "GOBLINS_TEST_DRIVER" not in os.environ:
-        # Match test-rust's workspace feature selection so Cargo reuses artifacts.
-        for artifact in cargo_artifacts("test", "--locked", "--workspace", "--no-run"):
-            if (artifact.get("reason") == "compiler-artifact" and artifact.get("executable")
-                    and artifact["target"]["name"] == "goblins_supervisor"):
-                os.environ["GOBLINS_TEST_DRIVER"] = artifact["executable"]
-        if "GOBLINS_TEST_DRIVER" not in os.environ:
-            raise RuntimeError("Cargo did not produce the Rust host test driver")
-    return os.environ["GOBLINS_TEST_DRIVER"]
 
 
 def command(args):

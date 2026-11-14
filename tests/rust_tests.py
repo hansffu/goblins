@@ -34,10 +34,17 @@ def supervisor_executable(artifacts):
     return executable
 
 
+def build_supervisor():
+    return supervisor_executable(cargo_artifacts(
+        "build", "--locked", "-j", "2", "-p", "goblins-supervisor-bwrap",
+        "--bin", "goblins-supervisor-bwrap"))
+
+
 def host(args):
     from build_support import fixture_path
     environment = {**os.environ, **{variable: str(fixture_path(f"{FLAKE}#{installable}"))
-                                    for variable, installable in HOST_FIXTURES.items()}}
+                                    for variable, installable in HOST_FIXTURES.items()},
+                   "GOBLINS_TEST_SUPERVISOR_EXECUTABLE": str(build_supervisor())}
     return subprocess.call([os.environ.get("CARGO", "cargo"), "test", "--locked",
                             *(args or ["--workspace", "-j", "2"]), "--", "--ignored", "host::",
                             "--test-threads=4"], cwd=HERE, env=environment)
@@ -47,10 +54,7 @@ def main(args=None):
     args = sys.argv[1:] if args is None else args
     if args[:1] == ["--host"]:
         return host(args[1:])
-    executable = supervisor_executable(cargo_artifacts(
-        "build", "--locked", "-j", "2", "-p", "goblins-supervisor-bwrap",
-        "--bin", "goblins-supervisor-bwrap"))
-    environment = {**os.environ, "GOBLINS_TEST_SUPERVISOR_EXECUTABLE": str(executable)}
+    environment = {**os.environ, "GOBLINS_TEST_SUPERVISOR_EXECUTABLE": str(build_supervisor())}
     return subprocess.call([os.environ.get("CARGO", "cargo"), "test", "--locked",
                             *(args or ["--workspace", "-j", "2", "--", "--test-threads=4"])],
                            cwd=HERE, env=environment)

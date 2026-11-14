@@ -89,3 +89,6 @@ pub(crate) fn wait(channel: &Channel) {
         }
     }
 }
+
+#[cfg(test)]
+mod host;
