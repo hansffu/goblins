@@ -99,6 +99,27 @@ fn peer() {
     let root = PathBuf::from(std::env::var_os("GOBLINS_TEST_SUPERVISOR_ROOT").unwrap());
     let mut channel =
         Channel::new(unsafe { UnixStream::from_raw_fd(supervisor::CONTROL_FD) }).unwrap();
+    if mode.starts_with("maintenance-cli-") {
+        let mut owner: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut size = std::mem::size_of_val(&owner) as libc::socklen_t;
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    channel.fd().unwrap(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    (&mut owner as *mut libc::ucred).cast(),
+                    &mut size,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) },
+            0
+        );
+        assert_eq!(unsafe { libc::getppid() }, owner.pid);
+    }
     let mut decoder = Decoder::default();
     let mut encoder = Encoder::default();
     let deadline = Instant::now() + Duration::from_secs(30);

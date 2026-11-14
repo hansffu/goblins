@@ -582,3 +582,6 @@ mod pin_tests {
         assert_eq!(pin.path().unwrap(), Path::new("/immutable/supervisor"));
     }
 }
+
+#[cfg(test)]
+mod host;

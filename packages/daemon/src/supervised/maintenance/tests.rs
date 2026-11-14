@@ -35,6 +35,10 @@ pub(crate) fn peer(root: &Path, mode: &str, received: Received, mut channel: Cha
         );
         return;
     }
+    if mode.starts_with("maintenance-cli-") {
+        cli_peer(root, mode, request, channel);
+        return;
+    }
     let mut output = File::from(OwnedFd::from(request.stdout));
     let mut error = File::from(OwnedFd::from(request.stderr));
     if mode == "maintenance-eof" {
@@ -354,4 +358,87 @@ fn already_cancelled_maintenance_never_spawns_or_creates_operation_state() {
     assert!(!root.join("pid").exists());
     assert!(!root.join("state").exists());
     fs::remove_dir_all(root).unwrap();
+}
+
+// The CLI host checks use the same scripted protocol peer as the unit tests.
+// Ready is an event after stderr and the first output bytes were written.
+fn cli_peer(root: &Path, mode: &str, request: Maintenance, mut channel: Channel) {
+    use std::{
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+    };
+    assert!(matches!(
+        request.operation,
+        MaintenanceOperation::ClearScope {
+            runtime: None,
+            name: None,
+            dry_run: true
+        }
+    ));
+    let mut output = File::from(OwnedFd::from(request.stdout));
+    let mut error = File::from(OwnedFd::from(request.stderr));
+    if mode == "maintenance-cli-tty" {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", r"printf '\376helper\n' >&2"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(error.try_clone().unwrap()))
+            .process_group(0);
+        let owner = unsafe { libc::getpid() };
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0
+                    || libc::getppid() != owner
+                {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                Ok(())
+            });
+        }
+        let mut child = {
+            let _fork = goblins_unix::forking();
+            Child(command.spawn().unwrap())
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "TOSTOP stopped the descendant writer"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    error.write_all(b"\xffstderr\n").unwrap();
+    let bytes: Vec<u8> = (0..4 * 1024 * 1024).map(|n| n as u8).collect();
+    output.write_all(&bytes[..256]).unwrap();
+    fs::write(root.join("cli-ready.tmp"),serde_json::json!({"pid":std::process::id(),"pgid":unsafe {libc::getpgrp()},"sid":unsafe {libc::getsid(0)}}).to_string()).unwrap();
+    fs::rename(root.join("cli-ready.tmp"), root.join("cli-ready.json")).unwrap();
+    output.write_all(&bytes[256..]).unwrap();
+    drop(output);
+    drop(error);
+    let mut writer = Writer::default();
+    writer
+        .begin(
+            Encoder::default()
+                .prepare(Message::MaintenanceFinished { result: Ok(()) })
+                .unwrap(),
+        )
+        .ok()
+        .unwrap();
+    while !writer.idle(&channel) {
+        writer.pump(&mut channel).unwrap();
+    }
+    channel.close();
 }

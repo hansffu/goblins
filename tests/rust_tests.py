@@ -14,24 +14,38 @@ from support import FLAKE, HERE, cargo_artifacts
 # What host tests read, and the fixture each names.
 HOST_FIXTURES = {
     "GOBLINS_TEST_RUNTIME": "runtime",
+    "GOBLINS_TEST_EXEC_MANIFEST": "checks.x86_64-linux.exec-goblins.config",
     "GOBLINS_TEST_JQ": "jq^bin",
     "GOBLINS_TEST_SYMLINK_TOOL": "symlink-tool",
 }
 
 
-def supervisor_executable(artifacts):
+def production_executable(artifacts, name, role):
     candidates = [Path(artifact["executable"]) for artifact in artifacts
                   if artifact.get("reason") == "compiler-artifact"
                   and artifact.get("executable")
-                  and artifact.get("target", {}).get("name") == "goblins-supervisor-bwrap"
+                  and artifact.get("target", {}).get("name") == name
                   and artifact.get("target", {}).get("kind") == ["bin"]
                   and artifact.get("profile", {}).get("test") is False]
     if len(candidates) != 1:
-        raise ValueError("Cargo must report exactly one production supervisor executable")
+        raise ValueError(f"Cargo must report exactly one production {role} executable")
     executable = candidates[0]
     if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
-        raise ValueError("Cargo supervisor artifact must be an absolute executable file")
+        raise ValueError(f"Cargo {role} artifact must be an absolute executable file")
     return executable
+
+
+def supervisor_executable(artifacts):
+    return production_executable(artifacts, "goblins-supervisor-bwrap", "supervisor")
+
+
+def controller_executable(artifacts):
+    return production_executable(artifacts, "goblins", "controller")
+
+
+def build_controller():
+    return controller_executable(cargo_artifacts(
+        "build", "--locked", "-j", "2", "-p", "goblins-controller", "--bin", "goblins"))
 
 
 def build_supervisor():
@@ -44,7 +58,8 @@ def host(args):
     from build_support import fixture_path
     environment = {**os.environ, **{variable: str(fixture_path(f"{FLAKE}#{installable}"))
                                     for variable, installable in HOST_FIXTURES.items()},
-                   "GOBLINS_TEST_SUPERVISOR_EXECUTABLE": str(build_supervisor())}
+                   "GOBLINS_TEST_SUPERVISOR_EXECUTABLE": str(build_supervisor()),
+                   "GOBLINS_TEST_CONTROLLER_EXECUTABLE": str(build_controller())}
     return subprocess.call([os.environ.get("CARGO", "cargo"), "test", "--locked",
                             *(args or ["--workspace", "-j", "2"]), "--", "--ignored", "host::",
                             "--test-threads=4"], cwd=HERE, env=environment)

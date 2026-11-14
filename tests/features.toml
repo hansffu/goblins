@@ -35,8 +35,8 @@ paths = ["libs/supervisor/src/binds.rs", "libs/supervisor/src/snapshot.rs", "lib
 
 [features.lifecycle]
 description = "Daemon management, configuration, names and responsiveness"
-python = ["test_server", "test_crashes", "test_cleanup", "test_configuration", "test_supervised", "test_maintenance"]
-checks = ["rust"]
+python = ["test_server", "test_crashes", "test_cleanup", "test_configuration"]
+checks = ["rust", "rust-host"]
 paths = ["packages/daemon/src/server.rs", "libs/supervisor/src/cleanup.rs", "packages/daemon/src/goblin-names.txt"]
 
 [features.exec]
