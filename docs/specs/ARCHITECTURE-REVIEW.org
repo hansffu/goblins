@@ -1,7 +1,7 @@
 #+title: Architecture review: suggested work
 #+date: 2026-11-10
 
-Suggestions from a read-only review of the whole repository at commit =d530df1= (2026-11-10). Nothing here is decided: each item is a proposal with the evidence it rests on. Line references are from that commit and will drift. Items are grouped by area and ordered by priority within each group; [[*Suggested order][the last section]] gives an order across groups.
+Suggestions from a read-only review of the whole repository at commit =d530df1= (2026-11-10), with completion status checked against the code on 2026-11-15. Items marked DONE have been implemented; the remaining TODO items are proposals, including those only partly addressed. Unless a completion note says otherwise, the findings and line references describe the reviewed commit and will drift. Items are grouped by area and ordered by priority within each group; [[*Suggested order][the last section]] gives an order across groups.
 
 The review found the process architecture sound: the daemon owns identity, policy and approvals, one supervisor per goblin owns the sandbox runtime ([[file:../adr/0018-per-goblin-supervisors.md][ADR 0018]]), and scopes are separate processes. The =Runtime= trait with its =Fake= backend, the bounded queues, the descriptor handoff with lease transfer, and the sequenced state subscription need no change. The items below concern what surrounds that core.
 
@@ -18,13 +18,13 @@ Session and permission states are strings: =SessionRecord.state= is a =String=, 
 - Enums alone are not the goal. A state change in the controller today also touches runtime ownership, name and history reservations and cleanup, in separate statements. Define the lifecycle transitions as operations that keep these consistent, so that a state cannot be set without its consequences. These operations are also the natural lines along which to split the controller (see [[*Split the controller's largest functions][Code size]]).
 - This is the first step of [[file:API-SCHEMA.org][API-SCHEMA.org]] and is useful without the rest of that plan.
 
-** TODO Decide on the schema-first API plan
+** DONE Decide on the schema-first API plan
 
-[[file:API-SCHEMA.org][API-SCHEMA.org]] is a parked draft. It would give Emacs, the shell scripts, the Claude mod and the Python tests a contract to check replies against, which typed Rust records alone do not. Decide whether to pursue it, and if not, record why and what protects the non-Rust clients instead.
+The schema-first plan was pursued through [[file:JSON-RPC-MIGRATION.org][JSON-RPC-MIGRATION.org]]. Repository-owned public and private JSON-RPC surfaces now have OpenRPC contracts in =libs/api/schema/=, generated Rust wire types and method associations, generated Emacs readers, and contract checks for the non-Rust consumers. [[file:API-SCHEMA.org][API-SCHEMA.org]] is retained as design background; its original implementation schedule is superseded. Lifecycle transition operations and domain state typing remain under the preceding TODO.
 
-** TODO Share the API version and the client handshake
+** DONE Share the API version and the client handshake
 
-=initialize= with ={"api":1}= is written out in at least seven places: =emacs/goblins.el=, =rpc.sh=, both adapters, =packages/sandbox-cli/src/main.rs= (twice) and =packages/daemon/src/host.rs=. The Rust clients should take the version and the connect, initialize and call sequence from one place in =libs/api=.
+The Rust host client, sandbox CLI and both adapters now use the schema-derived =contract::API_VERSION= and the shared =contract::initialize= in =libs/api/src/contract.rs=, which checks the endpoint role and API version. Typed requests and responses use =contract::exchange=. Callers retain socket selection and timeout setup; sharing the remaining adapter plumbing is a separate TODO below.
 
 * Event loops
 
@@ -186,11 +186,9 @@ Keep =full= for shared paths. The suggestions are to remove the feature paths th
 
 =just test-merge= runs =cargo test --workspace= and then the Nix checks build each Rust package with its check phase, at one Nix job. The two runs overlap but validate different arrangements: =tests/rust_tests.py= builds the production supervisor and pins it for the actor tests, while =nix/builders/rust.nix= builds each package from its own source set with stubbed workspace members and its fixture environment. First establish what each run covers that the other does not. Drop tests from one only where coverage is shown to be equivalent, and keep the packaging validation.
 
-** TODO Replace the long fixed sleeps
+** DONE Replace the long fixed sleeps
 
-Tests that assert nothing happened sleep for a fixed time: 32 s and 7 s in =tests/test_claude_config.py= and 4 s in =test_attach_handlers.py=. =test_claude_config.py:277= asserts an upper bound of 2.5 s on elapsed time. Where the code under test has a timeout, make it configurable for the test, as =GOBLINS_EVALUATION_TIMEOUT= does.
-
-=tests/test_emacs.py:85= is a different case: it sleeps 3 s between claiming a message and replying, to give Emacs time to process the snapshot the claim changed. Replace it with a wait on a condition Emacs reports, if one can be observed.
+Completed by [[file:INTEGRATION-WORKFLOWS.org][INTEGRATION-WORKFLOWS.org]]. The 32 s Claude heartbeat wait is covered by the controller's injected-clock expiry test, and the 7 s hook wait by a Nix check that observes and releases a blocked FIFO reader. The attach-handler workflow waits for client and descendant cleanup while checking that the server and unrelated exec survive, replacing the 4 s sleep. Emacs uses a claim-observation handshake before replying and verifies that the message view updates without a new snapshot, replacing the 3 s sleep. These changes preserve the cancellation, isolation and ordering assertions.
 
 * Documentation
 
@@ -217,9 +215,9 @@ The ADR list in =docs/README.org= omits 0009, 0010 and 0019 and presents superse
 
 Only [[file:TODO.org][TODO.org]], [[file:API-SCHEMA.org][API-SCHEMA.org]] and this file describe open work. The rest of =specs/= records finished or abandoned work, among them =SUPERVISOR-REFACTOR.org=, =SANDBOX-ACCESS.org=, =SESSION-RECREATE.org=, =SANDBOX-TERMINALS.org=, both =CHILDREN-AND-RAIDS= files and =CLAUDE-SERVER-GOBLINS.org=. Move them to a history directory or mark their status in the index.
 
-** TODO Retire or resume =RESULTS.org=
+** DONE Retire or resume =RESULTS.org=
 
-Its newest entry is from 2026-10-19, and =docs/README.org= still requires verified results to be recorded there. Either drop the convention and keep the file as history, or resume it.
+The results convention was resumed. [[file:../RESULTS.org][RESULTS.org]] now includes the 2026-11-13 worker-count and scheduling measurements after the catalogue and dev-shell speedups, and the Nix rebuild measurements that led to four build jobs with four cores. The file remains the record of those verified results.
 
 * Suggested order
 
