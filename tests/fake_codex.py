@@ -49,7 +49,12 @@ def serve(path):
         event('item/started', {'threadId': state['thread'], 'turnId': turn, 'item': item, 'startedAtMs': started})
         def work():
             outcome = 'completed'
-            if text == 'busy': time.sleep(2)
+            if text == 'busy':
+                deadline = time.monotonic() + 15
+                while not Path('/tmp/fake-codex-release').exists():
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('test did not release the busy turn')
+                    time.sleep(.01)
             elif text in ('failed', 'interrupted'): outcome = text
             elif text == 'notifier-fail':
                 for path in Path('/proc').glob('[0-9]*/cmdline'):

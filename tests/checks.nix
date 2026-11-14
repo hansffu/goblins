@@ -1814,4 +1814,4 @@ in
       jq -e '.goblins | .agent.resume_command == ["--resume", "{session_id}"] and .agent.scopes.work.resume_command == ["--resume", "{session_id}"] and .plain.resume_command == null' ${resume.config}
       touch $out
     '';
-}
+} // import ./agent-shell-checks.nix { inherit pkgs; }

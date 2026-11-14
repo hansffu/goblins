@@ -1300,3 +1300,6 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 }
+
+#[cfg(test)]
+mod scripted_tests;

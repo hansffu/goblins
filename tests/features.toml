@@ -89,15 +89,15 @@ paths = ["packages/daemon/src/mailbox*", "packages/daemon/src/messaging.rs", "pa
 
 [features.history]
 description = "Persistence, recreation and CLI/native/Emacs resume"
-python = ["test_history", "test_worktrees.WorktreeWorkflow", "test_codex_native.NativeProtocol.test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails", "test_codex_native.NativeProtocol.test_a_terminal_resuming_the_conversation_draws_its_history", "test_codex_config.CodexConfigTests.test_recreate_loads_the_recorded_thread_with_the_goblins_policy", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
+python = ["test_history", "test_worktrees.WorktreeWorkflow", "test_codex_native.NativeProtocol.test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails", "test_codex_native.NativeProtocol.test_a_terminal_resuming_the_conversation_draws_its_history", "test_codex_config.CodexConfigTests.test_a_codex_goblin_handles_its_inbox_and_resumes_its_conversation", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
 checks = ["rust"]
 paths = ["packages/daemon/src/history.rs", "packages/daemon/src/records.rs"]
 
 [features.codex]
 description = "Codex configuration, native adapter and operation notices"
 python = ["test_codex_native", "test_codex_config", "test_fake_codex", "test_operation_notices.CodexNoticesWorkflow"]
-checks = ["rust"]
-paths = ["packages/adapter-codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix", "tests/fake_codex.py", "tests/codex_wire.py"]
+checks = ["rust", "nix"]
+paths = ["packages/adapter-codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix", "tests/fake_codex.py", "tests/codex_wire.py", "tests/codex_shell.py", "tests/agent-shell-checks.nix"]
 
 [features.real-agents]
 description = "Opt-in real Codex App Server and native terminal checks with synthetic credentials"

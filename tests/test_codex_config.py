@@ -17,9 +17,8 @@ import uuid
 
 from build_support import fixture_app
 from daemon_support import Daemon, ROOT, RPC
-from support import command
+from support import step
 from terminal_support import Terminal, screen_wait
-
 
 PROVIDER = r"""
 # A scripted Responses API on loopback: the first request runs one command,
@@ -48,11 +47,9 @@ class Provider(BaseHTTPRequestHandler):
 HTTPServer(('127.0.0.1', int(sys.argv[1])), Provider).serve_forever()
 """
 
-
 # The native configuration uses real Codex; setup and inbox use fakes.
 real_codex = unittest.skipUnless(os.environ.get("GOBLINS_TEST_CODEX") == "1",
                                 "opt in with just test-feature real-agents")
-
 
 class CodexConfigTests(unittest.TestCase):
     @classmethod
@@ -96,7 +93,7 @@ class CodexConfigTests(unittest.TestCase):
         return subprocess.run([str(self.app), "--state-dir", str(self.d.state), "exec", session, "--", *argv],
                               capture_output=True, text=True, timeout=60)
 
-    def test_mounts_attach_and_member_inheritance(self):
+    def test_a_codex_goblin_shares_credentials_and_keeps_host_configuration_private(self):
         terminal = self.terminal()
         # The terminal is a client of the goblin's server, on its conversation.
         terminal.expect("CODEX_DIR=" + re.escape(str(self.codex)))
@@ -134,17 +131,12 @@ class CodexConfigTests(unittest.TestCase):
             peer.expect(r"(?:^|\n)ENV_MARKER=inherited\n")
         self.assertEqual((self.codex / "config.toml").read_bytes(), self.original)
         self.assertFalse((self.codex / "hooks.json").exists())
-
-    def test_a_goblin_with_nix_gets_the_nix_skill_instead_of_packages(self):
-        terminal = self.terminal("nix", "nixer")
-        terminal.expect("codex-probe>")
-        skills = "/etc/codex/skills"
-        terminal.send(
-            f"test -r {skills}/goblins-nix/SKILL.md && test -r {skills}/goblins-messaging/SKILL.md "
-            f"&& test ! -e {skills}/goblins-packages && test ! -e {skills}/goblins-devshell "
-            "&& command -v nix >/dev/null; printf 'NIX_SKILLS=%s\\n' \"$?\"\n"
-        )
-        terminal.expect(r"(?:^|\n)NIX_SKILLS=0\n")
+        with step("a configured credential directory is used literally"):
+            custom = self.home / "custom codex"
+            custom.mkdir()
+            custom_terminal = self.terminal("custom", "custom")
+            custom_terminal.expect("CODEX_DIR=" + re.escape(str(custom)))
+            custom_terminal.expect("codex-probe>")
 
     @real_codex
     def test_custom_directory_and_codex_on_path(self):
@@ -186,21 +178,6 @@ class CodexConfigTests(unittest.TestCase):
         # goblin's full access, and the goblin's conversation did not move.
         self.assertEqual(self.exec(native, "sh", "-c", "test -e /tmp/exec-marker").returncode, 0, result.stdout)
         self.assertEqual(self.local(native, "status")["thread_id"], thread)
-
-    def test_invalid_etc_mounts_fail_before_payload_launch(self):
-        source = self.manifest["goblins"]["codex"]["sandbox_etc"]["codex/config.toml"]
-        for mounts in [
-            {"../escape": source},
-            {"codex/config.toml": str(self.codex / "config.toml")},
-            {"codex": source, "codex/config.toml": source},
-        ]:
-            manifest = json.loads(json.dumps(self.manifest))
-            manifest["goblins"]["codex"]["sandbox_etc"] = mounts
-            path = self.home / "invalid.json"
-            path.write_text(json.dumps(manifest))
-            launch = self.d.start("codex", manifest=path, wait=False)
-            record = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] == "failed" else None))
-            self.assertTrue(record["detail"])
 
     @real_codex
     def test_plugin_mcp_filter_keeps_valid_transports(self):
@@ -264,7 +241,7 @@ class CodexConfigTests(unittest.TestCase):
         code = "import pathlib; print(pathlib.Path('/tmp/goblins-codex/native-status.json').read_text())"
         return json.loads(subprocess.check_output([str(self.app),"--state-dir",str(self.d.state),"exec",receiver,"--","python3","-c",code]))
 
-    def test_notify_then_fetch_without_model_or_attachment(self):
+    def test_a_codex_goblin_handles_its_inbox_and_resumes_its_conversation(self):
         receiver = self.d.start("notifier", agent_name="receiver")["session"]
         def paused_and_quiescent():
             # Pause writes controls; only a later observer snapshot applies it.
@@ -280,125 +257,111 @@ class CodexConfigTests(unittest.TestCase):
                     or delivery["pending"] is not None or delivery.get("uncertain") is not False):
                 return None
             return status
-        self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
-        self.local(receiver, "pause")
-        self.d.wait(paused_and_quiescent)
-        self.d.rpc.call("messages.send", {"key":"wake", "to":receiver, "body":"private inbox content"})
-        import time
-        time.sleep(1)
-        self.assertEqual(self.sandbox(receiver,"inbox.status",{})["queued"],1)
-        self.local(receiver,"resume")
-        self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 1)
-        response=self.d.rpc.call("inbox.next",{"key":"reply"})["message"]
-        self.assertEqual(response["body"],"processed: private inbox content")
-        events=self.d.rpc.call("communications.list",{})["events"]
-        self.assertFalse(any(e["kind"].startswith("integration.") for e in events))
-        peer=Terminal([str(self.app),"--state-dir",str(self.d.state),"attach",receiver])
-        self.addCleanup(peer.close)
-        peer.expect("› ")
-        peer.send("busy")
-        self.d.rpc.call("messages.send",{"key":"draft", "to":receiver,"body":"during human input"})
-        self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 1)
-        # The original human draft survives a separately queued inbox turn.
-        self.d.wait(lambda: self.native_status(receiver)["draft"] == "busy")
-        self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
-        peer.send("\r")
-        self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "working")
-        self.d.rpc.call("messages.send",{"key":"working", "to":receiver,"body":"during work"})
-        time.sleep(.7)
-        self.assertEqual(self.sandbox(receiver,"inbox.status",{})["queued"],1)
-        self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 2)
-        self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
-        for text in ("failed","interrupted"):
-            peer.send(text+"\r")
-            self.d.rpc.call("messages.send",{"key":text,"to":receiver,"body":text})
-        self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 4)
-        # Quitting the terminal detaches; the goblin and its delivery go on.
-        peer.send("exit\r")
-        self.assertEqual(peer.wait(), 0)
-        record = self.d.wait(lambda: (r if (r := self.d.get(receiver))["terminal_detached"] else None))
-        self.assertEqual(record["state"], "running")
-        self.d.rpc.call("messages.send",{"key":"detached","to":receiver,"body":"while detached"})
-        self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 5)
-        # Messages are handled by hand while delivery is paused.
-        self.local(receiver, "pause")
-        self.d.wait(paused_and_quiescent)
-        inbox = self.sandbox(receiver, "inbox.status", {})
-        self.assertEqual((inbox["queued"], inbox["claim"], inbox["head"]), (0, None, None))
-        manual = self.d.rpc.call("messages.send",{"key":"manual","to":receiver,"body":"manual fallback"})
-        inbox = self.sandbox(receiver, "inbox.status", {})
-        self.assertEqual((inbox["queued"], inbox["claim"]), (1, None))
-        self.assertEqual(inbox["head"][0], manual["id"])
-        import subprocess
-        command = [str(self.app),"--state-dir",str(self.d.state),"exec",receiver,"--","/run/goblins/bin/goblin"]
-        item = json.loads(subprocess.check_output([*command,"inbox","next"]))
-        self.assertIsNotNone(item["message"])
-        self.assertEqual((item["message"]["id"], item["message"]["body"]),
-                         (manual["id"], "manual fallback"))
-        subprocess.run([*command,"reply",item["message"]["id"],"--claim-generation",str(item["claim_generation"]),"--message","processed manually"],check=True,capture_output=True)
-        self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 6)
-        # Without its adapter, the goblin has no conversation: it stops.
-        self.local(receiver, "resume")
-        peer = Terminal([str(self.app),"--state-dir",str(self.d.state),"attach",receiver])
-        self.addCleanup(peer.close)
-        peer.expect("› ")
-        peer.send("notifier-fail\r")
-        self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
-        self.assertEqual(self.d.get(receiver)["agent_state"],"unknown")
-        self.assertNotEqual(self.d.get(receiver)["exit_code"],0)
-
-    def test_recreate_loads_the_recorded_thread_with_the_goblins_policy(self):
-        self.assertEqual(self.manifest["goblins"]["codex"]["resume_command"],
-                         ["-c", 'model="literal $(false) {{model}}"', "--thread", "{session_id}"])
-        self.assertEqual(self.manifest["goblins"]["profile"]["resume_command"],
-                         [*self.manifest["goblins"]["profile"]["args"], "--thread", "{session_id}"])
-        receiver = self.d.start("notifier", agent_name="receiver")["session"]
-        # The adapter names a new conversation after the goblin and records it.
-        thread = self.d.wait(lambda: (self.d.record(receiver) or {}).get("variables", {}).get("session_id"))
-        self.assertEqual(self.d.record(receiver)["variables"]["session_name"], "receiver")
-        import subprocess
-        def recorded(session, file):
-            return json.loads(subprocess.check_output([str(self.app), "--state-dir", str(self.d.state),
-                "exec", session, "--", "python3", "-c", "print(open('/tmp/goblins-codex/"+file+".json').read())"]))
-        params = recorded(receiver, "start-params")
-        self.assertEqual((params["sandbox"], params["approvalPolicy"]), ("danger-full-access", "on-request"))
-        # The terminal joins it as it is, without permission flags.
-        peer = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", receiver])
-        self.addCleanup(peer.close)
-        peer.expect("› ")
-        args = recorded(receiver, "native-args")
-        self.assertEqual(args[-2:], ["resume", thread])
-        self.assertIn("--remote", args)
-        self.assertNotIn("--sandbox", args)
-        self.assertNotIn("--ask-for-approval", args)
-        self.d.rpc.call("sessions.stop", {"session": receiver})
-        self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
-        self.d.wait_record_released(self.d.record(receiver)["id"])
-        launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
-                                                    "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
-        again = launch["session"]
-        self.d.wait(lambda: self.d.record(receiver)["variables"] ==
-                    {"session_id": thread, "session_name": "Resumed thread"}, timeout=60)
-        self.assertEqual(self.d.record(receiver)["sessions"], [receiver, again])
-        # The adapter loads it with this configuration's permissions, here
-        # Codex's default policy, since it does not bypass approvals.
-        params = recorded(again, "resume-params")
-        self.assertEqual((params["threadId"], params["approvalPolicy"], params["sandbox"]),
-                         (thread, "on-request", "danger-full-access"))
-        # A resume command that passes what is not a server option stops the
-        # goblin and says why in its server log.
-        config = json.loads(Path(self.d.manifest).read_text())
-        config["goblins"]["notifier"]["resume_command"] = ["--sandbox", "read-only", "--thread", "{session_id}"]
-        path = Path(self.d.temp.name) / "sandbox-resume.json"
-        path.write_text(json.dumps(config))
-        self.d.rpc.call("sessions.stop", {"session": again})
-        self.d.wait(lambda: self.d.get(again)["state"] == "stopped")
-        self.d.wait_record_released(self.d.record(again)["id"])
-        launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": str(path),
-                                                    "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
-        refused = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] == "stopped" else None), timeout=60)
-        self.assertEqual(refused["exit_code"], 2)
-        self.assertIn("--sandbox is not a Codex server option", Path(refused["server_log"]).read_text())
+        with step('pause delivery, queue a message, and resume while detached'):
+            self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
+            self.local(receiver, "pause")
+            self.d.wait(paused_and_quiescent)
+            self.d.rpc.call("messages.send", {"key":"wake", "to":receiver, "body":"private inbox content"})
+            self.assertEqual(self.sandbox(receiver,"inbox.status",{})["queued"],1)
+            self.local(receiver,"resume")
+            self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 1)
+            response=self.d.rpc.call("inbox.next",{"key":"reply"})["message"]
+            self.assertEqual(response["body"],"processed: private inbox content")
+            events=self.d.rpc.call("communications.list",{})["events"]
+            self.assertFalse(any(e["kind"].startswith("integration.") for e in events))
+        with step('attach while inbox turns preserve the human draft'):
+            peer=Terminal([str(self.app),"--state-dir",str(self.d.state),"attach",receiver])
+            self.addCleanup(peer.close)
+            peer.expect("› ")
+            peer.send("busy")
+            self.d.rpc.call("messages.send",{"key":"draft", "to":receiver,"body":"during human input"})
+            self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 1)
+            # The original human draft survives a separately queued inbox turn.
+            self.d.wait(lambda: self.native_status(receiver)["draft"] == "busy")
+            self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
+            peer.send("\r")
+            self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "working")
+            self.d.rpc.call("messages.send",{"key":"working", "to":receiver,"body":"during work"})
+            self.assertEqual(self.sandbox(receiver,"inbox.status",{})["queued"],1)
+            self.d.cli("exec", receiver, "--", "python3", "-c",
+                       "from pathlib import Path; Path('/tmp/fake-codex-release').touch()")
+            self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 2)
+            self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
+            for text in ("failed","interrupted"):
+                peer.send(text+"\r")
+                self.d.rpc.call("messages.send",{"key":text,"to":receiver,"body":text})
+            self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 4)
+        with step('quitting detaches and delivery continues'):
+            # Quitting the terminal detaches; the goblin and its delivery go on.
+            peer.send("exit\r")
+            self.assertEqual(peer.wait(), 0)
+            record = self.d.wait(lambda: (r if (r := self.d.get(receiver))["terminal_detached"] else None))
+            self.assertEqual(record["state"], "running")
+            self.d.rpc.call("messages.send",{"key":"detached","to":receiver,"body":"while detached"})
+            self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 5)
+        with step('handle a message by hand while paused'):
+            # Messages are handled by hand while delivery is paused.
+            self.local(receiver, "pause")
+            self.d.wait(paused_and_quiescent)
+            inbox = self.sandbox(receiver, "inbox.status", {})
+            self.assertEqual((inbox["queued"], inbox["claim"], inbox["head"]), (0, None, None))
+            manual = self.d.rpc.call("messages.send",{"key":"manual","to":receiver,"body":"manual fallback"})
+            inbox = self.sandbox(receiver, "inbox.status", {})
+            self.assertEqual((inbox["queued"], inbox["claim"]), (1, None))
+            self.assertEqual(inbox["head"][0], manual["id"])
+            import subprocess
+            command = [str(self.app),"--state-dir",str(self.d.state),"exec",receiver,"--","/run/goblins/bin/goblin"]
+            item = json.loads(subprocess.check_output([*command,"inbox","next"]))
+            self.assertIsNotNone(item["message"])
+            self.assertEqual((item["message"]["id"], item["message"]["body"]),
+                             (manual["id"], "manual fallback"))
+            subprocess.run([*command,"reply",item["message"]["id"],"--claim-generation",str(item["claim_generation"]),"--message","processed manually"],check=True,capture_output=True)
+            self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 6)
+        with step("a member replies on its own conversation"):
+            owner_thread = self.thread(receiver)
+            member = self.d.member(receiver, "notifier", agent_name="member", wait=False)["session"]
+            self.d.wait(lambda: self.d.get(member)["agent_state"] == "idle")
+            member_thread = self.d.wait(lambda: self.thread(member))
+            self.assertNotEqual(owner_thread, member_thread)
+            # Complete the earlier replies before reading this member's reply.
+            for _ in range(8):
+                if not self.d.rpc.call("inbox.status", {})["queued"]:
+                    break
+                item = self.d.rpc.call("inbox.next", {"key": uuid.uuid4().hex})
+                self.d.rpc.call("inbox.complete", {"key": uuid.uuid4().hex,
+                    "message": item["message"]["id"], "claim_generation": item["claim_generation"]})
+            self.d.rpc.call("messages.send", {"key":"member-message", "to":member,"body":"member only"})
+            self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 1)
+            reply = self.d.rpc.call("inbox.next", {"key":"member-reply"})["message"]
+            self.assertEqual((reply["sender"], reply["body"]), (member, "processed: member only"))
+            self.assertEqual(self.thread(receiver), owner_thread)
+            self.assertEqual(self.sandbox(receiver,"inbox.status",{})["queued"],0)
+            self.d.rpc.call("sessions.stop", {"session":member})
+            self.d.wait(lambda: self.d.get(member)["state"] == "stopped")
+            self.assertEqual(self.d.get(member)["agent_state"], "unknown")
+            self.assertEqual(self.d.get(receiver)["state"], "running")
+        with step("stop and resume continue the recorded conversation"):
+            self.d.rpc.call("sessions.stop", {"session":receiver})
+            self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
+            self.d.wait_record_released(self.d.record(receiver)["id"])
+            launch = self.d.rpc.call("sessions.start", {"key":uuid.uuid4().hex,
+                "configuration":self.d.manifest,"recreate":receiver,"rows":24,"cols":100,"detached":True})
+            previous, receiver = receiver, launch["session"]
+            self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
+            self.d.wait(lambda: self.thread(receiver) == owner_thread)
+            self.d.wait(lambda: self.d.record(previous)["variables"] ==
+                {"session_id":owner_thread,"session_name":"Resumed thread"})
+            self.assertEqual(self.d.record(previous)["sessions"], [previous,receiver])
+        with step("losing the adapter stops the goblin"):
+            # Without its adapter, the goblin has no conversation: it stops.
+            self.local(receiver, "resume")
+            peer = Terminal([str(self.app),"--state-dir",str(self.d.state),"attach",receiver])
+            self.addCleanup(peer.close)
+            peer.expect("› ")
+            peer.send("notifier-fail\r")
+            self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
+            self.assertEqual(self.d.get(receiver)["agent_state"],"unknown")
+            self.assertNotEqual(self.d.get(receiver)["exit_code"],0)
 
     @real_codex
     def test_native_terminal_attaches_quits_to_detach_and_reattaches(self):
@@ -422,56 +385,6 @@ class CodexConfigTests(unittest.TestCase):
         self.addCleanup(again.close)
         screen_wait(again, lambda text: "gpt-5.3-codex" in text, timeout=60)
         self.assertEqual(self.local(session, "status")["thread_id"], thread)
-
-    def test_profile_and_cli_overrides_reach_local_server(self):
-        profile = '[model_providers.fixture]\nbase_url="http://localhost/fixture"\n[features]\nplugins=false\n'
-        path = self.codex / 'fixture.config.toml'
-        path.write_text(profile)
-        receiver = self.d.start('profile', agent_name='profile')['session']
-        self.d.wait(lambda: self.d.get(receiver)['agent_state'] == 'idle')
-        import subprocess
-        code = "import pathlib; print(pathlib.Path('/tmp/goblins-codex/server-args.json').read_text())"
-        args = json.loads(subprocess.check_output([str(self.app), '--state-dir', str(self.d.state), 'exec', receiver, '--', 'python3', '-c', code]))
-        settings = {}
-        for i, arg in enumerate(args):
-            if arg == '-c' or arg == '--config':
-                key, value = args[i+1].split('=', 1)
-                settings[key] = tomllib.loads('value=' + value)['value']
-        self.assertEqual(settings['model_providers']['fixture']['base_url'], 'http://localhost/fixture')
-        self.assertEqual(settings['model_provider'], 'literal $(false) provider')
-        self.assertEqual(settings['features'], {'plugins': False})
-        # Full access always; the approval policy is Codex's own without
-        # bypassPermissions.
-        self.assertEqual(settings['sandbox_mode'], 'danger-full-access')
-        self.assertNotIn('approval_policy', settings)
-        self.assertIn('plugins', args)
-        self.assertNotIn('--profile', args)
-        self.assertEqual(path.read_text(), profile)
-
-    def test_owner_and_member_servers_have_independent_bindings(self):
-        owner = self.d.start('notifier', agent_name='owner')['session']
-        self.d.wait(lambda: self.d.get(owner)['agent_state'] == 'idle')
-        owner_thread = self.d.wait(lambda: self.thread(owner))
-        member = self.d.member(owner, 'notifier', agent_name='member', wait=False)['session']
-        record = self.d.wait(lambda: (r if (r := self.d.get(member))['agent_state'] == 'idle' or r['state'] in ('stopped', 'failed') else None), timeout=60)
-        self.assertEqual(record['agent_state'], 'idle', record)
-        member_thread = self.d.wait(lambda: self.thread(member))
-        self.assertNotEqual(owner_thread, member_thread)
-        self.local(owner, 'pause')
-        self.d.rpc.call('messages.send', {'key': 'member-message', 'to': member, 'body': 'member only'})
-        self.d.wait(lambda: self.d.rpc.call('inbox.status', {})['queued'] == 1)
-        reply = self.d.rpc.call('inbox.next', {'key': 'member-reply'})['message']
-        self.assertEqual(reply['sender'], member)
-        self.assertEqual(reply['body'], 'processed: member only')
-        self.assertEqual(self.local(owner, 'status')['thread_id'], owner_thread)
-        self.assertEqual(self.sandbox(owner, 'inbox.status', {})['queued'], 0)
-        # Nothing cascades: each goblin is stopped on its own.
-        for session in (member, owner):
-            self.d.rpc.call('sessions.stop', {'session': session})
-        self.d.wait(lambda: all(self.d.get(s)['state'] == 'stopped' for s in (owner, member)))
-        self.assertTrue(all(self.d.get(s)['agent_state'] == 'unknown' for s in (owner, member)))
-
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,13 +27,6 @@ pub fn mounts(
         {
             return Err("injectedFiles names must be relative /etc file paths".into());
         }
-        // Require a complete immutable store object, not an arbitrary host file
-        // or a path that could escape through a symlink within a derivation.
-        store_path(source)?;
-        let meta = std::fs::symlink_metadata(source)?;
-        if !meta.is_file() {
-            return Err("injectedFiles sources must be regular Nix store files".into());
-        }
         let destination = PathBuf::from("/etc").join(name);
         if mounts
             .iter()
@@ -42,6 +35,16 @@ pub fn mounts(
             return Err("injectedFiles file destinations overlap".into());
         }
         mounts.push((source.clone(), destination));
+    }
+    // Validate the whole destination layout before touching any source.
+    for (source, _) in &mounts {
+        // Require a complete immutable store object, not an arbitrary host file
+        // or a path that could escape through a symlink within a derivation.
+        store_path(source)?;
+        let meta = std::fs::symlink_metadata(source)?;
+        if !meta.is_file() {
+            return Err("injectedFiles sources must be regular Nix store files".into());
+        }
     }
     Ok(mounts)
 }
@@ -71,6 +74,35 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_overlapping_destinations_across_both_file_sets() {
+        let source = PathBuf::from("/not-opened");
+        for (files, dev) in [
+            (
+                BTreeMap::from([
+                    ("codex".into(), source.clone()),
+                    ("codex/config.toml".into(), source.clone()),
+                ]),
+                BTreeMap::new(),
+            ),
+            (
+                BTreeMap::from([("codex/config.toml".into(), source.clone())]),
+                BTreeMap::from([("codex".into(), source.clone())]),
+            ),
+            (
+                BTreeMap::from([("same".into(), source.clone())]),
+                BTreeMap::from([("same".into(), source.clone())]),
+            ),
+        ] {
+            assert!(
+                mounts(&files, &dev)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("overlap")
+            );
+        }
     }
 
     #[test]
