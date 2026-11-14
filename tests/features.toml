@@ -109,8 +109,8 @@ env = { GOBLINS_TEST_CODEX = "1" }
 [features.claude]
 description = "Claude configuration, hooks, mod and operation notices"
 python = ["test_claude_config", "test_claude_rpc", "test_operation_notices.ClaudeNoticesWorkflow"]
-checks = ["rust"]
-paths = ["packages/adapter-claude/*", "nix/goblins/claude/*", "nix/builders/mk-claude.nix", "tests/fake_claude.py"]
+checks = ["rust", "nix"]
+paths = ["packages/adapter-claude/*", "nix/goblins/claude/*", "nix/builders/mk-claude.nix", "tests/fake_claude.py", "tests/claude_shell.py", "tests/agent-shell-checks.nix"]
 
 [features.host-tools]
 description = "Host commands, editor requests and completion notices"
