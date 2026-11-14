@@ -142,19 +142,26 @@ fn snapshot(
         _ => root.clone(),
     };
     if complete {
-        let lock = read_lock(&flake)
-            .map_err(|e| format!("{e}; the flake source must contain a complete flake.lock"))?;
-        if metadata["locks"] != lock {
-            let mut changed = Vec::new();
-            changed_paths(&lock, &metadata["locks"], "", &mut changed, 5);
-            return Err(format!(
-                "flake.lock does not lock everything flake.nix uses (changed: {})",
-                changed.join(", ")
-            )
-            .into());
-        }
+        check_complete(&flake, &metadata["locks"])?;
     }
     Ok((root, flake, config))
+}
+
+/// Fail unless the snapshot's `flake.lock` is the lock Nix evaluated with,
+/// `locks` from `nix flake metadata`.
+fn check_complete(flake: &Path, locks: &Value) -> Result<()> {
+    let lock = read_lock(flake)
+        .map_err(|e| format!("{e}; the flake source must contain a complete flake.lock"))?;
+    if *locks != lock {
+        let mut changed = Vec::new();
+        changed_paths(&lock, locks, "", &mut changed, 5);
+        return Err(format!(
+            "flake.lock does not lock everything flake.nix uses (changed: {})",
+            changed.join(", ")
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// `path:` reference to a flake in a source tree. A flake in a subdirectory
@@ -709,9 +716,7 @@ pub fn app(
             evaluate,
         )?)?)
     };
-    let missing = |e: &(dyn std::error::Error + Send + Sync)| {
-        e.to_string().contains("does not provide attribute")
-    };
+    let missing = |e: &(dyn std::error::Error + Send + Sync)| missing_attribute(&e.to_string());
     let (program, installables) = match eval(
         format!("apps.{SYSTEM}.{name}"),
         "app: { type = app.type or null; program = app.program; \
@@ -724,22 +729,10 @@ pub fn app(
             let program = app["program"]
                 .as_str()
                 .ok_or("app program is not a string")?;
-            // Build exactly what the program string refers to.
-            let mut installables = Vec::new();
-            for (path, entry) in app["context"].as_object().into_iter().flatten() {
-                if entry["path"] == true {
-                    installables.push(path.clone());
-                }
-                if entry["allOutputs"] == true {
-                    installables.push(format!("{path}^*"));
-                } else if let Some(outputs) = entry["outputs"].as_array() {
-                    let outputs: Vec<_> = outputs.iter().filter_map(Value::as_str).collect();
-                    if !outputs.is_empty() {
-                        installables.push(format!("{path}^{}", outputs.join(",")));
-                    }
-                }
-            }
-            (PathBuf::from(program), installables)
+            (
+                PathBuf::from(program),
+                context_installables(&app["context"]),
+            )
         }
         Err(e) if missing(e.as_ref()) => {
             let package = eval(
@@ -749,8 +742,7 @@ pub fn app(
             )
             .map_err(|e| {
                 if missing(e.as_ref()) {
-                    format!("the dev shell flake has no apps.{SYSTEM}.{name} or packages.{SYSTEM}.{name}")
-                        .into()
+                    missing_app(name).into()
                 } else {
                     timed(e)
                 }
@@ -779,19 +771,7 @@ pub fn app(
             .into());
         }
     };
-    let owner = owning_store_path(&program).ok_or_else(|| {
-        format!(
-            "app program {} is not a path in the store",
-            program.display()
-        )
-    })?;
-    if installables.is_empty() {
-        return Err(format!(
-            "app program {} does not come from a derivation or store path",
-            program.display()
-        )
-        .into());
-    }
+    let owner = program_owner(&program, &installables)?;
     let mut args = nix(&["build", "--print-out-paths"]);
     args.extend(["--out-link".into(), evaluator.roots().join("app").into()]);
     args.extend(installables.into_iter().map(OsString::from));
@@ -812,6 +792,54 @@ pub fn app(
         return Err(format!("app program {} does not exist", program.display()).into());
     }
     Ok(App { program, outputs })
+}
+
+/// Build exactly what an app's program string refers to: the installables
+/// of its string context.
+fn context_installables(context: &Value) -> Vec<String> {
+    let mut installables = Vec::new();
+    for (path, entry) in context.as_object().into_iter().flatten() {
+        if entry["path"] == true {
+            installables.push(path.clone());
+        }
+        if entry["allOutputs"] == true {
+            installables.push(format!("{path}^*"));
+        } else if let Some(outputs) = entry["outputs"].as_array() {
+            let outputs: Vec<_> = outputs.iter().filter_map(Value::as_str).collect();
+            if !outputs.is_empty() {
+                installables.push(format!("{path}^{}", outputs.join(",")));
+            }
+        }
+    }
+    installables
+}
+
+/// Whether a Nix error says the flake has no such output attribute.
+fn missing_attribute(message: &str) -> bool {
+    message.contains("does not provide attribute")
+}
+
+fn missing_app(name: &str) -> String {
+    format!("the dev shell flake has no apps.{SYSTEM}.{name} or packages.{SYSTEM}.{name}")
+}
+
+/// The store path an app's program lies in. The program must name a store
+/// path directly and come from what the app builds (`installables`).
+fn program_owner(program: &Path, installables: &[String]) -> Result<PathBuf> {
+    let owner = owning_store_path(program).ok_or_else(|| {
+        format!(
+            "app program {} is not a path in the store",
+            program.display()
+        )
+    })?;
+    if installables.is_empty() {
+        return Err(format!(
+            "app program {} does not come from a derivation or store path",
+            program.display()
+        )
+        .into());
+    }
+    Ok(owner)
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -1708,6 +1736,124 @@ mod tests {
         ] {
             assert_eq!(owning_store_path(Path::new(&path)), None, "{path}");
         }
+    }
+
+    #[test]
+    fn app_programs_must_be_built_store_outputs() {
+        let hello = "/nix/store/vzs2086bj7hmzjvkn5ggc3d8zs4ss6v8-hello-2.12.3";
+        let drv = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-hello-2.12.3.drv";
+        let built = context_installables(&json!({drv: {"outputs": ["out"]}}));
+        assert_eq!(built, vec![format!("{drv}^out")]);
+        assert_eq!(
+            program_owner(Path::new(&format!("{hello}/bin/hello")), &built).unwrap(),
+            PathBuf::from(hello)
+        );
+        assert_eq!(
+            program_owner(Path::new("/bin/sh"), &built)
+                .unwrap_err()
+                .to_string(),
+            "app program /bin/sh is not a path in the store"
+        );
+        // A store path with its string context discarded builds nothing.
+        let literal = format!("{hello}/bin/hello");
+        assert_eq!(
+            program_owner(Path::new(&literal), &context_installables(&json!({})))
+                .unwrap_err()
+                .to_string(),
+            format!("app program {literal} does not come from a derivation or store path")
+        );
+        // Reproduced with nix eval of a flake without the attribute.
+        assert!(missing_attribute(
+            "error: flake 'path:/src/app' does not provide attribute 'apps.x86_64-linux.missing'"
+        ));
+        assert!(!missing_attribute("error: attribute 'x' missing"));
+        assert_eq!(
+            missing_app("missing"),
+            "the dev shell flake has no apps.x86_64-linux.missing or packages.x86_64-linux.missing"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_must_contain_the_complete_lock() {
+        let flake = goblins_unix::temp_directory().unwrap();
+        let locked = json!({"nodes":{"root":{"inputs":{"nixpkgs":"nixpkgs"}},
+            "nixpkgs":{"locked":{"rev":"a"}}},"root":"root","version":7});
+        let error = check_complete(&flake, &locked).unwrap_err().to_string();
+        assert!(error.starts_with("cannot open flake.lock: "), "{error}");
+        assert!(
+            error.ends_with("; the flake source must contain a complete flake.lock"),
+            "{error}"
+        );
+        fs::write(flake.join("flake.lock"), locked.to_string()).unwrap();
+        check_complete(&flake, &locked).unwrap();
+        // Nix locked an input flake.lock does not mention.
+        let mut evaluated = locked.clone();
+        evaluated["nodes"]["extra"] = json!({"locked":{"rev":"b"}});
+        assert_eq!(
+            check_complete(&flake, &evaluated).unwrap_err().to_string(),
+            "flake.lock does not lock everything flake.nix uses (changed: nodes.extra)"
+        );
+        fs::remove_dir_all(flake).unwrap();
+    }
+
+    #[test]
+    fn a_hand_edited_lock_is_not_trusted() {
+        let flake = goblins_unix::temp_directory().unwrap();
+        let lock =
+            json!({"nodes":{"nixpkgs":{"locked":{"rev":"a","narHash":"sha256-x"}}},"version":7});
+        let current: DevShell = serde_json::from_value(json!({
+            "reference": flake, "path": flake, "attr": "default", "generation": 1,
+            "source": "/nix/store/x", "flake": "/nix/store/x", "lock": lock,
+            "profile": "/nix/store/y", "variables": [], "script": "",
+            "summary": {"packages": {}, "env": {}, "derivation": "/nix/store/z"},
+        }))
+        .unwrap();
+        // Formatting does not matter; content does.
+        fs::write(
+            flake.join("flake.lock"),
+            serde_json::to_string_pretty(&lock).unwrap(),
+        )
+        .unwrap();
+        check_lock(&current).unwrap();
+        let mut edited = lock.clone();
+        edited["nodes"]["nixpkgs"]["locked"]["narHash"] = json!("sha256-A");
+        fs::write(flake.join("flake.lock"), edited.to_string()).unwrap();
+        let error = check_lock(&current).unwrap_err().to_string();
+        assert!(
+            error.starts_with(
+                "flake.lock differs from the trusted lock for this sandbox\n  \
+                 changed: nodes.nixpkgs.locked.narHash\n  \
+                 revert:  goblin devshell restore-lock\n"
+            ),
+            "{error}"
+        );
+        // Checking leaves the workspace lock alone.
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(flake.join("flake.lock")).unwrap()).unwrap(),
+            edited
+        );
+        fs::remove_dir_all(flake).unwrap();
+    }
+
+    #[test]
+    fn evaluation_sees_no_more_than_the_sandbox_working_directory() {
+        let repo = fs::canonicalize(goblins_unix::temp_directory().unwrap()).unwrap();
+        let sub = repo.join("sub");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir(&sub).unwrap();
+        // A flake in a subdirectory keeps its whole repository as source.
+        assert_eq!(visible_tree(&sub, &repo, None).unwrap(), repo);
+        assert_eq!(visible_tree(&sub, &sub, Some(&repo)).unwrap(), repo);
+        let error = visible_tree(&sub, &sub, None).unwrap_err().to_string();
+        assert!(
+            error.starts_with(&format!(
+                "the flake's source tree {} is outside the sandbox's working directory {}\n",
+                repo.display(),
+                sub.display()
+            )),
+            "{error}"
+        );
+        fs::remove_dir_all(repo).unwrap();
     }
 
     #[test]

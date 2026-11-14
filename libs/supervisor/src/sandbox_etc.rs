@@ -72,14 +72,45 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn dev_shell_files_are_mounted_only_with_a_dev_shell() {
+        let skill = "claude-code/.claude/skills/goblins-devshell/SKILL.md";
+        let mut launch: crate::config::Launch = serde_json::from_value(serde_json::json!({
+            "shell": "/unused", "posix_shell": "/unused", "helper": "/unused",
+            "bwrap": "/unused", "flake": "unused", "client_package": "/unused",
+            "dev_shell_sandbox_etc": {skill: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-SKILL.md"},
+        }))
+        .unwrap();
+        assert!(launch_dev_shell_files(&launch).is_empty());
+        launch.dev_shell = Some(
+            serde_json::from_value(serde_json::json!({
+                "reference": "/work", "path": "/work", "attr": "default", "generation": 1,
+                "source": "/nix/store/x", "flake": "/nix/store/x", "lock": {},
+                "profile": "/nix/store/y", "variables": [], "script": "",
+                "summary": {"packages": {}, "env": {}, "derivation": "/nix/store/z"},
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            launch_dev_shell_files(&launch).keys().collect::<Vec<_>>(),
+            [skill]
+        );
+    }
 }
 
 pub(crate) fn launch_mounts(
     launch: &crate::config::Launch,
 ) -> crate::Result<Vec<(PathBuf, PathBuf)>> {
-    let dev_shell = match launch.dev_shell {
+    mounts(&launch.sandbox_etc, launch_dev_shell_files(launch))
+}
+
+/// The dev shell files a launch mounts: all of them in a sandbox with a dev
+/// shell, whether launched with one or a member inheriting it, else none.
+fn launch_dev_shell_files(launch: &crate::config::Launch) -> &BTreeMap<String, PathBuf> {
+    static NONE: BTreeMap<String, PathBuf> = BTreeMap::new();
+    match launch.dev_shell {
         Some(_) => &launch.dev_shell_sandbox_etc,
-        None => &std::collections::BTreeMap::new(),
-    };
-    mounts(&launch.sandbox_etc, dev_shell)
+        None => &NONE,
+    }
 }

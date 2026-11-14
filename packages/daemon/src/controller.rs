@@ -6363,6 +6363,98 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn members_cannot_choose_a_dev_shell() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        // A member runs in its owner's dev shell; a run request names none.
+        let reply = sandbox_call(
+            &mut d,
+            "a",
+            "sessions.start",
+            json!({"key":"k","name":"shell","dev_shell":"/work","detached":true}),
+        );
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("unknown field `dev_shell`"),
+            "{reply}"
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_refresh_cannot_be_approved_before_its_preview() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        events.send(Event::SandboxOpened { connection: 1 }).unwrap();
+        events
+            .send(sandbox_event(1, 1, "initialize", json!({"api":1})))
+            .unwrap();
+        d.tick().unwrap();
+        events
+            .send(sandbox_event(
+                1,
+                2,
+                "permissions.request",
+                json!({"kind":"devshell","reason":"t"}),
+            ))
+            .unwrap();
+        d.tick().unwrap();
+        let request = d.permissions.back().unwrap().clone();
+        assert_eq!(
+            (request.kind.as_str(), request.state.as_str()),
+            ("devshell", "pending")
+        );
+        assert!(request.preview.is_none());
+        let decision = |approved| Decision {
+            session: "a".into(),
+            request: request.id.clone(),
+            approval: request.approval.clone(),
+            approved,
+        };
+        // The preview is the approver's whole basis; nothing to approve yet.
+        assert_eq!(
+            d.decide(decision(true), "host").unwrap_err(),
+            (
+                -32009,
+                "the dev shell refresh is still being evaluated; decide once its preview is shown"
+                    .into()
+            )
+        );
+        let state = |d: &Controller| {
+            d.permissions
+                .iter()
+                .find(|r| r.id == request.id)
+                .unwrap()
+                .state
+                .clone()
+        };
+        assert_eq!(state(&d), "pending");
+        received.lock().unwrap().clear();
+        // Denial still cancels the evaluation.
+        d.decide(decision(false), "host").unwrap();
+        assert_eq!(state(&d), "denied");
+        assert!(
+            received
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::Cancel(_))),
+            "{:?}",
+            received.lock().unwrap()
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn interactive_exec_records_typed_events_without_daemon_resource_writes() {
         let _no_forks = unix::no_forks();
         let mut d = daemon();

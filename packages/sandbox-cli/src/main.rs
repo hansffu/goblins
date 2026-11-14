@@ -451,11 +451,21 @@ fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
 /// The app named by `[FLAKE]#APP`. Only the dev shell's flake is served, so
 /// a named flake must resolve to it; the daemon never evaluates another.
 fn app_name(installable: Option<&str>) -> Result<String, String> {
+    served_app(installable, || {
+        let trusted = call_typed::<contract::sandbox::DevShellLock>(contract::EmptyParams {})?;
+        Ok(trusted.path.ok_or("missing lock path")?.into())
+    })
+}
+/// `app_name` with `trusted_lock` returning the path of the dev shell's
+/// trusted `flake.lock`, asked only when a flake is named.
+fn served_app(
+    installable: Option<&str>,
+    trusted_lock: impl FnOnce() -> Result<std::path::PathBuf, String>,
+) -> Result<String, String> {
     let installable = installable.unwrap_or(".");
     let (flake, app) = installable.split_once('#').unwrap_or((installable, ""));
     if !flake.is_empty() {
-        let trusted = call_typed::<contract::sandbox::DevShellLock>(contract::EmptyParams {})?;
-        let lock = std::path::Path::new(trusted.path.as_deref().ok_or("missing lock path")?);
+        let lock = &trusted_lock()?;
         let resolve = |p: &std::path::Path| std::fs::canonicalize(p).ok();
         if flake.contains(':')
             || resolve(std::path::Path::new(flake)).is_none()
@@ -815,6 +825,39 @@ mod tests {
         }
         assert!(parse_args(false, &["tui".into()]).is_err());
         assert!(parse_args(true, &["package".into(), "hello".into()]).is_ok());
+    }
+    #[test]
+    fn flake_run_serves_only_the_dev_shell_flake() {
+        let flake = std::env::temp_dir().join(format!("goblins-flake-run-{}", std::process::id()));
+        std::fs::create_dir_all(&flake).unwrap();
+        let lock = || Ok(flake.join("flake.lock"));
+        let refused = format!(
+            "flake run serves only this sandbox's dev shell flake ({}); use #APP",
+            flake.display()
+        );
+        for installable in [
+            "/tmp#greet",
+            "github:NixOS/nixpkgs#hello",
+            "/nonexistent#greet",
+        ] {
+            assert_eq!(
+                served_app(Some(installable), lock),
+                Err(refused.clone()),
+                "{installable}"
+            );
+        }
+        assert_eq!(
+            served_app(Some(&format!("{}#greet", flake.display())), lock).unwrap(),
+            "greet"
+        );
+        assert_eq!(
+            served_app(Some(&format!("{}/.", flake.display())), lock).unwrap(),
+            "default"
+        );
+        // Without a flake, the dev shell's own is meant and nothing is asked.
+        let unasked = || -> Result<std::path::PathBuf, String> { panic!("asked for the lock") };
+        assert_eq!(served_app(Some("#greet"), unasked).unwrap(), "greet");
+        std::fs::remove_dir_all(flake).unwrap();
     }
     #[test]
     fn variables_split_at_the_first_equals_sign() {

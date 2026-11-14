@@ -260,9 +260,7 @@ impl Worker {
                         session.run_targets = run_targets;
                         session.worktrees.detail = directory_error;
                         if let Some(reference) = dev_shell {
-                            let cwd = session.launch.cwd.clone().ok_or(
-                                "a dev shell needs a host working directory containing the flake",
-                            )?;
+                            let cwd = dev_shell_cwd(session.launch.cwd.clone())?;
                             let mut evaluator = crate::evaluator::Evaluator::new(
                                 &session.directory,
                                 &session.launch.bwrap,
@@ -593,6 +591,11 @@ impl Worker {
         }
     }
 }
+/// A host dev shell launch's working directory. Without one the sandbox sees
+/// no host files, so evaluation may see none either.
+fn dev_shell_cwd(cwd: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> {
+    Ok(cwd.ok_or("a dev shell needs a host working directory containing the flake")?)
+}
 /// Stage a recreated goblin's record before it starts: Docker, the recorded
 /// grants resolved against the current catalog, and its resume arguments.
 fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreated> {
@@ -740,5 +743,16 @@ mod output_tests {
                 _
             )))
         ));
+    }
+    #[test]
+    fn a_dev_shell_launch_needs_a_host_working_directory() {
+        assert_eq!(
+            dev_shell_cwd(None).unwrap_err().to_string(),
+            "a dev shell needs a host working directory containing the flake"
+        );
+        assert_eq!(
+            dev_shell_cwd(Some("/work".into())).unwrap(),
+            std::path::Path::new("/work")
+        );
     }
 }

@@ -92,6 +92,16 @@ pub fn source_tree(flake: &Path) -> PathBuf {
         .to_path_buf()
 }
 
+/// The evaluator's `nix.conf`. Evaluation before approval must never build:
+/// import-from-derivation would run builds the preview cannot show.
+fn configuration(import_from_derivation: bool) -> String {
+    let mut configuration = CONFIGURATION.to_string();
+    if !import_from_derivation {
+        configuration.push_str("allow-import-from-derivation = false\n");
+    }
+    configuration
+}
+
 impl Evaluator {
     /// `directory` is the session's private host directory. The evaluator
     /// state (configuration, fetcher cache, GC-root links) lives beneath it and
@@ -107,13 +117,10 @@ impl Evaluator {
         for name in ["conf", "cache", "state", "roots"] {
             fs::create_dir_all(root.join(name))?;
         }
-        // Evaluation before approval must never build: import-from-derivation
-        // would run builds the preview cannot show.
-        let mut configuration = CONFIGURATION.to_string();
-        if !import_from_derivation {
-            configuration.push_str("allow-import-from-derivation = false\n");
-        }
-        fs::write(root.join("conf/nix.conf"), configuration)?;
+        fs::write(
+            root.join("conf/nix.conf"),
+            configuration(import_from_derivation),
+        )?;
         Ok(Self {
             root,
             bwrap: bwrap.to_path_buf(),
@@ -229,5 +236,23 @@ impl Evaluator {
         }
         command.arg("--").arg(&self.nix).args(args);
         process::command_with_fds(&mut command, log, cancel, &keep)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn evaluation_before_approval_never_imports_from_derivation() {
+        assert_eq!(
+            configuration(false),
+            "experimental-features = nix-command flakes\n\
+             accept-flake-config = false\n\
+             flake-registry =\n\
+             allow-import-from-derivation = false\n"
+        );
+        // A host-chosen launch may build during evaluation.
+        assert_eq!(configuration(true), CONFIGURATION);
     }
 }
