@@ -4,6 +4,7 @@ The ignored Rust test driver supplies payload pipes and the request listener by
 SCM_RIGHTS. Original payload probes still execute in the actual namespace.
 """
 import array
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,15 @@ HERE = Path(__file__).resolve().parents[1]
 # The repository as a flake: tracked files only (untracked ones need git add),
 # so builds never copy target/ or other ignored files into the store again.
 FLAKE = "git+file://" + str(HERE)
+
+
+@contextlib.contextmanager
+def step(name):
+    """Name the workflow step in a failure, so one long test still says where it broke."""
+    try:
+        yield
+    except AssertionError as error:
+        raise AssertionError(f"step '{name}': {error}") from error
 
 
 def cases(suite):

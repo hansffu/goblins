@@ -6357,8 +6357,11 @@ mod tests {
             json!({"kind":"package","package":"hello","reason":"t"}),
         );
         assert_eq!(reply["error"]["message"], goblins_runtime::NIX_PACKAGES);
+        // A refused request leaves nothing for a person to decide.
+        assert!(d.sessions["a"].pending.is_none());
         let reply = sandbox_call(&mut d, "a", "flake.run", json!({"app":"hello"}));
         assert_eq!(reply["error"]["message"], goblins_runtime::NIX_DEV_SHELL);
+        assert!(d.sessions["a"].pending.is_none());
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

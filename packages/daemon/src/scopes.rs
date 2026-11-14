@@ -369,6 +369,53 @@ mod tests {
         std::fs::remove_dir_all(state).unwrap();
     }
     #[test]
+    fn a_relaunch_waits_for_a_stopping_scope_without_blocking_the_daemon() {
+        let _forking = unix::forking();
+        let state = unix::temp_directory().unwrap();
+        // The next scope process: a stand-in that only lives.
+        let executable = state.join("scope-process");
+        std::fs::write(&executable, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut scopes = Scopes::new(crate::supervised::Executable::from_path(Some(executable)));
+        // The previous instance was told to stop and is still releasing.
+        let (control, _peer) = UnixStream::pair().unwrap();
+        let old = Command::new("sleep").arg("30").spawn().unwrap();
+        scopes.insert_fake_process("work", old, control, 1);
+        scopes
+            .entries
+            .get_mut("work")
+            .unwrap()
+            .process
+            .as_mut()
+            .unwrap()
+            .stopping = true;
+        // The new member's lease returns at once; the daemon keeps serving
+        // while the membership waits, never handed to the stopping instance.
+        let fd = scopes.membership(&state, "work", true).unwrap();
+        let mut client = Channel::new(UnixStream::from(OwnedFd::from(fd))).unwrap();
+        scopes.tick(&state);
+        let entry = &scopes.entries["work"];
+        assert_eq!(entry.pending.len(), 1);
+        assert_eq!(entry.process.as_ref().unwrap().added, 1);
+        assert!(client.receive().unwrap().is_none());
+        // Once the old instance has exited, a fresh one takes the member.
+        let process = scopes.entries["work"].process.as_ref().unwrap();
+        process.child.kill().unwrap();
+        while !process.child.exited().unwrap() {
+            std::thread::yield_now();
+        }
+        scopes.tick(&state);
+        let entry = &scopes.entries["work"];
+        assert!(entry.pending.is_empty());
+        let fresh = entry.process.as_ref().unwrap();
+        assert!(!fresh.stopping);
+        assert_eq!(fresh.added, 1);
+        assert!(scopes.live("work"));
+        drop(scopes);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+    #[test]
     fn idle_crossing_a_new_add_member_does_not_stop_scope() {
         let _forking = unix::forking();
         // Exercise the real control channel/counter decision without namespace

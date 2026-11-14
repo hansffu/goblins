@@ -1,5 +1,4 @@
 """Working in flake dev shells (ADR 0007), as a person and an agent do."""
-import contextlib
 import json
 import os
 import re
@@ -11,7 +10,7 @@ import uuid
 
 from build_support import fixture_path
 from daemon_support import Daemon
-from support import FLAKE, command, lock_flake, pinned_nixpkgs
+from support import FLAKE, command, lock_flake, pinned_nixpkgs, step
 from terminal_support import Terminal
 # A module import, so its workflows are not collected here as well.
 import test_docker
@@ -32,15 +31,6 @@ TEMPLATE = """{
     };
 }
 """
-
-
-@contextlib.contextmanager
-def step(name):
-    """Name the workflow step in a failure, so one long test still says where it broke."""
-    try:
-        yield
-    except AssertionError as error:
-        raise AssertionError(f"step '{name}': {error}") from error
 
 
 # A flake in a subdirectory of its repository: its dev shell and its app read

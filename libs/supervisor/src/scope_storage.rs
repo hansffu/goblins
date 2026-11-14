@@ -223,6 +223,63 @@ mod tests {
         fs::remove_dir_all(cache).unwrap();
     }
     #[test]
+    fn temporary_storage_goes_with_its_instance_and_persistent_storage_stays() {
+        let cache = goblins_unix::temp_directory().unwrap();
+        let definition = |persistent| ScopeDefinition {
+            persistent,
+            pid: false,
+            docker: false,
+            storage: vec!["cache".into()],
+        };
+        let temporaries = || {
+            fs::read_dir(cache.join("scopes"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .filter(|name| name.starts_with("temporary-"))
+                .collect::<Vec<_>>()
+        };
+        // Each instance of a temporary scope gets a fresh directory, removed
+        // with the instance even when a member made it unreadable.
+        let first = Storage::open_in(&cache, "scratch", &definition(false))
+            .unwrap()
+            .unwrap();
+        let [directory] = &temporaries()[..] else {
+            panic!("{:?}", temporaries())
+        };
+        let directory = cache.join("scopes").join(directory);
+        fs::create_dir(directory.join("cache/locked")).unwrap();
+        fs::write(directory.join("cache/locked/file"), "temporary").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            directory.join("cache/locked"),
+            fs::Permissions::from_mode(0),
+        )
+        .unwrap();
+        let second = Storage::open_in(&cache, "scratch", &definition(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(temporaries().len(), 2);
+        drop(first);
+        assert!(!directory.exists());
+        drop(second);
+        assert!(temporaries().is_empty());
+        // A persistent scope's storage is at its name and outlives instances.
+        let kept = Storage::open_in(&cache, "kept", &definition(true))
+            .unwrap()
+            .unwrap();
+        fs::write(cache.join("scopes/scope-kept/cache/file"), "kept").unwrap();
+        drop(kept);
+        let kept = Storage::open_in(&cache, "kept", &definition(true))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(cache.join("scopes/scope-kept/cache/file")).unwrap(),
+            "kept"
+        );
+        drop(kept);
+        fs::remove_dir_all(cache).unwrap();
+    }
+    #[test]
     fn temporary_storage_is_removed_even_without_owner_permissions() {
         let temp = std::env::temp_dir().join(format!("goblins-storage-{}", std::process::id()));
         fs::create_dir_all(temp.join("a/b")).unwrap();

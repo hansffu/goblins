@@ -487,6 +487,25 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_selects_only_a_scope_its_configuration_allows() {
+        let goblins = json!({
+            "loner": goblin(json!({
+                "allowed_scopes": ["work"], "scopes": {"work": goblin(json!({}))},
+            })),
+        });
+        let select = |scope| select(parse(manifest(goblins.clone())), "loner", scope, |_| None);
+        // No default scope: an unscoped launch has none.
+        assert!(select(None).unwrap().selected_scope.is_none());
+        assert_eq!(
+            select(Some("work")).unwrap().selected_scope.unwrap().name,
+            "work"
+        );
+        assert_eq!(
+            select(Some("other")).err().unwrap().to_string(),
+            "scope 'other' is not allowed for 'loner'; allowed: work"
+        );
+    }
+    #[test]
     fn launch_options_are_parsed_and_bounded_like_mkgoblin() {
         let options =
             |value: Value| manifest(json!({"shell": goblin(json!({"launch_options": value}))}));

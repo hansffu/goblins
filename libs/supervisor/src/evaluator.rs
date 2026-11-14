@@ -29,9 +29,10 @@ pub(crate) const DAEMON_SOCKET: &str = "/nix/var/nix/daemon-socket";
 /// `NIX_DAEMON_SOCKET_PATH` in the daemon's environment selects another one.
 /// A launch without a socket is refused: nothing inside would say why Nix fails.
 pub(crate) fn daemon_socket() -> Result<PathBuf> {
-    let path = std::env::var_os("NIX_DAEMON_SOCKET_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(DAEMON_SOCKET).join("socket"));
+    daemon_socket_at(std::env::var_os("NIX_DAEMON_SOCKET_PATH").map(PathBuf::from))
+}
+fn daemon_socket_at(configured: Option<PathBuf>) -> Result<PathBuf> {
+    let path = configured.unwrap_or_else(|| Path::new(DAEMON_SOCKET).join("socket"));
     let resolved = fs::canonicalize(&path)
         .ok()
         .filter(|p| fs::metadata(p).is_ok_and(|m| m.file_type().is_socket()))
@@ -254,5 +255,42 @@ mod tests {
         );
         // A host-chosen launch may build during evaluation.
         assert_eq!(configuration(true), CONFIGURATION);
+    }
+
+    #[test]
+    fn an_allow_nix_launch_needs_a_daemon_socket() {
+        let directory = goblins_unix::temp_directory().unwrap();
+        let socket = directory.join("daemon.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        // A socket elsewhere is found through a link, at its real path.
+        std::os::unix::fs::symlink(&socket, directory.join("link")).unwrap();
+        assert_eq!(
+            daemon_socket_at(Some(directory.join("link"))).unwrap(),
+            fs::canonicalize(&socket).unwrap()
+        );
+        // A missing path or a file that is not a socket refuses the launch
+        // with a reason, instead of a sandbox where Nix fails unexplained.
+        fs::write(directory.join("file"), "").unwrap();
+        for path in [directory.join("missing/socket"), directory.join("file")] {
+            assert_eq!(
+                daemon_socket_at(Some(path.clone()))
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "allowNix needs a Nix daemon socket at {}; set NIX_DAEMON_SOCKET_PATH if the daemon listens elsewhere",
+                    path.display()
+                )
+            );
+        }
+        // Without the variable, the default socket is the one asked for.
+        if let Err(error) = daemon_socket_at(None) {
+            assert!(
+                error
+                    .to_string()
+                    .contains("at /nix/var/nix/daemon-socket/socket;"),
+                "{error}"
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 }

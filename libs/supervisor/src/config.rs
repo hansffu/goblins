@@ -127,16 +127,7 @@ pub fn launch(config: &Configuration) -> Result<Launch> {
             allow_nix: spec["allow_nix"] == true,
             host_commands: config.host_commands,
             bypass_permissions: config.bypass_permissions,
-            pasta: if config.network {
-                Some(
-                    spec["dependencies"]["pasta"]
-                        .as_str()
-                        .ok_or("missing pasta")?
-                        .into(),
-                )
-            } else {
-                None
-            },
+            pasta: pasta(config.network, &spec)?,
             shell: string("sandboxed_binary")?.into(),
             shell_args: config.args.clone(),
             resume_command: config.resume_command.clone(),
@@ -186,6 +177,19 @@ pub fn launch(config: &Configuration) -> Result<Launch> {
         worktrees_directory: None,
     })
 }
+/// The network helper an online goblin starts. An offline goblin (mkGoblin
+/// `allowedDomains = [ ]`) gets none, so its namespace has no route out.
+fn pasta(network: bool, spec: &serde_json::Value) -> Result<Option<PathBuf>> {
+    if !network {
+        return Ok(None);
+    }
+    Ok(Some(
+        spec["dependencies"]["pasta"]
+            .as_str()
+            .ok_or("missing pasta")?
+            .into(),
+    ))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +215,20 @@ mod tests {
                 "other": {"persistent": false, "pid": true},
             },
         })
+    }
+    #[test]
+    fn only_an_online_goblin_starts_a_network_helper() {
+        let spec = json!({"dependencies": {"pasta": "/nix/store/pasta/bin/pasta"}});
+        assert_eq!(
+            pasta(true, &spec).unwrap(),
+            Some(PathBuf::from("/nix/store/pasta/bin/pasta"))
+        );
+        assert_eq!(pasta(false, &spec).unwrap(), None);
+        assert_eq!(pasta(false, &json!({})).unwrap(), None);
+        assert_eq!(
+            pasta(true, &json!({})).unwrap_err().to_string(),
+            "missing pasta"
+        );
     }
     #[test]
     fn a_manifest_lease_roots_its_store_output_until_the_last_holder_drops_it() {

@@ -137,8 +137,8 @@ checks = ["nix", "packaged"]
 paths = ["packages/*/*.nix", "packages/docker/*", "nix/builders/rust.nix", "nix/builders/default.nix", "nix/goblins/skills.nix", "nix/demo-goblins/default.nix", "nix/demo-goblins/shell.nix"]
 
 [features.slow]
-description = "Opt-in slow tier: real tools with online networking (Docker Compose; Testcontainers with GOBLINS_TESTCONTAINERS_CLASSPATH)"
-python = ["test_docker.DockerSlowTier"]
+description = "Opt-in slow tier: real tools (Gradle daemons in a shared scope home; Docker Compose with online networking; Testcontainers with GOBLINS_TESTCONTAINERS_CLASSPATH)"
+python = ["test_docker.DockerSlowTier", "test_scopes.ScopeSlowTier"]
 checks = []
 paths = []
 env = { GOBLINS_TEST_SLOW = "1" }

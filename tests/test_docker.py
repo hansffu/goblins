@@ -26,18 +26,10 @@ import uuid
 
 from build_support import fixture_app, fixture_path
 from daemon_support import Daemon, ROOT
+from support import step
 from terminal_support import Terminal
 
 SOCKET = "/run/goblins/docker-socket/docker.sock"
-
-
-@contextlib.contextmanager
-def step(name):
-    """Name the workflow step in a failure, so one long test still says where it broke."""
-    try:
-        yield
-    except AssertionError as error:
-        raise AssertionError(f"step '{name}': {error}") from error
 
 
 class HostServer:

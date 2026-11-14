@@ -1,4 +1,4 @@
-"""allowNix: ordinary Nix commands inside a goblin against the host's daemon.
+"""allowNix: a person or an agent uses ordinary Nix commands inside a goblin, through the host's daemon.
 
 Run on a host with a multi-user Nix install; builds go through its daemon.
 """
@@ -13,6 +13,7 @@ import uuid
 
 from build_support import fixture_app
 from daemon_support import Daemon
+from support import step
 from terminal_support import Terminal
 
 PROMPT = "nix-test>"
@@ -59,7 +60,7 @@ class Forwarder:
         self.listener.close()
 
 
-class NixTests(unittest.TestCase):
+class NixWorkflow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = fixture_app("nix-goblins")
@@ -102,54 +103,47 @@ class NixTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         return output
 
-    def test_ordinary_nix_commands_against_the_host_daemon(self):
-        d = self.daemon()
-        terminal = self.attach(d, self.launch(d))
-        self.assertIn("Nix: available", self.run_ok(terminal, "goblin status"))
-        self.run_ok(terminal, "command -v nix && test -S \"$NIX_DAEMON_SOCKET_PATH\" && test \"$NIX_REMOTE\" = daemon")
-        # A fresh output, built after launch, is visible without a restart.
-        nonce = uuid.uuid4().hex
-        (self.project / "nonce.nix").write_text(
-            f'(import (builtins.getEnv "NIXPKGS") {{ }}).runCommand "goblins-nix-{nonce}" {{ }} "echo {nonce} > $out"\n')
-        self.run_ok(terminal, "nix build --impure -f nonce.nix --out-link result", timeout=600)
-        self.assertIn(nonce, self.run_ok(terminal, "cat result"))
-        # The link is a valid root on the host: the daemon sees the same path.
-        link = self.project / "result"
-        self.assertEqual(Path(os.readlink(link)).read_text().strip(), nonce)
-        roots = subprocess.run(["nix-store", "--gc", "--print-roots"], text=True, capture_output=True).stdout
-        self.assertIn(str(link), roots)
-        self.assertIn("jq-", self.run_ok(terminal, "nix shell \"path:$NIXPKGS#jq\" -c jq --version", timeout=600))
-        self.run_ok(terminal, "nix develop \"path:$NIXPKGS#jq\" -c true", timeout=900)
-
-    def test_package_and_dev_shell_requests_point_at_nix(self):
-        d = self.daemon()
-        terminal = self.attach(d, self.launch(d))
-        output, code = self.run_in(terminal, "goblin request-package jq --reason 'nix test'")
-        self.assertEqual(code, 1, output)
-        self.assertIn("nix shell nixpkgs#NAME", output)
-        self.assertFalse(d.permissions(state="pending"))
-        output, code = self.run_in(terminal, "goblin flake run '#app'")
-        self.assertNotEqual(code, 0, output)
-        self.assertIn("nix develop", output)
-
-    def test_a_member_with_another_configuration_has_no_nix(self):
+    def test_use_nix_in_a_goblin(self):
         d = self.daemon()
         owner = self.launch(d)
-        nixpkgs = self.run_ok(self.attach(d, owner), "printf '%s\\n' \"$NIXPKGS\"").split()[-1]
-        self.assertTrue(nixpkgs.startswith("/nix/store/"), nixpkgs)
-        member = d.member(owner, "plain", agent_name="kid", key="kid")["session"]
-        terminal = self.attach(d, member)
-        self.assertIn("Nix: none", self.run_ok(terminal, "goblin status"))
-        self.run_ok(terminal, f"! command -v nix && ! test -e {DEFAULT_SOCKET} && ! test -e {nixpkgs}")
+        terminal = self.attach(d, owner)
 
-    def test_launch_refused_without_a_daemon_socket(self):
-        d = self.daemon({**os.environ, "NIX_DAEMON_SOCKET_PATH": str(self.root / "missing/socket")})
-        session = self.launch(d, wait=False)
-        record = d.wait(lambda: (r if (r := d.get(session))["state"] not in ("starting", "running") else None), timeout=60)
-        self.assertEqual(record["state"], "failed", record)
-        self.assertIn("allowNix needs a Nix daemon socket", record.get("detail", ""))
+        with step("an allowNix goblin has Nix, talking to the host's daemon"):
+            self.assertIn("Nix: available", self.run_ok(terminal, "goblin status"))
+            self.run_ok(terminal, "command -v nix && test -S \"$NIX_DAEMON_SOCKET_PATH\" && test \"$NIX_REMOTE\" = daemon")
 
-    def test_a_socket_outside_the_default_path_reaches_the_sandbox(self):
+        with step("nix build makes a fresh output whose result link is a root on the host"):
+            nonce = uuid.uuid4().hex
+            (self.project / "nonce.nix").write_text(
+                f'(import (builtins.getEnv "NIXPKGS") {{ }}).runCommand "goblins-nix-{nonce}" {{ }} "echo {nonce} > $out"\n')
+            self.run_ok(terminal, "nix build --impure -f nonce.nix --out-link result", timeout=600)
+            self.assertIn(nonce, self.run_ok(terminal, "cat result"))
+            link = self.project / "result"
+            self.assertEqual(Path(os.readlink(link)).read_text().strip(), nonce)
+            roots = subprocess.run(["nix-store", "--gc", "--print-roots"], text=True, capture_output=True).stdout
+            self.assertIn(str(link), roots)
+
+        with step("nix shell runs a tool from nixpkgs"):
+            self.assertIn("jq-", self.run_ok(terminal, "nix shell \"path:$NIXPKGS#jq\" -c jq --version", timeout=600))
+
+        with step("asking for a package or a dev shell points the agent at Nix instead"):
+            output, code = self.run_in(terminal, "goblin request-package jq --reason 'nix test'")
+            self.assertEqual(code, 1, output)
+            self.assertIn("nix shell nixpkgs#NAME", output)
+            self.assertFalse(d.permissions(state="pending"))
+            output, code = self.run_in(terminal, "goblin flake run '#app'")
+            self.assertNotEqual(code, 0, output)
+            self.assertIn("nix develop", output)
+
+        with step("a member with another configuration has no Nix"):
+            nixpkgs = self.run_ok(terminal, "printf '%s\\n' \"$NIXPKGS\"").split()[-1]
+            self.assertTrue(nixpkgs.startswith("/nix/store/"), nixpkgs)
+            member = d.member(owner, "plain", agent_name="kid", key="kid")["session"]
+            plain = self.attach(d, member)
+            self.assertIn("Nix: none", self.run_ok(plain, "goblin status"))
+            self.run_ok(plain, f"! command -v nix && ! test -e {DEFAULT_SOCKET} && ! test -e {nixpkgs}")
+
+    def test_a_nix_daemon_listening_elsewhere(self):
         socket_dir = self.root / "socket"
         socket_dir.mkdir()
         (socket_dir / "neighbour").write_text("host only\n")
@@ -157,6 +151,7 @@ class NixTests(unittest.TestCase):
         self.addCleanup(forwarder.close)
         d = self.daemon({**os.environ, "NIX_DAEMON_SOCKET_PATH": str(socket_dir / "daemon.sock")})
         terminal = self.attach(d, self.launch(d))
+        # Only the socket is bound, not the files beside it.
         self.assertIn(str(socket_dir / "daemon.sock"), self.run_ok(terminal, "printf '%s\\n' \"$NIX_DAEMON_SOCKET_PATH\""))
         self.run_ok(terminal, f"! test -e {socket_dir}/neighbour && ! test -e {DEFAULT_SOCKET}")
         self.run_ok(terminal, "nix store info", timeout=120)

@@ -1,12 +1,13 @@
-"""Scopes: shared network/PID namespaces and managed storage between root goblins.
+"""Scopes, as a team of goblins uses them: shared network, processes and storage.
 
 Run on the host as a regular user with newuidmap/newgidmap and subuid/subgid.
+The opt-in slow tier (GOBLINS_TEST_SLOW=1, `just test-feature slow`) runs
+real Gradle daemons in a shared home.
 """
 import os
 from pathlib import Path
-import shutil
-import signal
 import select
+import shutil
 import subprocess
 import tempfile
 import time
@@ -16,10 +17,50 @@ import zipfile
 
 from build_support import fixture_app
 from daemon_support import Daemon, ROOT, supervisor_children
+from support import step
 from terminal_support import Terminal
 
+# What Gradle relies on in a shared home, without Gradle: the lock owner
+# records its PID and a loopback port beside the lock, and releases the lock
+# when another member asks over that port.
+LOCK_OWNER = """
+import fcntl, os, socket
+home = os.path.expanduser("~/.gradle")
+lock = open(os.path.join(home, "probe.lock"), "a+")
+fcntl.flock(lock, fcntl.LOCK_EX)
+server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+server.bind(("127.0.0.1", 0))
+owner = os.path.join(home, "probe.owner")
+with open(owner + ".tmp", "w") as f:
+    f.write(f"{os.getpid()} {server.getsockname()[1]}\\n")
+os.rename(owner + ".tmp", owner)
+request, peer = server.recvfrom(64)
+fcntl.flock(lock, fcntl.LOCK_UN)
+server.sendto(b"released-for-" + request, peer)
+"""
+LOCK_CONTENDER = """
+import fcntl, os, socket
+home = os.path.expanduser("~/.gradle")
+pid, port = open(os.path.join(home, "probe.owner")).read().split()
+print("OWNER", open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\\0", b" ").decode())
+lock = open(os.path.join(home, "probe.lock"), "a+")
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    print("NOT-HELD")
+except BlockingIOError:
+    print("HELD")
+client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+client.settimeout(10)
+client.sendto(b"contender", ("127.0.0.1", int(port)))
+print(client.recv(64).decode())
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+print("ACQUIRED")
+"""
 
-class ScopeTests(unittest.TestCase):
+
+class ScopeWorkflow(unittest.TestCase):
+    """Helpers for driving goblins of the scope-goblins fixture through their terminals."""
+
     @classmethod
     def setUpClass(cls):
         cls.app = fixture_app("scope-goblins")
@@ -31,12 +72,14 @@ class ScopeTests(unittest.TestCase):
         root = tempfile.TemporaryDirectory(prefix="goblins-scope-test-")
         self.addCleanup(root.cleanup)
         self.root = Path(root.name)
+        (self.root / "projects").mkdir()
+        (self.root / "repository").mkdir()
         self.d = Daemon(self.app, env=os.environ | {"XDG_CACHE_HOME": str(self.cache),
                                                      "GOBLINS_TEST_ROOT": str(self.root)})
         self.addCleanup(self.d.close)
         self.counter = 0
 
-    def start(self, name="member", scope=None, wait=True, cwd=None):
+    def start(self, name="member", scope=None, cwd=None):
         params = {"key": uuid.uuid4().hex, "name": name, "configuration": self.d.manifest,
                   "rows": 24, "cols": 100}
         if cwd:
@@ -44,10 +87,9 @@ class ScopeTests(unittest.TestCase):
         if scope:
             params["scope"] = scope
         session = self.d.rpc.call("sessions.start", params)["session"]
-        if wait:
-            record = self.d.wait(lambda: (r if (r := self.d.get(session))["state"] != "starting" else None),
-                                 timeout=60)
-            self.assertEqual(record["state"], "running", record)
+        record = self.d.wait(lambda: (r if (r := self.d.get(session))["state"] != "starting" else None),
+                             timeout=60)
+        self.assertEqual(record["state"], "running", record)
         return session
 
     def terminal(self, session):
@@ -57,7 +99,7 @@ class ScopeTests(unittest.TestCase):
         return terminal
 
     def run_in(self, terminal, script, timeout=30):
-        """Run a shell command and return its output."""
+        """Run a shell command and return its output and exit code."""
         self.counter += 1
         marker = f"END{self.counter}"
         if script.rstrip().endswith("&"):
@@ -69,6 +111,11 @@ class ScopeTests(unittest.TestCase):
         terminal.expect("scope-test>")
         return match.group(1).decode(), int(match.group(2))
 
+    def ok(self, terminal, script, timeout=30):
+        output, code = self.run_in(terminal, script, timeout)
+        self.assertEqual(code, 0, f"{script}\n{output}")
+        return output
+
     def stop(self, session):
         self.d.rpc.call("sessions.stop", {"session": session})
         self.d.wait(lambda: self.d.get(session)["state"] not in ("starting", "running", "stopping"))
@@ -78,176 +125,122 @@ class ScopeTests(unittest.TestCase):
             "print(*[p for p in os.listdir(\"/proc\") if p.isdigit() and p != str(os.getpid()) "
             "and n in open(f\"/proc/{p}/cmdline\",\"rb\").read()])' ")
 
-    def test_members_share_network_processes_and_storage(self):
-        a, b = self.start(), self.start()
-        ta, tb = self.terminal(a), self.terminal(b)
-        output, code = self.run_in(ta, "echo $SCOPE_MARKER $OVERRIDDEN")
-        self.assertEqual(output.split()[-2:], ["from-scope", "from-goblin"])
-        self.run_in(ta, "python3 -m http.server 18555 --bind 127.0.0.1 >/dev/null 2>&1 &")
-        self.run_in(ta, "sleep 1000 &")
-        self.run_in(ta, "echo shared > /var/cache/probe/file")
-        output, code = self.run_in(tb, "for i in $(seq 50); do python3 -c 'import urllib.request as u; "
-                                       "print(u.urlopen(\"http://127.0.0.1:18555/\").status)' 2>/dev/null && break; "
-                                       "sleep .1; done")
-        self.assertIn("200", output)
-        output, _ = self.run_in(tb, self.FIND + "sleep 1000")
-        self.assertRegex(output, r"\d+")
-        output, _ = self.run_in(tb, "cat /var/cache/probe/file")
-        self.assertIn("shared", output)
-        self.assertEqual((self.cache / "goblins/scopes/scope-work/cache/file").read_text(), "shared\n")
+    def fetch(self, port):
+        return (f"for i in $(seq 50); do python3 -c 'import urllib.request as u; "
+                f"print(u.urlopen(\"http://127.0.0.1:{port}/\").status)' 2>/dev/null && break; sleep .1; done")
 
-    def test_departed_member_daemons_are_stopped(self):
-        a, b = self.start(), self.start()
-        ta, tb = self.terminal(a), self.terminal(b)
-        # A detached daemon in its own session survives its shell, not its goblin.
-        self.run_in(ta, "setsid -f sleep 1001 </dev/null >/dev/null 2>&1")
-        output, _ = self.run_in(tb, self.FIND + "sleep 1001")
-        self.assertRegex(output, r"\d+")
-        self.stop(a)
-        output, _ = self.run_in(tb, "for i in $(seq 50); do out=$(" + self.FIND + "sleep 1001); "
-                                    "[ -z \"$out\" ] && echo GONE && break; sleep .1; done")
-        self.assertIn("GONE", output)
 
-    def test_exec_teardown_and_isolation_in_a_shared_pid_namespace(self):
-        a, b = self.start(), self.start()
-        ta = self.terminal(a)
+class ScopeTeamWorkflow(ScopeWorkflow):
+    """Goblins in one scope work together; other scopes, and goblins in none, keep apart."""
+
+    def test_a_team_in_one_scope(self):
         exec_ = [str(self.app), "--state-dir", str(self.d.state), "exec"]
-        # goblins-init is an ordinary member PID here, a subreaper rather
-        # than the namespace's init. Its execs, even one that left the exec's
-        # process group, still end with its goblin.
-        background = subprocess.Popen(
-            [*exec_, a, "--", "sh", "-c", "trap '' HUP TERM; setsid sleep 1002 & sleep 1003; wait"],
-            stderr=subprocess.DEVNULL)
-        self.addCleanup(background.wait)
-        find = [*exec_, b, "--", "sh", "-c", self.FIND + "sleep 100"]
-        self.d.wait(lambda: len(subprocess.run(find, capture_output=True, text=True).stdout.split()) == 2)
-        # Another member sees the processes but neither init's descriptors nor
-        # any socket in the scope.
-        script = (r'for d in /proc/[0-9]*; do '
-                  r'[ "$(head -c 29 $d/cmdline 2>/dev/null)" = /run/goblins/bin/goblins-init ] && '
-                  r'{ ls $d/fd >/dev/null 2>&1 && echo INIT_FD_READABLE || echo hidden; }; '
-                  r'for f in $d/fd/*; do case "$(readlink $f 2>/dev/null)" in socket:*) echo SOCKET $f;; esac; done; '
-                  r'done')
-        output = subprocess.run([*exec_, b, "--", "sh", "-c", script], capture_output=True,
-                                text=True, timeout=30).stdout
-        # Both inits and the keepers of their execs: none is dumpable.
-        self.assertGreaterEqual(len(output.split()), 3, output)
-        self.assertEqual(set(output.split()), {"hidden"}, output)
-        ta.send("exit 6\n")
-        self.assertEqual(ta.wait(), 6)
-        self.d.wait(lambda: subprocess.run(find, capture_output=True, text=True).stdout.split() == [])
-        self.assertEqual(self.d.get(a)["exit_code"], 6)
-        self.assertEqual(self.d.get(b)["state"], "running")
-        self.assertNotEqual(background.wait(timeout=10), 0)
 
-    def test_temporary_scope_storage_is_deleted_and_persistent_kept(self):
-        scratch = self.start(scope="scratch")
-        self.run_in(self.terminal(scratch), "echo temporary > /var/cache/probe/file")
-        self.assertEqual(len(list((self.cache / "goblins/scopes").glob("temporary-*"))), 1)
-        self.stop(scratch)
-        self.d.wait(lambda: not list((self.cache / "goblins/scopes").glob("temporary-*")))
-        again = self.start(scope="scratch")
-        output, code = self.run_in(self.terminal(again), "cat /var/cache/probe/file")
-        self.assertNotEqual(code, 0)
+        with step("two goblins in one scope see each other's processes, not their goblins' internals"):
+            a, b = self.start(), self.start()
+            ta, tb = self.terminal(a), self.terminal(b)
+            # A detached daemon in its own session, and an exec job that left
+            # the exec's process group and ignores hangups.
+            self.ok(ta, "setsid -f sleep 2001 </dev/null >/dev/null 2>&1")
+            background = subprocess.Popen(
+                [*exec_, a, "--", "sh", "-c", "trap '' HUP TERM; setsid sleep 2002 & sleep 2003; wait"],
+                stderr=subprocess.DEVNULL)
+            # Bounded, so a failure before A exits cannot wait for the sleeps.
+            self.addCleanup(lambda: background.poll() is None and (background.kill(), background.wait(timeout=10)))
+            find = [*exec_, b, "--", "sh", "-c", self.FIND + "sleep 200"]
+            self.d.wait(lambda: len(subprocess.run(find, capture_output=True, text=True).stdout.split()) == 3)
+            # goblins-init is an ordinary member PID here. Another member sees
+            # it but neither its descriptors nor any socket in the scope.
+            script = (r'for d in /proc/[0-9]*; do '
+                      r'[ "$(head -c 29 $d/cmdline 2>/dev/null)" = /run/goblins/bin/goblins-init ] && '
+                      r'{ ls $d/fd >/dev/null 2>&1 && echo INIT_FD_READABLE || echo hidden; }; '
+                      r'for f in $d/fd/*; do case "$(readlink $f 2>/dev/null)" in socket:*) echo SOCKET $f;; esac; done; '
+                      r'done')
+            output = subprocess.run([*exec_, b, "--", "sh", "-c", script], capture_output=True,
+                                    text=True, timeout=30).stdout
+            # Both inits and the keepers of their execs: none is dumpable.
+            self.assertGreaterEqual(len(output.split()), 3, output)
+            self.assertEqual(set(output.split()), {"hidden"}, output)
 
-        work = self.start()
-        self.run_in(self.terminal(work), "echo kept > /var/cache/probe/file")
-        self.stop(work)
-        work = self.start()
-        output, _ = self.run_in(self.terminal(work), "cat /var/cache/probe/file")
-        self.assertIn("kept", output)
+        with step("they get the scope's defaults and share a loopback server and storage"):
+            output = self.ok(ta, "echo $SCOPE_MARKER $OVERRIDDEN")
+            self.assertEqual(output.split()[-2:], ["from-scope", "from-goblin"])
+            self.ok(ta, "python3 -m http.server 18555 --bind 127.0.0.1 >/dev/null 2>&1 &")
+            self.ok(ta, "echo shared > /var/cache/probe/file")
+            self.assertIn("200", self.ok(tb, self.fetch(18555)))
+            self.assertIn("shared", self.ok(tb, "cat /var/cache/probe/file"))
 
-    def test_relaunch_waits_for_a_stopping_scope_to_release_its_storage(self):
-        first = self.start(scope="scratch")
-        def children(pid):
-            return [int(value) for value in Path(f"/proc/{pid}/task/{pid}/children").read_text().split()]
-        scopes, members = supervisor_children(self.d.process.pid, self.d.state)
-        self.assertEqual(set(scopes), {"scratch"})
-        self.assertEqual(len(members), 1)
-        scope_pid = scopes["scratch"]
-        keeper = next(pid for pid in children(scope_pid)
-                      if Path(f"/proc/{pid}/exe").resolve().name == "bwrap")
-        keeper_fd = os.pidfd_open(keeper)
-        self.addCleanup(os.close, keeper_fd)
-        def resume():
-            try:
-                signal.pidfd_send_signal(keeper_fd, signal.SIGCONT)
-            except ProcessLookupError:
-                pass
-        self.addCleanup(resume)
-        # Hold namespace teardown after the daemon sends Stop. The child keeps
-        # its runtime/storage leases until its stopped Bubblewrap is reaped.
-        signal.pidfd_send_signal(keeper_fd, signal.SIGSTOP)
-        self.d.wait(lambda: any(line.startswith("State:") and "T" in line
-                                for line in Path(f"/proc/{keeper}/status").read_text().splitlines()))
-        self.d.rpc.call("sessions.stop", {"session": first})
-        self.d.wait(lambda: "do_wait" in Path(f"/proc/{scope_pid}/wchan").read_text())
-        self.assertEqual(self.d.get(first)["state"], "stopping")
-        self.assertTrue((self.d.state / first / "resources").exists())
-        second = self.start(scope="scratch", wait=False)
-        self.d.wait(lambda: (self.d.state / second / "resources/request.sock").exists())
-        self.assertEqual(self.d.get(second)["state"], "starting")
-        # Host RPC continues while the worker waits for the old child to exit.
-        self.assertTrue(self.d.rpc.call("sessions.list", {}))
-        resume()
-        self.d.wait(lambda: self.d.get(first)["state"] == "stopped")
-        self.assertFalse((self.d.state / first / "resources").exists())
-        record = self.d.wait(lambda: (r if (r := self.d.get(second))["state"] != "starting" else None), timeout=60)
-        self.assertEqual(record["state"], "running", record)
+        with step("tools in a shared home coordinate through a lock and a loopback socket, as Gradle does"):
+            # The 'builds' scope shares only the Gradle home, at its default path.
+            for name, text in (("owner.py", LOCK_OWNER), ("contender.py", LOCK_CONTENDER)):
+                (self.root / "projects" / name).write_text(text)
+            first, second = self.start("builder"), self.start("builder")
+            t1, t2 = self.terminal(first), self.terminal(second)
+            self.ok(t1, f"python3 {self.root}/projects/owner.py & "
+                        "for i in $(seq 100); do test -e ~/.gradle/probe.owner && break; sleep .1; done; "
+                        "test -e ~/.gradle/probe.owner")
+            output = self.ok(t2, f"python3 {self.root}/projects/contender.py")
+            # The owner's PID means the same process to the other member.
+            self.assertIn(f"OWNER python3 {self.root}/projects/owner.py", output)
+            self.assertIn("HELD", output.split())
+            self.assertIn("released-for-contender", output)
+            self.assertIn("ACQUIRED", output)
+            # Tools' daemon registries in /tmp stay private to each member.
+            self.ok(t1, "touch /tmp/registry-first")
+            self.ok(t2, "! test -e /tmp/registry-first")
 
-    def test_daemon_shutdown_pumps_scope_release_before_joining_workers(self):
-        self.start()
-        self.start(scope="scratch")
-        scopes, members = supervisor_children(self.d.process.pid, self.d.state)
-        self.assertEqual(set(scopes), {"work", "scratch"})
-        self.assertEqual(len(members), 2)
-        pids = set(scopes.values()) | members
-        self.assertEqual(len(pids), 4)
-        descriptors = [os.pidfd_open(pid) for pid in pids]
-        for fd in descriptors:
-            self.addCleanup(os.close, fd)
-        self.d.process.terminate()
-        # This is the existing Daemon.close bound, shorter than release's
-        # failure fallback: ordinary shutdown must finish the handshake.
-        self.assertEqual(self.d.process.wait(timeout=10), 0)
-        self.assertEqual(set(select.select(descriptors, [], [], 0)[0]), set(descriptors))
-        self.assertFalse(list((self.cache / "goblins/scopes").glob("temporary-*")))
+        with step("a goblin that leaves takes its processes with it, and its exit code is recorded"):
+            ta.send("exit 6\n")
+            self.assertEqual(ta.wait(), 6)
+            self.d.wait(lambda: subprocess.run(find, capture_output=True, text=True).stdout.split() == [])
+            self.assertEqual(self.d.get(a)["exit_code"], 6)
+            self.assertEqual(self.d.get(b)["state"], "running")
+            self.assertNotEqual(background.wait(timeout=10), 0)
+            self.assertIn("shared", self.ok(tb, "cat /var/cache/probe/file"))
 
-    def test_unshared_pid_namespace_hides_processes_but_shares_network(self):
-        a, b = self.start(scope="private"), self.start(scope="private")
-        ta, tb = self.terminal(a), self.terminal(b)
-        self.run_in(ta, "sleep 1002 &")
-        self.run_in(ta, "python3 -m http.server 18556 --bind 127.0.0.1 >/dev/null 2>&1 &")
-        output, _ = self.run_in(tb, self.FIND + "sleep 1002")
-        self.assertNotRegex(output, r"\d")
-        output, _ = self.run_in(tb, "for i in $(seq 50); do python3 -c 'import urllib.request as u; "
-                                    "print(u.urlopen(\"http://127.0.0.1:18556/\").status)' 2>/dev/null && break; "
-                                    "sleep .1; done")
-        self.assertIn("200", output)
-        output, code = self.run_in(tb, "ls /var/cache/probe")
-        self.assertNotEqual(code, 0)
+        with step("in a scope without a shared PID namespace goblins share only the network"):
+            p, q = self.start(scope="private"), self.start(scope="private")
+            tp, tq = self.terminal(p), self.terminal(q)
+            self.ok(tp, "sleep 3001 &")
+            self.ok(tp, "python3 -m http.server 18556 --bind 127.0.0.1 >/dev/null 2>&1 &")
+            self.assertNotRegex(self.ok(tq, self.FIND + "sleep 3001"), r"\d")
+            self.assertIn("200", self.ok(tq, self.fetch(18556)))
+            _, code = self.run_in(tq, "ls /var/cache/probe")
+            self.assertNotEqual(code, 0)
 
-    def test_scope_selection_rules(self):
-        # No default scope: an unscoped goblin has its own network namespace.
-        loner = self.start("loner")
-        output, _ = self.run_in(self.terminal(loner), "echo ${SCOPE_MARKER:-none}")
-        self.assertIn("none", output)
-        failed = self.start("loner", scope="scratch", wait=False)
-        record = self.d.wait(lambda: (r if (r := self.d.get(failed))["state"] not in ("starting", "running") else None),
-                             timeout=60)
-        self.assertIn("not allowed", record["detail"] or "")
-        # A goblin a raid owner runs joins the owner's scope, so an unscoped
-        # owner cannot run a configuration that requires one.
-        failed = self.d.member(loner, "member", wait=False)["session"]
-        record = self.d.wait(lambda: (r if (r := self.d.get(failed))["state"] not in ("starting", "running") else None),
-                             timeout=60)
-        self.assertIn("its owner has no scope", record["detail"] or "")
-        owner = self.start(scope="scratch")
-        member = self.d.member(owner, "member")["session"]
-        self.assertEqual(self.d.get(member)["scope"], "scratch")
-        self.run_in(self.terminal(owner), "echo inherited > /var/cache/probe/file")
-        output, _ = self.run_in(self.terminal(member), "cat /var/cache/probe/file")
-        self.assertIn("inherited", output)
+        with step("an unscoped goblin has no scope; a member joins its owner's scope and storage"):
+            # No default scope: the loner has nothing of the scope's.
+            self.assertIn("none", self.ok(self.terminal(self.start("loner")), "echo ${SCOPE_MARKER:-none}"))
+            owner = self.start(scope="scratch")
+            member = self.d.member(owner, "member")["session"]
+            self.assertEqual(self.d.get(member)["scope"], "scratch")
+            self.ok(self.terminal(owner), "echo inherited > /var/cache/probe/file")
+            self.assertIn("inherited", self.ok(self.terminal(member), "cat /var/cache/probe/file"))
+
+        with step("when everyone has left, temporary scope data is gone and persistent data kept"):
+            for session in (member, owner, b):
+                self.stop(session)
+            _, code = self.run_in(self.terminal(self.start(scope="scratch")), "cat /var/cache/probe/file")
+            self.assertNotEqual(code, 0)
+            self.assertIn("shared", self.ok(self.terminal(self.start()), "cat /var/cache/probe/file"))
+
+        with step("stopping the server ends every scope and removes its temporary storage"):
+            scopes, members = supervisor_children(self.d.process.pid, self.d.state)
+            self.assertEqual(set(scopes), {"work", "scratch", "builds", "private"})
+            descriptors = [os.pidfd_open(pid) for pid in set(scopes.values()) | members]
+            for fd in descriptors:
+                self.addCleanup(os.close, fd)
+            self.d.process.terminate()
+            self.assertEqual(self.d.process.wait(timeout=10), 0)
+            self.assertEqual(set(select.select(descriptors, [], [], 0)[0]), set(descriptors))
+            self.assertFalse(list((self.cache / "goblins/scopes").glob("temporary-*")))
+
+
+@unittest.skipUnless(os.environ.get("GOBLINS_TEST_SLOW"),
+                     "slow tier: set GOBLINS_TEST_SLOW=1 or run `just test-feature slow`")
+class ScopeSlowTier(ScopeWorkflow):
+    """Real Gradle daemons. What they rely on is also checked, faster, in
+    ScopeTeamWorkflow."""
 
     def test_gradle_members_share_a_home_without_lock_timeouts(self):
         # Separately sandboxed Gradle daemons coordinate cache locks over the
@@ -299,4 +292,4 @@ class ScopeTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

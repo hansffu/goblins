@@ -1,4 +1,4 @@
-"""Private network namespaces with open TCP access; no external services/auth."""
+"""Networking as a goblin sees it: online in a private namespace, or offline; no external services/auth."""
 import http.server
 import json
 import multiprocessing
@@ -9,6 +9,7 @@ import unittest
 
 from build_support import fixture_app
 from daemon_support import Daemon
+from support import step
 from terminal_support import Terminal
 
 
@@ -22,7 +23,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-class NetworkTests(unittest.TestCase):
+class NetworkWorkflow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = fixture_app("network-goblins")
@@ -54,40 +55,43 @@ class NetworkTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)FETCH=0\n")
         terminal.expect("network-test>")
 
-    def test_open_network_members_and_interrupt(self):
-        owner = self.d.start("online", agent_name="chief")["session"]
-        terminal = self.terminal(owner)
-        self.fetch(terminal)
-        terminal.send("readlink /proc/self/ns/net; cat /etc/resolv.conf; printf 'PROXY=%s\\n' \"${HTTPS_PROXY-unset}\"\n")
-        owner_ns = terminal.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
-        self.assertNotEqual(owner_ns, os.readlink("/proc/self/ns/net"))
-        terminal.expect("nameserver 10.0.2.3")
-        terminal.expect("PROXY=unset")
-        terminal.expect("network-test>")
-        terminal.send("\x03")
-        terminal.expect("network-test>")
-        self.fetch(terminal)
-        member = self.d.member(owner, "online", agent_name="scout", key="scout")["session"]
-        attached = self.terminal(member)
-        self.fetch(attached)
-        attached.send("readlink /proc/self/ns/net\n")
-        member_ns = attached.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
-        # Without a scope, each sandbox has its own network namespace; a scope
-        # is how goblins share one.
-        self.assertNotEqual(owner_ns, member_ns)
-        attached.expect("network-test>")
-        attached.send("exit\n")
-        self.d.wait(lambda: self.d.get(member)["state"] == "stopped")
-        self.fetch(terminal)
+    def test_online_and_offline_goblins(self):
+        with step("an online goblin reaches the host from its own network namespace"):
+            owner = self.d.start("online", agent_name="chief")["session"]
+            terminal = self.terminal(owner)
+            self.fetch(terminal)
+            terminal.send("readlink /proc/self/ns/net; cat /etc/resolv.conf; printf 'PROXY=%s\\n' \"${HTTPS_PROXY-unset}\"\n")
+            owner_ns = terminal.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
+            self.assertNotEqual(owner_ns, os.readlink("/proc/self/ns/net"))
+            terminal.expect("nameserver 10.0.2.3")
+            terminal.expect("PROXY=unset")
+            terminal.expect("network-test>")
 
-    def test_explicit_offline_mode(self):
-        session = self.d.start("offline")["session"]
-        terminal = self.terminal(session)
-        terminal.send(f"curl -sS --max-time 2 {self.url} >/tmp/output 2>/tmp/error; printf 'FETCH=%s\\n' \"$?\"\n")
-        terminal.expect(r"(?:^|\n)FETCH=[1-9]\d*\n")
-        self.assertFalse((self.d.state / session / "resources/network.log").exists())
+        with step("Ctrl-C at the prompt leaves the network working"):
+            terminal.send("\x03")
+            terminal.expect("network-test>")
+            self.fetch(terminal)
 
-    def test_daemon_death_stops_network_processes(self):
+        with step("a member has a network namespace of its own, and leaving does not break the owner's"):
+            member = self.d.member(owner, "online", agent_name="scout", key="scout")["session"]
+            attached = self.terminal(member)
+            self.fetch(attached)
+            attached.send("readlink /proc/self/ns/net\n")
+            member_ns = attached.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
+            # Without a scope, each sandbox has its own network namespace; a
+            # scope is how goblins share one.
+            self.assertNotEqual(owner_ns, member_ns)
+            attached.expect("network-test>")
+            attached.send("exit\n")
+            self.d.wait(lambda: self.d.get(member)["state"] == "stopped")
+            self.fetch(terminal)
+
+        with step("an offline goblin reaches nothing"):
+            offline = self.terminal(self.d.start("offline")["session"])
+            offline.send(f"curl -sS --max-time 2 {self.url} >/tmp/output 2>/tmp/error; printf 'FETCH=%s\\n' \"$?\"\n")
+            offline.expect(r"(?:^|\n)FETCH=[1-9]\d*\n")
+
+    def test_network_processes_die_with_the_server(self):
         session = self.d.start("online")["session"]
         self.terminal(session)
         children = set()
