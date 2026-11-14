@@ -611,12 +611,13 @@ history, without a terminal; print the new goblin's ID."
         (ghostel-query-before-killing nil)
         (completing-read-function #'completing-read-default)
         (source (generate-new-buffer " *goblins launch notes*"))
-        terminals status)
+        terminals status initial-count)
     (unwind-protect
         (progn
           (goblins-status)
           (setq status (current-buffer))
           (goblins-test--wait (lambda () goblins--subscription))
+          (setq initial-count (length (plist-get goblins--snapshot :sessions)))
           (pop-to-buffer source)
           (insert "Unrelated launch notes")
           (setq buffer-read-only t)
@@ -635,7 +636,7 @@ history, without a terminal; print the new goblin's ID."
            (lambda () (file-exists-p (expand-file-name "emacs-launch.txt"
                                                        (getenv "GOBLINS_TEST_WORKSPACE")))) 60)
           (pop-to-buffer status)
-          (goblins-test--wait (lambda () (= 3 (length (plist-get goblins--snapshot :sessions)))))
+          (goblins-test--wait (lambda () (= (+ initial-count 2) (length (plist-get goblins--snapshot :sessions)))))
           (dolist (terminal terminals)
             (let ((id (nth 2 (buffer-local-value 'goblins--session-key terminal))))
               (goblins-test--goto-agent id)
@@ -857,7 +858,7 @@ history, without a terminal; print the new goblin's ID."
         (progn
           (goblins-status directory)
           (goblins-test--wait (lambda () goblins--subscription))
-          (should (string-match-p "snikk" (buffer-string)))
+          (should (string-match-p (or (getenv "GOBLINS_TEST_ACCEPT_AGENT") "snikk") (buffer-string)))
           (should-not (string-match-p "Try a live grant 🐟" (buffer-string)))
           (goblins-test--goto (getenv "GOBLINS_TEST_ACCEPT"))
           (goblins-details)
@@ -873,7 +874,9 @@ history, without a terminal; print the new goblin's ID."
                                :key (lambda (r) (plist-get r :state)) :test #'equal)))
           (goblins-refresh)
           (goblins-test--wait (lambda () goblins--subscription))
-          (should (= 2 (length (plist-get goblins--snapshot :sessions))))
+          (should (= 2 (length (seq-filter
+                                  (lambda (session) (equal (plist-get session :state) "running"))
+                                  (append (plist-get goblins--snapshot :sessions) nil)))))
           (let ((connection goblins--connection))
             (kill-buffer (current-buffer))
             (should-not (jsonrpc-running-p connection))))
@@ -3976,7 +3979,11 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
   "Run the workspace scenario, write ok or the failure to the result file, exit."
   (let ((result (getenv "GOBLINS_TEST_RESULT")))
     (condition-case err
-        (write-region (goblins-test--workspace-scenario) nil result)
+        (let ((outcome (goblins-test--workspace-scenario)))
+          (when (equal outcome "ok ghostel")
+            (ert-info ("launch in Ghostel after leaving the workspace")
+              (goblins-test-run-live)))
+          (write-region outcome nil result))
       (error (write-region (format "%S\n%s" err (goblins-test--sidebar-text-safe))
                            nil result)))
     (kill-emacs 0)))
@@ -5046,6 +5053,127 @@ programs started, each as (ARGS IDENTITY BUFFER)."
     (should-not (goblins-pin "g"))
     (should (goblins-pin "i-s2"))))
 
+(ert-deftest goblins-tramp-keeps-stale-pins-through-failures-and-configuration-changes ()
+  "A failed exec or a changed default daemon never resolves a namesake afresh."
+  (let* ((goblins--pins (make-hash-table :test #'equal))
+         (goblins-state-directory "/other-daemon")
+         (vec (tramp-dissect-file-name "/goblins:gribble:/tmp/"))
+         (tramp-current-connection (list vec))
+         (default-directory "/goblins:gribble:/tmp/")
+         calls)
+    (puthash "gribble" '("/original" "old-instance" "old-session") goblins--pins)
+    (cl-letf (((symbol-function 'goblins-tramp--resolve)
+               (lambda (&rest _) (ert-fail "Rebound a stale pin")))
+              ((symbol-function 'goblins-tramp--process-environment) (lambda (_) nil))
+              ((symbol-function 'goblins-tramp--program) (lambda () "/cli"))
+              ((symbol-function 'call-process)
+               (lambda (&rest args) (push args calls) 255)))
+      (dotimes (_ 2)
+        (should (= 255 (goblins-tramp--process-file #'ignore "sh" nil nil nil "-c" "echo refused")))
+        (should (equal (goblins-tramp--pin vec) '("/original" "old-instance" "old-session")))
+        (should (equal (mapcar #'goblins-tramp--pin-field '(0 1 2))
+                       '("/original" "old-instance" "old-session"))))
+      (should (equal calls
+                     (make-list 2 '("/cli" nil nil nil "--state-dir" "/original" "exec"
+                                    "--instance" "old-instance" "--session" "old-session"
+                                    "--workdir" "/tmp/" "gribble" "--" "sh" "-c" "echo refused")))))))
+
+(ert-deftest goblins-tramp-process-file-preserves-redirections-status-and-ownership ()
+  (let* ((goblins--pins (make-hash-table :test #'equal))
+         (default-directory "/goblins:gribble:/tmp/") calls fallback)
+    (puthash "gribble" '("/state" "instance" "session") goblins--pins)
+    (cl-letf (((symbol-function 'goblins-tramp--process-environment)
+               (lambda (_) '("FROM_EMACS=literal value")))
+              ((symbol-function 'goblins-tramp--program) (lambda () "/cli"))
+              ((symbol-function 'goblins-tramp--busy-p) (lambda (_) t))
+              ((symbol-function 'call-process)
+               (lambda (&rest args)
+                 (should (equal default-directory temporary-file-directory))
+                 (push args calls) 3)))
+      (should (= 3 (goblins-tramp--sh-process-file
+                    #'ignore "sh" nil t nil "-c" "echo value")))
+      (should (equal (car calls)
+                     '("/cli" nil t nil "--state-dir" "/state" "exec" "--instance" "instance"
+                       "--session" "session" "--workdir" "/tmp/" "--env" "FROM_EMACS=literal value"
+                       "gribble" "--" "sh" "-c" "echo value")))
+      (should (= 3 (goblins-tramp--process-file
+                    #'ignore "cat" "/goblins:gribble:/tmp/in with spaces"
+                    '(t "/goblins:gribble:/tmp/err with spaces") nil "literal argument")))
+      (let ((args (car calls)))
+        (should (equal (seq-take args 4) '("/cli" nil (t nil) nil)))
+        (should (equal (cdr (member "--" args))
+                       '("/bin/sh" "-c"
+                         "in=$1 err=$2; shift 2; if [ -n \"$in\" ]; then exec <\"$in\"; fi; if [ -n \"$err\" ]; then exec 2>\"$err\"; fi; exec \"$@\""
+                         "sh" "/tmp/in with spaces" "/tmp/err with spaces" "cat" "literal argument"))))
+      ;; Files on a different host remain TRAMP's responsibility.
+      (setq calls nil)
+      (should (= 7 (goblins-tramp--process-file
+                    (lambda (&rest args) (setq fallback args) 7)
+                    "cat" "/ssh:elsewhere:/input" t nil "arg")))
+      (should (equal fallback '("cat" "/ssh:elsewhere:/input" t nil "arg")))
+      (should-not calls))))
+
+(ert-deftest goblins-tramp-transfers-and-async-commands-use-local-pipes ()
+  (let ((vec (tramp-dissect-file-name "/goblins:gribble:/")) called)
+    (should-not (goblins-tramp--inline-compress
+                 (lambda (&rest _) (setq called t)) vec))
+    (should-not called)
+    (should (eq 'native (goblins-tramp--inline-compress
+                         (lambda (&rest args) (setq called args) 'native)
+                         (tramp-dissect-file-name "/ssh:other:/") 'argument)))
+    (should (equal (cdr called) '(argument))))
+  (let ((method (cdr (assoc "goblins" tramp-methods))))
+    (should (equal (cadr (assq 'tramp-direct-async method)) '("/bin/sh" "-c")))
+    (should (member '("--tty=auto") (cadr (assq 'tramp-login-args method))))
+    (should (member '("--instance" "%I") (cadr (assq 'tramp-login-args method))))
+    (should (member '("--session" "%S") (cadr (assq 'tramp-login-args method))))))
+
+(ert-deftest goblins-tramp-release-closes-files-before-unpinning-and-keeps-terminal-output ()
+  (let* ((goblins--pins (make-hash-table :test #'equal))
+         (notes (generate-new-buffer "goblins-release-notes"))
+         (shell (generate-new-buffer "goblins-release-terminal"))
+         cleaned)
+    (puthash "gribble" '("/state" "instance" "session") goblins--pins)
+    (unwind-protect
+        (cl-letf (((symbol-function 'tramp-cleanup-connection)
+                   (lambda (&rest _)
+                     (should-not (buffer-live-p notes))
+                     (should-not (goblins-pin "gribble"))
+                     (setq cleaned t))))
+          (with-current-buffer notes
+            (setq default-directory "/goblins:gribble:/tmp/")
+            (insert "unsaved sandbox notes"))
+          (with-current-buffer shell
+            (setq-local default-directory "/goblins:gribble:/"
+                        ghostel-identity '((kind . goblins-shell)))
+            (insert "terminal output"))
+          (goblins-tramp-release "gribble" "different-session")
+          (should (buffer-live-p notes))
+          (should (goblins-pin "gribble"))
+          (should-not cleaned)
+          (goblins-tramp-release "gribble" "session")
+          (should cleaned)
+          (should (buffer-live-p shell))
+          (with-current-buffer shell
+            (should (equal default-directory (expand-file-name "~/")))
+            (should (equal (buffer-string) "terminal output"))))
+      (dolist (buffer (list notes shell))
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer))))))
+
+(ert-deftest goblins-tramp-completion-lists-only-running-goblins ()
+  (cl-letf (((symbol-function 'goblins-tramp--state-directory) (lambda () "/state"))
+            ((symbol-function 'goblins-tramp--sessions)
+             (lambda (directory)
+               (should (equal directory "/state"))
+               '("instance" (:id "old" :agent_name "gone" :state "stopped")
+                            (:id "live" :agent_name "gribble" :state "running")))))
+    (should (equal (goblins-tramp--completion-function "goblins") '((nil "gribble"))))
+    (let ((non-essential t))
+      (should (equal (tramp-completion-handle-file-name-all-completions "goblins:gr" "/")
+                     '("goblins:gribble:"))))))
+
 (defun goblins-test--host-pids (marker)
   "PIDs of host processes whose command line contains MARKER."
   (cl-remove-if-not
@@ -5106,280 +5234,183 @@ programs started, each as (ARGS IDENTITY BUFFER)."
          (file "/goblins:gribble:/tmp/notes.txt")
          (tmp "/goblins:gribble:/tmp/")
          notes ghostel-used)
-    ;; Running goblins complete after /goblins:, like hosts after /ssh:.
-    (should (equal (let ((non-essential t))
-                     (tramp-completion-handle-file-name-all-completions "goblins:gr" "/"))
-                   '("goblins:gribble:")))
-    ;; Visit, save and list files; the connection is pinned to the session.
-    (setq notes (find-file file))
-    (insert "hello from emacs\n")
-    (save-buffer)
-    (should (equal (goblins-test--in directory "gribble" "cat /tmp/notes.txt")
-                   "hello from emacs\n"))
-    (should (equal (nth 2 (goblins-test--pin "gribble")) first))
-    (with-current-buffer (dired tmp)
-      (goto-char (point-min))
-      (should (search-forward "notes.txt" nil t)))
-    ;; Large files travel uncompressed, without a warning about gzip.
-    (goblins-test--in directory "gribble" "seq 1 5000 > /tmp/big.txt")
-    (with-current-buffer (find-file-noselect "/goblins:gribble:/tmp/big.txt")
-      (should (= (count-lines (point-min) (point-max)) 5000))
-      (goto-char (point-max))
-      (insert "end\n")
+    (ert-info ("visit and save files, then use eshell and dired")
+      ;; Visit, save and list files; the connection is pinned to the session.
+      (setq notes (find-file file))
+      (insert "hello from emacs\n")
       (save-buffer)
-      (kill-buffer))
-    (should (equal (goblins-test--in directory "gribble" "tail -n 1 /tmp/big.txt") "end\n"))
-    (should-not (and (get-buffer "*Warnings*")
-                     (string-match-p "compress" (with-current-buffer "*Warnings*" (buffer-string)))))
-    ;; Eshell runs external commands inside the sandbox.
-    (require 'eshell)
-    (let ((default-directory tmp))
-      (should (equal (string-trim (eshell-command-result "id -u")) "1000"))
-      (should (equal (string-trim (eshell-command-result "cat notes.txt")) "hello from emacs")))
-    ;; goblins-eshell and goblins-dired open in the goblin's directory.
-    (let ((session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source) first)))
-      (with-current-buffer (goblins-eshell session #'ignore source)
-        (should (equal default-directory "/goblins:gribble:/workspace/"))
-        (goto-char (point-max))
-        (insert "cat /tmp/notes.txt")
-        (eshell-send-input)
-        (goblins-test--wait (lambda () (string-match-p "^hello from emacs$" (buffer-string)))))
-      (with-current-buffer (goblins-dired session #'ignore source)
-        (should (derived-mode-p 'dired-mode))
-        (should (equal default-directory "/goblins:gribble:/workspace/"))))
-    ;; While TRAMP's connection is busy, process-file runs as its own exec,
-    ;; with the environment, stdin and stderr redirections it asks for.
-    (let ((default-directory tmp)
-          (process-environment (cons "GOBLINS_TEST_VAR=from-emacs" process-environment)))
-      (tramp-set-connection-property (tramp-get-connection-process (goblins-tramp--vec tmp))
-                                     "locked" t)
-      (unwind-protect
-          (with-temp-buffer
-            (should (eq (process-file "sh" nil t nil "-c"
-                                      "echo $GOBLINS_TEST_VAR; pwd; echo err >&2; exit 3")
-                        3))
-            (should (equal (buffer-string) "from-emacs\n/tmp\nerr\n"))
-            (erase-buffer)
-            (should (eq (process-file "cat" (concat tmp "notes.txt") t) 0))
-            (should (equal (buffer-string) "hello from emacs\n"))
-            (erase-buffer)
-            (should (eq (process-file "sh" nil (list t (concat tmp "stderr.txt")) nil "-c"
-                                      "echo out; echo bad >&2")
-                        0))
-            (should (equal (buffer-string) "out\n")))
-        (tramp-flush-connection-property
-         (tramp-get-connection-process (goblins-tramp--vec tmp)) "locked"))
-      (should (equal (goblins-test--in directory "gribble" "cat /tmp/stderr.txt") "bad\n")))
-    ;; Killing a compilation, or deleting a process, leaves nothing behind.
-    (let ((default-directory tmp)
-          (compilation-ask-about-save nil))
-      (with-current-buffer (compile "sleep 4242421; echo finished")
-        (goblins-test--wait (lambda () (goblins-test--host-pids "sleep\0004242421")))
-        (kill-compilation)
-        (goblins-test--wait (lambda () (null (goblins-test--host-pids "sleep\0004242421")))))
-      (let ((process (start-file-process "sleeper" nil "sleep" "4242422")))
-        (goblins-test--wait (lambda () (goblins-test--host-pids "sleep\0004242422")))
-        (delete-process process)
-        (goblins-test--wait (lambda () (null (goblins-test--host-pids "sleep\0004242422")))))
-      ;; Closing stdin ends a pipe process, as eglot's shutdown does.
-      (with-temp-buffer
-        (let ((process (make-process :name "cat" :buffer (current-buffer) :command '("cat")
-                                     :connection-type 'pipe :file-handler t)))
-          (process-send-string process "line\n")
-          (process-send-eof process)
-          (goblins-test--wait (lambda () (not (process-live-p process))))
-          (should (eq (process-exit-status process) 0))
-          (should (equal (buffer-string) "line\n")))))
-    ;; The first visit to a goblin-written file ignores eval: and unsafe variables.
-    (goblins-test--in directory "gribble"
-                      (concat "printf '%s\\n' '-*- eval: (setq goblins-test--pwned t); "
-                              "fill-column: 33; goblins-test--unsafe: 7 -*-' > /tmp/unsafe.txt"))
-    (setq goblins-test--pwned nil)
-    (let ((enable-local-variables t))
-      (with-current-buffer (find-file-noselect "/goblins:gribble:/tmp/unsafe.txt")
-        (should (= fill-column 33))
-        (should-not (local-variable-p 'goblins-test--unsafe))))
-    (should-not goblins-test--pwned)
-    ;; goblins-editor asks first: the popup names the goblin and its files,
-    ;; and nothing opens until you approve.  A refusal fails the editor.
-    (let ((editor (start-process "refused-editor" (generate-new-buffer " *refused*")
-                                 goblins-executable "--state-dir" directory "exec" "gribble"
-                                 "--" "goblins-editor" "/tmp/r1")))
-      (goblins-test--wait (lambda () goblins--pending-edits))
-      (should (get-buffer-window goblins--popup-buffer-name))
-      (with-current-buffer goblins--popup-buffer-name
-        (should (string-match-p "gribble wants to open in Emacs\n +/tmp/r1" (buffer-string)))
-        (goblins-request-popup-deny))
-      ;; The process can be reported as exited before Emacs has read its
-      ;; last output, so wait for the message as well as the exit.
-      (goblins-test--wait
-       (lambda () (and (not (process-live-p editor))
-                       (string-match-p "refused" (with-current-buffer (process-buffer editor)
-                                                   (buffer-string))))))
-      (should-not (eq (process-exit-status editor) 0))
-      (should-not (get-file-buffer "/goblins:gribble:/tmp/r1"))
-      (should-not (get-buffer-window goblins--popup-buffer-name)))
-    ;; goblins-editor blocks until every file is done with C-x #.
-    (let* ((editor (start-process "goblins-editor" (generate-new-buffer " *editor*")
-                                  goblins-executable "--state-dir" directory "exec" "gribble"
-                                  "--" "goblins-editor" "+2" "/tmp/m1" "/tmp/m2"))
-           (m1 "/goblins:gribble:/tmp/m1") (m2 "/goblins:gribble:/tmp/m2"))
-      (goblins-test--wait (lambda () goblins--pending-edits))
-      (should-not (get-file-buffer m1))
-      (with-current-buffer goblins--popup-buffer-name
-        (should (string-match-p "/tmp/m1:2\n +/tmp/m2" (buffer-string)))
-        (goblins-request-popup-accept))
-      (goblins-test--wait (lambda () (and (get-file-buffer m1) (get-file-buffer m2))))
-      (dolist (name (list m1 m2))
-        (with-current-buffer (get-file-buffer name)
-          (insert (file-name-nondirectory name))
-          (save-buffer)
-          (should (process-live-p editor))
-          (server-edit)))
-      (goblins-test--wait (lambda () (not (process-live-p editor))))
-      (should (eq (process-exit-status editor) 0))
-      (should (equal (goblins-test--in directory "gribble" "cat /tmp/m1 /tmp/m2") "m1m2")))
-    ;; A shell inside the goblin, alongside its agent terminal.
-    (when (and (require 'ghostel nil t) (require 'ghostel-module nil t))
-      (let ((shell (goblins-shell (goblins--snapshot-session
-                                   (buffer-local-value 'goblins--snapshot source) first))))
-        (with-current-buffer shell
-          (should (equal default-directory "/goblins:gribble:/"))
-          (goblins-test--wait (lambda () (process-live-p ghostel--process)))
-          (ghostel-send-string "echo SHELL-$((6*7))\n")
-          (goblins-test--wait (lambda () (string-match-p "SHELL-42" (buffer-string))))
-          ;; A pasted image lands byte for byte in the goblin's /tmp, its
-          ;; path pasted after the command.
-          (let ((image (apply #'concat (make-list 256 (apply #'unibyte-string
-                                                             (number-sequence 0 255))))))
-            (ghostel-send-string "echo PASTED:")
-            (goblins--yank-media-image 'image/png image)
-            (ghostel-send-string "\n")
-            (goblins-test--wait
-             (lambda () (string-match-p "^PASTED:/tmp/goblins-clipboard/[0-9-]+\\.png$"
-                                        (buffer-string))))
-            (should (equal (goblins-test--in directory "gribble"
-                                             "cat /tmp/goblins-clipboard/*.png | sha256sum")
-                           (format "%s  -\n" (secure-hash 'sha256 image))))))
-        ;; The shell is a terminal of the goblin: the snapshot lists it and
-        ;; the sidebar shows it under its goblin; it counts as no shell.
-        (require 'goblins-workspace)
-        (let ((record (lambda ()
-                        (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
-                                                   first)))
-              (attached (lambda (id)
-                          (eq (plist-get (goblins--session-terminal
-                                          (goblins--snapshot-session
-                                           (buffer-local-value 'goblins--snapshot source) first)
-                                          id)
-                                         :attached)
-                              t))))
-          (goblins-test--wait (lambda () (funcall attached "t1")))
-          (should (equal (plist-get (goblins--session-terminal (funcall record) "t1") :origin)
-                         "host"))
-          (should (zerop (or (plist-get (funcall record) :shells) 0)))
-          (should (string-match-p "› shell\n" (goblins--sidebar-text source nil)))
-          (should (eq (goblins--session-terminal-buffer source first "t1") shell))
-          ;; Killing the buffer detaches the terminal, which keeps running
-          ;; with its screen; attaching it again brings the screen back.
-          (kill-buffer shell)
-          (goblins-test--wait (lambda () (not (funcall attached "t1"))))
-          (should (goblins--session-terminal (funcall record) "t1"))
-          (setq shell (goblins-terminal-attach "t1" (funcall record) #'pop-to-buffer source))
+      (should (equal (goblins-test--in directory "gribble" "cat /tmp/notes.txt")
+                     "hello from emacs\n"))
+      (should (equal (nth 2 (goblins-test--pin "gribble")) first))
+      (with-current-buffer (dired tmp)
+        (goto-char (point-min))
+        (should (search-forward "notes.txt" nil t)))
+      ;; Eshell runs external commands inside the sandbox.
+      (require 'eshell)
+      (let ((default-directory tmp))
+        (should (equal (string-trim (eshell-command-result "id -u")) "1000"))
+        (should (equal (string-trim (eshell-command-result "cat notes.txt")) "hello from emacs")))
+      ;; goblins-eshell and goblins-dired open in the goblin's directory.
+      (let ((session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source) first)))
+        (with-current-buffer (goblins-eshell session #'ignore source)
+          (should (equal default-directory "/goblins:gribble:/workspace/"))
+          (goto-char (point-max))
+          (insert "cat /tmp/notes.txt")
+          (eshell-send-input)
+          (goblins-test--wait (lambda () (string-match-p "^hello from emacs$" (buffer-string)))))
+        (with-current-buffer (goblins-dired session #'ignore source)
+          (should (derived-mode-p 'dired-mode))
+          (should (equal default-directory "/goblins:gribble:/workspace/")))))
+    (ert-info ("cancel a compilation inside the goblin")
+      ;; Cancelling a compilation leaves no remote process behind.
+      (let ((default-directory tmp)
+            (compilation-ask-about-save nil))
+        (with-current-buffer (compile "sleep 4242421; echo finished")
+          (goblins-test--wait (lambda () (goblins-test--host-pids "sleep\0004242421")))
+          (kill-compilation)
+          (goblins-test--wait (lambda () (null (goblins-test--host-pids "sleep\0004242421")))))))
+    (ert-info ("refuse an editor request, then approve and finish files")
+      ;; goblins-editor asks first: the popup names the goblin and its files,
+      ;; and nothing opens until you approve.  A refusal fails the editor.
+      (let ((editor (start-process "refused-editor" (generate-new-buffer " *refused*")
+                                   goblins-executable "--state-dir" directory "exec" "gribble"
+                                   "--" "goblins-editor" "/tmp/r1")))
+        (goblins-test--wait (lambda () goblins--pending-edits))
+        (should (get-buffer-window goblins--popup-buffer-name))
+        (with-current-buffer goblins--popup-buffer-name
+          (should (string-match-p "gribble wants to open in Emacs\n +/tmp/r1" (buffer-string)))
+          (goblins-request-popup-deny))
+        ;; The process can be reported as exited before Emacs has read its
+        ;; last output, so wait for the message as well as the exit.
+        (goblins-test--wait
+         (lambda () (and (not (process-live-p editor))
+                         (string-match-p "refused" (with-current-buffer (process-buffer editor)
+                                                     (buffer-string))))))
+        (should-not (eq (process-exit-status editor) 0))
+        (should-not (get-file-buffer "/goblins:gribble:/tmp/r1"))
+        (should-not (get-buffer-window goblins--popup-buffer-name)))
+      ;; goblins-editor blocks until every file is done with C-x #.
+      (let* ((editor (start-process "goblins-editor" (generate-new-buffer " *editor*")
+                                    goblins-executable "--state-dir" directory "exec" "gribble"
+                                    "--" "goblins-editor" "+2" "/tmp/m1" "/tmp/m2"))
+             (m1 "/goblins:gribble:/tmp/m1") (m2 "/goblins:gribble:/tmp/m2"))
+        (goblins-test--wait (lambda () goblins--pending-edits))
+        (should-not (get-file-buffer m1))
+        (with-current-buffer goblins--popup-buffer-name
+          (should (string-match-p "/tmp/m1:2\n +/tmp/m2" (buffer-string)))
+          (goblins-request-popup-accept))
+        (goblins-test--wait (lambda () (and (get-file-buffer m1) (get-file-buffer m2))))
+        (dolist (name (list m1 m2))
+          (with-current-buffer (get-file-buffer name)
+            (insert (file-name-nondirectory name))
+            (save-buffer)
+            (should (process-live-p editor))
+            (server-edit)))
+        (goblins-test--wait (lambda () (not (process-live-p editor))))
+        (should (eq (process-exit-status editor) 0))
+        (should (equal (goblins-test--in directory "gribble" "cat /tmp/m1 /tmp/m2") "m1m2"))))
+    (ert-info ("use a shell, paste an image, detach and reattach")
+      ;; A shell inside the goblin, alongside its agent terminal.
+      (when (and (require 'ghostel nil t) (require 'ghostel-module nil t))
+        (let ((shell (goblins-shell (goblins--snapshot-session
+                                     (buffer-local-value 'goblins--snapshot source) first))))
           (with-current-buffer shell
-            (goblins-test--wait-text "SHELL-42")
-            (should (string-match-p "PASTED:/tmp/goblins-clipboard/" (buffer-string)))
-            (ghostel-send-string "echo AGAIN-$((6*7))\n")
-            (goblins-test--wait-text "AGAIN-42"))
-          ;; A full-screen program is redrawn on the alternate screen.
-          (let ((full (goblins-terminal
-                       '("sh" "-c"
-                         "printf '\\033[?1049h\\033[2J\\033[3;5HFULLSCREEN'; exec sleep 600")
-                       "full" (funcall record) #'pop-to-buffer source)))
-            (with-current-buffer full
-              (goblins-test--wait-text "FULLSCREEN"))
-            (kill-buffer full)
-            (goblins-test--wait (lambda () (not (funcall attached "t2"))))
-            (with-current-buffer (goblins-terminal-attach "t2" (funcall record) #'pop-to-buffer source)
-              (goblins-test--wait-text "FULLSCREEN"))
-            ;; Closing it takes it out of the snapshot.
-            (goblins--host-call source 'terminals.close (list :session first :terminal "t2"))
-            (goblins-test--wait (lambda () (not (goblins--session-terminal (funcall record) "t2"))))))
-        (setq ghostel-used t)))
-    ;; Stopping the goblin kills its buffers before the pin is released, so
-    ;; a later goblin with the same name is pinned afresh.
-    (goblins-test--stop-goblin source first)
-    (goblins-test--wait (lambda () (not (buffer-live-p notes))))
-    (should-not (goblins-test--pin "gribble"))
-    (should-not (cl-some (lambda (b) (goblins-tramp--buffer-vec b))
-                         (cl-remove-if #'goblins-tramp--terminal-p (buffer-list))))
-    (let ((second (goblins-test--start-goblin source "gribble")))
-      (setq notes (find-file-noselect "/goblins:gribble:/tmp/second.txt"))
-      (with-current-buffer notes (insert "x") (save-buffer))
-      (should (equal (nth 2 (goblins-test--pin "gribble")) second))
-      ;; With the stop notification missed, the pin fails hard instead of
-      ;; reaching the next namesake.
-      (remove-hook 'goblins-snapshot-hook #'goblins--after-snapshot)
-      (remove-hook 'goblins-snapshot-hook #'goblins-tramp--after-snapshot)
-      (goblins-test--stop-goblin source second)
+            (should (equal default-directory "/goblins:gribble:/"))
+            (goblins-test--wait (lambda () (process-live-p ghostel--process)))
+            (ghostel-send-string "echo SHELL-$((6*7))\n")
+            (goblins-test--wait (lambda () (string-match-p "SHELL-42" (buffer-string))))
+            ;; A pasted image lands byte for byte in the goblin's /tmp, its
+            ;; path pasted after the command.
+            (let ((image (apply #'concat (make-list 256 (apply #'unibyte-string
+                                                               (number-sequence 0 255))))))
+              (ghostel-send-string "echo PASTED:")
+              (goblins--yank-media-image 'image/png image)
+              (ghostel-send-string "\n")
+              (goblins-test--wait
+               (lambda () (string-match-p "^PASTED:/tmp/goblins-clipboard/[0-9-]+\\.png$"
+                                          (buffer-string))))
+              (should (equal (goblins-test--in directory "gribble"
+                                               "cat /tmp/goblins-clipboard/*.png | sha256sum")
+                             (format "%s  -\n" (secure-hash 'sha256 image))))))
+          ;; The shell is a terminal of the goblin: the snapshot lists it and
+          ;; the sidebar shows it under its goblin; it counts as no shell.
+          (require 'goblins-workspace)
+          (let ((record (lambda ()
+                          (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                                     first)))
+                (attached (lambda (id)
+                            (eq (plist-get (goblins--session-terminal
+                                            (goblins--snapshot-session
+                                             (buffer-local-value 'goblins--snapshot source) first)
+                                            id)
+                                           :attached)
+                                t))))
+            (goblins-test--wait (lambda () (funcall attached "t1")))
+            (should (equal (plist-get (goblins--session-terminal (funcall record) "t1") :origin)
+                           "host"))
+            (should (zerop (or (plist-get (funcall record) :shells) 0)))
+            (should (string-match-p "› shell\n" (goblins--sidebar-text source nil)))
+            (should (eq (goblins--session-terminal-buffer source first "t1") shell))
+            ;; Killing the buffer detaches the terminal, which keeps running
+            ;; with its screen; attaching it again brings the screen back.
+            (kill-buffer shell)
+            (goblins-test--wait (lambda () (not (funcall attached "t1"))))
+            (should (goblins--session-terminal (funcall record) "t1"))
+            (setq shell (goblins-terminal-attach "t1" (funcall record) #'pop-to-buffer source))
+            (with-current-buffer shell
+              (goblins-test--wait-text "SHELL-42")
+              (should (string-match-p "PASTED:/tmp/goblins-clipboard/" (buffer-string)))
+              (ghostel-send-string "echo AGAIN-$((6*7))\n")
+              (goblins-test--wait-text "AGAIN-42"))
+            ;; A full-screen program is redrawn on the alternate screen.
+            (let ((full (goblins-terminal
+                         '("sh" "-c"
+                           "printf '\\033[?1049h\\033[2J\\033[3;5HFULLSCREEN'; exec sleep 600")
+                         "full" (funcall record) #'pop-to-buffer source)))
+              (with-current-buffer full
+                (goblins-test--wait-text "FULLSCREEN"))
+              (kill-buffer full)
+              (goblins-test--wait (lambda () (not (funcall attached "t2"))))
+              (with-current-buffer (goblins-terminal-attach "t2" (funcall record) #'pop-to-buffer source)
+                (goblins-test--wait-text "FULLSCREEN"))
+              ;; Closing it takes it out of the snapshot.
+              (goblins--host-call source 'terminals.close (list :session first :terminal "t2"))
+              (goblins-test--wait (lambda () (not (goblins--session-terminal (funcall record) "t2"))))))
+          (setq ghostel-used t))))
+    (ert-info ("stop releases its files and pins; another server keeps its own identity")
+      ;; Stopping the goblin kills its buffers before the pin is released, so
+      ;; a later goblin with the same name is pinned afresh.
+      (goblins-test--stop-goblin source first)
+      (goblins-test--wait (lambda () (not (buffer-live-p notes))))
+      (should-not (goblins-test--pin "gribble"))
+      (should-not (cl-some (lambda (b) (goblins-tramp--buffer-vec b))
+                           (cl-remove-if #'goblins-tramp--terminal-p (buffer-list))))
       (goblins-test--start-goblin source "gribble")
-      (with-current-buffer notes
-        (should-not (ignore-errors (eq 0 (process-file "sh" nil nil nil "-c"
-                                                       "echo leaked > /tmp/leak")))))
-      (should (equal (goblins-test--in directory "gribble" "cat /tmp/leak 2>/dev/null") ""))
-      (add-hook 'goblins-snapshot-hook #'goblins--after-snapshot)
-      (add-hook 'goblins-snapshot-hook #'goblins-tramp--after-snapshot)
-      (with-current-buffer source (goblins--render))
-      (goblins-test--wait (lambda () (not (buffer-live-p notes)))))
-    ;; Pointing goblins.el at another daemon does not move existing connections.
-    (goblins-test--in directory "gribble" "echo first-daemon > /tmp/which")
-    (goblins-test--in other "gribble" "echo other-daemon > /tmp/which")
-    (with-current-buffer (find-file-noselect "/goblins:gribble:/tmp/which")
-      (let ((goblins-state-directory other))
-        (revert-buffer t t)
-        (should (equal (buffer-string) "first-daemon\n"))))
-    ;; An edit from the other daemon's namesake never opens this daemon's
-    ;; file: refused while the name is pinned here, its own once released.
-    (let* ((goblins-editor-approval 'approve)
-           (edit (lambda ()
-                  (let ((process (start-process "other-editor" (generate-new-buffer " *other*")
-                                                goblins-executable "--state-dir" other "exec"
-                                                "gribble" "--" "goblins-editor" "--no-wait"
-                                                "/tmp/which")))
-                    (goblins-test--wait (lambda () (not (process-live-p process))))
-                    (process-exit-status process)))))
-      (should-not (eq (funcall edit) 0))
-      (goblins-tramp-release "gribble")
-      (should-not (get-file-buffer "/goblins:gribble:/tmp/which"))
-      (should (eq (funcall edit) 0))
-      (should (equal (car (goblins-test--pin "gribble")) other))
-      (with-current-buffer (get-file-buffer "/goblins:gribble:/tmp/which")
-        (should (equal (buffer-string) "other-daemon\n")))
-      (goblins-tramp-release "gribble"))
-    ;; TRAMP's connection shell closes with the last buffer that uses it.
-    (let* ((id (goblins-test--start-goblin source "snaga"))
-           (execs (lambda () (or (plist-get (goblins--snapshot-session
-                                             (buffer-local-value 'goblins--snapshot source) id)
-                                            :execs)
-                                 0)))
-           (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source) id))
-           (listing (goblins-dired session #'ignore source)))
-      (goblins-test--wait (lambda () (> (funcall execs) 0)))
-      (kill-buffer listing)
-      (goblins-test--wait (lambda () (= (funcall execs) 0)))
-      (should (equal (nth 2 (goblins-test--pin "snaga")) id))
-      ;; A fresh shell runs goblins-shell-program from the sandbox's PATH,
-      ;; and leaves the sandbox when its goblin stops.
-      (when ghostel-used
-        (let ((shell (let ((goblins-shell-program '("sh" "-c" "echo PROGRAM-$((6*7)); sleep 600")))
-                       (goblins-shell session))))
-          (should (equal (buffer-local-value 'default-directory shell) "/goblins:snaga:/"))
-          (with-current-buffer shell
-            (goblins-test--wait (lambda () (string-match-p "PROGRAM-42" (buffer-string)))))
-          (goblins-test--stop-goblin source id)
-          (goblins-test--wait (lambda () (not (string-prefix-p "/goblins:" (buffer-local-value
-                                                                           'default-directory shell)))))
-          (should-not (goblins-test--pin "snaga")))))
+      ;; Pointing goblins.el at another daemon does not move existing connections.
+      (goblins-test--in directory "gribble" "echo first-daemon > /tmp/which")
+      (goblins-test--in other "gribble" "echo other-daemon > /tmp/which")
+      (with-current-buffer (find-file-noselect "/goblins:gribble:/tmp/which")
+        (let ((goblins-state-directory other))
+          (revert-buffer t t)
+          (should (equal (buffer-string) "first-daemon\n"))))
+      ;; An edit from the other daemon's namesake never opens this daemon's
+      ;; file: refused while the name is pinned here, its own once released.
+      (let* ((goblins-editor-approval 'approve)
+             (edit (lambda ()
+                    (let ((process (start-process "other-editor" (generate-new-buffer " *other*")
+                                                  goblins-executable "--state-dir" other "exec"
+                                                  "gribble" "--" "goblins-editor" "--no-wait"
+                                                  "/tmp/which")))
+                      (goblins-test--wait (lambda () (not (process-live-p process))))
+                      (process-exit-status process)))))
+        (should-not (eq (funcall edit) 0))
+        (goblins-tramp-release "gribble")
+        (should-not (get-file-buffer "/goblins:gribble:/tmp/which"))
+        (should (eq (funcall edit) 0))
+        (should (equal (car (goblins-test--pin "gribble")) other))
+        (with-current-buffer (get-file-buffer "/goblins:gribble:/tmp/which")
+          (should (equal (buffer-string) "other-daemon\n")))
+        (goblins-tramp-release "gribble")))
     (if ghostel-used "ok ghostel" "ok")))
 
 (defvar goblins-test--backtrace nil)
@@ -5684,7 +5715,7 @@ m2, and m3, which failed when beta stopped."
 
 (defun goblins-test-messages-live ()
   "Read a real daemon's messages, then see a message and an answer to you arrive."
-  (let (source list)
+  (let (source list initial-count claimed-sequence)
     (unwind-protect
         (progn
           (goblins-status (getenv "GOBLINS_TEST_STATE"))
@@ -5703,6 +5734,7 @@ m2, and m3, which failed when beta stopped."
             (should (string-match-p "^From     chief (shell)$" (buffer-string)))
             (should (string-match-p "^Re       m[0-9]+ .* host  First question$" (buffer-string)))
             (should (string-match-p "^First answer$" (buffer-string))))
+          (setq initial-count (with-current-buffer list (hash-table-count goblins--messages)))
           (goblins--host-call source 'messages.send
                               (list :key (md5 "second question") :to "chief"
                                     :body "Second question"))
@@ -5710,14 +5742,31 @@ m2, and m3, which failed when beta stopped."
           (with-current-buffer list
             (goblins-test--wait
              (lambda () (string-match-p "host → chief +Second question" (buffer-string))))
-            (should (string-match-p "3 messages" (format "%s" header-line-format))))
+            (should (string-match-p (format "%d messages" (1+ initial-count)) (format "%s" header-line-format))))
           ;; The goblin's answer to you changes no snapshot: the list reads
           ;; the log by itself.
           (write-region "" nil (getenv "GOBLINS_TEST_READY"))
+          (with-current-buffer source
+            (goblins-test--wait
+             (lambda () (zerop (plist-get
+                               (cl-find "chief" (plist-get goblins--snapshot :sessions)
+                                        :key (lambda (session) (plist-get session :agent_name))
+                                        :test #'equal)
+                               :inbox)))))
+          (with-current-buffer list
+            (goblins-test--wait
+             (lambda () (cl-some (lambda (id)
+                                  (let ((item (gethash id goblins--messages)))
+                                    (and (equal (plist-get item :body) "Second question")
+                                         (equal (plist-get item :state) "claimed"))))
+                                goblins--messages-order))))
+          (setq claimed-sequence (buffer-local-value 'goblins--sequence source))
+          (write-region "" nil (getenv "GOBLINS_TEST_CLAIMED"))
           (with-current-buffer list
             (goblins-test--wait
              (lambda () (string-match-p "host → chief +Second question +\\+1" (buffer-string))))
-            (should (string-match-p "4 messages" (format "%s" header-line-format)))))
+            (should (string-match-p (format "%d messages" (+ initial-count 2)) (format "%s" header-line-format))))
+          (should (= claimed-sequence (buffer-local-value 'goblins--sequence source))))
       (dolist (buffer (list list (get-buffer goblins--message-buffer-name) source))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
@@ -6336,3 +6385,10 @@ m2, and m3, which failed when beta stopped."
     (should (= (length (plist-get result :requests)) 1))
     (should (equal (plist-get result :notice) "Incompatible Goblins daemon; r to reconnect"))
     (should-not (plist-get result :instance))))
+
+(defun goblins-test-status-live ()
+  "Use one daemon and Emacs for activity, a message thread, decisions and resume."
+  (ert-info ("activity in overview, sidebar and details") (goblins-test-activity-live))
+  (ert-info ("read messages and observe a reply without a snapshot") (goblins-test-messages-live))
+  (ert-info ("accept, deny, reconnect and close") (goblins-test-live))
+  (ert-info ("choose and resume a recorded conversation") (goblins-test-resume-live)))

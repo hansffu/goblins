@@ -18,6 +18,7 @@ import uuid
 
 from build_support import fixture_app
 from daemon_support import Daemon, ROOT, RPC, app, receive
+from support import step
 
 EMACS_INIT = str(ROOT / "tests/emacs-init.el")
 # The dev shell's pinned test Emacs; any Emacs on PATH otherwise.
@@ -42,52 +43,79 @@ class EmacsTests(unittest.TestCase):
         if available.returncode:
             raise unittest.SkipTest("magit-section is not on Emacs load-path")
 
-    def test_live_activity_updates_overview_sidebar_and_details(self):
-        daemon = Daemon(); self.addCleanup(daemon.close)
-        agent = daemon.start(agent_name='activity')['session']
-        result = subprocess.run([EMACS, EMACS_HOME, '--batch', '-Q', '-l', EMACS_INIT,
-            '-l', 'goblins-tests', '-f', 'goblins-test-activity-live'],
-            env={**os.environ, 'GOBLINS_APP':str(daemon.app), 'GOBLINS_TEST_STATE':str(daemon.state),
-                 'GOBLINS_TEST_AGENT':agent}, capture_output=True, text=True, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_live_messages_threads_reader_and_updates(self):
+    def test_a_status_workspace_shows_activity_messages_decisions_and_resume(self):
         daemon = Daemon(); self.addCleanup(daemon.close)
-        chief = daemon.start(agent_name="chief")["session"]
-        sent = subprocess.run([str(daemon.app), "--state-dir", str(daemon.state),
-                               "send", "chief", "--message", "First question"],
-                              capture_output=True, text=True, timeout=10)
-        self.assertEqual(sent.returncode, 0, sent.stderr)
-        message = json.loads(sent.stdout)
-        def sandbox(method, params):
-            # The request socket answers one call per connection.
-            peer = RPC(daemon.state / chief / "resources/request.sock")
+        with step("record a conversation with an approved package"):
+            session = daemon.start(agent_name="resumable")["session"]
+            peer, request = daemon.pending(session)
+            self.addCleanup(peer.close)
+            daemon.decide(request, True)
+            peer.peer.settimeout(60)
+            self.assertEqual(receive(peer.peer)["result"]["status"], "ready")
+            peer.close()
+            peer = RPC(daemon.state / session / "resources/request.sock")
             try:
-                return peer.call(method, params)
+                peer.call("sessions.set-variables", {"variables":{"session_name":"Plan the resume"}})
             finally:
                 peer.close()
-        claim = sandbox("inbox.next", {"key": "fetch"})
-        sandbox("messages.reply", {"key": "reply", "message": message["id"],
-                                   "claim_generation": claim["claim_generation"],
-                                   "body": "First answer"})
-        ready = Path(daemon.temp.name) / "ready"
-        emacs = subprocess.Popen([EMACS, EMACS_HOME, '--batch', '-Q', '-l', EMACS_INIT,
-            '-l', 'goblins-tests', '-f', 'goblins-test-messages-live'],
-            env={**os.environ, 'GOBLINS_TEST_STATE': str(daemon.state),
-                 'GOBLINS_TEST_READY': str(ready)},
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        self.addCleanup(lambda: emacs.poll() is None and emacs.kill())
-        daemon.wait(lambda: ready.exists() or emacs.poll() is not None, timeout=60)
-        if ready.exists():
-            # Emacs sent the second question; claiming it changes a snapshot,
-            # the answer later on doesn't.
-            claim = sandbox("inbox.next", {"key": "fetch-second"})
-            time.sleep(3)
-            sandbox("messages.reply", {"key": "reply-second", "message": claim["message"]["id"],
-                                       "claim_generation": claim["claim_generation"],
-                                       "body": "Second answer"})
-        output, _ = emacs.communicate(timeout=60)
-        self.assertEqual(emacs.returncode, 0, output)
+            record = daemon.wait(lambda: (r if (r := daemon.record(session))["variables"] else None))
+            daemon.rpc.call("sessions.stop", {"session":session})
+            daemon.wait(lambda: daemon.record(session)["stopped"])
+            daemon.wait_record_released(record["id"])
+        with step("two running goblins have pending package decisions and a message thread"):
+            agents = [daemon.start(agent_name=name)["session"] for name in ("chief","zoggit")]
+            peers, requests = [], []
+            for agent in agents:
+                peer = RPC(daemon.state / agent / "resources/request.sock")
+                self.addCleanup(peer.close)
+                peer.send("permissions.request", {"kind":"package","package":"hello","reason":"Try a live grant 🐟"})
+                requests.append(daemon.wait(lambda: next(iter(daemon.permissions(session=agent,state="pending")),None)))
+                peers.append(peer)
+            def sandbox(method, params):
+                peer = RPC(daemon.state / agents[0] / "resources/request.sock")
+                try:
+                    return peer.call(method,params)
+                finally:
+                    peer.close()
+            message = daemon.rpc.call("messages.send", {"key":"first","to":"chief","body":"First question"})
+            claim = sandbox("inbox.next", {"key":"fetch"})
+            sandbox("messages.reply", {"key":"reply","message":message["id"],
+                                      "claim_generation":claim["claim_generation"],"body":"First answer"})
+        with step("one Emacs reads activity and messages, decides, reconnects, resumes and closes"):
+            ready, claimed = (Path(daemon.temp.name) / name for name in ("ready","claimed"))
+            emacs = subprocess.Popen([EMACS,EMACS_HOME,"--batch","-Q","-l",EMACS_INIT,
+                "-l","goblins-tests","-f","goblins-test-status-live"],
+                env={**os.environ,"GOBLINS_APP":str(daemon.app),"GOBLINS_TEST_STATE":str(daemon.state),
+                     "GOBLINS_TEST_AGENT":agents[0],"GOBLINS_TEST_ACCEPT_AGENT":"chief",
+                     "GOBLINS_TEST_ACCEPT":requests[0]["id"],"GOBLINS_TEST_DENY":requests[1]["id"],
+                     "GOBLINS_TEST_RECORD":record["id"],"GOBLINS_TEST_READY":str(ready),
+                     "GOBLINS_TEST_CLAIMED":str(claimed)},
+                stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+            def finish():
+                if emacs.poll() is None:
+                    emacs.kill()
+                emacs.wait(timeout=5)
+            self.addCleanup(finish)
+            daemon.wait(lambda: ready.exists() or emacs.poll() is not None,timeout=60)
+            if ready.exists():
+                claim = sandbox("inbox.next", {"key":"second"})
+                daemon.wait(lambda: claimed.exists() or emacs.poll() is not None,timeout=60)
+                if claimed.exists():
+                    sandbox("messages.reply", {"key":"second-reply","message":claim["message"]["id"],
+                        "claim_generation":claim["claim_generation"],"body":"Second answer"})
+            output,_ = emacs.communicate(timeout=120)
+            self.assertEqual(emacs.returncode,0,output)
+            self.assertTrue(claimed.exists(),output)
+            self.assertEqual(receive(peers[0].peer)["result"]["status"],"ready")
+            self.assertEqual(receive(peers[1].peer)["result"]["status"],"denied")
+            for agent in agents:
+                self.assertEqual(daemon.get(agent)["state"],"running")
+            resumed = output.split("RESUMED ")[1].splitlines()[0].strip()
+            launched = daemon.get(resumed)
+            self.assertEqual(launched["recreated_from"],record["id"])
+            self.assertIn("hello",launched["packages"])
+            self.assertIn(f"Resumed resumable ({record['id']})",output)
 
     def test_start_server_from_status(self):
         application = app()
@@ -112,92 +140,6 @@ class EmacsTests(unittest.TestCase):
                                capture_output=True, check=True, timeout=20,
                                env={**os.environ, "XDG_STATE_HOME": os.path.join(state, "xdg-state")})
 
-    def test_live_status_accept_deny_reconnect_and_close(self):
-        daemon = Daemon()
-        self.addCleanup(daemon.close)
-        agents = [daemon.start(agent_name=name) for name in ("snikk", "zoggit")]
-        peers, requests = [], []
-        for agent in agents:
-            peer = RPC(daemon.state / agent["session"] / "resources/request.sock")
-            self.addCleanup(peer.close)
-            peer.send("permissions.request", {
-                "kind": "package", "package": "hello", "reason": "Try a live grant 🐟",
-            })
-            requests.append(daemon.wait(lambda: next(iter(daemon.permissions(
-                session=agent["session"], state="pending")), None)))
-            peers.append(peer)
-        result = subprocess.run(
-            [EMACS, EMACS_HOME, "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-live"],
-            env={**os.environ, "GOBLINS_TEST_STATE": str(daemon.state),
-                 "GOBLINS_TEST_ACCEPT": requests[0]["id"],
-                 "GOBLINS_TEST_DENY": requests[1]["id"]},
-            capture_output=True, text=True, timeout=90,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(receive(peers[0].peer)["result"]["status"], "ready")
-        self.assertEqual(receive(peers[1].peer)["result"]["status"], "denied")
-        for agent in agents:
-            self.assertEqual(daemon.get(agent["session"])["state"], "running")
-
-    def test_run_in_ghostel_and_visit_from_status(self):
-        available = subprocess.run(
-            [EMACS, EMACS_HOME, "--batch", "-Q", "--eval",
-             '(kill-emacs (if (and (locate-library "ghostel") (locate-library "ghostel-module")) 0 1))'],
-            capture_output=True, timeout=10,
-        )
-        if available.returncode:
-            self.skipTest("Ghostel and its native module are not installed")
-        daemon = Daemon()
-        self.addCleanup(daemon.close)
-        external = daemon.start()
-        # Blank selection exercises the configured default. Keep this fixture
-        # shell-only: adding Codex must never turn a default test into model work.
-        manifest = json.loads(Path(daemon.manifest).read_text())
-        manifest["goblins"] = {"shell": manifest["goblins"]["shell"]}
-        manifest_path = Path(daemon.temp.name) / "shell-only.json"
-        manifest_path.write_text(json.dumps(manifest))
-        launcher = Path(daemon.temp.name) / "goblins-shell-only"
-        launcher.write_text(f'#!/bin/sh\nexec {shlex.quote(daemon.binary)} --runtime {shlex.quote(str(manifest_path))} "$@"\n')
-        launcher.chmod(0o700)
-        with tempfile.TemporaryDirectory(prefix="ge-workspace-") as workspace:
-            result = subprocess.run(
-                [EMACS, EMACS_HOME, "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-run-live"],
-                env={**os.environ, "GOBLINS_APP": str(launcher),
-                     "GOBLINS_TEST_STATE": str(daemon.state),
-                     "GOBLINS_TEST_WORKSPACE": workspace,
-                     "GOBLINS_TEST_EXTERNAL": external["session"]},
-                capture_output=True, text=True, timeout=90,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual((Path(workspace) / "emacs-launch.txt").read_text(), "ghostel-run-ok")
-
-
-    def test_live_resume_chooses_a_recorded_conversation(self):
-        daemon = Daemon(); self.addCleanup(daemon.close)
-        session = daemon.start(agent_name="resumable")["session"]
-        peer, request = daemon.pending(session)
-        daemon.decide(request, True)
-        peer.peer.settimeout(60)
-        self.assertEqual(receive(peer.peer)["result"]["status"], "ready"); peer.close()
-        peer = RPC(daemon.state / session / "resources/request.sock")
-        peer.call("sessions.set-variables", {"variables": {"session_name": "Plan the resume"}}); peer.close()
-        record = daemon.wait(lambda: (r if (r := daemon.record(session))["variables"] else None))
-        daemon.rpc.call("sessions.stop", {"session": session})
-        daemon.wait(lambda: daemon.record(session)["stopped"])
-        daemon.wait_record_released(record["id"])
-        result = subprocess.run(
-            [EMACS, EMACS_HOME, "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-resume-live"],
-            env={**os.environ, "GOBLINS_APP": str(daemon.app), "GOBLINS_TEST_STATE": str(daemon.state),
-                 "GOBLINS_TEST_RECORD": record["id"]},
-            capture_output=True, text=True, timeout=120,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        resumed = result.stdout.split("RESUMED ")[1].strip()
-        launched = daemon.get(resumed)
-        self.assertEqual(launched["recreated_from"], record["id"])
-        self.assertIn("hello", launched["packages"])
-        # Reported once started, in the echo area.
-        self.assertIn(f"Resumed resumable ({record['id']})", result.stderr)
 
     def test_live_workspace_in_a_terminal_emacs(self):
         """Drive the workspace in a real `emacs -nw` against an isolated daemon.
@@ -221,6 +163,13 @@ class EmacsTests(unittest.TestCase):
             daemon.wait(lambda: daemon.get(launch["session"])["state"] == "running", timeout=90)
             return launch["session"]
 
+        manifest = json.loads(Path(daemon.manifest).read_text())
+        manifest["goblins"] = {"shell":manifest["goblins"]["shell"]}
+        manifest_path = Path(daemon.temp.name) / "shell-only.json"
+        manifest_path.write_text(json.dumps(manifest))
+        launcher = Path(daemon.temp.name) / "goblins-shell-only"
+        launcher.write_text(f'#!/bin/sh\nexec {shlex.quote(daemon.binary)} --runtime {shlex.quote(str(manifest_path))} "$@"\n')
+        launcher.chmod(0o700)
         ids = {name: start(name, cwd) for name, cwd in
                [("alpha", one), ("beta", one), ("delta", two), ("gamma", two)]}
         peer, request = daemon.pending(ids["gamma"], "hello")
@@ -230,7 +179,9 @@ class EmacsTests(unittest.TestCase):
                 "-l", "goblins-tests",
                 "--eval", "(goblins-test-workspace-live)"]
         env = {**os.environ, "TERM": "xterm-256color",
-               "GOBLINS_APP": str(daemon.app),
+               "GOBLINS_APP": str(launcher),
+               "GOBLINS_TEST_WORKSPACE": str(one),
+               "GOBLINS_TEST_EXTERNAL": ids["alpha"],
                "GOBLINS_TEST_STATE": str(daemon.state),
                "GOBLINS_TEST_RESULT": str(result),
                "GOBLINS_TEST_PROJECT_ONE": str(one)}
@@ -261,6 +212,8 @@ class EmacsTests(unittest.TestCase):
             capture_output=True, timeout=10).returncode == 0
         # Attaching a terminal is covered whenever Ghostel is installed.
         self.assertEqual(result.read_text(), "ok ghostel" if ghostel else "ok")
+        if ghostel:
+            self.assertEqual((one / "emacs-launch.txt").read_text(),"ghostel-run-ok")
         # The daemon saw every action.
         self.assertEqual(daemon.permissions(session=ids["gamma"])[0]["state"], "denied")
         self.assertIn(daemon.get(ids["delta"])["state"], ("stopping", "stopped"))

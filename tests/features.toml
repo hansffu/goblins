@@ -89,7 +89,7 @@ paths = ["packages/daemon/src/mailbox*", "packages/daemon/src/messaging.rs", "pa
 
 [features.history]
 description = "Persistence, recreation and CLI/native/Emacs resume"
-python = ["test_history", "test_worktrees.WorktreeWorkflow", "test_codex_native.NativeProtocol.test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails", "test_codex_native.NativeProtocol.test_a_terminal_resuming_the_conversation_draws_its_history", "test_codex_config.CodexConfigTests.test_a_codex_goblin_handles_its_inbox_and_resumes_its_conversation", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
+python = ["test_history", "test_worktrees.WorktreeWorkflow", "test_codex_native.NativeProtocol.test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails", "test_codex_native.NativeProtocol.test_a_terminal_resuming_the_conversation_draws_its_history", "test_codex_config.CodexConfigTests.test_a_codex_goblin_handles_its_inbox_and_resumes_its_conversation", "test_emacs.EmacsTests.test_a_status_workspace_shows_activity_messages_decisions_and_resume"]
 checks = ["rust"]
 paths = ["packages/daemon/src/history.rs", "packages/daemon/src/records.rs"]
 
