@@ -35,3 +35,18 @@ pub fn clear_scope(
         cancelled,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn an_invalid_scope_is_rejected_before_starting_or_pinning_a_process() {
+        assert_eq!(
+            super::clear_scope(None, Some("../escape"), false, || panic!(
+                "entered maintenance driver"
+            ))
+            .unwrap_err()
+            .to_string(),
+            "invalid scope name"
+        );
+    }
+}

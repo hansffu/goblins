@@ -1,5 +1,4 @@
 """CLI scope clearing and GC: retention, active leases and confined deletion."""
-import fcntl
 import os
 from pathlib import Path
 import subprocess
@@ -8,6 +7,7 @@ import unittest
 
 from build_support import fixture_app
 from daemon_support import Daemon
+from support import step
 
 
 class CleanupTests(unittest.TestCase):
@@ -46,162 +46,69 @@ class CleanupTests(unittest.TestCase):
             (locks / f"{kind}-{name}").touch(mode=0o600)
         return path
 
-    def lock(self, path, shared=False):
-        path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-        file = path.open("a+")
-        fcntl.flock(file, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
-        self.addCleanup(file.close)
-        return file
+    def test_scope_data_maintenance(self):
+        with step("a running scope refuses clearing and survives garbage collection"):
+            daemon = Daemon(self.app, env=self.env)
+            self.addCleanup(daemon.close)
+            self.state = daemon.state
+            session = daemon.start("member")["session"]
+            live = self.cache / "scopes/scope-work"
+            self.assertTrue(live.exists())
+            self.assertIn("in use", self.cli("scope", "clear", "work", code=1))
+            self.cli("gc")
+            self.assertTrue(live.exists())
+            daemon.cli("exec", session, "--", "sh", "-c", "test -d /tmp")
+            lock = self.cache / "scopes/locks/work"
+            inode = lock.stat().st_ino
 
-    def test_scope_clear_requires_selection_and_validates_names(self):
-        for args in [("scope", "clear"), ("scope", "clear", "work", "--all")]:
-            self.cli(*args, code=2)
-        self.assertIn("invalid scope name", self.cli("scope", "clear", "../escape", code=1))
+        with step("preview and clear a retired scope without clearing the running scope"):
+            retired = [self.store(kind, "scope-retired") for kind in ("scopes", "docker")]
+            keep = self.store("scopes", "scope-keep")
+            self.assertIn("Would remove", self.cli("scope", "clear", "retired", "--dry-run"))
+            self.assertTrue(all(path.exists() for path in retired))
+            self.cli("scope", "clear", "retired")
+            self.assertTrue(all(not path.exists() for path in retired))
+            self.assertTrue(live.exists() and keep.exists())
 
-    def test_scope_clear_dry_run_then_clears_only_the_selected_scope(self):
-        selected = [self.store(kind, "scope-retired") for kind in ("scopes", "docker")]
-        keep = self.store("scopes", "scope-keep")
-        outside = self.directory(self.root / "host-project")
-        (selected[0] / "link").symlink_to(outside, target_is_directory=True)
-        os.link(outside / "payload", selected[0] / "hardlink")
-        outside_mode = (outside / "payload").stat().st_mode
-        locked_down = selected[0] / "locked"
-        locked_down.mkdir()
-        (locked_down / "file").write_text("x")
-        locked_down.chmod(0)
-        text = self.cli("scope", "clear", "retired", "--dry-run")
-        self.assertIn("Would remove", text)
-        self.assertTrue(all(path.exists() for path in selected))
-        self.cli("scope", "clear", "retired")
-        self.assertTrue(all(not path.exists() for path in selected))
-        self.assertEqual((outside / "payload").read_text(), "retained data")
-        self.assertEqual((outside / "payload").stat().st_mode, outside_mode)
-        self.assertTrue(keep.exists())
-        self.cli("scope", "clear", "--all")
-        self.assertFalse(keep.exists())
-        self.assertIn("No stored scope data", self.cli("scope", "clear", "--all"))
+        with step("stop the goblin, clear its scope, then clear all retired scope data"):
+            daemon.cli("stop", session)
+            daemon.wait(lambda: not (daemon.state / session / "resources").exists())
+            self.cli("scope", "clear", "work")
+            self.assertFalse(live.exists())
+            self.assertEqual(lock.stat().st_ino, inode)
+            self.cli("scope", "clear", "--all")
+            self.assertFalse(keep.exists())
+            self.assertIn("No stored scope data", self.cli("scope", "clear", "--all"))
+            daemon.process.terminate()
+            daemon.process.wait(timeout=10)
+            self.assertFalse((daemon.state / session).exists())
 
-    def test_scope_clear_preflights_all_locks_and_keeps_lock_inodes(self):
-        first = self.store("scopes", "scope-a")
-        second = self.store("docker", "scope-z")
-        path = self.cache / "docker/locks/z"
-        lease = self.lock(path)
-        inode = path.stat().st_ino
-        self.assertIn("in use", self.cli("scope", "clear", "--all", code=1))
-        self.assertTrue(first.exists())
-        self.assertTrue(second.exists())
-        fcntl.flock(lease, fcntl.LOCK_UN)
-        self.cli("scope", "clear", "--all")
-        self.assertEqual(path.stat().st_ino, inode)
+        with step("preview and collect abandoned data while keeping persistent stores, history and logs"):
+            temporary = self.store("scopes", "temporary-Abc123")
+            engine = self.store("docker", "session-Xyz987")
+            persistent = self.store("docker", "scope-retained")
+            unknown = self.store("scopes", "unrecognized")
+            legacy = self.directory(self.cache / "scopes/temporary-Old123")
+            scratch = self.directory(self.cache / "locks/cleanup-Abc123")
+            abandoned = self.directory(self.state / ("a" * 32 + "-s1"))
+            manifests = self.directory(self.state / "manifests")
+            (self.state / "server.log").write_text("log")
+            audit = next(self.state.glob("communications-*.jsonl"))
+            audit_contents = audit.read_bytes()
+            history = {path: path.read_bytes() for path in daemon.history.glob("*.json")}
+            self.assertTrue(history)
+            collected = [temporary, engine, scratch, abandoned, manifests]
+            self.assertIn("Would remove", self.cli("gc", "--dry-run"))
+            self.assertTrue(all(path.exists() for path in collected))
+            self.cli("gc")
+            self.assertFalse(any(path.exists() for path in collected))
+            self.assertTrue(all(path.exists() for path in (persistent, unknown, legacy)))
+            self.assertEqual((self.state / "server.log").read_text(), "log")
+            self.assertEqual(audit.read_bytes(), audit_contents)
+            for path, contents in history.items():
+                self.assertEqual(path.read_bytes(), contents)
+            self.cli("gc")
 
-    def test_scope_clear_refuses_a_top_level_symlink(self):
-        outside = self.directory(self.root / "outside")
-        root = self.cache / "scopes"
-        root.mkdir(parents=True, mode=0o700)
-        (root / "scope-work").symlink_to(outside, target_is_directory=True)
-        self.assertIn("unsafe scope", self.cli("scope", "clear", "work", code=1))
-        self.assertTrue((outside / "payload").exists())
 
-    def test_gc_collects_only_dangling_data_and_preserves_history_and_logs(self):
-        temp = self.store("scopes", "temporary-Abc123")
-        engine = self.store("docker", "session-Xyz987")
-        persistent = self.store("docker", "scope-retained")
-        unknown = self.store("scopes", "unrecognized")
-        scratch = self.directory(self.cache / "locks/cleanup-Abc123")
-        legacy = self.directory(self.cache / "scopes/temporary-Old123")
-        session = self.directory(self.state / ("a" * 32 + "-s1"))
-        self.state.chmod(0o700)
-        manifests = self.directory(self.state / "manifests")
-        outside = self.directory(self.root / "host-project")
-        (session / "host-bind").symlink_to(outside, target_is_directory=True)
-        (manifests / "gc-root").symlink_to(outside, target_is_directory=True)
-        (self.state / "server.log").write_text("log")
-        (self.state / ("communications-" + "a" * 32 + ".jsonl")).write_text("audit")
-        history = self.directory(self.root / "history/goblins/sessions")
-        self.assertIn("Would remove", self.cli("gc", "--dry-run"))
-        self.assertTrue(all(path.exists() for path in (temp, engine, session, manifests)))
-        self.cli("gc")
-        self.assertTrue(all(not path.exists() for path in (temp, engine, session, manifests, scratch)))
-        self.assertTrue(all(path.exists() for path in (persistent, unknown, history, outside, legacy)))
-        self.assertEqual((self.state / "server.log").read_text(), "log")
-        self.assertEqual(len(list(self.state.glob("communications-*.jsonl"))), 1)
-        self.cli("gc")
-
-    def test_gc_keeps_live_stores_and_live_or_guardian_owned_resources(self):
-        scope = self.store("scopes", "temporary-Abc123")
-        engine = self.store("docker", "session-Xyz987")
-        stale = self.store("scopes", "temporary-Qrs456")
-        leases = [self.lock(self.cache / "locks/scopes-temporary-Abc123"),
-                  self.lock(self.cache / "locks/docker-session-Xyz987")]
-        resource = self.directory(self.state / ("a" * 32 + "-s1") / "resources")
-        self.state.chmod(0o700)
-        daemon_lock = self.lock(self.state / "daemon.lock")
-        resource_lock = self.lock(resource / ".gc-lease", shared=True)
-        self.cli("gc")
-        self.assertTrue(scope.exists())
-        self.assertTrue(engine.exists())
-        self.assertFalse(stale.exists())
-        self.assertTrue(resource.exists())
-        fcntl.flock(daemon_lock, fcntl.LOCK_UN)
-        self.assertIn("active session", self.cli("gc"))
-        self.assertTrue(resource.exists())
-        for lease in [*leases, resource_lock]:
-            fcntl.flock(lease, fcntl.LOCK_UN)
-        self.cli("gc")
-        self.assertFalse(scope.exists())
-        self.assertFalse(engine.exists())
-        self.assertFalse(resource.parent.exists())
-
-    def test_gc_refuses_symlinked_roots_and_session_directories(self):
-        outside = self.directory(self.root / "outside")
-        self.cache.mkdir(parents=True, mode=0o700)
-        (self.cache / "scopes").symlink_to(outside, target_is_directory=True)
-        self.cli("gc", code=1)
-        (self.cache / "scopes").unlink()
-        self.state.mkdir(mode=0o700)
-        (self.state / ("a" * 32 + "-s1")).symlink_to(outside, target_is_directory=True)
-        self.cli("gc", code=1)
-        self.assertEqual((outside / "payload").read_text(), "retained data")
-        (self.state / ("a" * 32 + "-s1")).unlink()
-        session = self.directory(self.state / ("a" * 32 + "-s1"))
-        (session / "resources").symlink_to(outside, target_is_directory=True)
-        self.cli("gc", code=1)
-        self.assertFalse((outside / ".gc-lease").exists())
-
-    def test_gc_refuses_a_mounted_subtree_without_deleting_its_contents(self):
-        outside = self.directory(self.root / "outside")
-        session = self.directory(self.state / ("a" * 32 + "-s1"))
-        self.state.chmod(0o700)
-        mounted = session / "mounted"
-        mounted.mkdir()
-        # A private mount namespace exposes a same-filesystem bind mount to
-        # the worker. Device-number checks alone cannot enforce this boundary.
-        # The supervisor needs /dev/null; the root bind otherwise makes it nodev.
-        result = subprocess.run([
-            "bwrap", "--die-with-parent", "--unshare-user", "--unshare-pid",
-            "--bind", "/", "/", "--dev-bind", "/dev/null", "/dev/null",
-            "--proc", "/proc",
-            "--bind", str(outside), str(mounted),
-            str(self.app), "--state-dir", str(self.state), "gc",
-        ], env=self.env, text=True, capture_output=True, timeout=60)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("Invalid cross-device link", result.stderr)
-        self.assertEqual((outside / "payload").read_text(), "retained data")
-        self.assertTrue(session.exists())
-
-    def test_running_scope_is_refused_then_can_be_cleared_after_stop(self):
-        daemon = Daemon(self.app, env=self.env)
-        self.addCleanup(daemon.close)
-        session = daemon.start("member")["session"]
-        result = daemon.cli("scope", "clear", "work", check=False)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("in use", result.stderr)
-        daemon.rpc.call("sessions.stop", {"session": session})
-        # Stopped records retain terminal.sock until the daemon shuts down;
-        # resource teardown is the point where the scope lock is released.
-        daemon.wait(lambda: not (daemon.state / session / "resources").exists())
-        daemon.cli("scope", "clear", "work")
-        self.assertFalse((self.cache / "scopes/scope-work").exists())
-        daemon.process.terminate()
-        daemon.process.wait(timeout=10)
-        self.assertFalse((daemon.state / session).exists())
+if __name__ == "__main__":
+    unittest.main()

@@ -540,6 +540,9 @@ fn remove(
 mod host;
 
 #[cfg(test)]
+mod layout_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

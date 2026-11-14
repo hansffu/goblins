@@ -966,6 +966,8 @@ mod tests {
     fn command_tree_rejects_removed_aliases_and_misplaced_options() {
         Cli::command().debug_assert();
         for args in [
+            vec!["goblins", "scope", "clear"],
+            vec!["goblins", "scope", "clear", "work", "--all"],
             vec!["goblins", "shell"],
             vec!["goblins", "daemon"],
             vec!["goblins", "serve"],
