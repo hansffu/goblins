@@ -173,7 +173,7 @@ print(json.dumps(results))''')
             with conn:
                 req = receive(conn)
                 reply = session.decide(req, approved)
-                conn.sendall(frame({"jsonrpc":"2.0","id":req["id"],"result":{"request":"test-request","status":reply["status"]}}))
+                conn.sendall(frame({"jsonrpc":"2.0","id":req["id"],"result":{"request":"test-request","status":reply["status"],"message":None}}))
             self.assertEqual(json.loads(line(session))["status"], "ready" if approved else "denied", reply)
             self.assertEqual(session.output.readline().strip(), "CLIENT-EXIT:" + ("0" if approved else "1"))
         # Malformed requests never reach decide. A truncated peer cannot approve.

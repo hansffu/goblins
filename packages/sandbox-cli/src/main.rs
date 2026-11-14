@@ -15,6 +15,23 @@ use std::{
     os::unix::net::UnixStream,
 };
 
+/// What a command shows for a reply: its stdout, its stderr and its exit
+/// code.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Output {
+    pub stdout: String,
+    pub stderr: String,
+    pub code: i32,
+}
+impl Output {
+    /// Print the output and return its exit code.
+    pub fn emit(self) -> i32 {
+        print!("{}", self.stdout);
+        eprint!("{}", self.stderr);
+        self.code
+    }
+}
+
 fn parse_args(legacy: bool, args: &[String]) -> Result<(String, String), String> {
     let mut args = args.iter();
     let kind = if legacy { "package" } else { "request-package" };
@@ -125,10 +142,7 @@ fn run() -> Result<i32, String> {
             }
             cli::Command::RequestPackage { .. } => (),
             cli::Command::EnableDocker { reason } => {
-                return request_permission(permission_params(
-                    "docker",
-                    reason.unwrap_or_else(|| "Enable Docker in this sandbox".into()),
-                ));
+                return request_permission(docker_params(reason));
             }
             cli::Command::Devshell { command } => return devshell(command),
             cli::Command::Host { command } => return host::command(command),
@@ -266,14 +280,7 @@ fn run() -> Result<i32, String> {
                 options,
                 ..
             } => {
-                let params = contract::MemberLaunchParams {
-                    key: random_key()?,
-                    name: config,
-                    agent_name: name,
-                    detached: true,
-                    worktree,
-                    options: launch_options(&options)?,
-                };
+                let params = launch_params(random_key()?, config, name, worktree, &options)?;
                 println!(
                     "{}",
                     call_typed_with_wire::<contract::sandbox::SessionsStart>(params)?.1
@@ -305,11 +312,37 @@ fn run() -> Result<i32, String> {
         println!("usage: goblins-request package PACKAGE [--reason TEXT]");
         return Ok(0);
     }
-    let (package, reason) = parse_args(legacy, &args)?;
-    request_permission(contract::PermissionParams {
+    request_permission(package_params(legacy, &args)?)
+}
+/// The request of `request-package PACKAGE [--reason TEXT]`.
+fn package_params(legacy: bool, args: &[String]) -> Result<contract::PermissionParams, String> {
+    let (package, reason) = parse_args(legacy, args)?;
+    Ok(contract::PermissionParams {
         package,
         ..permission_params("package", reason)
     })
+}
+/// The request of `enable-docker [--reason TEXT]`.
+fn docker_params(reason: Option<String>) -> contract::PermissionParams {
+    permission_params(
+        "docker",
+        reason.unwrap_or_else(|| "Enable Docker in this sandbox".into()),
+    )
+}
+/// The request of `devshell refresh`.
+fn refresh_params(
+    update: Option<Vec<String>>,
+    lock: bool,
+    reason: Option<String>,
+) -> contract::PermissionParams {
+    contract::PermissionParams {
+        update,
+        lock,
+        ..permission_params(
+            "devshell",
+            reason.unwrap_or_else(|| "Refresh the dev shell from the workspace flake".into()),
+        )
+    }
 }
 /// `KEY=VALUE` arguments, split at the first `=`.
 fn variables(assignments: &[String]) -> Result<goblins_protocol::SetVariables, String> {
@@ -363,7 +396,13 @@ fn request_permission(params: contract::PermissionParams) -> Result<i32, String>
 /// Write the sandbox's trusted lock into the workspace unless it is already
 /// there. Returns whether the file changed.
 fn write_trusted_lock() -> Result<(bool, u64), String> {
-    let trusted = call_typed::<contract::sandbox::DevShellLock>(contract::EmptyParams {})?;
+    install_lock(&call_typed::<contract::sandbox::DevShellLock>(
+        contract::EmptyParams {},
+    )?)
+}
+/// Write the trusted lock the daemon returned to its path unless it is
+/// already there. Returns whether the file changed.
+fn install_lock(trusted: &contract::DevShellLockReply) -> Result<(bool, u64), String> {
     let path = std::path::PathBuf::from(trusted.path.as_deref().ok_or("missing lock path")?);
     let generation = trusted.generation;
     let current = std::fs::read(&path)
@@ -380,14 +419,18 @@ fn write_trusted_lock() -> Result<(bool, u64), String> {
         .map_err(|e| format!("cannot replace {}: {e}", path.display()))?;
     Ok((true, generation))
 }
+/// What `devshell restore-lock` prints.
+fn restored(changed: bool, generation: u64) -> String {
+    format!(
+        "flake.lock {} the trusted lock of dev shell generation {generation}\n",
+        if changed { "restored to" } else { "already is" }
+    )
+}
 fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
     match command {
         cli::DevshellCommand::RestoreLock => {
             let (changed, generation) = write_trusted_lock()?;
-            println!(
-                "flake.lock {} the trusted lock of dev shell generation {generation}",
-                if changed { "restored to" } else { "already is" }
-            );
+            print!("{}", restored(changed, generation));
             Ok(0)
         }
         cli::DevshellCommand::Diff { update, lock } => {
@@ -410,16 +453,7 @@ fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
             lock,
             reason,
         } => {
-            let params = contract::PermissionParams {
-                update,
-                lock,
-                ..permission_params(
-                    "devshell",
-                    reason
-                        .unwrap_or_else(|| "Refresh the dev shell from the workspace flake".into()),
-                )
-            };
-            let (code, reply) = request(params)?;
+            let (code, reply) = request(refresh_params(update, lock, reason))?;
             if code != 0 {
                 if let Some(message) = reply.message.as_deref() {
                     eprintln!("{message}");
@@ -548,9 +582,26 @@ fn waiting_call_typed<M: contract::Method>(
 /// `goblin editor open`: ask the host editor to open sandbox files, by
 /// default waiting until it is done with all of them.
 fn editor_open(args: &[String]) -> Result<i32, String> {
+    let open = editor_request(args, || std::env::current_dir().map_err(|e| e.to_string()))?;
+    match waiting_call_typed::<contract::sandbox::EditorOpen>(
+        goblins_protocol::editor::FEATURE,
+        open,
+    )? {
+        Ok(result) => Ok(edited(&result).emit()),
+        Err(message) => {
+            eprintln!("goblins: {message}");
+            Ok(1)
+        }
+    }
+}
+/// The files to open, their paths relative to `cwd`.
+fn editor_request(
+    args: &[String],
+    cwd: impl FnOnce() -> Result<std::path::PathBuf, String>,
+) -> Result<goblins_protocol::editor::Open, String> {
     use goblins_protocol::editor;
     let (mut files, wait) = editor::parse(args)?;
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cwd = cwd()?;
     for file in &mut files {
         file.path = editor::absolute(&cwd, std::path::Path::new(&file.path))
             .to_str()
@@ -559,17 +610,19 @@ fn editor_open(args: &[String]) -> Result<i32, String> {
     }
     let open = editor::Open { files, wait };
     open.validate()?;
-    match waiting_call_typed::<contract::sandbox::EditorOpen>(editor::FEATURE, open)? {
-        Ok(result) => {
-            if let Some(message) = result.message.as_deref() {
-                eprintln!("goblins: {}", goblins_protocol::plain_text(message));
-            }
-            Ok(result.code.map_or(1, |c| c as i32))
-        }
-        Err(message) => {
-            eprintln!("goblins: {message}");
-            Ok(1)
-        }
+    Ok(open)
+}
+/// What the editor's answer shows: its message, and its code as the exit
+/// code (1 when it has none).
+fn edited(result: &contract::EditorOpenReply) -> Output {
+    Output {
+        stderr: result
+            .message
+            .as_deref()
+            .map(|message| format!("goblins: {}\n", goblins_protocol::plain_text(message)))
+            .unwrap_or_default(),
+        code: result.code.map_or(1, |c| c as i32),
+        ..Output::default()
     }
 }
 /// `goblin run -o NAME=CHOICE`, each option at most once. The daemon checks
@@ -592,6 +645,23 @@ fn launch_options(
         }
     }
     Ok(chosen)
+}
+/// The request of `goblin run`, under the operation key `key`.
+fn launch_params(
+    key: String,
+    config: String,
+    name: Option<String>,
+    worktree: Option<String>,
+    options: &[String],
+) -> Result<contract::MemberLaunchParams, String> {
+    Ok(contract::MemberLaunchParams {
+        key,
+        name: config,
+        agent_name: name,
+        detached: true,
+        worktree,
+        options: launch_options(options)?,
+    })
 }
 /// `goblin targets`: each configuration, then its options and choices.
 fn targets(list: &contract::RunTargetListReply) -> String {
@@ -687,37 +757,58 @@ fn request(
         ))?)?;
         let reply = rpc::read(&mut socket)?;
         rpc::validate_response(&reply, &json!(id))?;
-        if let Some(error) = reply.get("error") {
-            return Ok(json!({"status":"error","message":error}));
-        }
-        let result = contract::decode_reply_profile::<
-            contract::sandbox::PermissionsRequest,
-            contract::sandbox_reply_profiles::PermissionsRequestGrant,
-        >(reply["result"].clone())?;
-        Ok(serde_json::to_value(result)?)
+        grant(&reply)
     };
-    match exchange() {
+    let (output, reply) = granted(exchange());
+    let code = output.emit();
+    Ok((code, reply?))
+}
+/// The outcome a correlated reply frame to a permission request reports:
+/// the daemon's error, or the result read through the grant profile.
+fn grant(reply: &serde_json::Value) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    if let Some(error) = reply.get("error") {
+        return Ok(json!({"status":"error","message":error}));
+    }
+    let result = contract::decode_reply_profile::<
+        contract::sandbox::PermissionsRequest,
+        contract::sandbox_reply_profiles::PermissionsRequestGrant,
+    >(reply["result"].clone())?;
+    Ok(serde_json::to_value(result)?)
+}
+/// What a permission request shows for its outcome: 0 when it is ready, 1
+/// when it is not, and 2 when the exchange failed and the outcome is unknown.
+fn granted(
+    outcome: Result<serde_json::Value, Box<dyn std::error::Error>>,
+) -> (Output, Result<contract::PermissionRequestReply, String>) {
+    match outcome {
         Ok(reply) => {
-            println!("{}", serde_json::to_string(&reply).unwrap());
+            let stdout = format!("{}\n", serde_json::to_string(&reply).unwrap());
             let normalized = contract::decode_reply::<contract::sandbox::PermissionsRequest>(reply)
-                .map_err(|e| e.to_string())?;
-            Ok((
-                if normalized.status.as_deref() == Some("ready") {
-                    0
-                } else {
-                    1
+                .map_err(|e| e.to_string());
+            let code = match &normalized {
+                Ok(n) if n.status.as_deref() == Some("ready") => 0,
+                _ => 1,
+            };
+            (
+                Output {
+                    stdout,
+                    code,
+                    ..Output::default()
                 },
                 normalized,
-            ))
+            )
         }
-        Err(e) => {
-            eprintln!("goblins-request: outcome unknown; do not retry automatically: {e}");
-            Ok((
-                2,
-                contract::decode_reply::<contract::sandbox::PermissionsRequest>(json!(null))
-                    .map_err(|e| e.to_string())?,
-            ))
-        }
+        Err(e) => (
+            Output {
+                stderr: format!(
+                    "goblins-request: outcome unknown; do not retry automatically: {e}\n"
+                ),
+                code: 2,
+                ..Output::default()
+            },
+            contract::decode_reply::<contract::sandbox::PermissionsRequest>(json!(null))
+                .map_err(|e| e.to_string()),
+        ),
     }
 }
 pub(crate) fn call_typed_with_wire<M: contract::Method>(
@@ -758,7 +849,7 @@ fn random_key() -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     Ok(random.iter().map(|b| format!("{b:02x}")).collect())
 }
-fn connect() -> Result<(UnixStream, contract::InitializeReply), String> {
+fn connect() -> Result<(UnixStream, contract::InitializeResult), String> {
     let mut socket = UnixStream::connect(REQUEST_SOCKET).map_err(|e| e.to_string())?;
     let init = contract::initialize(&mut socket, json!(0), contract::EndpointRole::Sandbox)
         .map_err(|e| e.to_string())?;
@@ -784,6 +875,369 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    fn parse(args: &[&str]) -> cli::Command {
+        cli::Cli::try_parse_from(std::iter::once("goblin").chain(args.iter().copied()))
+            .unwrap()
+            .command
+    }
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+    fn fixtures() -> Value {
+        serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap()
+    }
+    /// A fresh directory for one test.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("goblins-client-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn permission_requests_keep_their_fields() {
+        let wire = |params| {
+            contract::params_value::<contract::sandbox::PermissionsRequest>(params).unwrap()
+        };
+        assert_eq!(
+            wire(
+                package_params(
+                    false,
+                    &strings(&["request-package", "hello", "--reason", "tests"])
+                )
+                .unwrap()
+            ),
+            json!({"kind":"package","package":"hello","reason":"tests"})
+        );
+        let cli::Command::EnableDocker { reason } = parse(&["enable-docker", "--reason", "tests"])
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            wire(docker_params(reason)),
+            json!({"kind":"docker","reason":"tests"})
+        );
+        let cli::Command::Devshell {
+            command:
+                cli::DevshellCommand::Refresh {
+                    update,
+                    lock,
+                    reason,
+                },
+        } = parse(&[
+            "devshell", "refresh", "--reason", "tests", "--update", "nixpkgs",
+        ])
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            wire(refresh_params(update, lock, reason)),
+            json!({"kind":"devshell","reason":"tests","update":["nixpkgs"]})
+        );
+    }
+
+    #[test]
+    fn permission_outcomes_print_closed_results_and_flag_unknown_ones() {
+        let shown = |frame: Value| granted(grant(&frame)).0;
+        let result = |result: &Value| json!({"jsonrpc":"2.0","id":"k","result":result});
+        let printed = |output: &Output| serde_json::from_str::<Value>(&output.stdout).unwrap();
+        let good = json!({"request":"fixture-job-1","status":"ready","message":null});
+        let with = |field: &str, value: Value| {
+            let mut v = good.clone();
+            v[field] = value;
+            v
+        };
+        let denied = with("status", json!("denied"));
+        // A refusal prints the reply as it came, and exits 1.
+        let refused = json!({"request":"fixture-job-1","status":"denied","message":"no"});
+        let output = shown(result(&refused));
+        assert_eq!((output.code, printed(&output)), (1, refused));
+        for (reply, code, normalized) in [
+            (good.clone(), 0, good.clone()),
+            (denied.clone(), 1, denied.clone()),
+            (
+                with("status", json!("error")),
+                1,
+                with("status", json!("error")),
+            ),
+        ] {
+            let output = shown(result(&reply));
+            assert_eq!(
+                (output.code, printed(&output), output.stderr.as_str()),
+                (code, normalized, ""),
+                "{reply}"
+            );
+            assert!(output.stdout.ends_with('\n'));
+        }
+        for reply in [
+            with("status", json!("failed")),
+            with("status", json!("withdrawn")),
+            with("extra", json!(true)),
+            with("request", json!("bad id")),
+            json!({"request":"fixture-job-1","status":"ready"}),
+            json!(["fixture-job-1", "ready", null]),
+            Value::Null,
+            with("message", json!(7)),
+        ] {
+            let output = shown(result(&reply));
+            assert_eq!((output.code, output.stdout.as_str()), (2, ""), "{reply}");
+            assert!(
+                output
+                    .stderr
+                    .starts_with("goblins-request: outcome unknown; do not retry automatically: "),
+                "{reply}: {}",
+                output.stderr
+            );
+        }
+        let error = json!({"code":-32009,"message":"blocked","data":{"preserve":true}});
+        let output = shown(json!({"jsonrpc":"2.0","id":"k","error":error}));
+        assert_eq!(
+            (output.code, printed(&output), output.stderr.as_str()),
+            (1, json!({"status":"error","message":error}), "")
+        );
+    }
+
+    #[test]
+    fn editor_open_sends_absolute_paths_and_exits_with_the_editor_code() {
+        let cli::Command::Editor {
+            command: cli::EditorCommand::Open { args },
+        } = parse(&[
+            "editor",
+            "open",
+            "--no-wait",
+            "+3:4",
+            "../other/./file",
+            "/tmp/msg",
+            "+9",
+            "last",
+        ])
+        else {
+            unreachable!()
+        };
+        let wire = |open| contract::params_value::<contract::sandbox::EditorOpen>(open).unwrap();
+        assert_eq!(contract::sandbox::EditorOpen::NAME, "editor.open");
+        assert_eq!(
+            wire(editor_request(&args, || Ok("/root/work".into())).unwrap()),
+            json!({"files":[{"path":"/root/other/file","line":3,"column":4},{"path":"/tmp/msg"},
+                            {"path":"/root/work/last","line":9}],"wait":false})
+        );
+        assert_eq!(
+            wire(editor_request(&strings(&["/tmp/msg"]), || Ok("/root/work".into())).unwrap()),
+            json!({"files":[{"path":"/tmp/msg"}],"wait":true})
+        );
+        for (result, code, stderr) in [
+            (Value::Null, 1, ""),
+            (json!([]), 1, ""),
+            (json!({}), 1, ""),
+            (json!({"code":true,"message":1}), 1, ""),
+            (json!({"code":1.0}), 1, ""),
+            (json!({"code":4294967296i64}), 0, ""),
+            // Truncated to -1: the process exits 255.
+            (json!({"code":i64::MAX}), -1, ""),
+            (
+                json!({"code":7,"message":"refused\u{1b}[2J"}),
+                7,
+                "goblins: refused\\u001b[2J\n",
+            ),
+        ] {
+            let reply =
+                contract::decode_reply::<contract::sandbox::EditorOpen>(result.clone()).unwrap();
+            assert_eq!(
+                edited(&reply),
+                Output {
+                    stdout: String::new(),
+                    stderr: stderr.into(),
+                    code
+                },
+                "{result}"
+            );
+        }
+    }
+
+    #[test]
+    fn devshell_diff_sends_lock_and_update_only_when_given() {
+        assert_eq!(contract::sandbox::DevShellDiff::NAME, "devshell.diff");
+        for (args, params) in [
+            (&[][..], json!({})),
+            (&["--lock"], json!({"lock":true})),
+            (&["--update"], json!({"update":[]})),
+            (
+                &["--update", "nixpkgs", "a/b"],
+                json!({"update":["nixpkgs","a/b"]}),
+            ),
+        ] {
+            let cli::Command::Devshell {
+                command: cli::DevshellCommand::Diff { update, lock },
+            } = parse(&[&["devshell", "diff"][..], args].concat())
+            else {
+                unreachable!()
+            };
+            assert_eq!(
+                contract::params_value::<contract::sandbox::DevShellDiff>(
+                    contract::DevShellDiffParams { update, lock }
+                )
+                .unwrap(),
+                params,
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_lock_writes_the_trusted_lock_and_reports_its_generation() {
+        assert_eq!(contract::sandbox::DevShellLock::NAME, "devshell.lock");
+        assert_eq!(
+            contract::params_value::<contract::sandbox::DevShellLock>(contract::EmptyParams {})
+                .unwrap(),
+            json!({})
+        );
+        let dir = scratch("lock");
+        let path = dir.join("flake.lock");
+        let decode =
+            |v: Value| contract::decode_reply::<contract::sandbox::DevShellLock>(v).unwrap();
+        for (result, generation, lock) in [
+            (
+                json!({"path":path,"generation":3,"lock":{"nodes":{}}}),
+                3,
+                json!({"nodes":{}}),
+            ),
+            (json!({"path":path,"generation":"bad"}), 0, Value::Null),
+            (
+                json!({"path":path,"generation":u64::MAX,"lock":["opaque"]}),
+                u64::MAX,
+                json!(["opaque"]),
+            ),
+        ] {
+            let (changed, written) = install_lock(&decode(result.clone())).unwrap();
+            assert_eq!((changed, written), (true, generation), "{result}");
+            assert!(restored(changed, written).contains(&format!("generation {generation}")));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+                lock
+            );
+            assert_eq!(
+                install_lock(&decode(result)).unwrap(),
+                (false, generation),
+                "an unchanged lock is left alone"
+            );
+        }
+        assert_eq!(
+            restored(false, 2),
+            "flake.lock already is the trusted lock of dev shell generation 2\n"
+        );
+        for result in [Value::Null, json!([]), json!({"path":7})] {
+            assert_eq!(
+                install_lock(&decode(result.clone())).unwrap_err(),
+                "missing lock path",
+                "{result}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn flake_run_serves_only_the_dev_shell_flake_and_runs_store_programs() {
+        let dir = scratch("flake");
+        let other = dir.join("other");
+        std::fs::create_dir(&other).unwrap();
+        let trusted = || Ok(dir.join("flake.lock"));
+        let error = served_app(Some(&format!("{}#hello", other.display())), trusted).unwrap_err();
+        assert!(
+            error.contains("serves only this sandbox's dev shell flake"),
+            "{error}"
+        );
+        assert_eq!(
+            served_app(Some(&format!("{}#hello", dir.display())), trusted).unwrap(),
+            "hello"
+        );
+        let unused = || -> Result<_, String> { panic!("#APP needs no trusted lock") };
+        assert_eq!(served_app(Some("#hello"), unused).unwrap(), "hello");
+        assert_eq!(served_app(Some("#"), unused).unwrap(), "default");
+        std::fs::remove_dir_all(dir).unwrap();
+
+        assert_eq!(contract::sandbox::FlakeRun::NAME, "flake.run");
+        assert_eq!(
+            contract::params_value::<contract::sandbox::FlakeRun>(contract::FlakeRunParams {
+                app: "hello".into()
+            })
+            .unwrap(),
+            json!({"app":"hello"})
+        );
+        let program = |v: Value| {
+            store_program(
+                contract::decode_reply::<contract::sandbox::FlakeRun>(v)
+                    .unwrap()
+                    .program
+                    .as_deref(),
+            )
+        };
+        for (result, diagnostic) in [
+            (Value::Null, "missing program"),
+            (json!({}), "missing program"),
+            (json!({"program":1}), "missing program"),
+            (
+                json!({"program":"/tmp/not-a-store-program"}),
+                "invalid program",
+            ),
+        ] {
+            let error = program(result.clone()).unwrap_err();
+            assert!(error.contains(diagnostic), "{result}: {error}");
+        }
+        let true_ = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|dir| dir.join("true"))
+            .find(|p| p.is_file())
+            .expect("true on PATH");
+        assert!(true_.starts_with("/nix/store/"), "{}", true_.display());
+        assert_eq!(
+            program(json!({"program":true_,"generation":"ignored","extension":true})).unwrap(),
+            true_
+        );
+    }
+
+    #[test]
+    fn run_keeps_exact_named_and_unset_request_fields() {
+        assert_eq!(contract::sandbox::SessionsStart::NAME, "sessions.start");
+        for named in [false, true] {
+            let mut args = vec!["run", "shell"];
+            if named {
+                args.extend([
+                    "--name",
+                    "named",
+                    "--worktree",
+                    "branch",
+                    "-o",
+                    "model=fast",
+                ]);
+            }
+            let cli::Command::Run {
+                config,
+                name,
+                worktree,
+                options,
+                ..
+            } = parse(&args)
+            else {
+                unreachable!()
+            };
+            let params = contract::params_value::<contract::sandbox::SessionsStart>(
+                launch_params("k".into(), config, name, worktree, &options).unwrap(),
+            )
+            .unwrap();
+            let mut expected = json!({"key":"k","name":"shell","agent_name":null,"detached":true,
+                                      "options":{}});
+            if named {
+                expected = json!({"key":"k","name":"shell","agent_name":"named","detached":true,
+                                  "options":{"model":"fast"},"worktree":"branch"});
+            }
+            assert_eq!(params, expected, "{args:?}");
+        }
+        let reply = fixtures()["forward_compatibility"]["member_launch"].clone();
+        contract::decode_reply::<contract::sandbox::SessionsStart>(reply).unwrap();
+    }
+
     #[test]
     fn launch_options_are_name_choice_pairs_and_targets_list_them() {
         let options =

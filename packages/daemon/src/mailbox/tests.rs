@@ -1143,6 +1143,11 @@ fn generated_inbox_status_matches_original_producer_and_hides_operation_owner() 
         }
         for actor in ["host", "c", "x"] {
             assert_eq!(f.mailbox.status(actor), old(&f.mailbox, actor));
+            // What the sandbox clients and adapters read from it.
+            goblins_protocol::contract::decode_reply::<goblins_protocol::contract::sandbox::InboxStatus>(
+                f.mailbox.status(actor),
+            )
+            .unwrap();
         }
     }
 }

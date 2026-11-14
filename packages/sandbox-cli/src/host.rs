@@ -2,6 +2,7 @@
 //! approves them. A run is a `host-command` permission request; its ID is
 //! also the job's. The job's output is a file the daemon writes to
 //! /run/goblins/host-jobs/JOB, which this client tails.
+use crate::Output;
 use crate::cli::HostCommand;
 use contract::Method;
 use goblins_jsonrpc as rpc;
@@ -60,8 +61,11 @@ fn exit_code(result: &contract::PermissionRequestReply) -> i32 {
     }
 }
 
-fn report(result: &contract::PermissionRequestReply) -> i32 {
-    let code = exit_code(result);
+fn report(result: &contract::PermissionRequestReply) -> Output {
+    let mut out = Output {
+        code: exit_code(result),
+        ..Output::default()
+    };
     let status = result.status.as_deref().unwrap_or("unknown");
     if !(status == "finished" && result.code == Some(0)) {
         let detail = result
@@ -69,12 +73,12 @@ fn report(result: &contract::PermissionRequestReply) -> i32 {
             .as_deref()
             .map(|m| format!(": {}", goblins_protocol::plain_text(m)))
             .unwrap_or_default();
-        eprintln!(
-            "goblin: host command {} {status}{detail}",
+        out.stderr = format!(
+            "goblin: host command {} {status}{detail}\n",
             result.request.as_deref().unwrap_or("?")
         );
     }
-    code
+    out
 }
 
 fn connect() -> Result<UnixStream, String> {
@@ -94,7 +98,9 @@ fn readable(socket: &UnixStream, timeout: Duration) -> bool {
     unsafe { libc::poll(&mut poll, 1, timeout.as_millis() as i32) > 0 }
 }
 
-fn run(
+/// The `host-command` permission request for a run from `here`.
+#[allow(clippy::too_many_arguments)]
+fn params(
     reason: String,
     name: String,
     detach: bool,
@@ -102,8 +108,8 @@ fn run(
     env: Vec<String>,
     timeout: Option<u64>,
     command: Vec<String>,
-) -> Result<i32, String> {
-    let here = std::env::current_dir().map_err(|e| e.to_string())?;
+    here: PathBuf,
+) -> Result<contract::PermissionParams, String> {
     let cwd = match cwd {
         Some(dir) if dir.is_absolute() => dir,
         Some(dir) => here.join(dir),
@@ -141,14 +147,60 @@ fn run(
     if !host.validate() {
         return Err("invalid host command: check its arguments, environment and size".into());
     }
+    Ok(contract::PermissionParams {
+        host: Some(host),
+        ..crate::permission_params("host-command", reason)
+    })
+}
+
+/// What the final reply to a run shows, and the job whose output to copy
+/// before it.
+fn settle(frame: &Value, detach: bool) -> Result<(Option<String>, Output), String> {
+    if let Some(error) = frame.get("error") {
+        return Ok((
+            None,
+            Output {
+                stderr: format!(
+                    "goblin: host command refused: {}\n",
+                    goblins_protocol::plain_text(
+                        error["message"].as_str().unwrap_or("request failed")
+                    )
+                ),
+                code: NOT_RUN,
+                ..Output::default()
+            },
+        ));
+    }
+    let result = &frame["result"];
+    if detach {
+        return Ok((
+            None,
+            Output {
+                stdout: format!("{result}\n"),
+                ..Output::default()
+            },
+        ));
+    }
+    let result = contract::decode_reply::<contract::sandbox::PermissionsRequest>(result.clone())
+        .map_err(|e| e.to_string())?;
+    Ok((result.request.clone(), report(&result)))
+}
+
+fn run(
+    reason: String,
+    name: String,
+    detach: bool,
+    cwd: Option<PathBuf>,
+    env: Vec<String>,
+    timeout: Option<u64>,
+    command: Vec<String>,
+) -> Result<i32, String> {
+    let here = std::env::current_dir().map_err(|e| e.to_string())?;
+    let params = params(reason, name, detach, cwd, env, timeout, command, here)?;
     let mut socket = connect()?;
     socket
         .set_write_timeout(Some(rpc::TIMEOUT))
         .map_err(|e| e.to_string())?;
-    let params = contract::PermissionParams {
-        host: Some(host),
-        ..crate::permission_params("host-command", reason)
-    };
     socket
         .write_all(
             &rpc::encode(&rpc::request(
@@ -179,7 +231,7 @@ fn run(
                 return Ok(NOT_RUN);
             }
         };
-        if let Some(submitted) = contract::host_submitted(&frame) {
+        if let Some(submitted) = contract::host_submitted(&frame).map_err(|e| e.to_string())? {
             eprintln!(
                 "goblin: host command {} is waiting for approval",
                 submitted.request
@@ -188,25 +240,11 @@ fn run(
             continue;
         }
         rpc::validate_response(&frame, &json!(1)).map_err(|e| e.to_string())?;
-        if let Some(error) = frame.get("error") {
-            eprintln!(
-                "goblin: host command refused: {}",
-                goblins_protocol::plain_text(error["message"].as_str().unwrap_or("request failed"))
-            );
-            return Ok(NOT_RUN);
-        }
-        let result = &frame["result"];
-        if detach {
-            println!("{result}");
-            return Ok(0);
-        }
-        let result =
-            contract::decode_reply::<contract::sandbox::PermissionsRequest>(result.clone())
-                .map_err(|e| e.to_string())?;
-        if let Some(job) = result.request.as_deref() {
+        let (job, output) = settle(&frame, detach)?;
+        if let Some(job) = job.as_deref() {
             tail.copy(job);
         }
-        return Ok(report(&result));
+        return Ok(output.emit());
     }
 }
 
@@ -271,7 +309,7 @@ pub fn command(command: HostCommand) -> Result<i32, String> {
             loop {
                 let (result, _) = status(&job)?;
                 if terminal(&result) {
-                    return Ok(report(&result));
+                    return Ok(report(&result).emit());
                 }
                 if Instant::now() >= deadline {
                     eprintln!(
@@ -315,6 +353,160 @@ mod tests {
             assert_eq!(terminal(&reply), old_terminal, "{wire}");
             assert_eq!(exit_code(&reply), old_code, "{wire}");
         }
+    }
+
+    /// The params `goblin host ARGS` sends from `/work/here`.
+    fn sent(args: &[&str]) -> Value {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        let Command::Host {
+            command:
+                HostCommand::Run {
+                    reason,
+                    name,
+                    detach,
+                    cwd,
+                    env,
+                    timeout,
+                    command,
+                },
+        } = Cli::try_parse_from(["goblin", "host"].iter().chain(args))
+            .unwrap()
+            .command
+        else {
+            unreachable!()
+        };
+        let params = params(
+            reason,
+            name,
+            detach,
+            cwd,
+            env,
+            timeout,
+            command,
+            "/work/here".into(),
+        )
+        .unwrap();
+        contract::params_value::<contract::sandbox::PermissionsRequest>(params).unwrap()
+    }
+
+    /// What a run shows for the final reply `frame`.
+    fn shown(frame: Value, detach: bool) -> (Option<String>, Output) {
+        settle(&frame, detach).unwrap()
+    }
+
+    #[test]
+    fn a_run_sends_a_host_command_request_with_its_cwd_relative_to_here() {
+        assert_eq!(
+            contract::sandbox::PermissionsRequest::NAME,
+            "permissions.request"
+        );
+        assert_eq!(
+            sent(&[
+                "run",
+                "--name",
+                "Tests",
+                "--reason",
+                "tests",
+                "--cwd",
+                "sub",
+                "--env",
+                "A=b",
+                "--timeout",
+                "3",
+                "--",
+                "true"
+            ]),
+            json!({"kind":"host-command","reason":"tests","host":{
+                "argv":["true"],"cwd":"/work/here/sub","env":[["A","b"]],"timeout":3,"name":"Tests"}})
+        );
+        assert_eq!(
+            sent(&[
+                "run", "--name", "Tests", "--reason", "tests", "--detach", "--", "true"
+            ]),
+            json!({"kind":"host-command","reason":"tests","host":{
+                "argv":["true"],"cwd":"/work/here","env":[],"name":"Tests","detach":true}})
+        );
+    }
+
+    #[test]
+    fn a_run_reports_its_outcome_and_a_detached_run_prints_the_reply() {
+        let frame = |result: Value| json!({"jsonrpc":"2.0","id":1,"result":result});
+        let finished =
+            json!({"request":"fixture-job-1","status":"finished","message":"exit code 0","code":0});
+        assert_eq!(
+            shown(frame(finished), false),
+            (Some("fixture-job-1".into()), Output::default())
+        );
+        for result in [
+            json!({"request":"fixture-job-1","status":"pending","extra":1}),
+            Value::Null,
+            json!([]),
+            json!({"weird":true}),
+        ] {
+            let (job, output) = shown(frame(result.clone()), true);
+            assert_eq!((job, output.code, output.stderr), (None, 0, String::new()));
+            assert_eq!(
+                serde_json::from_str::<Value>(&output.stdout).unwrap(),
+                result
+            );
+            assert!(output.stdout.ends_with('\n'));
+        }
+        for (result, code, stderr) in [
+            (json!({"status":"finished","code":0}), 0, ""),
+            (
+                json!({"status":"finished","code":0.0}),
+                NOT_RUN,
+                "goblin: host command ? finished\n",
+            ),
+            // The code is truncated to 32 bits, but it is not a plain 0.
+            (
+                json!({"status":"finished","code":4294967296i64}),
+                0,
+                "goblin: host command ? finished\n",
+            ),
+            (
+                json!({"status":"cancelled","code":143,"message":"x\u{1b}"}),
+                143,
+                "goblin: host command ? cancelled: x\\u001b\n",
+            ),
+            (
+                json!({"status":"failed","code":127}),
+                127,
+                "goblin: host command ? failed\n",
+            ),
+            (
+                json!({"status":"future","code":0}),
+                NOT_RUN,
+                "goblin: host command ? future\n",
+            ),
+            (Value::Null, NOT_RUN, "goblin: host command ? unknown\n"),
+        ] {
+            let (_, output) = shown(frame(result.clone()), false);
+            assert_eq!(
+                output,
+                Output {
+                    stdout: String::new(),
+                    stderr: stderr.into(),
+                    code
+                },
+                "{result}"
+            );
+        }
+        assert_eq!(
+            shown(
+                json!({"jsonrpc":"2.0","id":1,"error":{"code":-32009,"message":"re\u{1b}fused"}}),
+                false
+            ),
+            (
+                None,
+                Output {
+                    stdout: String::new(),
+                    stderr: "goblin: host command refused: re\\u001bfused\n".into(),
+                    code: NOT_RUN
+                }
+            )
+        );
     }
 
     #[test]

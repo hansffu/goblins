@@ -324,336 +324,6 @@
       "type": "string",
       "description": "Host path; Rust uses PathBuf serialization so invalid UTF-8 is not silently replaced."
     },
-    "LimitsReply": {
-      "type": "object",
-      "properties": {
-        "header": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "body": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "frame_seconds": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "depth": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "response_body": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "calls": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "connections": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "sessions": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "output_queue": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "snapshot": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "terminal_buffer": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [],
-      "additionalProperties": true,
-      "description": "Client compatibility view: additive API-1 information may be absent; known fields remain typed and unknown result fields are ignored."
-    },
-    "InitializeReply": {
-      "type": "object",
-      "properties": {
-        "api": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 4294967295,
-          "format": "uint32",
-          "enum": [
-            1
-          ],
-          "x-json-integer": true
-        },
-        "instance": {
-          "type": "string"
-        },
-        "role": {
-          "$ref": "#/definitions/EndpointRole"
-        },
-        "configuration": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "features": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "limits": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/LimitsReply"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "api",
-        "instance",
-        "role",
-        "features"
-      ],
-      "additionalProperties": true,
-      "description": "Client compatibility view: additive API-1 information may be absent; known fields remain typed and unknown result fields are ignored."
-    },
-    "HistoryReply": {
-      "type": "object",
-      "properties": {
-        "directory": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/HostPath"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "owner": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "keep": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "format": "uint64",
-              "x-json-integer": true
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "recording": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "additionalProperties": true,
-      "required": [],
-      "description": "Optional client history metadata. No ownership or recording status is invented when older daemons omit it."
-    },
-    "ServerStatusReply": {
-      "type": "object",
-      "properties": {
-        "instance": {
-          "type": "string"
-        },
-        "state": {
-          "$ref": "#/definitions/ServerState"
-        },
-        "sessions": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 18446744073709551615,
-          "format": "uint64",
-          "x-json-integer": true
-        },
-        "history": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/HistoryReply"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "manifest": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/HostPath"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "worktrees_directory": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/HostPath"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "instance",
-        "state",
-        "sessions"
-      ],
-      "additionalProperties": true,
-      "description": "Client compatibility view: additive API-1 information may be absent; known fields remain typed and unknown result fields are ignored."
-    },
     "AgentState": {
       "type": "string",
       "enum": [
@@ -814,7 +484,9 @@
           ]
         }
       },
-      "required": [],
+      "required": [
+        "worktree"
+      ],
       "additionalProperties": true
     },
     "CreatedBy": {
@@ -950,7 +622,14 @@
           ]
         }
       },
-      "required": [],
+      "required": [
+        "id",
+        "name",
+        "role",
+        "owner",
+        "paused",
+        "owner_name"
+      ],
       "additionalProperties": true
     },
     "SelfStatus": {
@@ -1300,7 +979,27 @@
           ]
         }
       },
-      "required": [],
+      "required": [
+        "id",
+        "agent_name",
+        "name",
+        "description",
+        "state",
+        "agent_state",
+        "scope",
+        "docker_enabled",
+        "dev_shell",
+        "attached",
+        "attached_since",
+        "nix",
+        "host_commands",
+        "permission_bypass",
+        "allowed_run_targets",
+        "raid",
+        "worktree",
+        "created_by",
+        "options"
+      ],
       "additionalProperties": true
     },
     "SessionSelectorParams": {
@@ -1451,13 +1150,15 @@
           ]
         },
         "paused": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         }
       },
       "required": [
         "id",
-        "name"
+        "name",
+        "role",
+        "owner",
+        "paused"
       ],
       "additionalProperties": true
     },
@@ -1566,6 +1267,7 @@
       },
       "required": [
         "id",
+        "name",
         "label",
         "origin",
         "started_at",
@@ -1878,22 +1580,13 @@
           "type": "string"
         },
         "agent_name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Absent on the original API-1 daemon. Snapshot views keep their separate requirement for an agent name."
+          "type": "string"
         },
         "name": {
           "type": "string"
         },
         "description": {
-          "type": "string",
-          "default": ""
+          "type": "string"
         },
         "configuration": {
           "type": "string"
@@ -1902,12 +1595,10 @@
           "type": "string"
         },
         "attach": {
-          "type": "string",
-          "default": ""
+          "type": "string"
         },
         "docker_enabled": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "pty_eof": {
           "type": "boolean"
@@ -1919,12 +1610,10 @@
           "type": "boolean"
         },
         "terminal_attached": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "terminal_detached": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "scope": {
           "anyOf": [
@@ -1968,7 +1657,6 @@
         },
         "agent_state": {
           "type": "string",
-          "default": "unknown",
           "description": "Direct readers preserve activity text; snapshot views separately enforce their existing AgentState decoder."
         },
         "agent_state_since": {
@@ -1990,8 +1678,7 @@
           "format": "uint64",
           "minimum": 0,
           "maximum": 18446744073709551615,
-          "x-json-integer": true,
-          "default": 0
+          "x-json-integer": true
         },
         "state": {
           "type": "string",
@@ -2023,8 +1710,7 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "default": []
+          }
         },
         "server_log": {
           "anyOf": [
@@ -2095,30 +1781,26 @@
           "format": "uint32",
           "minimum": 0,
           "maximum": 4294967295,
-          "x-json-integer": true,
-          "default": 0
+          "x-json-integer": true
         },
         "execs": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
           "maximum": 4294967295,
-          "x-json-integer": true,
-          "default": 0
+          "x-json-integer": true
         },
         "terminals": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/SessionTerminalReply"
-          },
-          "default": []
+          }
         },
         "skipped": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/RecreateSkipped"
-          },
-          "default": []
+          }
         },
         "worktree": {
           "anyOf": [
@@ -2144,32 +1826,48 @@
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          },
-          "default": {}
-        },
-        "docker_scope": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Legacy alias for scope accepted by snapshot readers; duplicate canonical+alias fields remain refused by the snapshot adapter."
+          }
         }
       },
       "required": [
         "id",
+        "agent_name",
         "name",
+        "description",
         "configuration",
-        "state",
-        "initial_packages",
-        "packages",
         "terminal",
+        "attach",
+        "docker_enabled",
         "pty_eof",
         "terminal_complete",
-        "terminal_interrupted"
+        "terminal_interrupted",
+        "terminal_attached",
+        "terminal_detached",
+        "scope",
+        "dev_shell",
+        "cwd",
+        "created_by",
+        "agent_state",
+        "agent_state_since",
+        "inbox",
+        "state",
+        "identity",
+        "initial_packages",
+        "packages",
+        "auto_approve",
+        "server_log",
+        "stop_reason",
+        "detail",
+        "recreated_from",
+        "exit_code",
+        "raid",
+        "shells",
+        "execs",
+        "terminals",
+        "skipped",
+        "worktree",
+        "checkout",
+        "options"
       ],
       "additionalProperties": true
     },
@@ -2335,8 +2033,7 @@
           ]
         },
         "description": {
-          "type": "string",
-          "default": ""
+          "type": "string"
         },
         "state": {
           "type": "string",
@@ -2344,7 +2041,6 @@
         },
         "agent_state": {
           "type": "string",
-          "default": "unknown",
           "description": "Direct readers preserve activity text; snapshot views separately enforce their existing AgentState decoder."
         },
         "initial_packages": {
@@ -2363,8 +2059,7 @@
           "type": "array",
           "items": {
             "type": "string"
-          },
-          "default": []
+          }
         },
         "scope": {
           "anyOf": [
@@ -2377,8 +2072,7 @@
           ]
         },
         "docker_enabled": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "exit_code": {
           "anyOf": [
@@ -2411,12 +2105,10 @@
           "type": "boolean"
         },
         "terminal_detached": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "terminal_attached": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "worktree": {
           "anyOf": [
@@ -2432,19 +2124,30 @@
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          },
-          "default": {}
+          }
         }
       },
       "required": [
         "id",
         "agent_name",
         "name",
+        "created_by",
+        "description",
         "state",
+        "agent_state",
         "initial_packages",
         "packages",
+        "auto_approve",
+        "scope",
+        "docker_enabled",
+        "exit_code",
+        "stop_reason",
         "terminal_complete",
-        "terminal_interrupted"
+        "terminal_interrupted",
+        "terminal_detached",
+        "terminal_attached",
+        "worktree",
+        "options"
       ],
       "additionalProperties": true
     },
@@ -2789,7 +2492,11 @@
         }
       },
       "required": [
-        "session"
+        "session",
+        "agent_name",
+        "state",
+        "terminal",
+        "attach"
       ],
       "additionalProperties": true
     },
@@ -2841,7 +2548,9 @@
         }
       },
       "required": [
-        "session"
+        "session",
+        "agent_name",
+        "state"
       ],
       "additionalProperties": true
     },
@@ -2957,7 +2666,10 @@
           ]
         }
       },
-      "required": [],
+      "required": [
+        "description",
+        "choices"
+      ],
       "additionalProperties": true
     },
     "RunTargetReply": {
@@ -2991,7 +2703,9 @@
         }
       },
       "required": [
-        "name"
+        "name",
+        "description",
+        "options"
       ],
       "additionalProperties": true
     },
@@ -6231,8 +5945,7 @@
       "type": "object",
       "properties": {
         "kind": {
-          "type": "string",
-          "default": "package"
+          "type": "string"
         },
         "id": {
           "type": "string"
@@ -6308,6 +6021,7 @@
         }
       },
       "required": [
+        "kind",
         "id",
         "session",
         "agent_name",
@@ -7707,15 +7421,13 @@
           "type": "boolean"
         },
         "raid_audit_failed": {
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "operations": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/InboxOperation"
-          },
-          "default": []
+          }
         }
       },
       "required": [
@@ -7723,10 +7435,12 @@
         "claim",
         "head",
         "revision",
-        "audit_failed"
+        "audit_failed",
+        "raid_audit_failed",
+        "operations"
       ],
       "additionalProperties": true,
-      "description": "Require all five original inbox fields so malformed/missing data cannot become an empty inbox. Additive raid_audit_failed/operations may be absent on older daemons, defaulting to false/empty. Wrong scalar/container types, float counters, tuple arity and u64 overflow are errors."
+      "description": "Require every inbox field so malformed or missing data cannot become an empty inbox. Wrong scalar/container types, float counters, tuple arity and u64 overflow are errors."
     },
     "MailboxStatusParams": {
       "allOf": [
@@ -9867,24 +9581,21 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/RaidRecordReply"
-          },
-          "default": []
+          }
         },
         "messaging": {
-          "$ref": "#/definitions/StateMessagingHealth",
-          "default": {
-            "audit_failed": false,
-            "raid_audit_failed": false
-          }
+          "$ref": "#/definitions/StateMessagingHealth"
         }
       },
       "required": [
         "instance",
         "sessions",
-        "permissions"
+        "permissions",
+        "raids",
+        "messaging"
       ],
       "additionalProperties": true,
-      "description": "Compatible Rust snapshot reader: instance/sessions/permissions required; raids defaults empty and messaging defaults false/false only when absent. Nested arrays decode through original compatible row readers during field deserialization, preserving aliases, fallback, errors and precedence. Unknown top-level fields accepted. Emacs has a separate looser partial snapshot/integer policy."
+      "description": "Rust snapshot reader: every field is required. Nested arrays decode through the session, permission and raid row readers during field deserialization, preserving their errors and precedence. Unknown top-level fields are accepted. Emacs has a separate looser partial snapshot/integer policy."
     },
     "StateUnsubscribeParams": {
       "type": "object",
@@ -15193,9 +14904,8 @@
     "server_control": "Host only. Both remain available during shutdown. stop flushes acceptance then closes its connection and completes cleanup asynchronously.",
     "parameter_forms": "C01 methods accept named objects or positional arrays: initialize accepts {api:N} or [N], server methods accept {} or []. Omitted params default to {}. Preserve Serde refusal order.",
     "result_extensions": "Result objects, including nested limits and history variants, may gain fields. Clients ignore unknown result fields; known fields and history owner discrimination remain validated. Request parameters stay closed.",
-    "api1_compatibility": "Producer result schemas describe the current daemon precisely. x-client-result-schema describes compatible API-1 replies accepted by clients: configuration/limits and newer server.status history/manifest/worktree metadata may be absent. Clients retain absence as optional data and use advertised features rather than inventing values.",
     "self_reporting": "sessions.status exposes only the caller and its policy/activity. Worktree paths are deliberately visible. Activity is independent of lifecycle; variables update atomically and empty values remove keys. Missing or null set-worktree name clears the record; names are validated before filesystem access.",
-    "session-records": "Current session read producers emit complete endpoint-specific records. Host sessions include descriptor-free process identities and host paths; sandbox records exclude them, except the intentionally shared Worktree.path. API-1 reader schemas retain the defaults and omissions previously accepted by Rust snapshot clients. The controller retains domain records; explicit projections and a generated-read adapter preserve snapshot consumers until C15. Nested terminal and raid summaries are typed public data; their methods migrate in C05 and C11.",
+    "session-records": "Current session read producers emit complete endpoint-specific records. Host sessions include descriptor-free process identities and host paths; sandbox records exclude them, except the intentionally shared Worktree.path. The controller retains domain records; explicit projections and a generated-read adapter preserve snapshot consumers until C15. Nested terminal and raid summaries are typed public data; their methods migrate in C05 and C11.",
     "launch-lifecycle": "Launch keys bind endpoint actor and decoded parameters; identical retries return the original acceptance, including during recreate after the record becomes reserved. Recreate record resolution precedes normal launch validation. Acceptance state starting is not readiness. Public DTOs contain no recorded-history capability or host-selectable member worktree. Sandbox start uses current owner/run-target policy and fixed member launch arguments. Stop acceptance is not completed cleanup; host resize uses an exact session id, and sandbox detach closes its one-shot connection after acceptance. Sandbox sessions.attach remains refusal-only (-32601), before its existing trailing-input handling.",
     "positional-parameters": "Method descriptors retain original Serde field order. Generated structs are named DTOs; decode_params<M> maps positional arrays to those names before generated decoding because Typify sorts struct fields. Optional omissions and trailing defaults remain the original ones. Schema defaults do not authorize or perform lifecycle transitions. Nullable fields without an original Serde default still require an array position; x-positional-required records this independently of named-object optionality. Member launch requires its third agent_name position (null is valid); set-worktree requires [name] or [null], while {} still clears it.",
     "exec-descriptors": "Host sessions.exec carries SCM_RIGHTS with the first byte of its frame: one PTY slave when tty=true, otherwise stdin/stdout/stderr in that order. No descriptor numbers appear in JSON. The existing host connection budget is three accumulated descriptors, including fragmented reads. The call takes and closes all received descriptors on refusal and transfers stdio only after validation.",
@@ -17006,509 +16716,6 @@
       "additionalProperties": false
     }
   },
-  "x-client-result-schemas": {
-    "PermissionGrantReply": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "request": {
-              "$ref": "#/definitions/OperationKey"
-            },
-            "status": {
-              "$ref": "#/definitions/LegacyGrantState"
-            },
-            "message": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "request",
-            "status"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "array",
-          "items": [
-            {
-              "$ref": "#/definitions/OperationKey"
-            },
-            {
-              "$ref": "#/definitions/LegacyGrantState"
-            },
-            {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          ],
-          "minItems": 3,
-          "maxItems": 3
-        }
-      ]
-    },
-    "PermissionRecordReply": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "default": "package"
-            },
-            "id": {
-              "type": "string"
-            },
-            "session": {
-              "type": "string"
-            },
-            "agent_name": {
-              "type": "string"
-            },
-            "approval": {
-              "type": "string"
-            },
-            "package": {
-              "type": "string"
-            },
-            "reason": {
-              "type": "string"
-            },
-            "state": {
-              "type": "string"
-            },
-            "approved": {
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "preview": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/PermissionPreviewValue"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "message": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "started_at": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 18446744073709551615,
-                  "x-json-integer": true
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "log": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "id",
-            "session",
-            "agent_name",
-            "approval",
-            "package",
-            "reason",
-            "state"
-          ],
-          "additionalProperties": true
-        },
-        {
-          "type": "array",
-          "items": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "anyOf": [
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/PermissionPreviewValue"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 18446744073709551615,
-                  "x-json-integer": true
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          ],
-          "minItems": 11,
-          "maxItems": 14
-        }
-      ]
-    },
-    "PermissionListReply": {
-      "type": "array",
-      "items": {
-        "$ref": "#/x-client-result-schemas/PermissionRecordReply"
-      }
-    },
-    "RaidMemberRecordReply": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "agent_name": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "role": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "state": {
-              "type": "string"
-            },
-            "owner": {
-              "type": "boolean"
-            },
-            "created_by": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "options": {
-              "$ref": "#/definitions/RaidLegacyOptions"
-            }
-          },
-          "required": [
-            "id",
-            "agent_name",
-            "name",
-            "state",
-            "owner"
-          ],
-          "additionalProperties": true
-        },
-        {
-          "type": "array",
-          "items": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "boolean"
-            },
-            {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            {
-              "$ref": "#/definitions/RaidLegacyOptions"
-            }
-          ],
-          "minItems": 6,
-          "maxItems": 8
-        }
-      ]
-    },
-    "RaidRecordReply": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "owner": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "former_owner": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "paused": {
-              "type": "boolean"
-            },
-            "generation": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "x-json-integer": true
-            },
-            "members": {
-              "type": "array",
-              "items": {
-                "$ref": "#/x-client-result-schemas/RaidMemberRecordReply"
-              }
-            }
-          },
-          "required": [
-            "id",
-            "name",
-            "members"
-          ],
-          "additionalProperties": true
-        },
-        {
-          "type": "array",
-          "items": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 18446744073709551615,
-              "x-json-integer": true
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/x-client-result-schemas/RaidMemberRecordReply"
-              }
-            }
-          ],
-          "minItems": 7,
-          "maxItems": 7
-        }
-      ]
-    },
-    "SessionRaidReply": {
-      "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "role": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "owner": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "paused": {
-              "type": "boolean",
-              "default": false
-            }
-          },
-          "required": [
-            "id",
-            "name"
-          ],
-          "additionalProperties": true
-        },
-        {
-          "type": "array",
-          "items": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            {
-              "type": "boolean",
-              "default": false
-            }
-          ],
-          "minItems": 4,
-          "maxItems": 5
-        }
-      ]
-    },
-    "HistoryPruneReply": {
-      "type": "object",
-      "properties": {
-        "removed": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "failed": {
-          "type": "array",
-          "items": {}
-        }
-      },
-      "required": [
-        "removed",
-        "failed"
-      ],
-      "additionalProperties": true
-    }
-  },
   "x-rust-serde-records": {
     "MailboxSendParams": {
       "order": [
@@ -18979,9 +18186,6 @@
         ],
         "minItems": 1,
         "maxItems": 1
-      },
-      "x-client-result-schema": {
-        "$ref": "common.json#/definitions/InitializeReply"
       }
     }
   }

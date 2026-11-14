@@ -470,7 +470,7 @@ pub fn complete_names(default_state: Option<&Path>, words: Vec<String>) -> i32 {
     }
     for record in records.0 {
         if matches!(record.state.as_str(), "starting" | "running" | "stopping")
-            && let Some(name) = record.agent_name.as_deref()
+            && let name = record.agent_name.as_str()
             && !name.is_empty()
             && name
                 .bytes()

@@ -237,57 +237,6 @@
       }
     ]
   },
-  "historical_api1": {
-    "host_initialize": {
-      "api": 1,
-      "instance": "fixture-instance",
-      "role": "host",
-      "features": [
-        "package-grants",
-        "same-daemon-reconnect",
-        "state-subscribe",
-        "raw-terminal",
-        "agent-names",
-        "server-control",
-        "terminal-reattach"
-      ],
-      "limits": {
-        "header": 256,
-        "body": 16384,
-        "frame_seconds": 3,
-        "depth": 32,
-        "response_body": 1048576,
-        "calls": 4096,
-        "connections": 32,
-        "sessions": 16,
-        "output_queue": 2097152,
-        "snapshot": 921600,
-        "terminal_buffer": 65536
-      }
-    },
-    "sandbox_initialize": {
-      "api": 1,
-      "instance": "fixture-instance",
-      "role": "sandbox",
-      "features": ["package-grants", "terminal-detach"],
-      "limits": {
-        "header": 256,
-        "body": 4096,
-        "frame_seconds": 3,
-        "depth": 32,
-        "response_body": 1048576,
-        "calls": 2,
-        "connections": 8,
-        "sessions": 16,
-        "output_queue": 2097152,
-        "snapshot": 921600,
-        "terminal_buffer": 65536
-      }
-    },
-    "server_status": {"instance": "fixture-instance", "state": "running", "sessions": 0},
-    "server_stop": {"accepted": true},
-    "source": "2d1f7e92e9a7183727c4935b92155c6a47a59629:crates/controller/src/controller.rs (293c878 parent), initialization and server.status handlers"
-  },
   "self_status": {
     "id": "session-id",
     "agent_name": "goblin",
@@ -367,15 +316,15 @@
     {"schema": "SelfStatusReply", "result": {"raid": []}, "valid": false},
     {"schema": "SetWorktreeReply", "result": {"worktree": ["branch", "/tmp/branch"]}, "valid": false},
     {"schema": "SetWorktreeReply", "result": {"worktree": null}, "valid": true},
-    {"schema": "SetWorktreeReply", "result": {}, "valid": true},
+    {"schema": "SetWorktreeReply", "result": {}, "valid": false},
     {
       "schema": "SetWorktreeReply",
       "result": {"worktree": {"name": "branch", "path": "/tmp/branch", "future": true}},
       "valid": true
     },
-    {"schema": "SelfStatusReply", "result": {"raid": null, "created_by": null, "worktree": null}, "valid": true},
-    {"schema": "SelfStatusReply", "result": {"raid": {"future": true}}, "valid": true},
-    {"schema": "SelfStatusReply", "result": {"state": "finished", "agent_state": "future-activity"}, "valid": true}
+    {"schema": "SelfStatusReply", "result": {"raid": null, "created_by": null, "worktree": null}, "valid": false},
+    {"schema": "SelfStatusReply", "result": {"raid": {"future": true}}, "valid": false},
+    {"schema": "SelfStatusReply", "result": {"state": "finished", "agent_state": "future-activity"}, "valid": false}
   ],
   "host_session": {
     "id": "session-id",
@@ -449,20 +398,6 @@
     "terminal_attached": false,
     "worktree": {"name": "branch", "path": "/host/worktrees/branch"},
     "options": {"model": "fast"}
-  },
-  "host_session_legacy": {
-    "id": "session-id",
-    "agent_name": "goblin",
-    "name": "shell",
-    "configuration": "/host/manifest.json",
-    "state": "running",
-    "initial_packages": ["fish"],
-    "packages": [],
-    "terminal": "/host/terminal.sock",
-    "pty_eof": false,
-    "terminal_complete": false,
-    "terminal_interrupted": false,
-    "docker_scope": "legacy-scope"
   },
   "session_parameter_cases": [
     {"method": "sessions.list", "params": {}, "valid": true},
@@ -856,44 +791,6 @@
       "valid": true
     }
   ],
-  "original_api1": {
-    "source": "52fecebf46023423dfe5e6b82e1dd92aeabda647:crates/controller/src/controller.rs SessionRecord and initialization handler",
-    "host_initialize": {
-      "api": 1,
-      "instance": "fixture-instance",
-      "role": "host",
-      "features": ["package-grants", "same-daemon-reconnect", "state-subscribe", "raw-terminal"],
-      "limits": {
-        "header": 256,
-        "body": 16384,
-        "frame_seconds": 3,
-        "depth": 32,
-        "response_body": 1048576,
-        "calls": 4096,
-        "connections": 32,
-        "sessions": 16,
-        "output_queue": 2097152,
-        "snapshot": 921600,
-        "terminal_buffer": 65536
-      }
-    },
-    "host_session": {
-      "id": "session-id",
-      "name": "shell",
-      "configuration": "/host/manifest.json",
-      "state": "running",
-      "identity": {"pid": 42, "helper_userns": 1, "mount_owner": 2, "source_mountns": 3, "mountns": 4},
-      "initial_packages": ["fish"],
-      "packages": [],
-      "terminal": "/host/terminal.sock",
-      "pty_eof": false,
-      "terminal_complete": false,
-      "terminal_interrupted": false,
-      "exit_code": null,
-      "detail": null
-    },
-    "host_launch": {"session": "session-id", "state": "starting", "terminal": "/host/terminal.sock"}
-  },
   "lifecycle_parameter_cases": [
     {
       "endpoint": "host",
@@ -994,42 +891,19 @@
       }
     }
   ],
-  "legacy_run_targets": [{"name": "shell", "description": "Shell"}],
   "lifecycle_result_cases": [
     {
       "schema": "HostLaunchReply",
       "result": {"session": "session-id", "state": "starting", "terminal": "/host/terminal.sock"},
-      "valid": true
+      "valid": false
     },
-    {"schema": "HostLaunchReply", "result": {"session": "s", "state": "accepted"}, "valid": true},
-    {"schema": "MemberLaunchReply", "result": {"session": "s"}, "valid": true},
-    {"schema": "RunTargetListReply", "result": [{"name": "shell", "description": "Shell"}], "valid": true},
+    {"schema": "HostLaunchReply", "result": {"session": "s", "state": "accepted"}, "valid": false},
+    {"schema": "MemberLaunchReply", "result": {"session": "s"}, "valid": false},
+    {"schema": "RunTargetListReply", "result": [{"name": "shell", "description": "Shell"}], "valid": false},
     {"schema": "HostLaunchReply", "result": {"session": false}, "valid": false},
     {"schema": "MemberLaunchReply", "result": [], "valid": false},
     {"schema": "RunTargetListReply", "result": [[]], "valid": false}
   ],
-  "pre_launch_options_api1": {
-    "source": "857091adfdc4825f303d9eec4891e59471f0dea4:packages/daemon/src/controller.rs Start before d8362e5",
-    "host_start_params": {
-      "type": "object",
-      "properties": {
-        "key": {"$ref": "#/definitions/OperationKey"},
-        "configuration": {"$ref": "#/definitions/LaunchManifest"},
-        "name": {"$ref": "#/definitions/LaunchConfigurationName", "default": ""},
-        "agent_name": {"anyOf": [{"$ref": "#/definitions/LaunchAgentName"}, {"type": "null"}]},
-        "cwd": {"anyOf": [{"$ref": "#/definitions/HostPath"}, {"type": "null"}]},
-        "scope": {"anyOf": [{"$ref": "#/definitions/LaunchScope"}, {"type": "null"}]},
-        "dev_shell": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "rows": {"$ref": "#/definitions/LaunchDimension"},
-        "cols": {"$ref": "#/definitions/LaunchDimension"},
-        "detached": {"type": "boolean", "default": false},
-        "raid": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "recreate": {"anyOf": [{"type": "string"}, {"type": "null"}]}
-      },
-      "required": ["key", "configuration", "rows", "cols"],
-      "additionalProperties": false
-    }
-  },
   "exec_parameter_cases": [
     {"method": "sessions.exec", "params": {"session": "a"}, "valid": true, "decoded": true},
     {"method": "sessions.exec", "params": ["a"], "valid": true, "decoded": true},
@@ -2214,7 +2088,7 @@
         "message": null
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2231,7 +2105,7 @@
         "message": null
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2248,7 +2122,7 @@
         "message": null
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2299,7 +2173,7 @@
         "message": null
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2327,7 +2201,7 @@
         "log": "/host/job/output.log"
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2350,7 +2224,7 @@
         "message": null
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2367,7 +2241,7 @@
         "message": null
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2384,7 +2258,7 @@
         "message": null
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2401,7 +2275,7 @@
         "message": null
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2418,7 +2292,7 @@
         "message": null
       },
       "current": false,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2431,7 +2305,7 @@
         "state": "pending"
       },
       "current": false,
-      "legacy": true
+      "reader": false
     },
     {
       "result": {
@@ -2451,7 +2325,7 @@
         "log": null
       },
       "current": false,
-      "legacy": true
+      "reader": true
     },
     {
       "result": [
@@ -2471,17 +2345,17 @@
         null
       ],
       "current": false,
-      "legacy": true
+      "reader": false
     },
     {
       "result": ["package", "fixture-r1", "session-a", "snikk", "fixture-a1", "hello", "tests", "pending", null, null, null],
       "current": false,
-      "legacy": true
+      "reader": false
     },
     {
       "result": ["package", "fixture-r1", "session-a", "snikk", "fixture-a1", "hello", "tests", "pending", null, null],
       "current": false,
-      "legacy": false
+      "reader": false
     },
     {
       "result": {
@@ -2498,7 +2372,7 @@
         "message": null
       },
       "current": false,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2515,7 +2389,7 @@
         "message": null
       },
       "current": false,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2532,7 +2406,7 @@
         "message": null
       },
       "current": false,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2549,7 +2423,7 @@
         "message": null
       },
       "current": false,
-      "legacy": true
+      "reader": true
     }
   ],
   "host_job_active": {
@@ -2561,19 +2435,6 @@
     "reason": "tests",
     "message": null,
     "log": "/run/goblins/host-jobs/fixture-job-1/output.log"
-  },
-  "host_job_completed": {
-    "request": "fixture-job-1",
-    "status": "finished",
-    "name": "Tests",
-    "started_at": 100,
-    "subject": "host command",
-    "reason": "tests",
-    "message": "exit code 0",
-    "log": "/run/goblins/host-jobs/fixture-job-1/output.log",
-    "exit_code": 0,
-    "signal": null,
-    "code": 0
   },
   "host_job_result_cases": [
     {
@@ -2736,56 +2597,6 @@
     {"method": "raids.set_owner", "params": ["crew", "a", null, 0], "decoded": true, "valid": true},
     {"method": "raids.members", "params": {"raid": "invalid selector"}, "decoded": true, "valid": true}
   ],
-  "raid_record": {
-    "id": "raid-fixed",
-    "name": "crew",
-    "owner": "a",
-    "former_owner": null,
-    "paused": false,
-    "generation": 0,
-    "members": [
-      {
-        "id": "a",
-        "agent_name": "alpha",
-        "name": "shell",
-        "role": null,
-        "state": "running",
-        "owner": true,
-        "created_by": null,
-        "options": {}
-      },
-      {
-        "id": "b",
-        "agent_name": "beta",
-        "name": "codex",
-        "role": "reviewer",
-        "state": "starting",
-        "owner": false,
-        "created_by": "a",
-        "options": {"model": "fast", "effort": "high"}
-      }
-    ]
-  },
-  "raid_record_paused": {
-    "id": "raid-fixed",
-    "name": "crew",
-    "owner": null,
-    "former_owner": "a",
-    "paused": true,
-    "generation": 1,
-    "members": [
-      {
-        "id": "b",
-        "agent_name": "beta",
-        "name": "codex",
-        "role": "reviewer",
-        "state": "starting",
-        "owner": false,
-        "created_by": "a",
-        "options": {"model": "fast", "effort": "high"}
-      }
-    ]
-  },
   "raid_record_cases": [
     {
       "result": {
@@ -2819,7 +2630,7 @@
         ]
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2843,7 +2654,7 @@
         ]
       },
       "current": true,
-      "legacy": true
+      "reader": true
     },
     {
       "result": {
@@ -2855,7 +2666,7 @@
         ]
       },
       "current": false,
-      "legacy": true
+      "reader": false
     },
     {
       "result": {
@@ -2891,7 +2702,7 @@
         "extension": true
       },
       "current": false,
-      "legacy": true
+      "reader": true
     },
     {
       "result": [
@@ -2907,508 +2718,9 @@
         ]
       ],
       "current": false,
-      "legacy": true
+      "reader": false
     },
-    {"result": ["raid-fixed", "crew", "a", null, false, 0], "current": false, "legacy": false}
-  ],
-  "raid_display_cases": [
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": null,
-      "former_owner": "a",
-      "paused": true,
-      "generation": 1,
-      "members": [
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "members": [
-        {"id": "a", "agent_name": "alpha", "name": "shell", "state": "running", "owner": true},
-        {"id": "b", "agent_name": "beta", "name": "codex", "state": "starting", "owner": false}
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "future role",
-          "state": "future-state",
-          "owner": false,
-          "created_by": "a",
-          "options": {"new key": "", "new": "value"},
-          "extra": 1
-        }
-      ],
-      "extension": true
-    },
-    [
-      "raid-fixed",
-      "crew",
-      "a",
-      null,
-      false,
-      0,
-      [
-        ["a", "alpha", "shell", null, "running", true],
-        ["b", "beta", "codex", "reviewer", "starting", false, "a", {"model": "fast"}]
-      ]
-    ],
-    ["raid-fixed", "crew", "a", null, false, 0],
-    {
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {"id": "raid-fixed", "name": "crew", "owner": "a", "former_owner": null, "paused": false, "generation": 0},
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": -1,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 1.0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": null,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": 7,
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": null
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": null,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": null
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {"model": 3}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": 7,
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": null,
-          "state": "running",
-          "owner": true,
-          "created_by": true,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    {
-      "id": "raid-fixed",
-      "name": "crew",
-      "owner": "a",
-      "former_owner": null,
-      "paused": false,
-      "generation": 0,
-      "members": [
-        {
-          "id": "a",
-          "agent_name": "alpha",
-          "name": "shell",
-          "role": 7,
-          "state": "running",
-          "owner": true,
-          "created_by": null,
-          "options": {}
-        },
-        {
-          "id": "b",
-          "agent_name": "beta",
-          "name": "codex",
-          "role": "reviewer",
-          "state": "starting",
-          "owner": false,
-          "created_by": "a",
-          "options": {"model": "fast", "effort": "high"}
-        }
-      ]
-    },
-    null,
-    [],
-    1,
-    true,
-    {},
-    {
-      "name": "partial",
-      "id": 7,
-      "paused": true,
-      "former_owner": null,
-      "members": [
-        null,
-        {},
-        {
-          "id": "m",
-          "agent_name": "name",
-          "role": 3,
-          "name": "cfg",
-          "state": "future",
-          "owner": "true",
-          "created_by": "",
-          "options": {"a\n": "x‮", "b": 7, "c": "a, b"}
-        }
-      ]
-    },
-    {"members": "not an array"}
+    {"result": ["raid-fixed", "crew", "a", null, false, 0], "current": false, "reader": false}
   ],
   "sandbox_raid_parameter_cases": [
     {"method": "raids.create", "params": {"raid": "crew"}, "decoded": true, "valid": true},
@@ -3425,12 +2737,12 @@
     {"method": "raids.members", "params": null, "decoded": false, "valid": false}
   ],
   "session_raid_cases": [
-    {"result": {"id": "r", "name": "crew", "role": null, "owner": "a", "paused": false}, "legacy": true},
-    {"result": {"id": "r", "name": "crew"}, "legacy": true},
-    {"result": ["r", "crew", null, "a"], "legacy": true},
-    {"result": ["r", "crew", "reviewer", null, true], "legacy": true},
-    {"result": ["r", "crew", null, null, false, 7], "legacy": false},
-    {"result": {"id": "r", "name": "crew", "extra": 7}, "legacy": true}
+    {"result": {"id": "r", "name": "crew", "role": null, "owner": "a", "paused": false}, "reader": true},
+    {"result": {"id": "r", "name": "crew"}, "reader": false},
+    {"result": ["r", "crew", null, "a"], "reader": false},
+    {"result": ["r", "crew", "reviewer", null, true], "reader": false},
+    {"result": ["r", "crew", null, null, false, 7], "reader": false},
+    {"result": {"id": "r", "name": "crew", "extra": 7}, "reader": false}
   ],
   "raid_owner_requests": [
     {
@@ -3542,181 +2854,6 @@
     "claim_generation": 0,
     "failure": null
   },
-  "mailbox_message_cases": [
-    {
-      "value": {
-        "id": "i-m1",
-        "conversation": "i-c1",
-        "sender": "host",
-        "recipient": "a",
-        "sender_name": "host",
-        "recipient_name": "alpha",
-        "in_reply_to": null,
-        "body": "hello\n🐟",
-        "created_sequence": 1,
-        "created_at": 9,
-        "state": "queued",
-        "claim_generation": 0,
-        "failure": null
-      },
-      "decoded": true
-    },
-    {
-      "value": {
-        "id": "i-m1",
-        "conversation": "i-c1",
-        "sender": "host",
-        "recipient": "a",
-        "sender_name": "host",
-        "recipient_name": "alpha",
-        "in_reply_to": null,
-        "body": "hello\n🐟",
-        "created_sequence": 1,
-        "created_at": 9,
-        "state": "queued",
-        "claim_generation": 0,
-        "failure": null,
-        "operation": {"request": "r", "kind": "terminal", "subject": "build", "status": "exited", "message": "exit code 0\nlines"}
-      },
-      "decoded": true
-    },
-    {
-      "value": {
-        "id": "i-m1",
-        "conversation": "i-c1",
-        "sender": "host",
-        "recipient": "a",
-        "sender_name": "host",
-        "recipient_name": "alpha",
-        "in_reply_to": null,
-        "body": "hello\n🐟",
-        "created_sequence": 1,
-        "created_at": 9,
-        "state": "queued",
-        "claim_generation": 0,
-        "failure": null,
-        "raid": {"id": "r", "name": "crew", "event": "resumed", "owner": "a"}
-      },
-      "decoded": true
-    },
-    {
-      "value": {
-        "id": "i-m1",
-        "conversation": "i-c1",
-        "sender": "host",
-        "recipient": "a",
-        "sender_name": "host",
-        "recipient_name": "alpha",
-        "in_reply_to": null,
-        "body": "hello\n🐟",
-        "created_sequence": 1,
-        "created_at": 9,
-        "state": "queued",
-        "claim_generation": 0,
-        "failure": null,
-        "operation": {"request": "r", "kind": "extension", "subject": "build", "status": "future", "message": null}
-      },
-      "decoded": true
-    },
-    {
-      "value": {
-        "id": "i-m1",
-        "conversation": "i-c1",
-        "sender": "host",
-        "recipient": "a",
-        "in_reply_to": null,
-        "body": "hello\n🐟",
-        "created_sequence": 1,
-        "created_at": 9,
-        "state": "queued",
-        "claim_generation": 0,
-        "failure": null,
-        "sender_path": "host",
-        "recipient_path": "alpha"
-      },
-      "decoded": true
-    },
-    {
-      "value": {
-        "id": "i-m1",
-        "conversation": "i-c1",
-        "sender": "host",
-        "recipient": "a",
-        "sender_name": "host",
-        "recipient_name": "alpha",
-        "body": "hello\n🐟",
-        "created_sequence": 1,
-        "created_at": 9,
-        "state": "queued",
-        "claim_generation": 0,
-        "extension": {"ignored": true}
-      },
-      "decoded": true
-    },
-    {
-      "value": ["i-m1", "i-c1", "host", "a", "host", "alpha", null, "hello\n🐟", 1, 9, "queued", 0, null],
-      "decoded": true
-    },
-    {
-      "value": [
-        "i-m1",
-        "i-c1",
-        "host",
-        "a",
-        "host",
-        "alpha",
-        null,
-        "hello\n🐟",
-        1,
-        9,
-        "queued",
-        0,
-        null,
-        {"request": "r", "kind": "terminal", "subject": "build", "status": "exited", "message": "exit code 0\nlines"}
-      ],
-      "decoded": true
-    },
-    {
-      "value": [
-        "i-m1",
-        "i-c1",
-        "host",
-        "a",
-        "host",
-        "alpha",
-        null,
-        "hello\n🐟",
-        1,
-        9,
-        "queued",
-        0,
-        null,
-        null,
-        {"id": "r", "name": "crew", "event": "resumed", "owner": "a"}
-      ],
-      "decoded": true
-    },
-    {"value": ["i-m1", "i-c1", "host", "a", "host", "alpha", null, "hello\n🐟", 1, 9, "queued", 0], "decoded": false},
-    {
-      "value": {
-        "id": "i-m1",
-        "conversation": "i-c1",
-        "sender": "host",
-        "recipient": "a",
-        "sender_name": "host",
-        "recipient_name": "alpha",
-        "in_reply_to": null,
-        "body": "hello\n🐟",
-        "created_sequence": 1,
-        "created_at": 9,
-        "state": "queued",
-        "claim_generation": 0,
-        "failure": null,
-        "operation": {"request": "r", "kind": "terminal", "subject": "build", "status": "exited"}
-      },
-      "decoded": true
-    }
-  ],
   "mailbox_mutation_cases": [
     {"method": "messages.send", "params": {"key": "k", "to": "alpha", "body": "hello"}, "decoded": true, "valid": true},
     {"method": "messages.send", "params": ["k", "alpha", "hello", null], "decoded": true, "valid": true},
@@ -4398,15 +3535,6 @@
       "valid": true
     }
   ],
-  "inbox_status": {
-    "queued": 0,
-    "claim": null,
-    "head": null,
-    "revision": 0,
-    "audit_failed": false,
-    "raid_audit_failed": false,
-    "operations": []
-  },
   "inbox_status_cases": [
     {
       "value": {
@@ -4420,7 +3548,7 @@
       },
       "valid": true
     },
-    {"value": {"queued": 0, "claim": null, "head": null, "revision": 0, "audit_failed": false}, "valid": true},
+    {"value": {"queued": 0, "claim": null, "head": null, "revision": 0, "audit_failed": false}, "valid": false},
     {
       "value": {
         "queued": 1,
@@ -4631,7 +3759,7 @@
     {"raw": null, "view": null},
     {"raw": ["future"], "view": null}
   ],
-  "native_inbox_status": {"queued": 0, "claim": null, "head": null, "revision": 0, "audit_failed": false},
+  "native_inbox_status": {"queued": 0, "claim": null, "head": null, "revision": 0, "audit_failed": false, "raid_audit_failed": false, "operations": []},
   "communications_event": {
     "instance": "i",
     "sequence": 1,
@@ -5094,43 +4222,6 @@
     },
     {"method": "history.prune", "result": {"removed": [1], "failed": [], "dry_run": false}, "valid": false}
   ],
-  "history_legacy_list_cases": [
-    null,
-    [],
-    17,
-    {},
-    {"records": null, "truncated": "yes"},
-    {"records": ["future", null, {}, {"id": "r", "future": [true]}], "truncated": true},
-    {
-      "records": [
-        {
-          "version": 3,
-          "id": "r",
-          "configuration": "shell",
-          "agent_name": "scout",
-          "cwd": "/tmp/work",
-          "scope": null,
-          "dev_shell": null,
-          "docker_enabled": true,
-          "packages": {"approved": ["ripgrep"], "denied": ["git"], "auto_approve": ["nix"]},
-          "variables": {"session_name": "hello", "session_id": "thread"},
-          "sessions": ["s1", "s2"],
-          "skipped": [{"name": "docker", "reason": "not restored"}],
-          "worktree": {"name": "topic", "path": "/tmp/tree"},
-          "created": 1,
-          "updated": 9,
-          "stopped": null,
-          "running": false
-        }
-      ],
-      "truncated": false
-    }
-  ],
-  "history_legacy_prune_cases": [
-    {"result": {"removed": ["r"], "failed": [null, 5, {}, {"id": false, "reason": []}], "future": true}, "valid": true},
-    {"result": {"removed": [], "failed": []}, "valid": true},
-    {"result": null, "valid": false}
-  ],
   "state_parameter_cases": [
     {"method": "state.subscribe", "params": {}, "valid": true},
     {"method": "state.subscribe", "params": [], "valid": true},
@@ -5229,30 +4320,6 @@
         }
       },
       "valid": false
-    }
-  ],
-  "state_legacy_initial_cases": [
-    null,
-    [],
-    17,
-    {},
-    {"subscription": 0, "sequence": "1", "snapshot": null},
-    {"subscription": "sub", "sequence": 1.0, "snapshot": {"instance": "i"}},
-    {
-      "subscription": "sub",
-      "sequence": 18446744073709551615,
-      "snapshot": {"instance": "other", "sessions": [], "permissions": []}
-    },
-    {
-      "subscription": "sub",
-      "sequence": 0,
-      "snapshot": {
-        "instance": "i",
-        "sessions": [],
-        "permissions": [],
-        "raids": [],
-        "messaging": {"audit_failed": false, "raid_audit_failed": false}
-      }
     }
   ],
   "c16a1_supervisor_notifications": [
@@ -7421,78 +6488,6 @@
       "valid": true
     }
   ],
-  "c17d2_lifecycle_bindings": [
-    {
-      "method": "Command.ScopeFailed",
-      "schema": "SupervisorEmptyParams",
-      "marker": "CommandScopeFailed",
-      "direction": "daemon-to-supervisor",
-      "fields": []
-    },
-    {
-      "method": "Command.Export",
-      "schema": "SupervisorCommandExportParams",
-      "marker": "CommandExport",
-      "direction": "daemon-to-supervisor",
-      "fields": ["member"]
-    },
-    {
-      "method": "Command.Stop",
-      "schema": "SupervisorEmptyParams",
-      "marker": "CommandStop",
-      "direction": "daemon-to-supervisor",
-      "fields": []
-    },
-    {
-      "method": "Event.ScopeFailed",
-      "schema": "SupervisorEventScopeFailedParams",
-      "marker": "EventScopeFailed",
-      "direction": "supervisor-to-daemon",
-      "fields": ["name"]
-    },
-    {
-      "method": "Event.ScopeNeeded",
-      "schema": "SupervisorEventScopeNeededParams",
-      "marker": "EventScopeNeeded",
-      "direction": "supervisor-to-daemon",
-      "fields": ["name"]
-    },
-    {
-      "method": "Event.Mode",
-      "schema": "SupervisorEventModeParams",
-      "marker": "EventMode",
-      "direction": "supervisor-to-daemon",
-      "fields": ["server"]
-    },
-    {
-      "method": "Event.Stopped",
-      "schema": "SupervisorEventStoppedParams",
-      "marker": "EventStopped",
-      "direction": "supervisor-to-daemon",
-      "fields": ["exit_code"]
-    },
-    {
-      "method": "Event.Failed",
-      "schema": "SupervisorEventFailedParams",
-      "marker": "EventFailed",
-      "direction": "supervisor-to-daemon",
-      "fields": ["error"]
-    },
-    {
-      "method": "Event.InitLost",
-      "schema": "SupervisorEmptyParams",
-      "marker": "EventInitLost",
-      "direction": "supervisor-to-daemon",
-      "fields": []
-    },
-    {
-      "method": "Event.PayloadExited",
-      "schema": "SupervisorEmptyParams",
-      "marker": "EventPayloadExited",
-      "direction": "supervisor-to-daemon",
-      "fields": []
-    }
-  ],
   "c17d2_notification_cases": [
     {
       "direction": "daemon-to-supervisor",
@@ -7577,88 +6572,6 @@
       "valid": true
     },
     {"frame": {"jsonrpc": "2.0", "method": "Command.ScopeMembership", "params": {"result": {}}}, "valid": false}
-  ],
-  "c17d3b1_started_policy_bindings": [
-    {
-      "schema": "SupervisorStartedEditor",
-      "name": "Editor",
-      "fields": ["kind", "command"],
-      "types": ["String", "String"],
-      "required": ["kind", "command"],
-      "closed": true,
-      "derives": ["Clone", "Debug", "PartialEq", "Eq", "Serialize", "Deserialize"]
-    },
-    {
-      "schema": "SupervisorStartedOnAttach",
-      "name": "OnAttach",
-      "fields": ["command", "timeout", "wait_for"],
-      "types": ["Vec<String>", "u64", "Vec<String>"],
-      "required": ["command", "timeout"],
-      "closed": true,
-      "derives": ["Clone", "Debug", "Serialize", "Deserialize"]
-    },
-    {
-      "schema": "SupervisorStartedHandlers",
-      "name": "Handlers",
-      "fields": ["on_attach", "on_detach"],
-      "types": ["OnAttach", "Option<Vec<String>>"],
-      "required": ["on_attach"],
-      "closed": false,
-      "derives": ["Clone", "Debug", "Serialize", "Deserialize"]
-    },
-    {
-      "schema": "SupervisorStartedScopePolicy",
-      "name": "ScopePolicy",
-      "fields": ["name", "docker", "pid"],
-      "types": ["String", "bool", "bool"],
-      "required": ["name", "docker", "pid"],
-      "closed": false,
-      "derives": ["Clone", "Debug", "Serialize", "Deserialize"]
-    },
-    {
-      "schema": "SupervisorStartedDevShellPolicy",
-      "name": "DevShellPolicy",
-      "fields": ["reference", "path"],
-      "types": ["String", "::std::path::PathBuf"],
-      "required": ["reference", "path"],
-      "closed": false,
-      "derives": ["Clone", "Debug", "Serialize", "Deserialize"]
-    },
-    {
-      "schema": "SupervisorStartedPolicy",
-      "name": "Policy",
-      "fields": [
-        "configuration",
-        "description",
-        "run_targets",
-        "integration",
-        "bypass_permissions",
-        "editor",
-        "nix",
-        "host_commands",
-        "scope",
-        "dev_shell",
-        "initial_packages",
-        "handlers"
-      ],
-      "types": [
-        "String",
-        "String",
-        "Vec<String>",
-        "Option<String>",
-        "bool",
-        "Option<Editor>",
-        "bool",
-        "bool",
-        "Option<ScopePolicy>",
-        "Option<DevShellPolicy>",
-        "Vec<::std::path::PathBuf>",
-        "Option<Handlers>"
-      ],
-      "required": ["configuration", "description", "run_targets", "bypass_permissions", "nix", "host_commands", "initial_packages"],
-      "closed": false,
-      "derives": ["Clone", "Debug", "Serialize", "Deserialize"]
-    }
   ],
   "c17d3b1_started_policy_cases": {
     "SupervisorStartedEditor": [
@@ -8041,24 +6954,6 @@
       }
     ]
   },
-  "c17d3b2_feature_bindings": [
-    {"native": "LivePackages", "wire": "live-packages"},
-    {"native": "DevShells", "wire": "dev-shells"},
-    {"native": "FlakeApps", "wire": "flake-apps"},
-    {"native": "NixDaemon", "wire": "nix-daemon"},
-    {"native": "HostJobs", "wire": "host-jobs"},
-    {"native": "Exec", "wire": "exec"},
-    {"native": "AttachClients", "wire": "attach-clients"},
-    {"native": "Scopes", "wire": "scopes"},
-    {"native": "SharedPid", "wire": "shared-pid"},
-    {"native": "Docker", "wire": "docker"}
-  ],
-  "c17d3b2_identity_binding": {
-    "fields": ["pid", "helper_userns", "mount_owner", "source_mountns", "mountns"],
-    "types": ["u32", "u64", "u64", "u64", "u64"],
-    "refs": ["SupervisorStartedPid", "SupervisorSequence", "SupervisorSequence", "SupervisorSequence", "SupervisorSequence"],
-    "derives": ["Clone", "Debug", "Serialize", "Deserialize"]
-  },
   "c17d3b2_started_value_cases": {
     "SupervisorStartedFeature": [
       {"value": "live-packages", "valid": true},
@@ -8277,40 +7172,6 @@
       {"value": null, "valid": false}
     ]
   },
-  "c17d3b3_restoration_bindings": [
-    {
-      "name": "Skipped",
-      "fields": ["name", "reason"],
-      "types": ["String", "String"],
-      "required": ["name", "reason"],
-      "closed": true,
-      "derives": ["Clone", "Debug", "PartialEq", "Eq", "Serialize", "Deserialize"]
-    },
-    {
-      "name": "Recreated",
-      "fields": ["packages", "auto_approve", "skipped", "fresh"],
-      "types": ["Vec<(String,::std::path::PathBuf)>", "Vec<(String,::std::path::PathBuf)>", "Vec<Skipped>", "Option<String>"],
-      "required": ["packages", "auto_approve", "skipped"],
-      "closed": false,
-      "derives": ["Serialize", "Deserialize"]
-    },
-    {
-      "name": "Auto",
-      "fields": ["rooted", "skipped"],
-      "types": ["Vec<(String,::std::path::PathBuf)>", "Vec<Skipped>"],
-      "required": ["rooted", "skipped"],
-      "closed": false,
-      "derives": ["Default", "Serialize", "Deserialize"]
-    },
-    {
-      "name": "Report",
-      "fields": ["folder", "checkout", "worktree", "detail"],
-      "types": ["Option<::std::path::PathBuf>", "Option<::std::path::PathBuf>", "Option<String>", "Option<String>"],
-      "required": [],
-      "closed": false,
-      "derives": ["Clone", "Debug", "Default", "PartialEq", "Eq", "Serialize", "Deserialize"]
-    }
-  ],
   "c17d3b3_restoration_cases": {
     "SupervisorStartedSkipped": [
       {
@@ -8539,33 +7400,6 @@
       {"value": [[0, "p"]], "valid": false},
       {"value": [["n", null]], "valid": false}
     ]
-  },
-  "c17d3b4_started_binding": {
-    "schema": "SupervisorEventStartedParams",
-    "method": "Event.Started",
-    "marker": "EventStarted",
-    "direction": "supervisor-to-daemon",
-    "fields": ["docker_enabled", "policy", "support", "dev_shell", "identity", "recreated", "auto", "worktrees"],
-    "types": [
-      "bool",
-      "Box<crate::contract::started_metadata::Policy>",
-      "crate::contract::SupervisorStartedSupport",
-      "String",
-      "crate::contract::started_metadata::Identity",
-      "Option<Box<crate::contract::started_metadata::Recreated>>",
-      "Box<crate::contract::started_metadata::Auto>",
-      "Box<crate::contract::started_metadata::Report>"
-    ],
-    "shapes": {
-      "docker_enabled": {"type": "boolean"},
-      "policy": {"$ref": "#/definitions/SupervisorStartedPolicy"},
-      "support": {"$ref": "#/definitions/SupervisorStartedSupport"},
-      "identity": {"$ref": "#/definitions/SupervisorStartedIdentity"},
-      "recreated": {"anyOf": [{"$ref": "#/definitions/SupervisorStartedRecreated"}, {"type": "null"}]},
-      "auto": {"$ref": "#/definitions/SupervisorStartedAuto"},
-      "worktrees": {"$ref": "#/definitions/SupervisorStartedReport"},
-      "dev_shell": {"$ref": "#/definitions/SupervisorStartedDevShellText"}
-    }
   },
   "c17d3b4_started_cases": [
     {

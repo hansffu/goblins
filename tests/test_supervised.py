@@ -53,27 +53,6 @@ class SupervisedTests(unittest.TestCase):
     def assert_reaped(self, pid):
         self.d.wait(lambda: not Path(f"/proc/{pid}").exists())
 
-    def test_former_debug_local_variable_cannot_select_an_inprocess_runtime(self):
-        env = {**os.environ, "GOBLINS_DEBUG_LOCAL_RUNTIME": "1"}
-        self.d = Daemon(self.application, env=env)
-        self.addCleanup(self.d.close)
-        self.assertEqual(self.d.env["GOBLINS_DEBUG_LOCAL_RUNTIME"], "1")
-        # tests/run.py supplies a freshly built Cargo debug controller; direct
-        # packaged invocations additionally check release behavior. Source
-        # boundary tests reject the retired debug-only selector independently.
-        if controller := os.environ.get("GOBLINS_LOCAL_CONTROLLER"):
-            self.assertEqual(Path(f"/proc/{self.d.process.pid}/exe").resolve(), Path(controller).resolve())
-        launch, supervisor = self.launch(name="always-supervised")
-        self.assertNotEqual(supervisor, self.d.process.pid)
-        terminal = self.d.terminal(launch)
-        self.addCleanup(terminal.close)
-        self.d.rpc.call("sessions.stop", {"session": launch["session"]})
-        self.d.wait(lambda: not (self.d.state / launch["session"] / "resources").exists())
-        while terminal.recv(4096):
-            pass
-        terminal.close()
-        self.assert_reaped(supervisor)
-
     def test_foreground_supervisor_preserves_payload_nofile_and_ambient_capacity(self):
         parent_limits = resource.getrlimit(resource.RLIMIT_NOFILE)
         for soft in (128, 512):

@@ -17,134 +17,6 @@ SCHEMA = ROOT / "libs/api/schema"
 ELISP_READERS = ROOT / "emacs/goblins-api-generated.el"
 ENDPOINTS = ("host", "sandbox", "attach")
 PRIVATE_ENDPOINTS = ("supervisor", "scope", "guardian")
-NORMALIZATIONS = {
-    "raid-members-display": "Read raid/member display strings independently with - fallback, booleans strictly, members only when an array, created_by string presence and existing escaped/sorted option rendering; accept non-object legacy results.",
-    "state-subscribe-fields": "Project string subscription, u64 sequence and raw snapshot independently; preserve validation only after nonblocking setup in the Rust consumer, including original missing-field diagnostics and initial cross-instance acceptance.",
-    "history-list-fields": "Read records only as an array (otherwise empty) and truncated only as true; retain every raw record and additive field.",
-    "history-prune-fields": "Require failed array and removed string array, decoding failed first; retain raw failed rows for independent dash fallback and ignore result dry_run.",
-    "communications-page-fields": "Read events only as an array, cursor/latest only as u64 JSON integers, and session only as a string; malformed fields and nonobjects remain absent so the CLI retains its original printing and diagnostic order.",
-    "ignore-successful-body": "Ignore the successful body, including non-objects; retain the original validated JSON for printing.",
-    "permission-record-fields": "Map original positional record order, default missing kind to package, retain required string fields, nullable options and arbitrary preview JSON, ignoring additive record fields.",
-    "permission-list-records": "Apply the compatible permission-record reader element-wise to the result list.",
-    "permission-request-fields": "Independently read string request/status/message and signed i64 code; other values and non-objects become absent, preserving the host CLI fallbacks and original detached JSON output.",
-    "permission-grant-fields": "Preserve the closed grant CLI result decoder, optional named message and exact positional request/status/message tuple, followed by identifier and ready/denied/error checks.",
-    "permission-decision-fields": "Independently read boolean accepted/approved and string request for the typed projection; successful bodies remain otherwise ignored, and the plain frontend prints the original validated JSON.",
-    "editor-open-fields": "Read signed i64 code and string message independently; absent/malformed fields and non-objects retain exit code 1 and no message as fallbacks.",
-    "devshell-preview-display": "Normalize recognized preview fields independently while preserving CLI/TUI numeric display fallbacks and object/array side presence; reject non-object diff results.",
-    "devshell-lock-fields": "Read string path or absent, unsigned u64 generation or zero, arbitrary lock JSON or null.",
-    "flake-run-fields": "Read string program or absent; other fields are ignored.",
-    "exec-field-fallback": "Read code/signal independently as signed 64-bit JSON integers and message as a string; other values become null. A non-object result has no recognized fields.",
-    "terminal-create-fields": "Read a string id independently; all other input becomes an absent id, preserving the CLI's ? fallback.",
-    "terminal-list-display": "Iterate terminals only when it is an array. Each item independently retains string identity/display fields, boolean attached and JSON-rendered rows/cols (missing means null).",
-    "terminal-close-fields": "The CLI ignores close results; normalize only a boolean accepted when present.",
-    "terminal-read-fields": "Read a string text independently, otherwise absent (printed as an empty line).",
-    "terminal-wait-fields": "Read string status/line/text and signed 64-bit integer code/signal independently. Missing or malformed fields are absent; an unknown/missing status retains the timeout report.",
-}
-
-
-def normalize_reply(profile, result):
-    if profile == "state-subscribe-fields":
-        fields=result if isinstance(result,dict) else {}
-        seq=fields.get("sequence")
-        return dict(subscription=fields.get("subscription") if isinstance(fields.get("subscription"),str) else None,
-                    sequence=seq if type(seq) is int and 0<=seq<2**64 else None,snapshot=fields.get("snapshot"))
-    if profile == "history-list-fields":
-        fields=result if isinstance(result,dict) else {}
-        return dict(records=fields["records"] if isinstance(fields.get("records"),list) else [],truncated=fields.get("truncated") is True)
-    if profile == "history-prune-fields":
-        return dict(removed=result["removed"],failed=result["failed"])
-    if profile == "communications-page-fields":
-        obj=result if isinstance(result,dict) else {}
-        integer=lambda key:obj.get(key) if type(obj.get(key)) is int and 0<=obj[key]<=2**64-1 else None
-        return dict(events=obj.get("events") if isinstance(obj.get("events"),list) else None,cursor=integer("cursor"),latest=integer("latest"),session=obj.get("session") if isinstance(obj.get("session"),str) else None)
-    if profile == "ignore-successful-body":return {}
-    if profile == "raid-members-display":
-        fields=result if isinstance(result,dict) else {}
-        def field(value,key):return value.get(key) if isinstance(value,dict) else None
-        def text(value,key):
-            value=field(value,key)
-            return value if isinstance(value,str) else "-"
-        def plain(value):return "".join(f"\\u{ord(c):04x}" if ord(c)<32 or 127<=ord(c)<160 or ord(c) in (0x2028,0x2029) or 0x202a<=ord(c)<=0x202e or 0x2066<=ord(c)<=0x2069 else c for c in value)
-        members=[]
-        values=fields.get("members")
-        for member in values if isinstance(values,list) else []:
-            options=field(member,"options")
-            choices=", ".join(plain(f"{key}={value if isinstance(value,str) else '?'}") for key,value in sorted(options.items())) if isinstance(options,dict) else ""
-            members.append(dict(**{key:text(member,key) for key in ("id","agent_name","name","role","state")},owner=field(member,"owner") is True,created=isinstance(field(member,"created_by"),str),options=choices.replace(", ",",") if choices else "-"))
-        return dict(**{key:text(fields,key) for key in ("id","name","former_owner")},paused=fields.get("paused") is True,members=members)
-    if profile == "permission-list-records":
-        return [normalize_reply("permission-record-fields",v) for v in result]
-    if profile == "permission-record-fields":
-        order=("kind","id","session","agent_name","approval","package","reason","state","approved","preview","message","name","started_at","log")
-        fields=dict(zip(order,result)) if isinstance(result,list) else result.copy()
-        fields.setdefault("kind","package")
-        for key in ("approved","preview","message"):fields.setdefault(key,None)
-        return {key:value for key,value in fields.items() if key in order}
-    fields = result if isinstance(result, dict) else {}
-    text = lambda name: fields.get(name) if isinstance(fields.get(name), str) else None
-    if profile == "devshell-preview-display":
-        def field(v,key):return v.get(key) if isinstance(v,dict) else None
-        def text(v,key):
-            value=field(v,key)
-            return value if isinstance(value,str) else ""
-        def optional(v,key):
-            value=field(v,key)
-            return value if isinstance(value,str) else None
-        def items(v,key):
-            value=field(v,key)
-            return value if isinstance(value,list) else []
-        def number(v,key):
-            value=field(v,key)
-            return dict(json=json.dumps(value,ensure_ascii=False,separators=(",",":"),sort_keys=True),unsigned=value if type(value) is int and 0<=value<2**64 else None)
-        def locked(v,key):
-            value=field(v,key)
-            return dict(source=optional(value,"source"),id=text(value,"id"),date=optional(value,"date")) if isinstance(value,dict) else None
-        def versions(v,key):
-            value=field(v,key)
-            return [s if isinstance(s,str) else "" for s in value] if isinstance(value,list) else None
-        return dict(reference=text(fields,"reference"),**{"from":number(fields,"from")},to=number(fields,"to"),
-            attention=[dict(**{key:text(n,key) for key in ("kind","input","source","old","new")},count=number(n,"count")) for n in items(fields,"attention")],
-            files=[dict(path=text(f,"path"),added=number(f,"added"),removed=number(f,"removed")) for f in items(fields,"files")],
-            inputs=[dict(name=text(c,"name"),change=text(c,"change"),old=locked(c,"old"),new=locked(c,"new")) for c in items(fields,"inputs")],
-            packages=[dict(name=text(c,"name"),change=text(c,"change"),old=versions(c,"old"),new=versions(c,"new")) for c in items(fields,"packages")],
-            env=[dict(name=text(c,"name"),change=text(c,"change"),old=optional(c,"old"),new=optional(c,"new"),long=field(c,"long") is True) for c in items(fields,"env")],
-            fetch=number(fields,"fetch"),build=number(fields,"build"),download=optional(fields,"download"),
-            incoming=[dict(action=text(c,"action"),name=text(c,"name"),versions=versions(c,"versions")) for c in items(fields,"incoming")],diff=text(fields,"diff"))
-    if profile == "flake-run-fields": return dict(program=text("program"))
-    if profile == "devshell-lock-fields":
-        generation=fields.get("generation")
-        return dict(path=text("path"), lock=fields.get("lock"), generation=generation if type(generation) is int and 0 <= generation < 2**64 else 0)
-    if profile == "permission-decision-fields":
-        return dict(accepted=fields.get("accepted") if type(fields.get("accepted")) is bool else None,approved=fields.get("approved") if type(fields.get("approved")) is bool else None,request=text("request"))
-    if profile == "permission-grant-fields":
-        if isinstance(result,list):
-            result=dict(zip(("request","status","message"),result))
-        return dict(request=result["request"],status=result["status"],message=result.get("message"))
-    if profile in ("permission-request-fields", "editor-open-fields"):
-        code=fields.get("code")
-        normalized=dict(code=code if type(code) is int and -(2**63)<=code<2**63 else None,message=text("message"))
-        if profile == "permission-request-fields":normalized.update(request=text("request"),status=text("status"))
-        return normalized
-    if profile == "exec-field-fallback":
-        normalized = {name: (value if type(value) is int and -(2**63) <= value < 2**63 else None) for name in ("code", "signal") for value in [fields.get(name)]}
-        return dict(normalized, message=text("message"))
-    if profile == "terminal-create-fields": return dict(id=text("id"))
-    if profile == "terminal-close-fields": return dict(accepted=fields.get("accepted") if type(fields.get("accepted")) is bool else None)
-    if profile == "terminal-read-fields": return dict(text=text("text"))
-    if profile == "terminal-wait-fields":
-        normalized={name:text(name) for name in ("status","line","text")}
-        normalized.update({name:value if type(value) is int and -(2**63)<=value<2**63 else None for name in ("code","signal") for value in [fields.get(name)]})
-        return normalized
-    if profile == "terminal-list-display":
-        terminals=[]
-        for item in fields.get("terminals", []) if isinstance(fields.get("terminals"), list) else []:
-            item=item if isinstance(item, dict) else {}
-            row={key: item.get(key) if isinstance(item.get(key), str) else None for key in ("id","name","label","origin")}
-            row.update(attached=item.get("attached") if type(item.get("attached")) is bool else None)
-            row.update({key:json.dumps(item.get(key),ensure_ascii=False,sort_keys=True,separators=(",",":")) for key in ("rows","cols")})
-            terminals.append(row)
-        return dict(terminals=terminals)
-    raise ValueError("unknown client normalization")
 
 
 def read(name):
@@ -218,7 +90,7 @@ def resolve(schema):
 
 
 def schema_validator(schema):
-    return Validator({**resolve(schema), "definitions": common()["definitions"], "x-envelope-schemas": common()["x-envelope-schemas"], "x-positional-schemas": common()["x-positional-schemas"], "x-client-result-schemas": common()["x-client-result-schemas"]})
+    return Validator({**resolve(schema), "definitions": common()["definitions"], "x-envelope-schemas": common()["x-envelope-schemas"], "x-positional-schemas": common()["x-positional-schemas"]})
 
 
 def method(endpoint, name):
@@ -241,7 +113,7 @@ def validate_params(endpoint, name, params):
     return True
 
 
-def validate_notification(endpoint, direction, notification, compatibility=False):
+def validate_notification(endpoint, direction, notification):
     if not isinstance(notification,dict):return False
     private=endpoint in PRIVATE_ENDPOINTS
     concrete=("daemon-to-supervisor","supervisor-to-daemon")
@@ -250,16 +122,6 @@ def validate_notification(endpoint, direction, notification, compatibility=False
                   (n["direction"] == direction or
                    (private and n["direction"] == "bidirectional" and direction in concrete))), None)
     if entry is None: return False
-    if compatibility and entry.get("x-client-normalization") == "host-submitted-legacy":
-        params=notification.get("params",{})
-        request=params.get("request") if isinstance(params,dict) else None
-        schema_validator(entry["x-client-params-schema"]).validate(dict(request=request if isinstance(request,str) else ""))
-        return True
-    if compatibility and entry.get("x-client-normalization") == "attach-waiting-legacy":
-        params=notification.get("params",{})
-        missing=params.get("missing") if isinstance(params,dict) else None
-        schema_validator(entry["x-client-params-schema"]).validate(dict(has_missing=isinstance(missing,list) and bool(missing)))
-        return True
     if set(notification) - {"jsonrpc", "method", "params"} or notification.get("jsonrpc") != "2.0":
         raise ValidationError("invalid notification envelope")
     if private and "params" not in notification:
@@ -271,7 +133,7 @@ def validate_notification(endpoint, direction, notification, compatibility=False
     return True
 
 
-def validate_completion(name, reply, compatibility=False):
+def validate_completion(name, reply):
     entry=next((e for e in document("attach")["x-completions"] if e["name"]==name),None)
     if entry is None:return False
     if not isinstance(reply,dict):raise ValidationError("invalid completion envelope")
@@ -279,33 +141,26 @@ def validate_completion(name, reply, compatibility=False):
     schema_validator(common()["x-envelope-schemas"][shape]).validate(reply)
     if type(reply.get("id")) is not int or reply["id"] != entry["id"]:raise ValidationError("invalid completion id")
     if "error" in reply:
-        if not compatibility and reply["error"]["code"] not in [e["code"] for e in entry["errors"]]:raise ValidationError("unlisted attachment error")
+        if reply["error"]["code"] not in [e["code"] for e in entry["errors"]]:raise ValidationError("unlisted attachment error")
     else:schema_validator(entry["result"]["schema"]).validate(reply["result"])
     return True
 
 
-def validate_reply(endpoint, name, reply, compatibility=False, client_profile=None):
-    """Unmigrated methods remain pending; covered methods must match exactly."""
+def validate_reply(endpoint, name, reply):
+    """Validate a reply against the current producer contract."""
     entry = method(endpoint, name)
     if entry is None:
         return False
-    if client_profile is not None:
-        if not compatibility:raise ValueError("client profile requires compatibility validation")
-        entry=next(p for p in entry["x-client-result-profiles"] if p["name"]==client_profile)
     shape = "Failure" if "error" in reply else "Success"
     schema_validator(common()["x-envelope-schemas"][shape]).validate(reply)
     if "error" in reply:
         error = reply["error"]
-        codes = document(endpoint)["x-common-errors"] + [e["code"] for e in method(endpoint,name)["errors"]]
+        codes = document(endpoint)["x-common-errors"] + [e["code"] for e in entry["errors"]]
         if error["code"] not in codes:
             raise ValidationError(f"unlisted error for {endpoint}/{name}: {error['code']}")
     else:
         result = reply["result"]
-        if compatibility and "x-client-result-normalization" in entry:
-            schema_validator(entry["x-client-wire-result-schema"]).validate(result)
-            result = normalize_reply(entry["x-client-result-normalization"],result)
-        schema = entry["x-client-result-schema"] if compatibility and "x-client-result-schema" in entry else entry["result"]["schema"]
-        schema_validator(schema).validate(result)
+        schema_validator(entry["result"]["schema"]).validate(result)
         if name == "initialize" and (result["api"] != common()["x-api-version"] or result["role"] != endpoint):
             raise ValidationError("incompatible initialization result")
         if name == "initialize" and endpoint == "host" and result.get("configuration") is not None:
@@ -693,7 +548,7 @@ def check_coverage(registry=None, sources=None):
     if "attach.hello" not in method_names(rust_function(sources["attach_server"],"accept")) or "contract::attach_waiting(" not in rust_code_mask(sources["attach_client"]):
         raise ValueError("attachment notification peer changed")
     completed=set().union(*(completion_names(sources[key]) for key in ("attach_client","attach_server","legacy_terminal","terminal_runtime")))
-    if completion_names(sources["attach_client"])!={"attach.reply","legacy.attach"} or "legacy.attach" not in completion_names(sources["legacy_terminal"]) or "attach.reply" not in completion_names(sources["attach_server"]) or "attach.reply" not in completion_names(sources["terminal_runtime"]):
+    if completion_names(sources["attach_client"])!={"attach.reply"} or "legacy.attach" not in completion_names(sources["legacy_terminal"]) or "attach.reply" not in completion_names(sources["attach_server"]) or "attach.reply" not in completion_names(sources["terminal_runtime"]):
         raise ValueError("missing completion producer or consumer")
     assigned_exchanges=[(row["endpoint"],row["name"]) for row in registry["exchanges"]]+[("attach",row["name"]) for row in document("attach")["x-completions"]]
     if len(assigned_exchanges)!=len(set(assigned_exchanges)) or set(assigned_exchanges)!={("attach",name) for name in completed}:
@@ -1692,10 +1547,6 @@ def check():
                 schema_validator(entry["result"]["schema"]).check_schema(resolve(entry["result"]["schema"]))
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
-            if "x-client-result-normalization" in entry:
-                expected={"state.subscribe":"state-subscribe-fields","state.unsubscribe":"ignore-successful-body","history.list":"history-list-fields","history.prune":"history-prune-fields","communications.list":"communications-page-fields","raids.members":"raid-members-display",**{name:"ignore-successful-body" for name in ("messages.get","messages.send","messages.reply","inbox.next","inbox.complete","inbox.requeue","raids.create","raids.leave","raids.invite","raids.destroy","raids.set_owner","raids.kick","raids.set_role")},"host.list":"ignore-successful-body","host.cancel":"ignore-successful-body","host.status":"permission-request-fields","permissions.list":"permission-list-records","permissions.get":"permission-record-fields","permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
-                if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"$ref":"common.json#/x-client-result-schemas/PermissionListReply"} if entry["name"]=="permissions.list" else {"$ref":"common.json#/x-client-result-schemas/PermissionRecordReply"} if entry["name"]=="permissions.get" else {"type":"object"} if entry["name"]=="devshell.diff" else {"$ref":"common.json#/x-client-result-schemas/HistoryPruneReply"} if entry["name"]=="history.prune" else {}):
-                    raise ValueError("unknown client result normalization")
             if "x-client-param-normalization" in entry:
                 if entry["name"]!="permissions.request" or entry["x-client-param-normalization"]!="permission-request-fields":raise ValueError("unknown client parameter normalization")
             param_profiles=entry.get("x-client-param-profiles",[])
@@ -1710,14 +1561,8 @@ def check():
             if profiles:
                 if entry["name"]!="permissions.request" or len(profiles)!=1:raise ValueError("unknown client result profile")
                 profile=profiles[0]
-                if (profile["name"],profile["x-rust-name"],profile["x-client-result-normalization"],profile["x-result-order"],profile["x-min-positional"])!=("grant-cli","PermissionsRequestGrant","permission-grant-fields",["request","status","message"],3):raise ValueError("invalid client result profile")
-                normalized=resolve(profile["x-client-result-schema"])
-                wire=resolve(profile["x-client-wire-result-schema"])
-                named=copy.deepcopy(normalized);named["required"]=["request","status"]
-                tuple_schema={"type":"array","items":[normalized["properties"][key] for key in profile["x-result-order"]],"minItems":profile["x-min-positional"],"maxItems":len(profile["x-result-order"])}
-                if wire!={"oneOf":[named,tuple_schema]}:raise ValueError("client result profile wire differs")
-                schema_validator(profile["x-client-wire-result-schema"]).check_schema(wire)
-                schema_validator(profile["x-client-result-schema"]).check_schema(normalized)
+                if (profile["name"],profile["x-rust-name"])!=("grant-cli","PermissionsRequestGrant"):raise ValueError("invalid client result profile")
+                schema_validator(profile["x-client-result-schema"]).check_schema(resolve(profile["x-client-result-schema"]))
             if "x-request-constraints" in entry:
                 schema_validator(entry["x-request-constraints"]).check_schema(resolve(entry["x-request-constraints"]))
         for entry in doc.get("x-completions",[]):

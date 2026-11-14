@@ -4,6 +4,8 @@ use goblins_protocol::contract::Method;
 mod attachment;
 mod cli;
 mod exec;
+#[cfg(test)]
+mod fake_daemon;
 mod plain;
 mod records;
 mod server;
@@ -260,33 +262,14 @@ fn execute(cli: Cli) -> Result<i32> {
                 tui::serve(state)?;
             }
         }
-        Command::List => println!(
-            "{}",
-            Client::connect(&state)?
-                .call_typed_with_wire::<goblins_protocol::contract::host::SessionsList>(
-                    goblins_protocol::contract::EmptyParams {}
-                )?
-                .1
-        ),
+        Command::List => println!("{}", sessions_list(&mut Client::connect(&state)?)?),
         Command::Stop { id_or_name } | Command::Kill { id_or_name } => println!(
             "{}",
-            Client::connect(&state)?
-                .call_typed_with_wire::<goblins_protocol::contract::host::SessionsStop>(
-                    goblins_protocol::contract::SessionSelectorParams {
-                        session: id_or_name
-                    }
-                )?
-                .1
+            sessions_stop(&mut Client::connect(&state)?, id_or_name)?
         ),
         Command::Detach { id_or_name } => println!(
             "{}",
-            Client::connect(&state)?
-                .call_typed_with_wire::<goblins_protocol::contract::host::SessionsDetach>(
-                    goblins_protocol::contract::SessionSelectorParams {
-                        session: id_or_name
-                    }
-                )?
-                .1
+            sessions_detach(&mut Client::connect(&state)?, id_or_name)?
         ),
         Command::Host { command } => {
             let mut client = Client::connect(&state)?;
@@ -506,6 +489,34 @@ fn mailbox_command(
     ))
 }
 
+/// `goblins list` prints the reply as the daemon sent it, once it reads as
+/// session records.
+fn sessions_list(client: &mut Client) -> Result<serde_json::Value> {
+    Ok(client
+        .call_typed_with_wire::<goblins_protocol::contract::host::SessionsList>(
+            goblins_protocol::contract::EmptyParams {},
+        )?
+        .1)
+}
+
+/// `goblins stop` and `kill` print the acknowledgement as the daemon sent it.
+fn sessions_stop(client: &mut Client, session: String) -> Result<serde_json::Value> {
+    Ok(client
+        .call_typed_with_wire::<goblins_protocol::contract::host::SessionsStop>(
+            goblins_protocol::contract::SessionSelectorParams { session },
+        )?
+        .1)
+}
+
+/// `goblins detach` prints the acknowledgement as the daemon sent it.
+fn sessions_detach(client: &mut Client, session: String) -> Result<serde_json::Value> {
+    Ok(client
+        .call_typed_with_wire::<goblins_protocol::contract::host::SessionsDetach>(
+            goblins_protocol::contract::SessionSelectorParams { session },
+        )?
+        .1)
+}
+
 fn print_event(event: &serde_json::Value, json: bool) -> Result<()> {
     if json {
         println!("{event}");
@@ -523,6 +534,67 @@ fn print_event(event: &serde_json::Value, json: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::fake_daemon::{Daemon, fixtures};
+    use goblins_controller::host::Client;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn list_prints_the_wire_records_and_refuses_malformed_ones() {
+        let fixtures = fixtures();
+        let mut future = fixtures["host_session"].clone();
+        future["state"] = json!("finished");
+        future["agent_state"] = json!("future-activity");
+        future["terminals"][0]["origin"] = json!("remote");
+        let good = json!([fixtures["forward_compatibility"]["host_session"], future]);
+        let mut broken = good.clone();
+        broken[0]["identity"] = json!([42, 1, 2, 3, 4]);
+        let _no_forks = goblins_unix::no_forks();
+        for (records, valid) in [(good, true), (broken, false)] {
+            let daemon = Daemon::start(&[], records.clone());
+            let shown = super::sessions_list(&mut Client::connect(&daemon.state).unwrap());
+            let call = daemon.call();
+            assert_eq!(
+                (&call["method"], &call["params"]),
+                (&json!("sessions.list"), &json!({}))
+            );
+            match shown {
+                Ok(shown) if valid => {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&shown.to_string()).unwrap(),
+                        records
+                    )
+                }
+                Err(_) if !valid => (),
+                other => panic!("{valid}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stop_and_detach_print_acknowledgements_with_their_extensions() {
+        let result = json!({"accepted":true,"future":{"kept":true}});
+        let _no_forks = goblins_unix::no_forks();
+        for method in ["sessions.stop", "sessions.detach"] {
+            let daemon = Daemon::start(&[], result.clone());
+            let mut client = Client::connect(&daemon.state).unwrap();
+            let shown = if method == "sessions.stop" {
+                super::sessions_stop(&mut client, "goblin".into())
+            } else {
+                super::sessions_detach(&mut client, "goblin".into())
+            }
+            .unwrap();
+            let call = daemon.call();
+            assert_eq!(
+                (&call["method"], &call["params"]),
+                (&json!(method), &json!({"session":"goblin"}))
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&shown.to_string()).unwrap(),
+                result
+            );
+        }
+    }
+
     #[test]
     fn terminal_text_is_ascii_json_data() {
         let text = "\x1b[2J\n approve\u{009b}\u{202e}🐟";

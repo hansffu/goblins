@@ -305,8 +305,8 @@ requires_openai_auth=false
                 with peer:
                     try:
                         init = receive(peer)
-                        fixture = json.loads((Path(__file__).resolve().parents[1] / 'libs/api/tests/fixtures.json').read_text())['sandbox_initialize']
-                        peer.sendall(frame({'jsonrpc':'2.0','id':init['id'],'result':fixture}))
+                        fixtures = json.loads((Path(__file__).resolve().parents[1] / 'libs/api/tests/fixtures.json').read_text())
+                        peer.sendall(frame({'jsonrpc':'2.0','id':init['id'],'result':fixtures['sandbox_initialize']}))
                         call = receive(peer)
                         if call['method'] == 'sessions.set-variables':
                             reports.put(call['params']['variables'])
@@ -314,12 +314,13 @@ requires_openai_auth=false
                         elif call['method'] == 'sessions.status':
                             if not self.status_held: self.reported_since = self.attached_since
                             since = self.reported_since
-                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{'agent_name':'gobbo','attached':since is not None,'attached_since':since}}))
+                            status = {**fixtures['self_status'], 'agent_name':'gobbo', 'raid':None, 'worktree':None, 'attached':since is not None, 'attached_since':since}
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':status}))
                         elif call['method'] == 'inbox.status':
                             peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':self.inbox}))
                         elif call['method'] == 'sessions.set-state':
                             self.states.put(call['params']['state'])
-                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{}}))
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{'accepted':True}}))
                         else:
                             peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'error':{'code':-32601,'message':'not in this test'}}))
                     except (OSError, EOFError, ValueError): pass
@@ -521,7 +522,7 @@ requires_openai_auth=false
         terminal.call('turn/start', {'threadId': home, 'input': [{'type': 'text', 'text': 'long task'}]})
         terminal.event('turn/started', lambda p: p['threadId'] == home)
         self.bound(runtime, home)
-        self.inbox = {'queued': 1, 'claim': None, 'head': ['m', 0], 'revision': 1, 'audit_failed': False}
+        self.inbox = {'queued': 1, 'claim': None, 'head': ['m', 0], 'revision': 1, 'audit_failed': False, 'raid_audit_failed': False, 'operations': []}
         deadline = time.monotonic() + 10
         while not self.observer.call('thread/queue/list', {'threadId': home})['data']:
             self.assertLess(time.monotonic(), deadline, 'no reminder queued')
@@ -536,7 +537,7 @@ requires_openai_auth=false
         reminder = terminal.event('item/started', lambda p: p['threadId'] == home and p['item'].get('type') == 'userMessage' and p['item'].get('clientId'))
         self.assertEqual(reminder['item']['content'][0]['text'], 'Check your Goblins inbox and process the next item.')
         terminal.event('turn/completed', lambda p: p['threadId'] == home)
-        self.inbox = {'queued': 0, 'claim': None, 'head': None, 'revision': 2, 'audit_failed': False}
+        self.inbox = {'queued': 0, 'claim': None, 'head': None, 'revision': 2, 'audit_failed': False, 'raid_audit_failed': False, 'operations': []}
         self.stays(runtime, other)
         # Rebinding by hand.
         subprocess.run([str(self.adapter), '--runtime-dir', str(runtime), 'bind', home], check=True, stdout=subprocess.DEVNULL)

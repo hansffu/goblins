@@ -112,8 +112,8 @@ pub fn run(state: PathBuf, options: Options) -> Result<i32> {
     }
 }
 
-fn exec(state: PathBuf, options: Options) -> Result<i32> {
-    let terminal = unsafe { libc::isatty(0) } == 1;
+/// The exec request, given whether stdin is a terminal.
+fn params(options: Options, terminal: bool) -> Result<contract::ExecParams> {
     let tty = match options.tty.as_str() {
         "always" => true,
         "auto" => terminal,
@@ -126,18 +126,7 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
             .ok_or_else(|| format!("-e expects NAME=VALUE, not {entry}"))?;
         env.push((name.to_string(), value.to_string()));
     }
-    let mut client = Client::connect(&state)?;
-    if !client.features.iter().any(|f| f == "exec") {
-        return Err("this daemon cannot run commands in sandboxes; restart it".into());
-    }
-    if options
-        .instance
-        .as_ref()
-        .is_some_and(|expected| client.instance != *expected)
-    {
-        return Err(format!("daemon instance changed; goblin {} is gone", options.goblin).into());
-    }
-    let params = contract::ExecParams {
+    Ok(contract::ExecParams {
         session: options.goblin,
         tty,
         interactive: options.tty == "always",
@@ -145,7 +134,35 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
         argv: (!options.command.is_empty()).then_some(options.command),
         cwd: options.workdir,
         pin: options.session,
-    };
+    })
+}
+
+/// The exit code for a finished exec: the command's, 128 plus the signal that
+/// ended it, or FAILURE when the result says neither.
+fn exit_code(result: &<contract::host::SessionsExec as Method>::Result) -> i32 {
+    match (result.code, result.signal) {
+        (Some(code), _) => code as i32,
+        (None, Some(signal)) => 128 + signal as i32,
+        _ => FAILURE,
+    }
+}
+
+fn exec(state: PathBuf, options: Options) -> Result<i32> {
+    let terminal = unsafe { libc::isatty(0) } == 1;
+    let instance = options.instance.clone();
+    let goblin = options.goblin.clone();
+    let params = params(options, terminal)?;
+    let tty = params.tty;
+    let mut client = Client::connect(&state)?;
+    if !client.features.iter().any(|f| f == "exec") {
+        return Err("this daemon cannot run commands in sandboxes; restart it".into());
+    }
+    if instance
+        .as_ref()
+        .is_some_and(|expected| client.instance != *expected)
+    {
+        return Err(format!("daemon instance changed; goblin {goblin} is gone").into());
+    }
     // The sandbox ends travel to goblins-init; we keep our ends.
     let mut pipes = Vec::new();
     let mut keep = Vec::new();
@@ -201,11 +218,7 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
     if let Some(message) = &result.message {
         eprintln!("goblins: {}", goblins_protocol::plain_text(message));
     }
-    Ok(match (result.code, result.signal) {
-        (Some(code), _) => code as i32,
-        (None, Some(signal)) => 128 + signal as i32,
-        _ => FAILURE,
-    })
+    Ok(exit_code(&result))
 }
 
 fn relay(
@@ -409,6 +422,116 @@ mod tests {
         os::unix::net::UnixStream,
         process::{Child, Command, Stdio},
     };
+
+    /// `goblins exec ARGS` as parsed.
+    fn options(args: &[&str]) -> Options {
+        use clap::Parser;
+        let Some(crate::cli::Command::Exec {
+            tty,
+            env,
+            workdir,
+            instance,
+            session,
+            goblin,
+            command,
+        }) = crate::cli::Cli::try_parse_from(["goblins", "exec"].iter().chain(args))
+            .unwrap()
+            .command
+        else {
+            unreachable!()
+        };
+        Options {
+            goblin,
+            command,
+            tty,
+            env,
+            workdir,
+            instance,
+            session,
+        }
+    }
+
+    #[test]
+    fn exec_requests_carry_the_options_and_no_descriptors() {
+        let named = [
+            "--session",
+            "pinned",
+            "--workdir",
+            "/work",
+            "-e",
+            "A=b",
+            "agent",
+            "--",
+            "echo",
+            "hello",
+        ];
+        let cases = [
+            (
+                &["agent"][..],
+                false,
+                json!({"session":"agent","env":[],"tty":false,"interactive":false}),
+            ),
+            (
+                &["agent"],
+                true,
+                json!({"session":"agent","env":[],"tty":false,"interactive":false}),
+            ),
+            (
+                &["-t", "agent"],
+                false,
+                json!({"session":"agent","env":[],"tty":true,"interactive":true}),
+            ),
+            (
+                &["--tty=auto", "agent"],
+                true,
+                json!({"session":"agent","env":[],"tty":true,"interactive":false}),
+            ),
+            (
+                &["--tty=auto", "agent"],
+                false,
+                json!({"session":"agent","env":[],"tty":false,"interactive":false}),
+            ),
+            (
+                &named,
+                false,
+                json!({"session":"agent","env":[["A","b"]],"tty":false,"interactive":false,"pin":"pinned","cwd":"/work","argv":["echo","hello"]}),
+            ),
+        ];
+        for (args, terminal, expected) in cases {
+            let params = params(options(args), terminal).unwrap();
+            assert_eq!(
+                contract::params_value::<contract::host::SessionsExec>(params).unwrap(),
+                expected,
+                "{args:?} {terminal}"
+            );
+        }
+        assert_eq!(
+            params(options(&["-e", "A", "agent"]), false)
+                .unwrap_err()
+                .to_string(),
+            "-e expects NAME=VALUE, not A"
+        );
+    }
+
+    #[test]
+    fn exec_exit_code_is_the_command_status_or_failure() {
+        let cases = [
+            (json!({"code":7,"signal":null,"future":true}), 7),
+            (json!({"code":127,"message":"fixture missing"}), 127),
+            (json!({"code":null,"signal":15}), 143),
+            (json!({}), FAILURE),
+            (json!({"code":0,"signal":"bad"}), 0),
+            (json!({"code":"bad","signal":15}), 143),
+            (json!({"code":3,"message":42}), 3),
+            (json!({"code":true,"signal":15}), 143),
+            (Value::Null, FAILURE),
+        ];
+        for (wire, expected) in cases {
+            let result =
+                <contract::host::SessionsExec as Method>::Result::decode(wire.clone()).unwrap();
+            assert_eq!(exit_code(&result), expected, "{wire}");
+        }
+    }
 
     #[test]
     fn finished_relay_stops_at_the_idle_bound_even_with_a_retained_writer() {

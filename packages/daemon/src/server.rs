@@ -199,20 +199,16 @@ pub fn status(state: &Path) -> Result<i32> {
             "Server {} ({}) · {} live agents",
             status.state, client.instance, status.sessions
         );
-        if let Some(history) = &status.history {
-            match (history.owner, history.directory.as_deref()) {
-                (Some(true), Some(directory)) if history.recording == Some(false) => println!(
-                    "Session history in {} (not recording: goblins of a --workspace server cannot be resumed)",
-                    directory.display()
-                ),
-                (Some(true), Some(directory)) => {
-                    println!("Session history in {}", directory.display())
-                }
-                (Some(false), _) => println!(
-                    "No session history: {}",
-                    history.reason.as_deref().unwrap_or("unavailable")
-                ),
-                _ => (),
+        match &status.history {
+            contract::HistoryStatus::OwnedHistory(history) if !history.recording => println!(
+                "Session history in {} (not recording: goblins of a --workspace server cannot be resumed)",
+                history.directory.display()
+            ),
+            contract::HistoryStatus::OwnedHistory(history) => {
+                println!("Session history in {}", history.directory.display())
+            }
+            contract::HistoryStatus::UnavailableHistory(history) => {
+                println!("No session history: {}", history.reason)
             }
         }
         match status.manifest.as_deref() {

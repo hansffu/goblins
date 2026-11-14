@@ -460,8 +460,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalCreateReply"
       },
-      "x-client-result-normalization": "terminal-create-fields",
-      "x-client-wire-result-schema": {},
       "x-client-omit-default-false": [
         "notify"
       ],
@@ -496,8 +494,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalListReply"
       },
-      "x-client-result-normalization": "terminal-list-display",
-      "x-client-wire-result-schema": {},
       "x-null-params-as-empty": true
     },
     {
@@ -540,8 +536,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalCloseReply"
       },
-      "x-client-result-normalization": "terminal-close-fields",
-      "x-client-wire-result-schema": {},
       "x-null-params-as-empty": true
     },
     {
@@ -598,8 +592,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalReadReply"
       },
-      "x-client-result-normalization": "terminal-read-fields",
-      "x-client-wire-result-schema": {},
       "x-null-params-as-empty": true
     },
     {
@@ -656,8 +648,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalCloseReply"
       },
-      "x-client-result-normalization": "terminal-close-fields",
-      "x-client-wire-result-schema": {},
       "x-null-params-as-empty": true,
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/MemberTerminalSendParams"
@@ -738,8 +728,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalWaitReply"
       },
-      "x-client-result-normalization": "terminal-wait-fields",
-      "x-client-wire-result-schema": {},
       "x-null-params-as-empty": true,
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/MemberTerminalWaitParams"
@@ -776,9 +764,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/DevShellLockReply"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "devshell-lock-fields"
+      }
     },
     {
       "name": "flake.run",
@@ -816,9 +802,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/FlakeRunReply"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "flake-run-fields"
+      }
     },
     {
       "name": "devshell.diff",
@@ -867,10 +851,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/DevShellPreviewReply"
       },
-      "x-client-wire-result-schema": {
-        "type": "object"
-      },
-      "x-client-result-normalization": "devshell-preview-display",
       "x-client-omit-default-false": [
         "lock"
       ]
@@ -939,9 +919,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/EditorOpenReply"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "editor-open-fields"
+      }
     },
     {
       "name": "permissions.request",
@@ -1053,8 +1031,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/PermissionRequestReply"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "permission-request-fields",
       "x-client-result-profiles": [
         {
           "name": "grant-cli",
@@ -1062,16 +1038,6 @@
           "x-client-result-schema": {
             "$ref": "common.json#/definitions/PermissionGrantReply"
           },
-          "x-client-wire-result-schema": {
-            "$ref": "common.json#/x-client-result-schemas/PermissionGrantReply"
-          },
-          "x-client-result-normalization": "permission-grant-fields",
-          "x-result-order": [
-            "request",
-            "status",
-            "message"
-          ],
-          "x-min-positional": 3,
           "description": "The package/Docker/devshell CLI uses its original closed grant decoder, accepting named missing message or exactly [request,status,message], then requiring identifier request and ready/denied/error status. It emits message:null when absent. Unknown result fields, failed/withdrawn statuses and malformed types retain outcome-unknown exit 2."
         }
       ]
@@ -1107,9 +1073,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "host.status",
@@ -1150,9 +1114,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/PermissionRequestReply"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "permission-request-fields"
+      }
     },
     {
       "name": "host.cancel",
@@ -1193,9 +1155,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "raids.create",
@@ -1237,8 +1197,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body",
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/SandboxRaidCreateParams"
       }
@@ -1274,9 +1232,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "raids.members",
@@ -1309,9 +1265,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/RaidDisplayReply"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "raid-members-display"
+      }
     },
     {
       "name": "raids.set_role",
@@ -1357,8 +1311,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body",
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/SandboxRaidRoleParams"
       }
@@ -1434,8 +1386,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body",
       "x-positional-required": [
         "conversation"
       ]
@@ -1507,9 +1457,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "inbox.next",
@@ -1556,9 +1504,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "inbox.complete",
@@ -1621,9 +1567,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "inbox.requeue",
@@ -1692,9 +1636,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "messages.get",
@@ -1732,9 +1674,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "inbox.status",
@@ -1791,10 +1731,6 @@
       },
       "x-positional-schema": {
         "not": {}
-      },
-      "x-client-normalization": "host-submitted-legacy",
-      "x-client-params-schema": {
-        "$ref": "common.json#/definitions/HostSubmittedReply"
       }
     }
   ],

@@ -36,17 +36,25 @@ impl<'de> Deserialize<'de> for HostJob {
         result.map_err(serde::de::Error::custom)
     }
 }
-pub fn host_submitted(frame: &Value) -> Option<HostSubmittedReply> {
-    (frame.get("method").and_then(Value::as_str)
-        == Some(sandbox_notifications::HostSubmitted::NAME))
-    .then(|| HostSubmittedReply {
-        request: frame
-            .get("params")
-            .and_then(|params| params.get("request"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
-    })
+pub fn host_submitted(frame: &Value) -> io::Result<Option<HostSubmittedReply>> {
+    if frame.get("method").and_then(Value::as_str) != Some(sandbox_notifications::HostSubmitted::NAME)
+    {
+        return Ok(None);
+    }
+    let invalid = || io::Error::other("invalid host.submitted notification");
+    let object = frame.as_object().ok_or_else(invalid)?;
+    if frame["jsonrpc"] != "2.0"
+        || object
+            .keys()
+            .any(|k| !["jsonrpc", "method", "params"].contains(&k.as_str()))
+    {
+        return Err(invalid());
+    }
+    let params: HostSubmittedParams =
+        serde_json::from_value(frame["params"].clone()).map_err(|_| invalid())?;
+    Ok(Some(HostSubmittedReply {
+        request: params.request,
+    }))
 }
 
 #[cfg(test)]
@@ -111,28 +119,16 @@ mod tests {
         assert_eq!(result.status.as_deref(), Some("running"));
     }
     #[test]
-    fn host_submission_reader_matches_method_only_legacy_classification() {
+    fn host_submission_reader_requires_current_notifications() {
         for case in fixtures()["host_submitted_cases"].as_array().unwrap() {
-            let frame = &case["frame"];
-            let old =
-                (frame.get("method") == Some(&Value::String("host.submitted".into()))).then(|| {
-                    frame
-                        .get("params")
-                        .and_then(|params| params.get("request"))
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                });
-            let new = host_submitted(frame);
-            assert_eq!(
-                new.as_ref().map(|reply| reply.request.as_str()),
-                old,
-                "{case}"
-            );
-            assert_eq!(
-                new.as_ref().map(|reply| reply.request.as_str()),
-                case["request"].as_str(),
-                "{case}"
-            );
+            let read = host_submitted(&case["frame"]);
+            if case["current"].as_bool().unwrap() {
+                assert_eq!(read.unwrap().unwrap().request, case["request"].as_str().unwrap(), "{case}");
+            } else if case["frame"]["method"] == "host.submitted" {
+                assert!(read.is_err(), "{case}");
+            } else {
+                assert!(read.unwrap().is_none(), "{case}");
+            }
         }
         assert_eq!(
             notification::<sandbox_notifications::HostSubmitted>(HostSubmittedParams {

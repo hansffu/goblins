@@ -131,7 +131,7 @@ mod tests {
         }
     }
     #[test]
-    fn inbox_status_requires_core_fields_and_preserves_additive_legacy_defaults() {
+    fn inbox_status_requires_every_field() {
         for case in fixtures()["inbox_status_cases"].as_array().unwrap() {
             let result = decode_reply::<sandbox::InboxStatus>(case["value"].clone());
             assert_eq!(result.is_ok(), case["valid"].as_bool().unwrap(), "{case}");

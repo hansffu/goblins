@@ -120,10 +120,9 @@ Errors are =Box<dyn Error>= or strings. Cancellation is recognised by the text =
 
 ** TODO Remove the legacy =terminal.sock= handshake
 
-The legacy socket costs a prebound listener in =SupervisorStart=, the =SO_ACCEPTCONN= validation and a hold, refuse and release state machine (=libs/supervisor/src/terminal.rs=, =terminals.rs=). Current daemons always offer =attach.sock=. There are two separate compatibility decisions:
+The legacy socket costs a prebound listener in =SupervisorStart=, the =SO_ACCEPTCONN= validation and a hold, refuse and release state machine (=libs/supervisor/src/terminal.rs=, =terminals.rs=). Current daemons always offer =attach.sock=, and goblins supports no older frontends or daemons ([[file:INTEGRATION-WORKFLOWS.org][INTEGRATION-WORKFLOWS.org]], decision 1), so the listener can go: remove the supervisor side, the =legacy_listener= field and =legacy.attach= exchange in the schema, the session records' =terminal= path, the Python tests of =terminal.sock= and its section in [[file:../API.org][API.org]].
 
-- Removing the listener from the daemon and supervisor affects older frontends that attach to a new daemon through =terminal.sock=. Decide that no supported frontend does, then remove the supervisor side and its section in [[file:../API.org][API.org]].
-- The host CLI falls back to the record's =terminal= path when a record has no =attach= field (=packages/daemon/src/attachment.rs:191=), so that a new CLI can attach to a daemon older than attach handlers. This fallback is independent of the listener and can stay after it is gone. Remove it only when older daemons are no longer supported.
+The host CLI's fallback to the record's =terminal= path for daemons older than attach handlers is removed: it always attaches through =attach.sock=.
 
 ** TODO Clear the leftovers from the supervisor cutover
 

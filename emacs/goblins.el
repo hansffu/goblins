@@ -592,7 +592,7 @@ HIDE starts it folded and HEADING replaces the default heading text."
         (when (equal (plist-get preview :kind) "devshell")
           (insert "\n")
           (goblins--insert-devshell-summary (plist-get record :id) preview))
-        ;; Older daemons send a text description and a diff without a kind.
+        ;; The preview's source diff follows its summary.
         (let ((patch (plist-get preview :diff)))
           (unless (string-empty-p (or patch ""))
             (goblins--insert-diff (plist-get record :id) patch))))
@@ -1016,19 +1016,18 @@ reports in the echo area, so it suits init files and hooks."
   (and (equal (plist-get result :api) 1)
        (equal (plist-get result :role) "host")
        (stringp (plist-get result :instance))
+       (plist-member result :configuration)
        (null (plist-get result :configuration))
        (vectorp (plist-get result :features))
        (cl-every #'stringp (append (plist-get result :features) nil))
-       (or (not (plist-member result :limits))
-           (let ((limits (plist-get result :limits)))
-             (and (listp limits)
-                  (cl-every (lambda (key)
-                     (let ((value (plist-get limits key)))
-                       (or (null value)
-                           (and (integerp value) (<= 0 value 18446744073709551615)))))
-                   '(:header :body :frame_seconds :depth :response_body
-                     :calls :connections :sessions :output_queue
-                     :snapshot :terminal_buffer)))))))
+       (let ((limits (plist-get result :limits)))
+         (and limits (listp limits)
+              (cl-every (lambda (key)
+                          (let ((value (plist-get limits key)))
+                            (and (integerp value) (<= 0 value 18446744073709551615))))
+                        '(:header :body :frame_seconds :depth :response_body
+                          :calls :connections :sessions :output_queue
+                          :snapshot :terminal_buffer))))))
 
 (defun goblins--connect-now ()
   "Connect this status buffer and subscribe to the daemon's state."

@@ -732,13 +732,13 @@ mod preview_tests {
         std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn raid_membership_wrapper_preserves_original_wire_forms() {
+    fn raid_membership_reader_requires_named_records() {
         let fixtures: Value =
             serde_json::from_str(include_str!("../../../../libs/api/tests/fixtures.json"))
                 .unwrap();
         for case in fixtures["session_raid_cases"].as_array().unwrap() {
             let result = serde_json::from_value::<RaidMembership>(case["result"].clone());
-            assert_eq!(result.is_ok(), case["legacy"].as_bool().unwrap(), "{case}");
+            assert_eq!(result.is_ok(), case["reader"].as_bool().unwrap(), "{case}");
             if let Ok(result) = result {
                 assert_eq!(
                     serde_json::to_value(&result).unwrap(),

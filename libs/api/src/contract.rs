@@ -120,15 +120,7 @@ pub fn snapshot_sessions<'de, D: serde::Deserializer<'de>>(
     Vec::<Value>::deserialize(d)?
         .into_iter()
         .map(|value| {
-            if value.get("scope").is_some() && value.get("docker_scope").is_some() {
-                return Err(serde::de::Error::custom("duplicate scope and docker_scope"));
-            }
             let record = HostSessionReply::decode(value).map_err(serde::de::Error::custom)?;
-            if record.agent_name.is_none() {
-                return Err(serde::de::Error::custom(
-                    "snapshot session requires agent_name",
-                ));
-            }
             record
                 .agent_state
                 .parse::<crate::AgentState>()
@@ -288,15 +280,11 @@ pub fn profile_params<P: ParamsProfile>(params: P::Params) -> serde_json::Result
 pub trait ResultProfile {
     type Method: Method;
     type Reply: Response;
-    const PARAM_ORDER: &'static [&'static str];
-    const MIN_POSITIONAL: usize;
 }
 
 pub fn decode_reply_profile<M: Method, P: ResultProfile<Method = M>>(
     value: Value,
 ) -> io::Result<P::Reply> {
-    let value =
-        ordered_value(value, P::PARAM_ORDER, P::MIN_POSITIONAL).map_err(io::Error::other)?;
     P::Reply::decode(value)
 }
 
@@ -390,17 +378,23 @@ pub fn decode_completion<C: Completion>(value: Value) -> io::Result<C::Result> {
     C::Result::decode(value["result"].clone())
 }
 
-/// Preserve the old client's method-only waiting classification and its
-/// nonempty-array test, without tightening legacy peer envelopes or elements.
-pub fn attach_waiting(value: &Value) -> Option<AttachWaitingReply> {
-    (value.get("method").and_then(Value::as_str) == Some(attach_notifications::AttachWaiting::NAME))
-        .then(|| AttachWaitingReply {
-            has_missing: value
-                .get("params")
-                .and_then(|p| p.get("missing"))
-                .and_then(Value::as_array)
-                .is_some_and(|m| !m.is_empty()),
-        })
+/// Classify a frame on the attach socket: `None` for anything but a waiting
+/// notification, which must be a current `attach.waiting` notification.
+pub fn attach_waiting(value: &Value) -> io::Result<Option<AttachWaitingReply>> {
+    if value.get("method").and_then(Value::as_str) != Some(attach_notifications::AttachWaiting::NAME)
+    {
+        return Ok(None);
+    }
+    let invalid = || io::Error::other("invalid waiting notification");
+    let object = value.as_object().ok_or_else(invalid)?;
+    if value["jsonrpc"] != "2.0" || object.keys().any(|k| !["jsonrpc", "method", "params"].contains(&k.as_str())) {
+        return Err(invalid());
+    }
+    let params: AttachWaitingParams =
+        serde_json::from_value(value["params"].clone()).map_err(|_| invalid())?;
+    Ok(Some(AttachWaitingReply {
+        has_missing: !params.missing.is_empty(),
+    }))
 }
 
 pub fn notification<N: Notification>(params: N::Params) -> serde_json::Result<Value> {
@@ -499,7 +493,7 @@ impl Response for PermissionRequestReply {
 impl Response for PermissionGrantReply {
     const SCHEMA: &'static str = "PermissionGrantReply";
     fn decode(value: Value) -> io::Result<Self> {
-        // Named missing message was accepted by the original Option decoder.
+        validate_result_shape(&value, Self::SCHEMA)?;
         let reply: Self = serde_json::from_value(value).map_err(io::Error::other)?;
         if !crate::identifier(&reply.request)
             || !matches!(reply.status.as_str(), "ready" | "denied" | "error")
@@ -791,42 +785,6 @@ impl Response for InitializeResult {
     }
 }
 
-impl Response for InitializeReply {
-    const SCHEMA: &'static str = "InitializeReply";
-    fn decode(value: Value) -> io::Result<Self> {
-        validate_result_shape(&value, Self::SCHEMA)?;
-        require(&value, &["api", "instance", "role", "features"])?;
-        if value
-            .get("limits")
-            .is_some_and(|v| !v.is_null() && !v.is_object())
-        {
-            return Err(io::Error::other("invalid initialization limits"));
-        }
-        let result: Self = serde_json::from_value(value).map_err(io::Error::other)?;
-        if *result.api != API_VERSION
-            || (result.role == EndpointRole::Host && result.configuration.is_some())
-        {
-            return Err(io::Error::other("incompatible daemon"));
-        }
-        Ok(result)
-    }
-}
-
-impl Response for ServerStatusReply {
-    const SCHEMA: &'static str = "ServerStatusReply";
-    fn decode(value: Value) -> io::Result<Self> {
-        validate_result_shape(&value, Self::SCHEMA)?;
-        require(&value, &["instance", "state", "sessions"])?;
-        if value
-            .get("history")
-            .is_some_and(|v| !v.is_null() && !v.is_object())
-        {
-            return Err(io::Error::other("invalid history metadata"));
-        }
-        serde_json::from_value(value).map_err(io::Error::other)
-    }
-}
-
 impl Response for ServerStatusResult {
     const SCHEMA: &'static str = "ServerStatusResult";
     fn decode(value: Value) -> io::Result<Self> {
@@ -956,7 +914,7 @@ fn ordered_value(value: Value, order: &[&str], minimum: usize) -> serde_json::Re
     Ok(value)
 }
 
-/// Retain method-specific API-1 omission behavior that Typify cannot generate
+/// Apply method-specific request field omissions that Typify cannot generate
 /// for a replaced map type. Only empty objects marked in the contract are omitted.
 pub fn params_value<M: Method>(params: M::Params) -> serde_json::Result<Value> {
     let mut value = serde_json::to_value(params)?;
@@ -1045,7 +1003,7 @@ pub fn initialize(
     stream: &mut UnixStream,
     id: Value,
     role: EndpointRole,
-) -> io::Result<InitializeReply> {
+) -> io::Result<InitializeResult> {
     let params = InitializeParams { api: API_VERSION };
     let result = match role {
         EndpointRole::Host => exchange::<host::Initialize>(stream, id, params)?,
@@ -1151,10 +1109,13 @@ mod tests {
 
 
     #[test]
-    fn attachment_waiting_and_completions_keep_old_client_acceptance() {
+    fn attachment_waiting_and_completions_are_classified() {
         for case in fixtures()["attach_waiting_cases"].as_array().unwrap() {
-            let actual = attach_waiting(&case["frame"]).map(|p| p.has_missing);
-            assert_eq!(actual, case["has_missing"].as_bool(), "{case}");
+            let actual = attach_waiting(&case["frame"]).map(|p| p.map(|p| p.has_missing));
+            match case["valid"].as_bool().unwrap() {
+                true => assert_eq!(actual.unwrap(), Some(case["has_missing"].as_bool().unwrap()), "{case}"),
+                false => assert!(actual.is_err(), "{case}"),
+            }
         }
         fn old(value: &Value) -> io::Result<()> {
             rpc::validate_response(value, &serde_json::json!(0))?;
@@ -1387,14 +1348,19 @@ mod tests {
     }
 
     #[test]
-    fn historical_api1_replies_work_through_the_framed_handshake() {
+    fn the_framed_handshake_reads_current_initialization_results() {
         use std::io::Write;
-        let historical = fixtures()["historical_api1"].clone();
-        for (name, role) in [
-            ("host_initialize", EndpointRole::Host),
-            ("sandbox_initialize", EndpointRole::Sandbox),
+        let fixtures = fixtures();
+        for (name, role, missing) in [
+            ("host_initialize", EndpointRole::Host, None),
+            ("sandbox_initialize", EndpointRole::Sandbox, None),
+            ("host_initialize", EndpointRole::Host, Some("configuration")),
+            ("host_initialize", EndpointRole::Host, Some("limits")),
         ] {
-            let value = historical[name].clone();
+            let mut value = fixtures[name].clone();
+            if let Some(field) = missing {
+                value.as_object_mut().unwrap().remove(field);
+            }
             let (mut client, mut peer) = UnixStream::pair().unwrap();
             let server = std::thread::spawn(move || {
                 let request = rpc::read(&mut peer).unwrap();
@@ -1403,23 +1369,13 @@ mod tests {
                 peer.write_all(&rpc::encode(&rpc::result(request["id"].clone(), value)).unwrap())
                     .unwrap();
             });
-            let reply = initialize(&mut client, json!(1), role.clone()).unwrap();
-            assert_eq!(reply.role, role);
-            assert!(reply.configuration.is_none());
+            let reply = initialize(&mut client, json!(1), role.clone());
+            match missing {
+                None => assert_eq!(reply.unwrap().role, role),
+                Some(field) => assert!(reply.is_err(), "{field}"),
+            }
             server.join().unwrap();
         }
-        let reply = ServerStatusReply::decode(historical["server_status"].clone()).unwrap();
-        assert!(reply.history.is_none());
-        assert!(reply.manifest.is_none());
-        assert!(reply.worktrees_directory.is_none());
-        assert!(ServerStatusResult::decode(historical["server_status"].clone()).is_err());
-        assert!(InitializeResult::decode(historical["host_initialize"].clone()).is_err());
-        let mut bad = historical["host_initialize"].clone();
-        bad["limits"] = json!([]);
-        assert!(InitializeReply::decode(bad).is_err());
-        let mut bad = historical["server_status"].clone();
-        bad["history"] = json!([]);
-        assert!(ServerStatusReply::decode(bad).is_err());
     }
 
     #[test]
@@ -1448,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn self_status_round_trips_extensions_and_preserves_absent_legacy_metadata() {
+    fn self_status_round_trips_extensions_and_requires_current_fields() {
         let fixture = fixtures();
         let value = fixture["self_status"].clone();
         assert_eq!(json!(SelfStatus::decode(value.clone()).unwrap()), value);
@@ -1457,12 +1413,11 @@ mod tests {
         extended["raid"]["future"] = json!(true);
         extended["worktree"]["future"] = json!(true);
         assert_eq!(json!(SelfStatus::decode(extended).unwrap()), value);
-        let legacy =
-            SelfStatusReply::decode(json!({"agent_name":"goblin","attached":true})).unwrap();
-        assert_eq!(legacy.agent_name.as_deref(), Some("goblin"));
-        assert_eq!(legacy.attached, Some(true));
-        assert!(legacy.allowed_run_targets.is_none());
-        assert!(legacy.options.is_none());
+        assert!(
+            SelfStatusReply::decode(json!({"agent_name":"goblin","attached":true})).is_err()
+        );
+        let reply = SelfStatusReply::decode(value.clone()).unwrap();
+        assert_eq!(reply.agent_name.as_deref(), value["agent_name"].as_str());
         assert!(SelfStatusReply::decode(json!({"attached":"true"})).is_err());
         assert!(SelfStatusReply::decode(json!([])).is_err());
         for field in ["scope", "worktree", "created_by", "permission_bypass"] {
@@ -1489,7 +1444,7 @@ mod tests {
     }
 
     #[test]
-    fn session_read_contracts_preserve_requests_results_and_legacy_defaults() {
+    fn session_read_contracts_preserve_requests_and_require_current_fields() {
         let f = fixtures();
         for case in f["session_parameter_cases"].as_array().unwrap() {
             let valid = if case["method"] == "sessions.list" {
@@ -1507,29 +1462,25 @@ mod tests {
             };
             assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
         }
-        let original =
-            HostSessionReply::decode(f["original_api1"]["host_session"].clone()).unwrap();
-        assert!(original.agent_name.is_none());
-        let original = invoke::<host::SessionsGet, io::Error>(
+        let record = invoke::<host::SessionsGet, io::Error>(
             SessionSelectorParams {
                 session: "session-id".into(),
             },
             |name, params| {
                 assert_eq!(name, "sessions.get");
                 assert_eq!(params, json!({"session":"session-id"}));
-                Ok(f["original_api1"]["host_session"].clone())
+                Ok(f["host_session"].clone())
             },
         )
         .unwrap();
-        assert_eq!(original.terminal, "/host/terminal.sock");
-        let legacy = HostSessionReply::decode(f["host_session_legacy"].clone()).unwrap();
-        assert_eq!(legacy.docker_scope.as_deref(), Some("legacy-scope"));
-        assert_eq!(legacy.agent_state, "unknown");
-        assert_eq!(legacy.inbox, 0);
-        assert!(!legacy.terminal_attached);
-        assert!(legacy.worktree.is_none());
+        assert_eq!(record.agent_name, f["host_session"]["agent_name"]);
+        for field in ["agent_name", "agent_state", "inbox", "attach", "terminals"] {
+            let mut value = f["host_session"].clone();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(HostSessionReply::decode(value).is_err(), "{field}");
+        }
         assert_eq!(
-            HostSessionListReply::decode(json!([f["host_session"], f["host_session_legacy"]]))
+            HostSessionListReply::decode(json!([f["host_session"], f["host_session"]]))
                 .unwrap()
                 .0
                 .len(),
@@ -1649,7 +1600,7 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_results_accept_old_metadata_and_validate_nested_records() {
+    fn lifecycle_results_require_current_fields_and_validate_nested_records() {
         let fixture = fixtures();
         for case in fixture["lifecycle_result_cases"].as_array().unwrap() {
             let value = case["result"].clone();
@@ -1661,14 +1612,16 @@ mod tests {
             };
             assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
         }
-        let accepted =
-            HostLaunchReply::decode(fixture["original_api1"]["host_launch"].clone()).unwrap();
-        assert!(accepted.agent_name.is_none());
-        assert!(accepted.attach.is_none());
+        let launch = HostLaunchReply::decode(fixture["host_launch"].clone()).unwrap();
         assert_eq!(
-            accepted.terminal.unwrap(),
-            std::path::PathBuf::from("/host/terminal.sock")
+            launch.agent_name.as_deref(),
+            fixture["host_launch"]["agent_name"].as_str()
         );
+        for field in ["agent_name", "state", "terminal", "attach"] {
+            let mut value = fixture["host_launch"].clone();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(HostLaunchReply::decode(value).is_err(), "{field}");
+        }
         assert_eq!(
             RunTargetListReply::decode(fixture["forward_compatibility"]["run_targets"].clone())
                 .unwrap()

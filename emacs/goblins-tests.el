@@ -17,17 +17,11 @@
     (should (goblins--initialize-valid-p host))
     (should (goblins--initialize-valid-p
              (plist-get (plist-get fixtures :forward_compatibility) :host_initialize)))
-    (should (goblins--initialize-valid-p
-             (plist-get (plist-get fixtures :historical_api1) :host_initialize)))
     (should-not (goblins--initialize-valid-p (plist-get fixtures :sandbox_initialize)))
-    (dolist (key '(:api :role :instance :features))
+    (dolist (key '(:api :role :instance :features :configuration :limits))
       (let ((broken (copy-tree host)))
         (cl-remf broken key)
         (should-not (goblins--initialize-valid-p broken))))
-    (dolist (key '(:configuration :limits))
-      (let ((legacy (copy-tree host)))
-        (cl-remf legacy key)
-        (should (goblins--initialize-valid-p legacy))))
     (let ((broken (copy-tree host)))
       (setf (plist-get broken :features) [1])
       (should-not (goblins--initialize-valid-p broken)))))
@@ -38,15 +32,12 @@
          (fixtures (with-temp-buffer
                      (insert-file-contents file)
                      (json-parse-buffer :object-type 'plist :null-object nil))))
-    (dolist (key '(:host_session :host_session_legacy))
-      (let ((record (plist-get fixtures key)))
-        (with-temp-buffer
-          (goblins--insert-agent-fields record)
-          (should (string-match-p "Session:.*session-id" (buffer-string)))
-          (should (string-match-p "State:.*running" (buffer-string)))
-          (should (string-match-p
-                   (if (eq key :host_session) "Activity:.*working" "Activity:.*unknown")
-                   (buffer-string))))))
+    (let ((record (plist-get fixtures :host_session)))
+      (with-temp-buffer
+        (goblins--insert-agent-fields record)
+        (should (string-match-p "Session:.*session-id" (buffer-string)))
+        (should (string-match-p "State:.*running" (buffer-string)))
+        (should (string-match-p "Activity:.*working" (buffer-string)))))
     (should (equal (plist-get (goblins--session-worktree
                               (plist-get fixtures :host_session)) :path)
                    "/host/worktrees/branch"))))
@@ -276,21 +267,6 @@
     (goblins--render)
     (should (equal (cdr (assoc '(other-diff "devshell") (goblins-test--sections 'goblins-diff-section)))
                    nil))))
-
-(ert-deftest goblins-diff-from-an-older-daemon-is-still-shown ()
-  (goblins-test--buffer
-    (let ((request (goblins-test--request "old")))
-      (setq request (plist-put request :kind "devshell")
-            request (plist-put request :preview
-                               (list :description "Dev shell /src · generation 1 → 2"
-                                     :diff "diff --git a/flake.nix b/flake.nix\n@@ -1 +1 @@\n-a\n+b\n"))
-            goblins--snapshot (goblins-test--snapshot request)))
-    (goblins--render)
-    (goblins-test--goto "old")
-    (goblins-details)
-    (should (string-match-p "Dev shell /src" (buffer-string)))
-    (should (string-match-p "^Nix changes (1 file)" (buffer-string)))
-    (should (string-match-p "^\\+b" (buffer-string)))))
 
 (ert-deftest goblins-details-retain-identity-and-never-target-a-replacement ()
   (goblins-test--buffer
@@ -6300,7 +6276,11 @@ m2, and m3, which failed when beta stopped."
         (should (= (length requests) 1))
         (funcall (nth 2 (car requests))
                  (list :api (if invalid-initialize 2 1) :role "host" :instance "i"
-                       :configuration nil :features ["state-subscribe"]))
+                       :configuration nil :features ["state-subscribe"]
+                       :limits '(:header 256 :body 65536 :frame_seconds 3 :depth 32
+                                 :response_body 1048576 :calls 4096 :connections 32
+                                 :sessions 16 :output_queue 2097152 :snapshot 921600
+                                 :terminal_buffer 65536)))
         (unless invalid-initialize
           (should (eq (caar requests) 'state.subscribe))
           (should (hash-table-p (cadar requests)))

@@ -33,9 +33,6 @@
         "items": false,
         "minItems": 0,
         "maxItems": 0
-      },
-      "x-client-result-schema": {
-        "$ref": "common.json#/definitions/ServerStatusReply"
       }
     },
     {
@@ -124,7 +121,7 @@
     },
     {
       "name": "sessions.start",
-      "description": "Accept a host launch or recreate; retry keys return the original acceptance, not current readiness. For API-1 compatibility typed clients omit the empty host options map; nonempty maps remain present and are refused by host policy.",
+      "description": "Accept a host launch or recreate; retry keys return the original acceptance, not current readiness. Typed clients omit an empty host options map; nonempty maps remain present and are refused by host policy.",
       "paramStructure": "either",
       "params": [
         {
@@ -463,9 +460,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/ExecReply"
-      },
-      "x-client-result-normalization": "exec-field-fallback",
-      "x-client-wire-result-schema": {}
+      }
     },
     {
       "name": "sessions.kill_execs",
@@ -587,8 +582,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalCreateReply"
       },
-      "x-client-result-normalization": "terminal-create-fields",
-      "x-client-wire-result-schema": {},
       "x-client-omit-default-false": [
         "notify"
       ]
@@ -632,9 +625,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalListReply"
-      },
-      "x-client-result-normalization": "terminal-list-display",
-      "x-client-wire-result-schema": {}
+      }
     },
     {
       "name": "terminals.close",
@@ -674,9 +665,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalCloseReply"
-      },
-      "x-client-result-normalization": "terminal-close-fields",
-      "x-client-wire-result-schema": {}
+      }
     },
     {
       "name": "terminals.read",
@@ -738,9 +727,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalReadReply"
-      },
-      "x-client-result-normalization": "terminal-read-fields",
-      "x-client-wire-result-schema": {}
+      }
     },
     {
       "name": "terminals.send",
@@ -803,8 +790,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalCloseReply"
       },
-      "x-client-result-normalization": "terminal-close-fields",
-      "x-client-wire-result-schema": {},
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/HostTerminalSendParams"
       }
@@ -891,8 +876,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalWaitReply"
       },
-      "x-client-result-normalization": "terminal-wait-fields",
-      "x-client-wire-result-schema": {},
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/HostTerminalWaitParams"
       }
@@ -935,9 +918,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalCloseReply"
-      },
-      "x-client-result-normalization": "terminal-close-fields",
-      "x-client-wire-result-schema": {}
+      }
     },
     {
       "name": "terminals.resize",
@@ -999,9 +980,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/TerminalCloseReply"
-      },
-      "x-client-result-normalization": "terminal-close-fields",
-      "x-client-wire-result-schema": {}
+      }
     },
     {
       "name": "permissions.decide",
@@ -1066,9 +1045,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/PermissionDecisionReply"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "permission-decision-fields"
+      }
     },
     {
       "name": "permissions.list",
@@ -1117,11 +1094,7 @@
       ],
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/PermissionListReply"
-      },
-      "x-client-wire-result-schema": {
-        "$ref": "common.json#/x-client-result-schemas/PermissionListReply"
-      },
-      "x-client-result-normalization": "permission-list-records"
+      }
     },
     {
       "name": "permissions.get",
@@ -1163,11 +1136,7 @@
       "x-positional-required": [],
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/PermissionRecordReply"
-      },
-      "x-client-wire-result-schema": {
-        "$ref": "common.json#/x-client-result-schemas/PermissionRecordReply"
-      },
-      "x-client-result-normalization": "permission-record-fields"
+      }
     },
     {
       "name": "host.list",
@@ -1200,9 +1169,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "host.status",
@@ -1243,9 +1210,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/PermissionRequestReply"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "permission-request-fields"
+      }
     },
     {
       "name": "host.cancel",
@@ -1286,9 +1251,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "raids.invite",
@@ -1337,8 +1300,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body",
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/RaidInviteParams"
       }
@@ -1407,8 +1368,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body",
       "x-client-param-profiles": [
         {
           "name": "raid-owner-ui",
@@ -1481,8 +1440,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body",
       "x-client-param-profiles": [
         {
           "name": "raid-owner-ui",
@@ -1529,9 +1486,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/RaidDisplayReply"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "raid-members-display"
+      }
     },
     {
       "name": "raids.kick",
@@ -1579,9 +1534,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "raids.set_role",
@@ -1637,8 +1590,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body",
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/RaidSetRoleParams"
       }
@@ -1714,8 +1665,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
       },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body",
       "x-positional-required": [
         "conversation"
       ]
@@ -1787,9 +1736,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "inbox.next",
@@ -1836,9 +1783,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "inbox.complete",
@@ -1901,9 +1846,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "inbox.requeue",
@@ -1972,9 +1915,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "messages.get",
@@ -2012,9 +1953,7 @@
       },
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-wire-result-schema": {},
-      "x-client-result-normalization": "ignore-successful-body"
+      }
     },
     {
       "name": "inbox.status",
@@ -2106,8 +2045,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/CommunicationsPageReply"
       },
-      "x-client-result-normalization": "communications-page-fields",
-      "x-client-wire-result-schema": {},
       "x-client-param-profiles": [
         {
           "name": "communications-cli",
@@ -2151,8 +2088,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/HistoryListReply"
       },
-      "x-client-result-normalization": "history-list-fields",
-      "x-client-wire-result-schema": {},
       "x-direct-serde-params": true
     },
     {
@@ -2213,10 +2148,6 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/HistoryPruneReply"
       },
-      "x-client-result-normalization": "history-prune-fields",
-      "x-client-wire-result-schema": {
-        "$ref": "common.json#/x-client-result-schemas/HistoryPruneReply"
-      },
       "x-request-constraints": {
         "$ref": "common.json#/x-request-constraints/HistoryPruneParams"
       },
@@ -2254,9 +2185,7 @@
       "x-direct-serde-params": true,
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/StateSubscribeReply"
-      },
-      "x-client-result-normalization": "state-subscribe-fields",
-      "x-client-wire-result-schema": {}
+      }
     },
     {
       "name": "state.unsubscribe",
@@ -2302,9 +2231,7 @@
       "x-direct-serde-params": true,
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/IgnoredResult"
-      },
-      "x-client-result-normalization": "ignore-successful-body",
-      "x-client-wire-result-schema": {}
+      }
     }
   ],
   "x-notifications": [

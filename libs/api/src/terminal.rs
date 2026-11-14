@@ -269,7 +269,7 @@ mod tests {
     use serde_json::json;
     fn completion_record(outcome: Value) -> Value {
         let mut record = serde_json::from_str::<Value>(include_str!("../tests/fixtures.json"))
-            .unwrap()["host_session_legacy"]
+            .unwrap()["host_session"]
             .clone();
         record
             .as_object_mut()

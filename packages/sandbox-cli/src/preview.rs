@@ -330,6 +330,38 @@ mod tests {
     }
 
     #[test]
+    fn fixture_previews_render_with_their_display_fallbacks() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
+        let shown = |wire: &serde_json::Value| {
+            super::render(
+                &contract::decode_reply::<contract::sandbox::DevShellDiff>(wire.clone()).unwrap(),
+            )
+        };
+        let text = shown(&fixtures["devshell_preview"]);
+        for expected in [
+            "generation 1 → 2",
+            "hello 2.12 → 2.13",
+            "image.png +? -?",
+            "long value; see source diff",
+            "1.5 MiB",
+        ] {
+            assert!(text.contains(expected), "{expected:?} missing in\n{text}");
+        }
+        let text = shown(&fixtures["devshell_preview_legacy"][1]);
+        for expected in [
+            "generation ? → ?",
+            "? derivation(s) build on this machine",
+            "x.nix +? -?",
+            "?, ?, ?, 1 →",
+            "? to fetch · ? to build",
+        ] {
+            assert!(text.contains(expected), "{expected:?} missing in\n{text}");
+        }
+        assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
+    }
+
+    #[test]
     fn identical_generation_says_so() {
         let text = render(&json!({
             "kind": "devshell", "reference": "path:/p", "from": 3, "to": 4,

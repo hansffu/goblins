@@ -46,16 +46,12 @@ init=$(call 0 initialize '{"api":1}') || status=$?
 if ((status == 0)) && ! jq -e '
   .api == 1 and .role == "sandbox" and
   (.instance | type == "string") and
-  (.configuration | . == null or type == "string") and
+  has("configuration") and (.configuration | . == null or type == "string") and
   (.features | type == "array" and all(.[]; type == "string")) and
-  (if (has("limits") and .limits != null) then
-    .limits as $limits | ($limits | type == "object") and
-    (["header", "body", "frame_seconds", "depth", "response_body", "calls",
-      "connections", "sessions", "output_queue", "snapshot", "terminal_buffer"] |
-      all(.[]; . as $key | if ($limits | has($key)) then
-        $limits[$key] | . == null or (type == "number" and . >= 0 and floor == .)
-      else true end))
-   else true end)
+  (.limits | type == "object" and (. as $limits |
+    ["header", "body", "frame_seconds", "depth", "response_body", "calls",
+     "connections", "sessions", "output_queue", "snapshot", "terminal_buffer"] |
+    all(.[]; . as $key | $limits[$key] | type == "number" and . >= 0 and floor == .)))
 ' <<<"$init" >/dev/null; then
   printf 'goblins-claude-message: incompatible daemon\n' >&2
   exit 2

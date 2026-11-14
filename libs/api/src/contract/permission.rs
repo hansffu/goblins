@@ -1,30 +1,8 @@
-//! Compatible readers for retained permission records.
+//! Readers for permission records.
 use super::*;
-
-pub const RECORD_ORDER: &[&str] = &[
-    "kind",
-    "id",
-    "session",
-    "agent_name",
-    "approval",
-    "package",
-    "reason",
-    "state",
-    "approved",
-    "preview",
-    "message",
-    "name",
-    "started_at",
-    "log",
-];
 
 impl Response for PermissionRecordReply {
     const SCHEMA: &'static str = "PermissionRecordReply";
-    fn decode(value: Value) -> io::Result<Self> {
-        // The original record's final non-default sequence slot was message.
-        // Named Option fields could be omitted; kind defaulted to package.
-        decode_ordered(value, RECORD_ORDER, 11).map_err(io::Error::other)
-    }
 }
 impl Response for PermissionListReply {
     const SCHEMA: &'static str = "PermissionListReply";

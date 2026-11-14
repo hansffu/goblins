@@ -821,7 +821,7 @@ mod tests {
         assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
     }
     fn c15_snapshot() -> Snapshot {
-        serde_json::from_value(json!({"instance":"i","sessions":[],"permissions":[]})).unwrap()
+        serde_json::from_value(json!({"instance":"i","sessions":[],"permissions":[],"raids":[],"messaging":{"audit_failed":false,"raid_audit_failed":false}})).unwrap()
     }
     fn c15_subscription() -> (Subscription, UnixStream) {
         let (stream, peer) = UnixStream::pair().unwrap();
@@ -844,9 +844,9 @@ mod tests {
         json!({"jsonrpc":"2.0","method":"state.changed","params":{"subscription":"sub","sequence":sequence,"snapshot":snapshot}})
     }
     #[test]
-    fn c15_subscribe_preserves_outbound_request_initial_defaults_and_errors() {
+    fn c15_subscribe_preserves_outbound_request_and_initial_errors() {
         let _no_forks = goblins_unix::no_forks();
-        let snapshot = json!({"instance":"i","sessions":[],"permissions":[]});
+        let snapshot = json!({"instance":"i","sessions":[],"permissions":[],"raids":[],"messaging":{"audit_failed":false,"raid_audit_failed":false}});
         for (reply, error) in [
             (
                 json!({"subscription":"sub","sequence":0,"snapshot":snapshot,"future":true}),
@@ -857,7 +857,7 @@ mod tests {
                 None,
             ),
             (
-                json!({"subscription":"sub","sequence":0,"snapshot":{"instance":"other","sessions":[],"permissions":[]}}),
+                json!({"subscription":"sub","sequence":0,"snapshot":{"instance":"other","sessions":[],"permissions":[],"raids":[],"messaging":{"audit_failed":false,"raid_audit_failed":false}}}),
                 None,
             ),
             (
@@ -877,7 +877,7 @@ mod tests {
                 Some("missing sequence"),
             ),
             (
-                json!({"subscription":"sub","sequence":0,"snapshot":{"sessions":[],"permissions":[]}}),
+                json!({"subscription":"sub","sequence":0,"snapshot":{"sessions":[],"permissions":[],"raids":[],"messaging":{"audit_failed":false,"raid_audit_failed":false}}}),
                 Some("missing field `instance`"),
             ),
         ] {
@@ -916,7 +916,7 @@ mod tests {
                     }
                     (Err(actual), Some(expected)) => assert_eq!(actual.to_string(), expected),
                     (Ok(_), Some(expected)) => panic!("accepted invalid initial result: {expected}"),
-                    (Err(error), None) => panic!("refused legacy initial result: {error}"),
+                    (Err(error), None) => panic!("refused initial result: {error}"),
                 }
                 server.join().unwrap();
             });

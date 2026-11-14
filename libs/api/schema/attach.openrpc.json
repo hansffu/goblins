@@ -78,10 +78,6 @@
       },
       "x-positional-schema": {
         "not": {}
-      },
-      "x-client-normalization": "attach-waiting-legacy",
-      "x-client-params-schema": {
-        "$ref": "common.json#/definitions/AttachWaitingReply"
       }
     }
   ],

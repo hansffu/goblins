@@ -52,13 +52,6 @@ def check_dependencies(paths, edges):
                 pending.extend(edges.get(dependency, ()))
 
 
-def check_retired_runtime_boundary(controller, supervisor, local_exists):
-    """Reject the retired implementation selector even in debug-only code."""
-    if ("GOBLINS_DEBUG_LOCAL_RUNTIME" in controller or "RuntimeBackend::Local" in controller
-            or "mod local;" in supervisor or "pub use local::Local;" in supervisor or local_exists):
-        raise ValueError("retired Local runtime boundary is present")
-
-
 def workspace_graph(metadata, root):
     """All declared workspace edges, including dev/build/optional/target edges."""
     members = set(metadata["workspace_members"])
@@ -140,17 +133,3 @@ class DependencyTests(unittest.TestCase):
                                               target=target, indirect=indirect), self.assertRaisesRegex(
                                     ValueError, "daemon links runtime implementation"):
                                 check_dependencies(*workspace_graph(metadata, root))
-
-    def test_retired_local_backend_module_and_debug_selector_are_absent(self):
-        check_retired_runtime_boundary((HERE / "packages/daemon/src/controller.rs").read_text(),
-                                       (HERE / "libs/supervisor/src/lib.rs").read_text(),
-                                       (HERE / "libs/supervisor/src/local.rs").exists())
-
-    def test_retired_boundary_guard_rejects_pre_cutover_paths(self):
-        for controller, supervisor, local in (
-                ('#[cfg(debug_assertions)] if var_os("GOBLINS_DEBUG_LOCAL_RUNTIME").is_some() {}', "", False),
-                ("RuntimeBackend::Local => start_local()", "", False),
-                ("", "mod local;", False), ("", "pub use local::Local;", False), ("", "", True)):
-            with self.subTest(controller=controller, supervisor=supervisor, local=local), self.assertRaisesRegex(
-                    ValueError, "retired Local runtime boundary"):
-                check_retired_runtime_boundary(controller, supervisor, local)

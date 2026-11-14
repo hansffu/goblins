@@ -48,7 +48,7 @@ const NO_MANIFEST: &str = "no configuration is known yet; start the server with 
 pub struct SessionRecord {
     #[serde(default)]
     pub docker_enabled: bool,
-    #[serde(default, alias = "docker_scope")]
+    #[serde(default)]
     pub scope: Option<String>,
     /// Flake reference of the host-launched dev shell, if any.
     #[serde(default)]
@@ -205,19 +205,18 @@ impl From<&SessionRecord> for contract::HostSession {
     }
 }
 
-// Domain/UI conversion from the generated compatible record; snapshot field
-// readers validate it before conversion, preserving legacy decode precedence.
+// Domain/UI conversion from the generated record; snapshot field readers
+// validate it before conversion.
 impl TryFrom<contract::HostSessionReply> for SessionRecord {
     type Error = &'static str;
     fn try_from(r: contract::HostSessionReply) -> std::result::Result<Self, Self::Error> {
-        let agent_name = r.agent_name.ok_or("snapshot session requires agent_name")?;
         let agent_state = r
             .agent_state
             .parse()
             .map_err(|_| "invalid snapshot agent_state")?;
         Ok(Self {
             id: r.id,
-            agent_name,
+            agent_name: r.agent_name,
             name: r.name,
             description: r.description,
             configuration: r.configuration,
@@ -229,7 +228,7 @@ impl TryFrom<contract::HostSessionReply> for SessionRecord {
             terminal_interrupted: r.terminal_interrupted,
             terminal_attached: r.terminal_attached,
             terminal_detached: r.terminal_detached,
-            scope: r.scope.or(r.docker_scope),
+            scope: r.scope,
             dev_shell: r.dev_shell,
             cwd: r.cwd,
             created_by: r.created_by.map(|c| CreatedBy {
@@ -4360,17 +4359,19 @@ mod tests {
                "agent_name":agent_name,"rows":24,"cols":100})
     }
     #[test]
-    fn snapshot_raid_bridge_matches_original_record_deserialization() {
+    fn snapshot_raids_use_the_raid_record_reader() {
         let fixtures: Value =
             serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         for case in fixtures["raid_record_cases"].as_array().unwrap() {
-            let old = serde_json::from_value::<RaidRecord>(case["result"].clone());
-            let snapshot = serde_json::from_value::<Snapshot>(
-                json!({"instance":"test","sessions":[],"permissions":[],"raids":[case["result"]]}),
-            );
-            assert_eq!(old.is_ok(), snapshot.is_ok(), "{case}");
-            if let (Ok(old), Ok(snapshot)) = (old, snapshot) {
-                assert_eq!(json!(snapshot.raids), json!([old]), "{case}");
+            let snapshot = serde_json::from_value::<Snapshot>(json!({"instance":"test",
+                "sessions":[],"permissions":[],"raids":[case["result"]],
+                "messaging":{"audit_failed":false,"raid_audit_failed":false}}));
+            assert_eq!(snapshot.is_ok(), case["reader"].as_bool().unwrap(), "{case}");
+            if let Ok(snapshot) = snapshot {
+                let reply =
+                    <contract::RaidRecordReply as contract::Response>::decode(case["result"].clone())
+                        .unwrap();
+                assert_eq!(json!(snapshot.raids), json!([RaidRecord::from(reply)]), "{case}");
             }
         }
     }
@@ -4618,17 +4619,20 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn snapshot_permission_bridge_matches_original_record_decoding() {
+    fn snapshot_permissions_use_the_permission_record_reader() {
         let fixtures: Value =
             serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         for case in fixtures["permission_record_cases"].as_array().unwrap() {
-            let old = serde_json::from_value::<PermissionRecord>(case["result"].clone());
-            let snapshot = serde_json::from_value::<Snapshot>(
-                json!({"instance":"test","sessions":[],"permissions":[case["result"]]}),
-            );
-            assert_eq!(old.is_ok(), snapshot.is_ok(), "{case}");
-            if let (Ok(old), Ok(snapshot)) = (old, snapshot) {
-                assert_eq!(json!(snapshot.permissions), json!([old]));
+            let snapshot = serde_json::from_value::<Snapshot>(json!({"instance":"test",
+                "sessions":[],"permissions":[case["result"]],"raids":[],
+                "messaging":{"audit_failed":false,"raid_audit_failed":false}}));
+            assert_eq!(snapshot.is_ok(), case["reader"].as_bool().unwrap(), "{case}");
+            if let Ok(snapshot) = snapshot {
+                let reply = <contract::PermissionRecordReply as contract::Response>::decode(
+                    case["result"].clone(),
+                )
+                .unwrap();
+                assert_eq!(json!(snapshot.permissions), json!([PermissionRecord::from(reply)]));
             }
         }
     }
@@ -5666,7 +5670,7 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn generated_session_projections_preserve_visibility_and_snapshot_compatibility() {
+    fn generated_session_projections_preserve_visibility_and_the_snapshot_reader() {
         let fixtures: Value =
             serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
         let record: SessionRecord =
@@ -5682,18 +5686,21 @@ mod tests {
             json!(d.sandbox_record(&record)),
             fixtures["sandbox_session"]
         );
-        let wire = json!({"instance":"fixture","sessions":[fixtures["host_session_legacy"]],"permissions":[]});
+        let wire = json!({"instance":"fixture","sessions":[fixtures["host_session"]],"permissions":[],
+            "raids":[],"messaging":{"audit_failed":false,"raid_audit_failed":false}});
         let snapshot: Snapshot = serde_json::from_value(wire.clone()).unwrap();
-        let legacy = &snapshot.sessions[0];
-        assert_eq!(legacy.scope.as_deref(), Some("legacy-scope"));
-        assert_eq!(legacy.agent_state, goblins_protocol::AgentState::Unknown);
-        assert_eq!(legacy.inbox, 0);
-        assert!(!legacy.terminal_attached);
-        let mut original = wire.clone();
-        original["sessions"][0] = fixtures["original_api1"]["host_session"].clone();
-        assert!(serde_json::from_value::<Snapshot>(original).is_err());
-        let mut future =
-            json!({"instance":"fixture","sessions":[fixtures["host_session"]],"permissions":[]});
+        assert_eq!(json!(snapshot.sessions[0]), fixtures["host_session"]);
+        for field in ["agent_name", "agent_state", "inbox"] {
+            let mut missing = wire.clone();
+            missing["sessions"][0].as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<Snapshot>(missing).is_err(), "{field}");
+        }
+        for field in ["raids", "messaging"] {
+            let mut missing = wire.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<Snapshot>(missing).is_err(), "{field}");
+        }
+        let mut future = wire.clone();
         future["sessions"][0]["state"] = json!("finished");
         future["sessions"][0]["terminals"][0]["origin"] = json!("remote");
         let accepted: Snapshot = serde_json::from_value(future.clone()).unwrap();
@@ -5701,9 +5708,6 @@ mod tests {
         assert_eq!(accepted.sessions[0].terminals[0].origin, "remote");
         future["sessions"][0]["agent_state"] = json!("future-activity");
         assert!(serde_json::from_value::<Snapshot>(future).is_err());
-        let mut duplicate = wire.clone();
-        duplicate["sessions"][0]["scope"] = json!("canonical");
-        assert!(serde_json::from_value::<Snapshot>(duplicate).is_err());
         let mut malformed = wire;
         malformed["sessions"][0]["identity"] = json!([42, 1, 2, 3, 4]);
         assert!(serde_json::from_value::<Snapshot>(malformed).is_err());
@@ -5711,22 +5715,6 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
 
-    #[test]
-    fn old_session_snapshots_default_activity_to_unknown() {
-        let mut d = daemon();
-        let path = d.state.clone();
-        let id = session_with_results(&mut d, vec![]);
-        let mut value = serde_json::to_value(&d.sessions[&id].record).unwrap();
-        for field in ["agent_state", "agent_state_since", "inbox"] {
-            value.as_object_mut().unwrap().remove(field);
-        }
-        let record: SessionRecord = serde_json::from_value(value).unwrap();
-        assert_eq!(record.agent_state, goblins_protocol::AgentState::Unknown);
-        assert_eq!(record.agent_state_since, None);
-        assert_eq!(record.inbox, 0);
-        drop(d);
-        fs::remove_dir_all(path).unwrap();
-    }
     #[test]
     fn queued_progress_cannot_restore_cancelled_permission() {
         let mut d = daemon();
@@ -7504,7 +7492,7 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         let session = session_with_results(&mut d, vec![]);
-        let (mut c, _peer) = connection(Role::Sandbox(session));
+        let (mut c, _peer) = connection(Role::Sandbox(session.clone()));
         assert_eq!(
             dispatch(&mut d, &mut c, "sessions.list", json!({}), Some(json!(1)))["error"]["code"],
             -32001
@@ -7539,6 +7527,10 @@ mod tests {
             )["result"]["role"],
             "sandbox"
         );
+        let (mut other, _other_peer) = connection(Role::Sandbox(session.clone()));
+        let init = dispatch(&mut d, &mut other, "initialize", json!([1]), Some(json!(1)));
+        assert_eq!(init["result"]["role"], "sandbox");
+        assert_eq!(init["result"]["limits"]["calls"], 2);
         let (mut host, _host_peer) = connection(Role::Host);
         let _ = dispatch(
             &mut d,
@@ -7582,7 +7574,7 @@ mod tests {
     fn server_shutdown_flushes_acceptance_and_rejects_later_work() {
         let mut d = daemon();
         let path = d.state.clone();
-        let (mut c, _peer) = connection(Role::Host);
+        let (mut c, mut peer) = connection(Role::Host);
         c.initialized = true;
         assert_eq!(
             d.host(&mut c, "server.status", json!({})).unwrap()["state"],
@@ -7612,8 +7604,184 @@ mod tests {
             d.host(&mut other, "server.status", json!({})).unwrap()["state"],
             "stopping"
         );
+        assert!(d.connections[0].close && !d.connections[0].dead);
         d.connections[0].flush();
         assert!(d.shutdown_ready());
+        // The stopping connection closes once its acceptance is flushed.
+        assert!(d.connections[0].dead);
+        let mut reply = vec![];
+        drop(d.connections.remove(0));
+        peer.read_to_end(&mut reply).unwrap();
+        let body = reply.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        assert_eq!(
+            rpc::parse(&reply[body..]).unwrap()["result"],
+            json!({"accepted":true})
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn permission_decisions_need_initialize_and_bind_parameters_before_lookup() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = connection(Role::Host);
+        assert_eq!(
+            dispatch(
+                &mut d,
+                &mut host,
+                "permissions.decide",
+                json!({}),
+                Some(json!(1))
+            )["error"]["code"],
+            -32001
+        );
+        dispatch(
+            &mut d,
+            &mut host,
+            "initialize",
+            json!({"api":1}),
+            Some(json!(2)),
+        );
+        let cases = fixtures["permission_decision_parameter_cases"]
+            .as_array()
+            .unwrap();
+        assert!(
+            cases.iter().any(|c| c["valid"] == true) && cases.iter().any(|c| c["valid"] == false)
+        );
+        for (index, case) in cases.iter().enumerate() {
+            let reply = dispatch(
+                &mut d,
+                &mut host,
+                "permissions.decide",
+                case["params"].clone(),
+                Some(json!(index + 3)),
+            );
+            let expected = if case["valid"] == true {
+                -32004
+            } else {
+                -32602
+            };
+            assert_eq!(reply["error"]["code"], expected, "{case}");
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn host_parameter_forms_bounds_and_initialization_precedence() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        for value in [
+            json!({}),
+            json!([]),
+            Value::Null,
+            json!({"api":null}),
+            json!({"api":true}),
+            json!({"api":-1}),
+            json!({"api":1u64 << 32}),
+            json!({"api":1,"extra":1}),
+            json!([1, 2]),
+        ] {
+            let (mut c, _peer) = connection(Role::Host);
+            assert_eq!(
+                dispatch(&mut d, &mut c, "initialize", value.clone(), Some(json!(1)))["error"]["code"],
+                -32602,
+                "{value}"
+            );
+            assert!(!c.initialized, "{value}");
+        }
+        let (mut c, _peer) = connection(Role::Host);
+        let mut call = |d: &mut Controller, method: &str, params: Value| {
+            dispatch(d, &mut c, method, params, Some(json!(1)))
+        };
+        assert_eq!(
+            call(&mut d, "initialize", json!([0]))["error"]["code"],
+            -32002
+        );
+        assert_eq!(call(&mut d, "initialize", json!([1]))["result"]["api"], 1);
+        // Parameters bind before the repeated initialization conflicts.
+        assert_eq!(
+            call(&mut d, "initialize", json!({"api":null}))["error"]["code"],
+            -32602
+        );
+        assert_eq!(
+            call(&mut d, "initialize", json!({"api":0}))["error"]["code"],
+            -32009
+        );
+        assert_eq!(
+            call(&mut d, "server.status", json!([]))["result"]["sessions"],
+            0
+        );
+        for value in [Value::Null, json!({"extra":1}), json!([1])] {
+            assert_eq!(
+                call(&mut d, "server.status", value.clone())["error"]["code"],
+                -32602,
+                "{value}"
+            );
+        }
+        // A call that omits params binds as empty named parameters.
+        let omitted = rpc::call(br#"{"jsonrpc":"2.0","id":7,"method":"server.status"}"#).unwrap();
+        d.dispatch(&mut c, omitted);
+        let data = c.output.pop_back().unwrap();
+        let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let reply = rpc::parse(&data[body..]).unwrap();
+        assert_eq!(reply["id"], 7);
+        assert_eq!(reply["result"]["state"], "running");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn sandbox_self_reporting_binds_current_contracts_at_dispatch() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let _results = live(&mut d, "a");
+        d.history.as_mut().unwrap().write({
+            let mut record = crate::history::Record::new("a", "shell", "a", 1);
+            record.ran_as("a");
+            record
+        });
+        let status = sandbox_call(&mut d, "a", "sessions.status", json!([]))["result"].clone();
+        assert_eq!(status["id"], "a");
+        assert!(status.get("identity").is_none() && status.get("configuration").is_none());
+        // What the sandbox clients (CLI, adapters) read from these replies.
+        contract::decode_reply::<contract::sandbox::SessionsStatus>(status).unwrap();
+        let state =
+            sandbox_call(&mut d, "a", "sessions.set-state", json!(["working"]))["result"].clone();
+        assert_eq!(state, json!({"accepted":true}));
+        contract::decode_reply::<contract::sandbox::SessionsSetState>(state).unwrap();
+        assert_eq!(
+            sandbox_call(&mut d, "a", "sessions.status", json!({}))["result"]["agent_state"],
+            "working"
+        );
+        assert_eq!(
+            sandbox_call(
+                &mut d,
+                "a",
+                "sessions.set-variables",
+                json!([{"session_id":"contract-test"}])
+            )["result"],
+            json!({"accepted":true,"recorded":true})
+        );
+        for params in [json!({}), json!({"name":null})] {
+            assert_eq!(
+                sandbox_call(&mut d, "a", "sessions.set-worktree", params)["result"],
+                json!({"worktree":null})
+            );
+        }
+        for (method, params) in [
+            ("sessions.set-state", json!({"state":"running"})),
+            ("sessions.set-variables", json!({"variables":{"Bad":"x"}})),
+            ("sessions.set-worktree", json!({"name":"../escape"})),
+            ("sessions.set-worktree", json!([])),
+        ] {
+            assert_eq!(
+                sandbox_call(&mut d, "a", method, params.clone())["error"]["code"],
+                -32602,
+                "{method} {params}"
+            );
+        }
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

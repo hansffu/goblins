@@ -759,8 +759,8 @@ fn main() {
         output.push_str("} } }\n");
     }
     let mut decoded = std::collections::BTreeSet::from([
-        "InitializeReply".to_string(),
-        "ServerStatusReply".to_string(),
+        "InitializeResult".to_string(),
+        "ServerStatusResult".to_string(),
         "ServerStopResult".to_string(),
         "SetVariablesResult".to_string(),
         "ExecReply".to_string(),
@@ -925,14 +925,7 @@ fn main() {
                     .unwrap()
                     .strip_prefix("common.json#/definitions/")
                     .unwrap();
-                let order: Vec<_> = profile["x-result-order"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_str().unwrap())
-                    .collect();
-                let minimum = profile["x-min-positional"].as_u64().unwrap();
-                output.push_str(&format!("pub struct {rust}; impl crate::contract::ResultProfile for {rust} {{ type Method = super::{endpoint}::{method_rust}; type Reply = {reply}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; }}\n"));
+                output.push_str(&format!("pub struct {rust}; impl crate::contract::ResultProfile for {rust} {{ type Method = super::{endpoint}::{method_rust}; type Reply = {reply}; }}\n"));
             }
         }
         output.push_str("}\n");
