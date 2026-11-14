@@ -838,6 +838,41 @@
     {
       "endpoint": "sandbox",
       "method": "sessions.start",
+      "params": {"key": "member-key", "name": "shell", "configuration": "/host/manifest"},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {"key": "member-key", "name": "shell", "cwd": "/tmp"},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {"key": "member-key", "name": "shell", "parent": "."},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {"key": "member-key", "name": "shell", "inherit_raid": true},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
+      "params": {"key": "member-key", "name": "shell", "scope": "work"},
+      "valid": false,
+      "decoded": false
+    },
+    {
+      "endpoint": "sandbox",
+      "method": "sessions.start",
       "params": ["member-key", "shell", null, true, "branch", {"model": "fast"}],
       "valid": true,
       "decoded": true

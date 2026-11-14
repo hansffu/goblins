@@ -1238,4 +1238,64 @@ mod tests {
         );
         assert_eq!(spec(&["/"], "/w", &[]).label(), "/");
     }
+
+    #[test]
+    fn a_request_is_shown_whole_or_refused_and_waiting_ones_keep_views_bounded() {
+        let _no_forks = goblins_unix::no_forks();
+        let mut controller = super::super::tests::daemon();
+        let path = controller.state.clone();
+        let _events = super::super::tests::live(&mut controller, "a");
+        let request = |quotes: usize| -> HostCommand {
+            serde_json::from_value(
+                json!({"argv":["true", "'".repeat(quotes)],"cwd":"/work","detach":true}),
+            )
+            .unwrap()
+        };
+        // Too long to show whole: refused, never cut.
+        let refused = controller
+            .host_spec(&request(12000), "/work".into())
+            .err()
+            .unwrap();
+        assert_eq!(refused.0, -32602);
+        assert!(refused.1.contains("too long to show"), "{}", refused.1);
+        // One that fits is shown whole: each apostrophe quoted for the shell.
+        let spec = controller
+            .host_spec(&request(6000), "/work".into())
+            .unwrap();
+        let preview = spec.preview();
+        assert_eq!(
+            preview["command"],
+            format!("true '{}'", "'\\''".repeat(6000))
+        );
+        // Waiting requests are pinned in every snapshot: once they fill the
+        // budget, a new one waits for the host to decide some.
+        let mut waiting = 0;
+        loop {
+            match controller.host_spec(&request(6000), "/work".into()) {
+                Ok(spec) => {
+                    let mut record = job_record(&format!("r{waiting}"), "a", "pending");
+                    record.preview = Some(spec.preview());
+                    controller.permissions.push_back(record);
+                    waiting += 1;
+                }
+                Err(refused) => {
+                    assert_eq!(refused.0, -32003);
+                    assert!(
+                        refused.1.contains("too many large requests"),
+                        "{}",
+                        refused.1
+                    );
+                    break;
+                }
+            }
+            assert!(waiting < 100, "the budget never filled");
+        }
+        assert!(waiting > 1);
+        assert!(serde_json::to_vec(&controller.snapshot()).unwrap().len() < rpc::MAX_BODY);
+        // Decided requests leave the pinned budget.
+        controller.permissions.back_mut().unwrap().state = "denied".into();
+        assert!(controller.host_spec(&request(6000), "/work".into()).is_ok());
+        drop(controller);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }

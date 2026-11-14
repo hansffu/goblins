@@ -48,17 +48,12 @@ fn execute(cli: Cli) -> Result<i32> {
         .unwrap_or_else(|| format!("/run/user/{uid}").into());
     let completion_default_allowed =
         cli.state_dir.is_some() || std::env::var_os("GOBLINS_HOST_JOB").is_none();
-    // A host command (`goblin host run`) works for a goblin of the default
-    // server. Tests it runs must name their own server, never reach or stop
-    // that one by accident.
-    if cli.state_dir.is_none()
-        && std::env::var_os("GOBLINS_HOST_JOB").is_some()
-        && !matches!(
-            command,
-            Command::Configurations | Command::Completions { .. } | Command::CompleteNames { .. }
-        )
-    {
-        return Err("inside a Goblins host command (GOBLINS_HOST_JOB), pass --state-dir: the default server runs the goblin that asked for this command".into());
+    if let Some(refusal) = host_job_refusal(
+        cli.state_dir.is_some(),
+        std::env::var_os("GOBLINS_HOST_JOB").is_some(),
+        &command,
+    ) {
+        return Err(refusal.into());
     }
     let state = cli.state_dir.unwrap_or_else(|| {
         if root.is_dir() {
@@ -532,11 +527,46 @@ fn print_event(event: &serde_json::Value, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// A host command (`goblin host run`) works for a goblin of the default
+/// server. Tests it runs must name their own server, never reach or stop
+/// that one by accident: everything but local help needs `--state-dir`.
+fn host_job_refusal(state_dir: bool, host_job: bool, command: &Command) -> Option<&'static str> {
+    (!state_dir
+        && host_job
+        && !matches!(
+            command,
+            Command::Configurations | Command::Completions { .. } | Command::CompleteNames { .. }
+        ))
+    .then_some("inside a Goblins host command (GOBLINS_HOST_JOB), pass --state-dir: the default server runs the goblin that asked for this command")
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fake_daemon::{Daemon, fixtures};
     use goblins_controller::host::Client;
     use serde_json::{Value, json};
+
+    #[test]
+    fn a_host_command_must_name_its_own_server() {
+        use clap::Parser;
+        let command = |args: &[&str]| {
+            crate::cli::Cli::try_parse_from([&["goblins"], args].concat())
+                .unwrap()
+                .command
+                .unwrap()
+        };
+        let status = command(&["server", "status"]);
+        assert!(
+            super::host_job_refusal(false, true, &status)
+                .unwrap()
+                .contains("pass --state-dir")
+        );
+        assert!(super::host_job_refusal(true, true, &status).is_none());
+        assert!(super::host_job_refusal(false, false, &status).is_none());
+        for local in [&["configurations"][..], &["completions", "bash"]] {
+            assert!(super::host_job_refusal(false, true, &command(local)).is_none());
+        }
+    }
 
     #[test]
     fn list_prints_the_wire_records_and_refuses_malformed_ones() {

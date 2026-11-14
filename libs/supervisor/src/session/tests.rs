@@ -525,6 +525,18 @@ fn a_member_asked_for_a_worktree_must_find_it_directly_in_the_owners_folder() {
         session.layout().map(|l| l.folder.clone()),
         Some(root.join("trees/a"))
     );
+    // A name that is missing, or a plain directory, is no worktree.
+    std::fs::create_dir(root.join("trees/a/plain")).unwrap();
+    for name in ["missing", "plain"] {
+        let error = member(&root.join("trees/a").join(name))
+            .settle_layout()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("is not a worktree of the owner's repository"),
+            "{name}: {error}"
+        );
+    }
     // a's folder holds a symlink to b's worktree, under the same name and another.
     std::fs::remove_dir_all(&trees[0]).unwrap();
     std::os::unix::fs::symlink(&trees[1], &trees[0]).unwrap();

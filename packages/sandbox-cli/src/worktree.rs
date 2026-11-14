@@ -53,18 +53,7 @@ fn create(name: &str, target: &Path, base: Option<&str>) -> Result<(), String> {
     let exists = git(&["show-ref", "--verify", "--quiet", &branch])?
         .status
         .success();
-    let output = if exists {
-        if base.is_some() {
-            return Err(format!(
-                "branch '{name}' exists; --base only applies to a new branch"
-            ));
-        }
-        git(&["worktree", "add", &target_text, name])?
-    } else {
-        let mut args = vec!["worktree", "add", "-b", name, &target_text];
-        args.extend(base);
-        git(&args)?
-    };
+    let output = git(&add_arguments(name, &target_text, base, exists)?)?;
     if output.status.success() {
         return Ok(());
     }
@@ -75,9 +64,74 @@ fn create(name: &str, target: &Path, base: Option<&str>) -> Result<(), String> {
     Err(format!("git worktree add: {message}"))
 }
 
+/// `git worktree add` on the existing branch `name`, or on a new one from
+/// `base` (HEAD by default); a base for an existing branch is refused.
+fn add_arguments<'a>(
+    name: &'a str,
+    target: &'a str,
+    base: Option<&'a str>,
+    exists: bool,
+) -> Result<Vec<&'a str>, String> {
+    if exists {
+        if base.is_some() {
+            return Err(format!(
+                "branch '{name}' exists; --base only applies to a new branch"
+            ));
+        }
+        return Ok(vec!["worktree", "add", target, name]);
+    }
+    let mut args = vec!["worktree", "add", "-b", name, target];
+    args.extend(base);
+    Ok(args)
+}
+
 fn git(args: &[&str]) -> Result<std::process::Output, String> {
     Command::new("git")
         .args(args)
         .output()
         .map_err(|e| format!("cannot run git: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_branch_and_directory_names() {
+        for good in ["fix", "fix-2", "v1.2_x", "9lives"] {
+            assert!(valid_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "a/b",
+            "../x",
+            ".git",
+            "-x",
+            "_x",
+            "a b",
+            &"a".repeat(101),
+        ] {
+            assert!(!valid_name(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_existing_branch_is_checked_out_and_a_new_one_starts_at_its_base() {
+        assert_eq!(
+            add_arguments("fix", "/w/fix", None, true).unwrap(),
+            ["worktree", "add", "/w/fix", "fix"]
+        );
+        assert_eq!(
+            add_arguments("two", "/w/two", Some("main"), false).unwrap(),
+            ["worktree", "add", "-b", "two", "/w/two", "main"]
+        );
+        assert_eq!(
+            add_arguments("two", "/w/two", None, false).unwrap(),
+            ["worktree", "add", "-b", "two", "/w/two"]
+        );
+        assert_eq!(
+            add_arguments("third", "/w/third", Some("main"), true).unwrap_err(),
+            "branch 'third' exists; --base only applies to a new branch"
+        );
+    }
 }

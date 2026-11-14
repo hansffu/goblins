@@ -1008,15 +1008,15 @@ pub struct Controller {
 /// since expiry is checked on every tick.
 fn activity_expiry() -> std::time::Duration {
     static EXPIRY: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
-    *EXPIRY.get_or_init(|| {
-        std::env::var("GOBLINS_ACTIVITY_EXPIRY")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .map_or(
-                std::time::Duration::from_secs(30),
-                std::time::Duration::from_secs,
-            )
-    })
+    *EXPIRY.get_or_init(|| expiry_from(std::env::var("GOBLINS_ACTIVITY_EXPIRY").ok().as_deref()))
+}
+/// The activity expiry a `GOBLINS_ACTIVITY_EXPIRY` value asks for: whole
+/// seconds, or 30 seconds when unset or not a number.
+fn expiry_from(value: Option<&str>) -> std::time::Duration {
+    value.and_then(|s| s.parse().ok()).map_or(
+        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs,
+    )
 }
 
 impl Controller {
@@ -3429,7 +3429,9 @@ impl Controller {
         }
     }
     fn expire_activity(&mut self, now: Instant) {
-        let expiry = activity_expiry();
+        self.expire_activity_within(now, activity_expiry());
+    }
+    fn expire_activity_within(&mut self, now: Instant, expiry: std::time::Duration) {
         for a in self.sessions.values_mut() {
             if a.record.state != "running"
                 || a.activity_at
@@ -8100,6 +8102,8 @@ mod tests {
         line.packages.approved = vec!["jq".into()];
         line.variables.insert("session_id".into(), "c1".into());
         line.stopped = Some(2);
+        // Docker its configuration no longer offers is skipped, not forgotten.
+        line.docker_enabled = true;
         let mut other = Record::new("o1", "shell", "grib", 0);
         other.ran_as("g1");
         other.packages.approved = vec!["tree".into()];
@@ -8122,6 +8126,8 @@ mod tests {
             |d: &Controller, id: &str| d.history.as_ref().unwrap().records.get(id).cloned();
         let r0 = record(&d, "r0").unwrap();
         assert_eq!(r0.sessions, ["g0", "s5"]);
+        assert!(!d.sessions["s5"].record.docker_enabled);
+        assert!(r0.docker_enabled);
         assert_eq!(r0.packages.approved, ["jq", "hello"]);
         assert_eq!(r0.stopped, None);
         assert!(record(&d, "s5").is_none());
@@ -9590,6 +9596,16 @@ mod tests {
                 "goblin 'other' is already in raid 'elsewhere'".into()
             )
         );
+        // Another owner's equal key is its own launch, never the first one's.
+        let theirs = d
+            .sandbox_control_for_test("other", "sessions.start", member("k1"))
+            .unwrap();
+        assert_ne!(theirs["session"], accepted["session"]);
+        let theirs = theirs["session"].as_str().unwrap();
+        assert_eq!(
+            d.sessions[theirs].record.created_by.as_ref().unwrap().id,
+            "other"
+        );
         // Host launches create or join by name; a retry after dissolution
         // still returns the original acceptance.
         let mut start = launch("h1", Some("fresh"));
@@ -10272,5 +10288,266 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
-
+    #[test]
+    fn the_host_kicks_by_raid_and_member_and_the_last_kick_dissolves() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["alpha", "beta"] {
+            live(&mut d, id);
+        }
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"crew","sessions":["alpha","beta"]}),
+        )
+        .unwrap();
+        let kick = |d: &mut Controller, host: &mut Connection, raid: &str, session: &str| {
+            d.host(host, "raids.kick", json!({"raid":raid,"session":session}))
+        };
+        // Unknown goblins and raids are absent; a goblin not in the raid conflicts.
+        assert_eq!(
+            kick(&mut d, &mut host, "crew", "nobody").unwrap_err().0,
+            -32004
+        );
+        assert_eq!(
+            kick(&mut d, &mut host, "absent", "beta").unwrap_err().0,
+            -32004
+        );
+        assert_eq!(
+            kick(&mut d, &mut host, "crew", "beta").unwrap(),
+            json!({"accepted":true,"dissolved":false,"paused":false})
+        );
+        assert!(d.sessions["beta"].record.raid.is_none());
+        assert_eq!(
+            kick(&mut d, &mut host, "crew", "beta").unwrap_err().0,
+            -32009
+        );
+        // Kicking the only member left dissolves the raid.
+        assert_eq!(
+            kick(&mut d, &mut host, "crew", "alpha").unwrap(),
+            json!({"accepted":true,"dissolved":true,"paused":false})
+        );
+        assert_eq!(
+            d.host(&mut host, "raids.members", json!({"raid":"crew"}))
+                .unwrap_err()
+                .0,
+            -32004
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_sandbox_cannot_reach_host_methods_or_another_goblins_terminal() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        live(&mut d, "b");
+        for (method, params) in [
+            ("sessions.attach", json!({"session":"b"})),
+            (
+                "sessions.resize",
+                json!({"session":"b","rows":40,"cols":90}),
+            ),
+            ("permissions.list", json!({})),
+            ("permissions.decide", json!({})),
+            ("communications.list", json!({})),
+            ("server.stop", json!({})),
+            ("state.subscribe", json!({})),
+            ("raids.invite", json!({"sessions":["b"]})),
+        ] {
+            assert_eq!(
+                d.sandbox_control_for_test("a", method, params)
+                    .unwrap_err()
+                    .0,
+                -32601,
+                "{method}"
+            );
+        }
+        assert!(!d.sessions["b"].record.terminal_attached);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_workspace_server_records_none_of_its_goblins() {
+        let path = unix::temp_directory().unwrap();
+        let mut d = Controller::new(&path, Some(path.clone())).unwrap();
+        d.open_history(Ok(path.join("history")), 100);
+        session_with_results_id(&mut d, "g", vec![]);
+        let a = d.sessions.remove("g").unwrap();
+        d.record_started(&a);
+        d.sessions.insert("g".into(), a);
+        d.record_running();
+        assert!(d.history.as_ref().unwrap().records.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_recreated_goblins_grants_are_its_own_and_reach_the_members_it_runs() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let events = live(&mut d, "root");
+        d.sessions.get_mut("root").unwrap().record.state = "starting".into();
+        let skipped = goblins_runtime::history::Skipped::new("tree", "unable to download");
+        events
+            .send(Event::Started {
+                docker_enabled: false,
+                policy: Box::new(policy_fixture("shell", &["shell"])),
+                support: Support::linux(),
+                dev_shell: None,
+                identity: Identity {
+                    pid: 1,
+                    helper_userns: 0,
+                    mount_owner: 0,
+                    source_mountns: 0,
+                    mountns: 0,
+                },
+                recreated: Some(Box::new(goblins_runtime::Recreated {
+                    packages: vec![("hello".into(), "/nix/store/x-hello".into())],
+                    auto_approve: vec![],
+                    skipped: vec![skipped.clone()],
+                    fresh: Some("variable 'session_id' is not recorded".into()),
+                })),
+                auto: Box::default(),
+                worktrees: Box::default(),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let record = &d.sessions["root"].record;
+        assert_eq!(record.state, "running");
+        assert_eq!(record.packages, ["hello"]);
+        assert_eq!(record.skipped, [skipped]);
+        // A missing variable starts a fresh conversation, and says why.
+        assert_eq!(
+            record.detail.as_deref(),
+            Some("resumed in a fresh conversation: variable 'session_id' is not recorded")
+        );
+        // A member it runs gets the recreated grant as auto-approve.
+        d.current_manifest = Some(std::sync::Arc::new(
+            goblins_runtime::config::ManifestLease::unrooted(&path.join("current.json")),
+        ));
+        d.sandbox_control_for_test("root", "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        let accepted = d
+            .sandbox_control_for_test(
+                "root",
+                "sessions.start",
+                json!({"key":"k","name":"shell","agent_name":null}),
+            )
+            .unwrap();
+        let member = accepted["session"].as_str().unwrap();
+        assert_eq!(d.sessions[member].record.auto_approve, ["hello"]);
+        assert!(d.sessions[member].record.packages.is_empty());
+        // A member starts in a worktree only by a worktree's name, and only
+        // when its owner has a worktree folder.
+        let in_worktree = |name: &str| json!({"key":format!("w-{name}"),"name":"shell","agent_name":null,"worktree":name});
+        for bad in ["../api", "a/b", ".git"] {
+            assert_eq!(
+                d.sandbox_control_for_test("root", "sessions.start", in_worktree(bad))
+                    .unwrap_err()
+                    .0,
+                -32602,
+                "{bad}"
+            );
+        }
+        let refused = d
+            .sandbox_control_for_test("root", "sessions.start", in_worktree("fix"))
+            .unwrap_err();
+        assert_eq!(refused.0, -32009);
+        assert!(
+            refused.1.contains("has no worktree folder"),
+            "{}",
+            refused.1
+        );
+        // Nor can it declare one of its own.
+        let refused = d
+            .sandbox_control_for_test("root", "sessions.set-worktree", json!({"name":"fix"}))
+            .unwrap_err();
+        assert!(
+            refused.1.contains("has no worktree folder"),
+            "{}",
+            refused.1
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_communications_log_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = daemon();
+        let path = d.state.clone();
+        let logs: Vec<_> = fs::read_dir(&path)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("communications-")
+            })
+            .collect();
+        assert_eq!(logs.len(), 1);
+        let mode = fs::symlink_metadata(&logs[0]).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn an_activity_expiry_override_is_whole_seconds() {
+        use std::time::Duration;
+        assert_eq!(expiry_from(Some("2")), Duration::from_secs(2));
+        for ignored in [None, Some(""), Some("soon"), Some("-1"), Some("1.5")] {
+            assert_eq!(expiry_from(ignored), Duration::from_secs(30), "{ignored:?}");
+        }
+    }
+    #[test]
+    fn expired_activity_reaches_subscribers_and_heartbeats_do_not() {
+        use goblins_protocol::AgentState;
+        let mut d = daemon();
+        let path = d.state.clone();
+        let a = session_with_results(&mut d, vec![]);
+        let b = session_with_results_id(&mut d, "other", vec![]);
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        dispatch(&mut d, &mut c, "state.subscribe", json!({}), Some(json!(1)));
+        d.connections.push(c);
+        let published = |d: &mut Controller| -> Option<Value> {
+            d.publish();
+            let data = d.connections[0].output.pop_back()?;
+            let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let event = rpc::parse(&data[body..]).unwrap();
+            let sessions = &event["params"]["snapshot"]["sessions"];
+            Some(
+                sessions
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|s| s["id"] == a)
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        d.sandbox_control_for_test(&a, "sessions.set-state", json!({"state":"working"}))
+            .unwrap();
+        assert_eq!(published(&mut d).unwrap()["agent_state"], "working");
+        let at = d.sessions[&a].activity_at.unwrap();
+        // A heartbeat refreshes the activity without publishing anything.
+        d.sandbox_control_for_test(&a, "sessions.set-state", json!({"state":"working"}))
+            .unwrap();
+        assert!(published(&mut d).is_none());
+        let expiry = expiry_from(Some("2"));
+        let at = d.sessions[&a].activity_at.unwrap().max(at);
+        d.expire_activity_within(at + std::time::Duration::from_secs(1), expiry);
+        assert!(published(&mut d).is_none());
+        d.expire_activity_within(at + expiry, expiry);
+        let record = published(&mut d).unwrap();
+        assert_eq!(
+            (&record["agent_state"], &record["state"]),
+            (&json!("unknown"), &json!("running"))
+        );
+        assert_eq!(d.sessions[&b].record.agent_state, AgentState::Unknown);
+        assert_eq!(d.sessions[&b].record.state, "running");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
 }

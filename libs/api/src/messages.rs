@@ -261,6 +261,16 @@ mod tests {
         assert!(read_body("🐟".repeat(MAX_BODY / 4).as_bytes()).is_ok());
         assert!(read_body("🐟".repeat(MAX_BODY / 4 + 1).as_bytes()).is_err());
         assert!(read_body(&[0xff][..]).is_err());
+        // A --message argument has the same bound.
+        assert!(load_body(Some("x".repeat(MAX_BODY)), None).is_ok());
+        assert!(load_body(Some("x".repeat(MAX_BODY + 1)), None).is_err());
+        assert!(
+            Mutation::parse(
+                "messages.send",
+                json!({"key":"k", "to":"scout", "body":"x".repeat(MAX_BODY + 1)})
+            )
+            .is_err()
+        );
         assert_eq!(
             read_body("literal $(false)\nsecond line".as_bytes()).unwrap(),
             "literal $(false)\nsecond line"

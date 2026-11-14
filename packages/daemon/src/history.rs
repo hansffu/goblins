@@ -1063,6 +1063,11 @@ mod tests {
             std::os::unix::fs::PermissionsExt::mode(&mode.permissions()) & 0o777,
             0o600
         );
+        let mode = fs::metadata(&directory).unwrap();
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&mode.permissions()) & 0o777,
+            0o700
+        );
         assert!(fs::read_dir(&directory).unwrap().all(|e| {
             !e.unwrap()
                 .file_name()

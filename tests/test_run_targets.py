@@ -1,393 +1,18 @@
-"""Raid owners running members, through real controller sockets, CLIs and namespaces."""
-import fcntl
+"""Raid owners running members of other configurations (checks.nix
+run-target-goblins): a coordinator and its reviewer, through real controller
+sockets, CLIs and namespaces."""
 import json
 import os
 from pathlib import Path
 import shlex
-import signal
 import subprocess
 import tempfile
 import unittest
 import uuid
 
 from build_support import fixture_app
-from daemon_support import Daemon, RPC, frame, receive
-from support import command, lock_flake, pinned_nixpkgs
-from terminal_support import Terminal
-
-
-class RaidMemberTests(unittest.TestCase):
-    def setUp(self):
-        self.d = Daemon()
-        self.addCleanup(self.d.close)
-
-    def sandbox(self, session, method, params):
-        peer = RPC(self.d.state / session / "resources/request.sock")
-        try:
-            return peer.call(method, params)
-        finally:
-            peer.close()
-
-    def refused(self, session, method, params):
-        with self.assertRaises(ValueError) as error:
-            self.sandbox(session, method, params)
-        return error.exception.args[0]
-
-    def running(self, launch):
-        record = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None), timeout=60)
-        self.assertEqual(record["state"], "running", record)
-        return launch
-
-    def terminal(self, launch):
-        # Sandbox launch replies deliberately omit the host-only terminal path.
-        launch = dict(launch, terminal=self.d.get(launch["session"])["terminal"])
-        peer = self.d.terminal(launch)
-        self.addCleanup(peer.close)
-        return peer
-
-    def cli(self, *args, **kwargs):
-        result = subprocess.run([str(self.d.app), "--state-dir", str(self.d.state), *args],
-                                env=self.d.env, timeout=60, text=True, capture_output=True, **kwargs)
-        self.assertEqual(result.returncode, 0,
-                         f"goblins {args}: {result.stdout}\n{result.stderr}")
-        return result
-
-    def wait_json(self, path):
-        def read():
-            try:
-                return json.loads(path.read_text())
-            except (OSError, ValueError):
-                return None
-        return self.d.wait(read)
-
-    def test_owners_run_list_and_stop_only_the_members_they_created(self):
-        owner = self.d.start(agent_name="owner")
-        other = self.d.start(agent_name="other")
-        terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", "owner"])
-        self.addCleanup(terminal.close)
-        terminal.send("goblin run shell --name early; printf 'EARLY=%s\\n' $status\n")
-        terminal.expect(r"only a raid owner can run goblins[^\n]*\n(?:.*\n)*?EARLY=2\n")
-        terminal.send("goblin raid create crew; goblin run shell --name member > /workspace/member.json; "
-                      "goblin status > /workspace/status; goblin __complete-names -- goblin run > /workspace/targets; "
-                      "goblin __complete-names -- goblin stop > /workspace/members; touch /workspace/done\n")
-        workspace = self.d.state / owner["session"] / "resources/workspace"
-        self.d.wait(lambda: (workspace / "done").exists())
-        member = self.running(json.loads((workspace / "member.json").read_text()))
-        self.assertEqual(set(member), {"session", "agent_name", "state"})
-        self.assertIn("Raid: crew (role: none, owner: owner)\n", (workspace / "status").read_text())
-        self.assertEqual((workspace / "targets").read_text().split(), ["shell"])
-        self.assertEqual((workspace / "members").read_text().split(), ["member"])
-        record = self.d.get(member["session"])
-        self.assertEqual(record["created_by"], {"id": owner["session"], "agent_name": "owner"})
-        self.assertNotIn("parent", record)
-        self.assertNotIn("path", record)
-        status = self.sandbox(member["session"], "sessions.status", {})
-        self.assertEqual(set(status), {"id", "agent_name", "name", "description", "state", "agent_state", "scope",
-                                       "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands",
-                                       "permission_bypass", "allowed_run_targets", "raid", "worktree", "created_by",
-                                       "options"})
-        self.assertIsNone(status["permission_bypass"])
-        self.assertEqual(status["allowed_run_targets"], ["shell"])
-        self.assertEqual(status["raid"]["owner_name"], "owner")
-        # The owner sees only the members created in its raid.
-        invited = self.cli("raid", "invite", "crew", "other")
-        self.assertEqual(invited.returncode, 0, invited.stderr)
-        listing = self.sandbox(owner["session"], "sessions.list", {})
-        self.assertEqual([r["id"] for r in listing], [member["session"]])
-        for record in listing:
-            self.assertTrue({"configuration", "terminal", "identity", "detail", "path", "parent"}.isdisjoint(record))
-        for target in (owner["session"], other["session"], "other", "absent"):
-            for method in ("sessions.get", "sessions.stop"):
-                self.assertEqual(self.refused(owner["session"], method, {"session": target})["code"], -32004)
-        # No goblin attaches to, or resizes, another goblin's terminal.
-        for method, extra in (("sessions.attach", {}), ("sessions.resize", {"rows": 40, "cols": 90})):
-            self.assertEqual(self.refused(owner["session"], method, {"session": member["session"], **extra})["code"],
-                             -32601)
-        pipeline = RPC(self.d.state / owner["session"] / "resources/request.sock")
-        try:
-            pipeline.peer.sendall(frame({"jsonrpc": "2.0", "id": 2, "method": "sessions.attach",
-                                         "params": {"session": member["session"]}}) + b"injected keys")
-            self.assertIn("error", receive(pipeline.peer))
-            self.assertFalse(self.d.get(member["session"])["terminal_attached"])
-        finally:
-            pipeline.close()
-        for params in ({"name": "codex"}, {"configuration": self.d.manifest}, {"cwd": "/tmp"}, {"parent": "."},
-                       {"inherit_raid": True}):
-            with self.assertRaises(ValueError):
-                self.sandbox(owner["session"], "sessions.start", {"key": uuid.uuid4().hex, "name": "shell", **params})
-        for method in ("permissions.list", "permissions.decide", "server.stop", "state.subscribe", "raids.invite"):
-            with self.assertRaises(ValueError):
-                self.sandbox(owner["session"], method, {})
-        # A member that is not the owner runs nobody and cannot leave.
-        self.assertEqual(self.refused(member["session"], "sessions.start",
-                                      {"key": "k", "name": "shell"})["code"], -32009)
-        self.assertIn("stay until stopped", self.refused(member["session"], "raids.leave", {})["message"])
-        # Equal idempotency keys of different owners never meet.
-        params = {"key": "same-key", "name": "shell", "agent_name": "repeat"}
-        first = self.running(self.sandbox(owner["session"], "sessions.start", params))
-        self.assertEqual(self.sandbox(owner["session"], "sessions.start", params), first)
-        third = self.d.start(agent_name="third")
-        self.sandbox(third["session"], "raids.create", {"raid": "elsewhere"})
-        with self.assertRaises(ValueError) as error:
-            self.sandbox(third["session"], "sessions.start", params)
-        self.assertIn("already in use", error.exception.args[0]["message"])
-        # The owner stops its member; the CLI says who did.
-        terminal.send("goblin stop member; printf 'STOP=%s\\n' $status\n")
-        terminal.expect(r"STOP=0\n")
-        self.d.wait(lambda: self.d.get(member["session"])["state"] == "stopped")
-        self.assertEqual(self.d.get(member["session"])["stop_reason"],
-                         f"stopped by raid owner owner ({owner['session']})")
-        terminal.send("exit\n")
-        self.assertEqual(terminal.wait(), 0)
-        # Members outlive the owner that ran them.
-        self.assertEqual(self.d.get(first["session"])["state"], "running")
-
-    def test_members_outlive_their_owner_and_a_new_owner_takes_them_over(self):
-        owner = self.d.start(agent_name="owner")
-        member = self.d.member(owner["session"], agent_name="member")
-        raid = self.d.get(member["session"])["raid"]["name"]
-        self.terminal(owner).sendall(b"exit\n")
-        self.d.wait(lambda: self.d.get(owner["session"])["state"] == "stopped")
-        self.assertIsNone(self.d.get(owner["session"])["stop_reason"])
-        record = self.d.get(member["session"])
-        self.assertEqual(record["state"], "running")
-        self.assertEqual((record["raid"]["paused"], record["raid"]["owner"]), (True, None))
-        # Nobody owns a paused raid, so nobody runs or stops its members.
-        self.assertEqual(self.refused(member["session"], "sessions.start", {"key": "k", "name": "shell"})["code"],
-                         -32009)
-        resumed = self.cli("raid", "set-owner", raid, "member")
-        self.assertEqual(resumed.returncode, 0, resumed.stderr)
-        late = self.d.member(member["session"], agent_name="late")
-        self.assertEqual(self.d.get(late["session"])["created_by"]["agent_name"], "member")
-        self.assertEqual([r["id"] for r in self.sandbox(member["session"], "sessions.list", {})], [late["session"]])
-        # Members of the raid message each other by name.
-        sent = self.sandbox(late["session"], "messages.send", {"key": "k", "to": "member", "body": "hi"})
-        self.assertEqual((sent["recipient"], sent["sender_name"]), (member["session"], "late"))
-
-    def resources(self, launch):
-        return self.d.state / launch["session"] / "resources"
-
-    def stopped(self, launch):
-        self.d.rpc.call("sessions.stop", {"session": launch["session"]})
-        self.d.wait(lambda: self.d.get(launch["session"])["state"] == "stopped")
-
-    def lease_free(self, directory):
-        """Whether nobody holds a lease on `directory` any more (probed, then let go)."""
-        with open(directory / ".gc-lease", "rb") as lease:
-            try:
-                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return False
-            fcntl.flock(lease, fcntl.LOCK_UN)
-            return True
-
-    def test_a_member_keeps_the_resources_of_every_goblin_up_its_chain_until_it_stops(self):
-        # A runs B; A stops and B takes the paused raid over and runs C, so
-        # C's workspace lives in A's snapshot, not in B's.
-        with tempfile.TemporaryDirectory(prefix="goblin-raid-chain-") as folder:
-            source = Path(folder)
-            (source / "input").write_text("host\n")
-            self.d = Daemon(workspace=source)
-            self.addCleanup(self.d.close)
-            a = self.d.start(agent_name="a")
-            b = self.d.member(a["session"], agent_name="b")
-            snapshot = self.resources(a) / "workspace"
-            self.stopped(a)
-            raid = self.d.get(b["session"])["raid"]["name"]
-            self.cli("raid", "set-owner", raid, "b")
-            # Garbage collection leaves a running server's resources alone, A's
-            # included, which B still holds.
-            self.assertIn("Keeping resources of the running server", self.cli("gc").stdout)
-            self.assertTrue((snapshot / "input").exists())
-            # C starts after A stopped, from B, and uses A's snapshot.
-            c = self.d.member(b["session"], agent_name="c")
-            shell = self.terminal(c)
-            shell.sendall(b"cat input > seen; echo c-write > input\n")
-            self.d.wait(lambda: (snapshot / "seen").exists() and (snapshot / "input").read_text() == "c-write\n")
-            self.assertEqual((snapshot / "seen").read_text(), "host\n")
-            self.assertEqual((source / "input").read_text(), "host\n")
-            self.stopped(b)
-            # Neither owner is running, but C holds a lease on each directory.
-            self.assertIn("Keeping resources of the running server", self.cli("gc").stdout)
-            self.assertEqual(self.d.get(c["session"])["state"], "running")
-            # C still reads and writes A's snapshot, though A and B stopped
-            # and goblins gc ran.
-            shell.sendall(b"cat input > seen-again; echo c-again > input\n")
-            self.d.wait(lambda: (snapshot / "seen-again").exists() and (snapshot / "input").read_text() == "c-again\n")
-            self.assertEqual((snapshot / "seen-again").read_text(), "c-write\n")
-            for launch in (a, b, c):
-                self.assertTrue((self.resources(launch) / ".gc-lease").exists(), launch)
-                self.assertFalse(self.lease_free(self.resources(launch)), launch)
-            # The last holder removes what it kept alive.
-            self.stopped(c)
-            for launch in (a, b, c):
-                self.d.wait(lambda launch=launch: not self.resources(launch).exists(), timeout=15)
-
-    def test_a_member_launched_as_its_owner_stops_still_starts_with_the_owners_snapshot(self):
-        with tempfile.TemporaryDirectory(prefix="goblin-raid-stop-") as folder:
-            source = Path(folder)
-            (source / "input").write_text("host\n")
-            self.d = Daemon(workspace=source)
-            self.addCleanup(self.d.close)
-            owner = self.d.start(agent_name="owner")
-            snapshot = self.resources(owner) / "workspace"
-            # Accepted, then the owner stops at once: the owner's runtime
-            # answers the export it was sent before it handles the stop.
-            member = self.d.member(owner["session"], agent_name="member", wait=False)
-            self.stopped(owner)
-            self.running(member)
-            self.assertTrue(snapshot.is_dir())
-            self.terminal(member).sendall(b"cat input > seen; echo member-write > input\n")
-            self.d.wait(lambda: (snapshot / "seen").exists() and (snapshot / "input").read_text() == "member-write\n")
-            self.assertEqual((snapshot / "seen").read_text(), "host\n")
-
-    def test_goblins_gc_collects_the_resources_of_a_whole_chain_once_every_holder_died(self):
-        # A runs B; A stops and B takes the raid over and runs C. The daemon
-        # is then killed: C's leases on all three directories die with it.
-        a = self.d.start(agent_name="a")
-        b = self.d.member(a["session"], agent_name="b")
-        self.stopped(a)
-        raid = self.d.get(b["session"])["raid"]["name"]
-        self.cli("raid", "set-owner", raid, "b")
-        c = self.d.member(b["session"], agent_name="c")
-        directories = [self.resources(launch) for launch in (a, b, c)]
-        for directory in directories:
-            self.assertTrue(directory.is_dir())
-        os.kill(self.d.process.pid, signal.SIGKILL)
-        self.d.process.wait()
-        # Every sandbox, and with it every copy of a lease, goes with the
-        # daemon: observe that, rather than collecting until it has.
-        self.d.wait(lambda: all(self.lease_free(directory) for directory in directories), timeout=30)
-        collected = self.cli("gc")
-        self.assertFalse(any(directory.exists() for directory in directories), collected.stdout)
-
-    def test_an_owner_keeps_its_resources_while_a_member_runs_and_whoever_stops_last_removes_them(self):
-        for first in ("member", "owner"):
-            with self.subTest(first=first):
-                owner = self.d.start(agent_name=f"owner-{first}")
-                member = self.d.member(owner["session"], agent_name=f"member-{first}")
-                one, other = (member, owner) if first == "member" else (owner, member)
-                self.stopped(one)
-                # The one still running, and whoever it inherited from or
-                # shares with, keeps its directory.
-                self.assertEqual(self.d.get(other["session"])["state"], "running")
-                self.assertTrue(self.resources(owner).is_dir())
-                self.stopped(other)
-                self.d.wait(lambda: not self.resources(owner).exists(), timeout=15)
-                self.d.wait(lambda: not self.resources(member).exists(), timeout=15)
-
-    def test_members_share_the_owners_workspace_and_pinned_working_directory(self):
-        with tempfile.TemporaryDirectory(prefix="goblin-raid-work-") as folder:
-            original = Path(folder) / "project"
-            original.mkdir()
-            (original / "input").write_text("owner\n")
-            result = self.cli("run", "shell", "--name", "owner", "--detatched", cwd=original)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            owner = self.running(json.loads(result.stdout))
-            moved = Path(folder) / "moved"
-            original.rename(moved)
-            original.mkdir()
-            (original / "input").write_text("replacement-host-path\n")
-            shell = self.terminal(owner)
-            shell.sendall(b"goblin raid create crew; goblin run shell --name member > member.json\n")
-            member = self.running(self.wait_json(moved / "member.json"))
-            self.terminal(member).sendall(b"cat input > seen; echo member-write > shared\n")
-            self.d.wait(lambda: (moved / "shared").exists())
-            self.assertEqual((moved / "seen").read_text(), "owner\n")
-            self.assertFalse((original / "shared").exists())
-            self.assertEqual(Path(self.d.get(member["session"])["cwd"]), original)
-
-    def test_snapshot_is_shared_with_members(self):
-        with tempfile.TemporaryDirectory(prefix="goblin-raid-snapshot-") as folder:
-            source = Path(folder)
-            (source / "input").write_text("host\n")
-            d = Daemon(workspace=source)
-            self.addCleanup(d.close)
-            self.d = d
-            owner = d.start()
-            member = d.member(owner["session"])
-            owner_workspace = d.state / owner["session"] / "resources/workspace"
-            self.terminal(member).sendall(b"echo member > input; echo done > marker\n")
-            d.wait(lambda: (owner_workspace / "marker").exists())
-            self.assertEqual((owner_workspace / "input").read_text(), "member\n")
-            self.assertEqual((source / "input").read_text(), "host\n")
-
-    def test_members_launch_from_the_last_validated_host_manifest(self):
-        mutable = Path(self.d.temp.name) / "mutable.json"
-        mutable.write_text(Path(self.d.manifest).read_text())
-        owner = self.d.start(manifest=mutable, agent_name="owner")
-        member = self.d.member(owner["session"])
-        self.assertEqual(self.d.get(member["session"])["configuration"], str(mutable))
-        # The current manifest is a file the host chose; a member reads it
-        # when it starts.
-        mutable.write_text("invalid replacement manifest")
-        broken = self.d.member(owner["session"], wait=False)
-        failed = self.d.wait(lambda: (r if (r := self.d.get(broken["session"]))["state"] == "failed" else None),
-                             timeout=60)
-        self.assertIn("invalid configuration", failed["detail"])
-        # A host launch that fails validation leaves the current manifest.
-        rejected = self.d.start(manifest=mutable, wait=False)
-        self.d.wait(lambda: self.d.get(rejected["session"])["state"] == "failed")
-        self.assertIn(str(mutable), self.cli("server", "status").stdout)
-        # A valid host launch makes its manifest current.
-        self.d.start(agent_name="later")
-        self.assertIn(self.d.manifest, self.cli("server", "status").stdout)
-        member = self.d.member(owner["session"])
-        self.assertEqual(self.d.get(member["session"])["configuration"], self.d.manifest)
-        # There is no tree to launch into.
-        with self.assertRaisesRegex(ValueError, "unknown field `parent`"):
-            self.d.rpc.call("sessions.start", {"key": "host-child", "configuration": self.d.manifest,
-                                               "name": "shell", "parent": owner["session"], "rows": 24, "cols": 80})
-        with self.assertRaisesRegex(ValueError, "'codex' is not an allowed run target of 'shell'; allowed: shell"):
-            self.sandbox(owner["session"], "sessions.start", {"key": "codex", "name": "codex"})
-
-    def test_approvals_are_copied_to_members_run_later(self):
-        root = self.d.start(agent_name="root")
-        before = self.d.member(root["session"], agent_name="before")
-        request, permission = self.d.pending(root["session"])
-        self.addCleanup(request.close)
-        self.d.decide(permission, True)
-        request.peer.settimeout(120)
-        self.assertEqual(receive(request.peer)["result"]["status"], "ready")
-        # Members run afterwards get the approval as auto-approve, and pass it
-        # on once they own the raid; nothing is mounted until they ask.
-        after = self.d.member(root["session"], agent_name="after")
-        raid = self.d.get(after["session"])["raid"]["name"]
-        self.assertEqual(self.cli("raid", "set-owner", raid, "after").returncode, 0)
-        deeper = self.d.member(after["session"], agent_name="deeper")
-        for member in (deeper, after):
-            record = self.d.get(member["session"])
-            self.assertEqual((record["packages"], record["auto_approve"]), ([], ["hello"]))
-            peer = RPC(self.d.state / member["session"] / "resources/request.sock")
-            self.addCleanup(peer.close)
-            peer.peer.settimeout(120)
-            result = peer.call("permissions.request", {"kind": "package", "package": "hello", "reason": "copied"})
-            self.assertEqual(result["status"], "ready")
-            self.assertTrue(self.d.rpc.call("permissions.get", {"request": result["request"]})["approved"])
-        # A repeated request is the goblin's own grant.
-        peer = RPC(self.d.state / after["session"] / "resources/request.sock")
-        self.addCleanup(peer.close)
-        peer.peer.settimeout(120)
-        self.assertEqual(peer.call("permissions.request", {"kind": "package", "package": "hello",
-                                                           "reason": "again"})["status"], "ready")
-        # A member run before the grant still asks.
-        peer, record = self.d.pending(before["session"])
-        self.addCleanup(peer.close)
-        self.assertIsNone(record["approved"])
-        self.d.decide(record, False)
-        self.assertEqual(receive(peer.peer)["result"]["status"], "denied")
-        # Copied once: a later grant to the owner does not reach members.
-        owner_request, owner_permission = self.d.pending(after["session"], "cowsay")
-        self.addCleanup(owner_request.close)
-        self.d.decide(owner_permission, True)
-        owner_request.peer.settimeout(120)
-        self.assertEqual(receive(owner_request.peer)["result"]["status"], "ready")
-        pending, waiting = self.d.pending(deeper["session"], "cowsay")
-        self.addCleanup(pending.close)
-        self.assertIsNone(waiting["approved"])
-        self.d.decide(waiting, False)
-        self.assertEqual(receive(pending.peer)["result"]["status"], "denied")
-        self.assertEqual(self.d.get(after["session"])["packages"], ["hello", "cowsay"])
+from daemon_support import Daemon, RPC, receive
+from support import command, lock_flake, pinned_nixpkgs, step
 
 
 class RunTargetFixture(unittest.TestCase):
@@ -407,13 +32,26 @@ class RunTargetFixture(unittest.TestCase):
         self.addCleanup(self.d.close)
         self.terminals = {}
 
-    sandbox = RaidMemberTests.sandbox
-    running = RaidMemberTests.running
+    def sandbox(self, session, method, params):
+        peer = RPC(self.d.state / session / "resources/request.sock")
+        try:
+            return peer.call(method, params)
+        finally:
+            peer.close()
+
+    def running(self, launch):
+        record = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None),
+                             timeout=60)
+        self.assertEqual(record["state"], "running", record)
+        return launch
 
     def terminal(self, launch):
-        # One attachment per sandbox, reused by later commands.
+        # One attachment per sandbox, reused by later commands. Sandbox launch
+        # replies leave out the host-only terminal path.
         if launch["session"] not in self.terminals:
-            self.terminals[launch["session"]] = RaidMemberTests.terminal(self, launch)
+            peer = self.d.terminal(dict(launch, terminal=self.d.get(launch["session"])["terminal"]))
+            self.addCleanup(peer.close)
+            self.terminals[launch["session"]] = peer
         return self.terminals[launch["session"]]
 
     def launch(self, owner, name, agent_name=None, wait=True):
@@ -453,130 +91,123 @@ class RunTargetFixture(unittest.TestCase):
         return self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] == "failed" else None), timeout=60)
 
 
-class RunTargetTests(RunTargetFixture):
-    def test_member_runs_its_own_configuration_in_the_owners_workspace(self):
-        root = self.start_root()
-        root_status = self.sandbox(root["session"], "sessions.status", {})
-        self.assertEqual(root_status["allowed_run_targets"], ["coordinator", "reviewer", "shell", "broken", "unscoped"])
-        member = self.launch(root, "reviewer")
-        record = self.d.get(member["session"])
-        self.assertEqual((record["name"], record["created_by"]["id"]), ("reviewer", root["session"]))
-        self.assertEqual(record["description"], "reviewer run target")
-        # The current manifest: the one the host last used.
-        self.assertEqual(record["configuration"], self.d.manifest)
-        status = self.sandbox(member["session"], "sessions.status", {})
-        self.assertEqual((status["name"], status["allowed_run_targets"]), ("reviewer", []))
-        writable = self.root / "reviewer"
-        self.run_in(member, f"printf '%s' \"$TARGET_MARKER\" > /workspace/marker; cat /etc/run-target-test.conf > /workspace/etc; "
-                            f"echo member > {writable}/from-member; echo $? > /workspace/member-rw", "member-done")
-        self.assertEqual((self.workspace / "marker").read_text(), "reviewer")
-        self.assertEqual((self.workspace / "etc").read_text(), "reviewer\n")
-        self.assertEqual((self.workspace / "member-rw").read_text(), "0\n")
-        self.assertEqual((writable / "from-member").read_text(), "member\n")
-        # The owner gains none of the member's declared access.
-        self.run_in(root, f"printf '%s' \"$TARGET_MARKER\" > /workspace/root-marker; cat /etc/run-target-test.conf > /workspace/root-etc; "
-                          f"test -e {writable}; echo $? > /workspace/root-rw", "root-done")
-        self.assertEqual((self.workspace / "root-marker").read_text(), "coordinator")
-        self.assertEqual((self.workspace / "root-etc").read_text(), "coordinator\n")
-        self.assertEqual((self.workspace / "root-rw").read_text(), "1\n")
-        self.run_in(root, "goblin status > /workspace/status; goblin __complete-names -- goblin run > /workspace/complete",
-                    "status-done")
-        self.assertIn("Configuration: coordinator\nDescription: coordinator run target\n"
-                      "Run targets: coordinator, reviewer, shell, broken, unscoped\n",
-                      (self.workspace / "status").read_text())
-        self.assertEqual((self.workspace / "complete").read_text().split(),
-                         ["coordinator", "reviewer", "shell", "broken", "unscoped"])
-        # A missing bind source of a permitted configuration fails only that member.
-        broken = self.failed(self.launch(root, "broken", wait=False))
-        self.assertIn("host bind", broken["detail"])
-        self.assertEqual(self.d.get(root["session"])["state"], "running")
-        # The owner exiting stops nobody else.
-        self.terminal(root).sendall(b"exit\n")
-        self.d.wait(lambda: self.d.get(root["session"])["state"] == "stopped")
-        self.assertEqual(self.d.get(member["session"])["state"], "running")
+class CoordinatorWorkflow(RunTargetFixture):
+    def test_a_coordinator_runs_a_reviewer(self):
+        targets = ["coordinator", "reviewer", "shell", "broken", "unscoped"]
 
-    def test_launch_options_add_their_fixed_arguments_and_are_shown(self):
-        root = self.start_root()
-        targets = self.sandbox(root["session"], "targets.list", {})
-        self.assertEqual([t["name"] for t in targets], ["coordinator", "reviewer", "shell", "broken", "unscoped"])
-        self.assertEqual(targets[1], {"name": "reviewer", "description": "reviewer run target", "options": {
-            "shopt": {"description": "A bash option", "choices": {"extglob": {"description": None}}}}})
-        self.sandbox(root["session"], "raids.create", {"raid": "crew"})
-        with self.assertRaises(ValueError) as error:
-            self.sandbox(root["session"], "sessions.start", {"key": uuid.uuid4().hex, "name": "reviewer",
-                                                             "options": {"shopt": "nope"}})
-        self.assertEqual(error.exception.args[0]["message"], "option 'shopt' has no choice 'nope'; choices: extglob")
-        self.run_in(root, "goblin run reviewer --name opted -o shopt=extglob > /workspace/opted.json; "
-                          "goblin targets > /workspace/targets; "
-                          "goblin __complete-names -- goblin run reviewer -o > /workspace/choices; "
-                          "goblin __complete-names -- goblin run reviewer -o shopt = > /workspace/bash-choices; "
-                          "goblin completions bash > /workspace/completion.bash", "run-done")
-        member = self.running(json.loads((self.workspace / "opted.json").read_text()))
-        self.assertIn("reviewer  reviewer run target\n  shopt  extglob  A bash option\n",
-                      (self.workspace / "targets").read_text())
-        self.assertEqual((self.workspace / "choices").read_text().split(), ["shopt=extglob"])
-        # Bash splits `-o shopt=` at the equals sign: only the choices.
-        self.assertEqual((self.workspace / "bash-choices").read_text().split(), ["extglob"])
-        # Through the Bash hook, at `-o shopt=<TAB>`, `-o shopt=ext<TAB>` and
-        # a second `-o <TAB>` after `-o shopt=extglob`, as Bash splits them.
-        for words, expected in ((["goblin", "run", "reviewer", "-o", "shopt", "="], "extglob"),
-                                (["goblin", "run", "reviewer", "-o", "shopt", "=", "ext"], "extglob"),
-                                (["goblin", "run", "reviewer", "-o", "shopt", "=", "extglob", "-o", ""],
-                                 "shopt=extglob")):
-            code = ("source /workspace/completion.bash; COMP_WORDS=(" + shlex.join(words) + "); "
-                    f"COMP_CWORD={len(words) - 1}; _goblin goblin {shlex.quote(words[-1])} "
-                    f"{shlex.quote(words[-2])}; printf '%s\\n' \"${{COMPREPLY[@]}}\" > /workspace/hook")
-            self.run_in(root, "bash --noprofile --norc -c " + shlex.quote(code), f"hook-{len(words)}")
-            self.assertEqual((self.workspace / "hook").read_text().split(), [expected], words)
-        # The member's command line: its configuration's args, then the choice's.
-        self.run_in(member, "tr '\\0' ' ' < /proc/$$/cmdline > /workspace/cmdline; shopt -q extglob; "
-                            "echo $? > /workspace/extglob; goblin status > /workspace/member-status", "member-done")
-        self.assertTrue((self.workspace / "cmdline").read_text().endswith("--noprofile --norc -i -O extglob "))
-        self.assertEqual((self.workspace / "extglob").read_text(), "0\n")
-        self.assertIn("Launch options: shopt=extglob\n", (self.workspace / "member-status").read_text())
-        self.assertEqual(self.d.get(member["session"])["options"], {"shopt": "extglob"})
-        self.run_in(root, "goblin raid members > /workspace/members", "members-done")
-        self.assertRegex((self.workspace / "members").read_text(), r"\nopted +-  +reviewer .* shopt=extglob +\S+\n")
+        with step("a coordinator in a scope sees what it may run"):
+            root = self.running(self.host_start("coordinator", scope="work", agent_name="root"))
+            self.workspace = self.d.state / root["session"] / "resources/workspace"
+            self.run_in(root, "goblin targets > /workspace/targets; goblin status > /workspace/status; "
+                              "goblin __complete-names -- goblin run > /workspace/complete", "listed")
+            self.assertIn("reviewer  reviewer run target\n  shopt  extglob  A bash option\n",
+                          (self.workspace / "targets").read_text())
+            self.assertIn("Configuration: coordinator\nDescription: coordinator run target\n"
+                          "Run targets: coordinator, reviewer, shell, broken, unscoped\n",
+                          (self.workspace / "status").read_text())
+            self.assertEqual((self.workspace / "complete").read_text().split(), targets)
+            self.assertIn("Host commands: none\n", (self.workspace / "status").read_text())
+            # The host's launch made this manifest the server's current one.
+            self.assertIn(self.d.manifest, self.d.cli("server", "status").stdout)
 
-    def test_each_owner_uses_its_own_list(self):
-        root = self.start_root()
-        self.refused(root, "unlisted", "configuration 'unlisted' is not an allowed run target of 'coordinator'; "
-                                       "allowed: coordinator, reviewer, shell, broken, unscoped")
-        reviewer = self.launch(root, "reviewer")
-        # Approved refusal-order exception: policy precedes live raid state.
-        # An empty list refuses the target even while the caller isn't owner.
-        self.refused(reviewer, "reviewer", "configuration 'reviewer' permits no run targets", -32602)
-        self.owner(reviewer)
-        self.refused(reviewer, "reviewer", "configuration 'reviewer' permits no run targets")
-        # Ownership moves on; a shell owner may run only what its list names.
-        self.owner(root)
-        shell = self.launch(root, "shell")
-        # A permitted target still requires ownership: the gate grants none.
-        self.refused(shell, "reviewer",
-                     "only a raid owner can run goblins; create one with goblin raid create NAME", -32009)
-        self.owner(shell)
-        leaf = self.launch(shell, "reviewer", "leaf")
-        self.assertEqual(self.d.get(leaf["session"])["created_by"]["id"], shell["session"])
-        self.refused(shell, "coordinator",
-                     "configuration 'coordinator' is not an allowed run target of 'shell'; allowed: reviewer")
+        with step("completion offers the reviewer's launch options, in bash too"):
+            self.run_in(root, "goblin __complete-names -- goblin run reviewer -o > /workspace/choices; "
+                              "goblin __complete-names -- goblin run reviewer -o shopt = > /workspace/bash-choices; "
+                              "goblin completions bash > /workspace/completion.bash", "completed")
+            self.assertEqual((self.workspace / "choices").read_text().split(), ["shopt=extglob"])
+            # Bash splits `-o shopt=` at the equals sign: only the choices.
+            self.assertEqual((self.workspace / "bash-choices").read_text().split(), ["extglob"])
+            # Through the Bash hook, at `-o shopt=<TAB>`, `-o shopt=ext<TAB>` and
+            # a second `-o <TAB>` after `-o shopt=extglob`, as Bash splits them.
+            for words, expected in ((["goblin", "run", "reviewer", "-o", "shopt", "="], "extglob"),
+                                    (["goblin", "run", "reviewer", "-o", "shopt", "=", "ext"], "extglob"),
+                                    (["goblin", "run", "reviewer", "-o", "shopt", "=", "extglob", "-o", ""],
+                                     "shopt=extglob")):
+                code = ("source /workspace/completion.bash; COMP_WORDS=(" + shlex.join(words) + "); "
+                        f"COMP_CWORD={len(words) - 1}; _goblin goblin {shlex.quote(words[-1])} "
+                        f"{shlex.quote(words[-2])}; printf '%s\\n' \"${{COMPREPLY[@]}}\" > /workspace/hook")
+                self.run_in(root, "bash --noprofile --norc -c " + shlex.quote(code), f"hook-{len(words)}")
+                self.assertEqual((self.workspace / "hook").read_text().split(), [expected], words)
 
-    def test_member_shares_the_owners_scope(self):
-        launch = self.host_start("coordinator", scope="work", agent_name="root")
-        root = self.running(launch)
-        self.workspace = self.d.state / root["session"] / "resources/workspace"
-        member = self.launch(root, "reviewer")
-        self.assertEqual(self.d.get(member["session"])["scope"], "work")
-        # The current manifest is read when the member starts.
-        unscoped = self.failed(self.launch(root, "unscoped", wait=False))
-        self.assertIn("configuration 'unscoped' cannot be launched here: 'unscoped' does not allow scope 'work'",
-                      unscoped["detail"])
-        # Members share the scope's namespaces: the member sees the owner's processes.
-        self.run_in(root, "sleep 300 & echo $! > /workspace/root-sleep", "root-done")
-        pid = (self.workspace / "root-sleep").read_text().strip()
-        self.run_in(member, f"test -e /proc/{pid}; echo $? > /workspace/seen", "member-done")
-        self.assertEqual((self.workspace / "seen").read_text(), "0\n")
+        with step("the host approves a package for the coordinator"):
+            request, permission = self.d.pending(root["session"])
+            self.addCleanup(request.close)
+            self.d.decide(permission, True)
+            request.peer.settimeout(120)
+            self.assertEqual(receive(request.peer)["result"]["status"], "ready")
 
-    def test_member_shares_the_owners_dev_shell_generation(self):
+        with step("the coordinator runs a reviewer with a launch option"):
+            self.run_in(root, "goblin raid create crew; "
+                              "goblin run reviewer --name opted -o shopt=extglob > /workspace/opted.json", "ran")
+            member = self.running(json.loads((self.workspace / "opted.json").read_text()))
+            record = self.d.get(member["session"])
+            self.assertEqual((record["name"], record["created_by"]["id"]), ("reviewer", root["session"]))
+            self.assertEqual(record["description"], "reviewer run target")
+            # The current manifest: the one the host last used.
+            self.assertEqual(record["configuration"], self.d.manifest)
+            self.assertEqual((record["scope"], record["options"]), ("work", {"shopt": "extglob"}))
+            self.assertEqual(record["packages"], [])
+
+        with step("the reviewer runs its own configuration, with its environment, files, binds and arguments"):
+            writable = self.root / "reviewer"
+            self.run_in(member, "printf '%s' \"$TARGET_MARKER\" > /workspace/marker; "
+                                "cat /etc/run-target-test.conf > /workspace/etc; "
+                                f"echo member > {writable}/from-member; echo $? > /workspace/member-rw; "
+                                "tr '\\0' ' ' < /proc/$$/cmdline > /workspace/cmdline; shopt -q extglob; "
+                                "echo $? > /workspace/extglob; goblin status > /workspace/member-status", "member")
+            self.assertEqual((self.workspace / "marker").read_text(), "reviewer")
+            self.assertEqual((self.workspace / "etc").read_text(), "reviewer\n")
+            self.assertEqual((self.workspace / "member-rw").read_text(), "0\n")
+            self.assertEqual((writable / "from-member").read_text(), "member\n")
+            # Its configuration's arguments, then the choice's.
+            self.assertTrue((self.workspace / "cmdline").read_text().endswith("--noprofile --norc -i -O extglob "))
+            self.assertEqual((self.workspace / "extglob").read_text(), "0\n")
+            self.assertIn("Launch options: shopt=extglob\n", (self.workspace / "member-status").read_text())
+            status = self.sandbox(member["session"], "sessions.status", {})
+            self.assertEqual((status["name"], status["allowed_run_targets"]), ("reviewer", []))
+
+        with step("the coordinator gets none of the reviewer's access"):
+            self.run_in(root, "printf '%s' \"$TARGET_MARKER\" > /workspace/root-marker; "
+                              "cat /etc/run-target-test.conf > /workspace/root-etc; "
+                              f"test -e {writable}; echo $? > /workspace/root-rw", "root")
+            self.assertEqual((self.workspace / "root-marker").read_text(), "coordinator")
+            self.assertEqual((self.workspace / "root-etc").read_text(), "coordinator\n")
+            self.assertEqual((self.workspace / "root-rw").read_text(), "1\n")
+
+        with step("the reviewer shares the coordinator's scope and sees its processes"):
+            self.run_in(root, "sleep 300 & echo $! > /workspace/root-sleep", "slept")
+            pid = (self.workspace / "root-sleep").read_text().strip()
+            self.run_in(member, f"test -e /proc/{pid}; echo $? > /workspace/seen", "seen-done")
+            self.assertEqual((self.workspace / "seen").read_text(), "0\n")
+
+        with step("the coordinator's approval reaches the reviewer when it asks"):
+            self.run_in(member, "goblin request-package hello --reason copied > /workspace/requested 2>&1; "
+                                "command -v hello > /workspace/hello", "requested-done")
+            self.assertEqual((self.workspace / "hello").read_text(), "/run/goblins/packages/current/bin/hello\n")
+            self.assertEqual(self.d.get(member["session"])["packages"], ["hello"])
+            self.assertEqual(self.d.permissions(session=member["session"], state="pending"), [])
+
+        with step("raid members show the reviewer's options"):
+            self.run_in(root, "goblin raid members > /workspace/members", "members-done")
+            self.assertRegex((self.workspace / "members").read_text(),
+                             r"\nopted +-  +reviewer .* shopt=extglob +\S+\n")
+
+        with step("a configuration with a missing bind, or one that refuses the scope, fails alone"):
+            broken = self.failed(self.launch(root, "broken", wait=False))
+            self.assertIn("host bind", broken["detail"])
+            unscoped = self.failed(self.launch(root, "unscoped", wait=False))
+            self.assertIn("configuration 'unscoped' cannot be launched here: 'unscoped' does not allow scope 'work'",
+                          unscoped["detail"])
+            self.assertEqual(self.d.get(root["session"])["state"], "running")
+
+        with step("the coordinator exits; the reviewer keeps running"):
+            self.terminal(root).sendall(b"exit\n")
+            self.d.wait(lambda: self.d.get(root["session"])["state"] == "stopped")
+            self.assertEqual(self.d.get(member["session"])["state"], "running")
+
+
+class DevShellMemberWorkflow(RunTargetFixture):
+    def test_a_member_shares_the_owners_dev_shell_generation(self):
         from test_devshell import TEMPLATE
         project = self.root / "project"
         project.mkdir()
@@ -605,47 +236,6 @@ class RunTargetTests(RunTargetFixture):
         self.assertEqual((self.workspace / "marker").read_text(), "original reviewer")
         # It also shares the owner's pinned working directory.
         self.assertEqual((self.workspace / "cwd").read_text(), f"{project}\n")
-
-    def test_owner_approvals_reach_a_different_configuration_on_request(self):
-        root = self.start_root()
-        request, permission = self.d.pending(root["session"])
-        self.addCleanup(request.close)
-        self.d.decide(permission, True)
-        request.peer.settimeout(120)
-        self.assertEqual(receive(request.peer)["result"]["status"], "ready")
-        member = self.launch(root, "reviewer")
-        self.assertEqual(self.d.get(member["session"])["packages"], [])
-        peer = RPC(self.d.state / member["session"] / "resources/request.sock")
-        self.addCleanup(peer.close)
-        peer.peer.settimeout(120)
-        result = peer.call("permissions.request", {"kind": "package", "package": "hello", "reason": "copied"})
-        self.assertEqual(result["status"], "ready")
-        self.assertTrue(self.d.rpc.call("permissions.get", {"request": result["request"]})["approved"])
-        self.assertEqual(self.d.get(member["session"])["packages"], ["hello"])
-
-    def test_members_follow_the_build_the_host_last_used(self):
-        root = self.start_root()
-        updated = fixture_app("run-target-goblins-updated")
-        cli = lambda *args: subprocess.run([str(updated), "--state-dir", str(self.d.state), *args],
-                                           text=True, capture_output=True)
-        # A launch from the new build makes its manifest current, which no
-        # longer declares the reviewer; the owner's own list still names it.
-        result = cli("run", "coordinator", "--name", "newer", "--detached")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.running(json.loads(result.stdout))
-        late = self.failed(self.launch(root, "reviewer", "late", wait=False))
-        self.assertIn("unknown goblin 'reviewer'", late["detail"])
-        # Never permitted: refused before anything is launched.
-        self.refused(root, "unlisted", "configuration 'unlisted' is not an allowed run target of 'coordinator'; "
-                                       "allowed: coordinator, reviewer, shell, broken, unscoped")
-
-    def test_daemon_rejects_an_allowed_run_targets_list_over_the_bound(self):
-        manifest = self.root / "oversized.json"
-        configuration = json.loads(Path(self.d.manifest).read_text())
-        configuration["goblins"]["coordinator"]["allowed_run_targets"] = [f"g{i}" for i in range(65)]
-        manifest.write_text(json.dumps(configuration))
-        record = self.failed(self.d.start("coordinator", manifest=manifest, wait=False))
-        self.assertIn("invalid allowed_run_targets for 'coordinator'", record["detail"])
 
 
 class RunTargetDockerTests(RunTargetFixture):

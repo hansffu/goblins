@@ -14,7 +14,8 @@ import unittest
 import uuid
 
 from build_support import fixture_app
-from daemon_support import Daemon, ROOT, RPC
+from daemon_support import Daemon, ROOT
+from support import step
 from terminal_support import Terminal
 
 PROMPT = "host-test>"
@@ -29,7 +30,7 @@ def alive(pid):
     return stat.rsplit(")", 1)[1].split()[0] != "Z"
 
 
-class HostCommandTests(unittest.TestCase):
+class HostCommandFixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = fixture_app("host-goblins")
@@ -76,168 +77,187 @@ class HostCommandTests(unittest.TestCase):
     def record(self, request):
         return next(r for r in self.d.permissions() if r["id"] == request)
 
-    def test_an_approved_command_runs_on_the_host_and_streams_its_output(self):
-        session, terminal = self.launch()
-        self.assertIn("Host commands: available after approval", self.run_in(terminal, "goblin status")[0])
-        (self.project / "job.sh").write_text(
-            'echo out; echo err >&2; pwd; echo "JOB=$GOBLINS_HOST_JOB"; echo "EXTRA=$EXTRA"\n'
-            "test -e /run/goblins/request.sock && echo IN-SANDBOX || echo ON-HOST\n"
-            'echo made-on-host > from-host; cat from-sandbox; echo "TMP=${TMPDIR-unset}"; exit 3\n')
-        marker = self.send(terminal, "echo made-in-sandbox > from-sandbox; goblin host run --name 'host test' --reason 'host test' --env EXTRA='a b' -- bash job.sh")
-        record = self.pending(session)
-        self.assertEqual(record["kind"], "host-command")
-        # The name, and where the output will be, are known before approval;
-        # the start time only once the job is sent.
-        self.assertEqual(record["name"], "host test")
-        self.assertEqual(record["preview"]["name"], "host test")
-        self.assertEqual(record["preview"]["description"].splitlines()[1], "Name: host test")
-        self.assertTrue(record["package"].startswith("host test: "), record["package"])
-        self.assertNotIn("started_at", record)
-        self.assertEqual(record["log"], str(self.d.state / session / "resources" / "host-jobs" / record["id"] / "output.log"))
-        before = int(time.time())
-        self.assertIn("bash job.sh", record["package"])
-        self.assertIn(str(self.project), record["package"])
-        self.assertIn("Runs on the host as you", record["preview"]["description"])
-        self.assertIn("EXTRA='a b'", record["preview"]["description"])
-        self.d.decide(record, True)
-        output, code = self.done(terminal, marker)
-        self.assertEqual(code, 3, output)
-        for line in ["out", "err", str(self.project), f"JOB={record['id']}", "EXTRA=a b", "ON-HOST", "made-in-sandbox"]:
-            self.assertIn(line, output)
-        self.assertEqual((self.project / "from-host").read_text(), "made-on-host\n")
-        # Plain /tmp: nested daemons' socket paths stay short.
-        self.assertIn("TMP=unset", output)
-        final = self.record(record["id"])
-        self.assertEqual((final["state"], final["message"]), ("finished", "exit code 3"))
-        self.assertTrue(before - 1 <= final["started_at"] <= int(time.time()) + 1, final)
-        self.assertIn("made-in-sandbox", Path(final["log"]).read_text())
-        # The output stays readable in the sandbox, which cannot change it.
-        log = f"/run/goblins/host-jobs/{record['id']}/output.log"
-        output, code = self.run_in(terminal, f"cat {log}")
-        self.assertEqual(code, 0, output)
-        self.assertIn("made-in-sandbox", output)
-        output, code = self.run_in(terminal, f"echo x >> {log}")
-        self.assertNotEqual(code, 0, output)
-        self.assertIn("Read-only file system", output)
+    def events(self):
+        """The whole communications log, page by page."""
+        events, after = [], 0
+        while True:
+            page = self.d.rpc.call("communications.list", {"after": after})
+            events += page["events"]
+            after = page["cursor"]
+            if after >= page["latest"]:
+                return events
 
-    def test_names_are_required_restricted_and_default_for_older_clients(self):
+    def completed(self, request):
+        """The communications log's completion of a request, if any."""
+        return next((e for e in self.events() if e["kind"] == "operation.completed"
+                     and e["data"]["request"] == request), None)
+
+class HostCommandWorkflow(HostCommandFixture):
+    def test_an_agent_runs_a_command_on_the_host(self):
         session, terminal = self.launch()
-        output, code = self.run_in(terminal, "goblin host run --reason r -- true")
-        self.assertNotEqual(code, 0, output)
-        self.assertIn("--name", output)
-        for bad in ["'a/b'", "' x'", "''", "'" + "a" * 33 + "'", "'caf\u00e9'"]:
-            output, code = self.run_in(terminal, f"goblin host run --name {bad} --reason r -- true")
+
+        with step("the goblin may ask for host commands"):
+            self.assertIn("Host commands: available after approval", self.run_in(terminal, "goblin status")[0])
+
+        with step("an approved command runs on the host and streams its output and exit code"):
+            (self.project / "job.sh").write_text(
+                'echo out; echo err >&2; pwd; echo "JOB=$GOBLINS_HOST_JOB"; echo "EXTRA=$EXTRA"\n'
+                "test -e /run/goblins/request.sock && echo IN-SANDBOX || echo ON-HOST\n"
+                'echo made-on-host > from-host; cat from-sandbox; echo "TMP=${TMPDIR-unset}"; exit 3\n')
+            marker = self.send(terminal, "echo made-in-sandbox > from-sandbox; goblin host run --name 'host test' "
+                                         "--reason 'host test' --env EXTRA='a b' -- bash job.sh")
+            record = self.pending(session)
+            self.assertEqual(record["kind"], "host-command")
+            # The name, and where the output will be, are known before approval;
+            # the start time only once the job is sent.
+            self.assertEqual((record["name"], record["preview"]["name"]), ("host test", "host test"))
+            self.assertEqual(record["preview"]["description"].splitlines()[1], "Name: host test")
+            self.assertTrue(record["package"].startswith("host test: "), record["package"])
+            self.assertNotIn("started_at", record)
+            self.assertEqual(record["log"], str(self.d.state / session / "resources" / "host-jobs" / record["id"]
+                                                / "output.log"))
+            before = int(time.time())
+            self.assertIn("bash job.sh", record["package"])
+            self.assertIn(str(self.project), record["package"])
+            self.assertIn("Runs on the host as you", record["preview"]["description"])
+            self.assertIn("EXTRA='a b'", record["preview"]["description"])
+            self.d.decide(record, True)
+            output, code = self.done(terminal, marker)
+            self.assertEqual(code, 3, output)
+            for line in ["out", "err", str(self.project), f"JOB={record['id']}", "EXTRA=a b", "ON-HOST",
+                         "made-in-sandbox"]:
+                self.assertIn(line, output)
+            self.assertEqual((self.project / "from-host").read_text(), "made-on-host\n")
+            # Plain /tmp: nested daemons' socket paths stay short.
+            self.assertIn("TMP=unset", output)
+            final = self.record(record["id"])
+            self.assertEqual((final["state"], final["message"]), ("finished", "exit code 3"))
+            self.assertTrue(before - 1 <= final["started_at"] <= int(time.time()) + 1, final)
+            self.assertIn("made-in-sandbox", Path(final["log"]).read_text())
+            # The agent got the result itself: no inbox notice.
+            completed = self.d.wait(lambda: self.completed(record["id"]))
+            self.assertIsNone(completed["data"].get("notice"))
+            attached = record["id"]
+
+        with step("its output stays readable in the goblin, which cannot change it"):
+            log = f"/run/goblins/host-jobs/{attached}/output.log"
+            output, code = self.run_in(terminal, f"cat {log}")
+            self.assertEqual(code, 0, output)
+            self.assertIn("made-in-sandbox", output)
+            output, code = self.run_in(terminal, f"echo x >> {log}")
             self.assertNotEqual(code, 0, output)
-            self.assertIn("1-32 characters", output)
-        self.assertFalse(self.d.permissions(session=session, state="pending"))
-        # An in-sandbox client without a name still works: the label is the
-        # program's base name.
-        peer = RPC(self.d.state / session / "resources/request.sock")
-        peer.call("permissions.request", {"kind": "host-command", "reason": "old", "host": {
-            "argv": ["/bin/true"], "cwd": str(self.project), "detach": True}})
-        record = self.pending(session)
-        self.assertEqual(record["name"], "true")
-        self.assertEqual(record["preview"]["description"].splitlines()[1], "Name: true")
-        self.d.decide(record, False)
-        peer.close()
+            self.assertIn("Read-only file system", output)
 
-    def test_denied_withdrawn_and_unshared_commands_do_not_run(self):
-        session, terminal = self.launch()
-        marker = self.send(terminal, "goblin host run --name job --reason denied -- touch ran")
-        self.d.decide(self.pending(session), False)
-        output, code = self.done(terminal, marker)
-        self.assertEqual(code, 125, output)
-        self.assertIn("denied", output)
-        self.assertFalse((self.project / "ran").exists())
-        # Interrupting the client withdraws the request.
-        terminal.send("goblin host run --name job --reason withdrawn -- touch ran\n")
-        record = self.pending(session)
-        terminal.send("\x03")
-        terminal.expect(PROMPT)
-        self.d.wait(lambda: self.record(record["id"])["state"] == "withdrawn")
-        self.assertFalse((self.project / "ran").exists())
-        # The sandbox's own home and /tmp are not the host's.
-        for cwd in ["$HOME", "/tmp", "/run/goblins"]:
-            output, code = self.run_in(terminal, f"goblin host run --name job --reason unshared --cwd {cwd} -- true")
+        with step("a command the host denies does not run"):
+            marker = self.send(terminal, "goblin host run --name job --reason denied -- touch ran")
+            self.d.decide(self.pending(session), False)
+            output, code = self.done(terminal, marker)
             self.assertEqual(code, 125, output)
-            self.assertIn("not shared with the host", output)
-        self.assertFalse(self.d.permissions(session=session, state="pending"))
+            self.assertIn("denied", output)
+            self.assertFalse((self.project / "ran").exists())
 
-    def test_detached_jobs_status_logs_wait_and_cancel(self):
-        session, terminal = self.launch()
-        output, code = self.run_in(terminal, "goblin host run --name job --detach --reason long -- bash -c 'echo started; exec sleep 300'")
-        self.assertEqual(code, 0, output)
-        request = json.loads(re.search(r"\{.*\}", output)[0])["request"]
-        self.d.decide(self.pending(session), True)
-        self.d.wait(lambda: self.record(request)["state"] == "running")
-        self.d.wait(lambda: "started" in self.run_in(terminal, f"goblin host logs {request}")[0])
-        status = json.loads(re.search(r"\{.*\}", self.run_in(terminal, f"goblin host status {request}")[0])[0])
-        self.assertEqual(status["status"], "running")
-        output, code = self.run_in(terminal, f"goblin host wait {request} --timeout 1")
-        self.assertEqual(code, 124, output)
-        listed = json.loads(re.search(r"\{.*\}", self.run_in(terminal, "goblin host list")[0])[0])["jobs"]
-        self.assertEqual([j["request"] for j in listed], [request])
-        self.run_in(terminal, f"goblin host cancel {request}")
-        output, code = self.run_in(terminal, f"goblin host wait {request} --timeout 30")
-        self.assertEqual(code, 128 + signal.SIGTERM, output)
-        self.assertEqual(self.record(request)["state"], "cancelled")
-        # Requested, decided and completed, in the communications log.
-        events = self.d.wait(lambda: (e if len(e := [x for x in self.d.rpc.call("communications.list", {})["events"]
-                                                    if request in json.dumps(x)]) >= 3 else None))
-        self.assertEqual([e["kind"] for e in events][-3:],
-                         ["operation.requested", "operation.decided", "operation.completed"])
+        with step("Ctrl-C withdraws a request"):
+            terminal.send("goblin host run --name job --reason withdrawn -- touch ran\n")
+            record = self.pending(session)
+            terminal.send("\x03")
+            terminal.expect(PROMPT)
+            self.d.wait(lambda: self.record(record["id"])["state"] == "withdrawn")
+            self.assertFalse((self.project / "ran").exists())
 
-    def test_the_host_lists_and_cancels_running_commands(self):
-        session, terminal = self.launch()
-        self.run_in(terminal, "goblin host run --name sleeper --detach --reason host-cancel -- sleep 300")
-        record = self.pending(session)
-        self.d.decide(record, True)
-        self.d.wait(lambda: self.record(record["id"])["state"] == "running")
-        listed = json.loads(self.d.cli("host", "list").stdout)["jobs"]
-        self.assertEqual([(j["request"], j["name"], j["status"]) for j in listed],
-                         [(record["id"], "sleeper", "running")])
-        self.assertIsInstance(listed[0]["started_at"], int)
-        # The sandbox sees the same name and start.
-        sandbox = json.loads(re.search(r"\{.*\}", self.run_in(terminal, f"goblin host status {record['id']}")[0])[0])
-        self.assertEqual((sandbox["name"], sandbox["started_at"]), ("sleeper", listed[0]["started_at"]))
-        self.d.cli("host", "cancel", record["id"])
-        self.d.wait(lambda: self.record(record["id"])["state"] == "cancelled")
-        self.assertIn("cancelled by the host", self.record(record["id"])["message"])
-        refused = self.d.cli("host", "cancel", record["id"], check=False)
-        self.assertNotEqual(refused.returncode, 0)
+        with step("the goblin's own home and /tmp are not the host's"):
+            for cwd in ["$HOME", "/tmp", "/run/goblins"]:
+                output, code = self.run_in(terminal, f"goblin host run --name job --reason unshared --cwd {cwd} -- true")
+                self.assertEqual(code, 125, output)
+                self.assertIn("not shared with the host", output)
+            self.assertFalse(self.d.permissions(session=session, state="pending"))
 
-    def test_processes_left_behind_are_stopped_whatever_the_ending(self):
-        session, terminal = self.launch()
-        leave = "setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > {name}.pid; exit {code}"
-        for name, code in [("success", 0), ("failure", 4)]:
-            marker = self.send(terminal, f"goblin host run --name job --reason cleanup -- bash -c '{leave.format(name=name, code=code)}'")
+        with step("a detached job: logs, status, wait and cancel"):
+            output, code = self.run_in(terminal, "goblin host run --name job --detach --reason long -- "
+                                                 "bash -c 'echo started; exec sleep 300'")
+            self.assertEqual(code, 0, output)
+            request = json.loads(re.search(r"\{.*\}", output)[0])["request"]
             self.d.decide(self.pending(session), True)
-            output, status = self.done(terminal, marker)
-            self.assertEqual(status, code, output)
-            pid = int((self.project / f"{name}.pid").read_text())
-            self.assertFalse(alive(pid), f"{name}: background process {pid} survived")
-        # Orphans that exit are reaped while the job runs, as init would:
-        # an exiting PID namespace waits for its processes' reaping.
-        marker = self.send(terminal, "goblin host run --name job --reason reap -- bash -c 'echo $PPID > supervisor.pid; (sleep 0.1 &); sleep 2'")
-        self.d.decide(self.pending(session), True)
-        self.d.wait(lambda: (self.project / "supervisor.pid").exists())
-        supervisor = int((self.project / "supervisor.pid").read_text())
-        time.sleep(1)
-        children = Path(f"/proc/{supervisor}/task/{supervisor}/children").read_text().split()
-        zombies = [c for c in children if Path(f"/proc/{c}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"]
-        self.assertEqual(zombies, [], "the supervisor left exited orphans unreaped")
-        self.assertEqual(self.done(terminal, marker)[1], 0)
-        # Stopping the goblin stops its job and what it started.
-        stopped = "setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > stopped.pid; exec sleep 300"
-        self.run_in(terminal, f"goblin host run --name job --detach --reason stop -- bash -c '{stopped}'")
-        record = self.pending(session)
-        self.d.decide(record, True)
-        self.d.wait(lambda: (self.project / "stopped.pid").exists())
-        pid = int((self.project / "stopped.pid").read_text())
-        self.assertTrue(alive(pid))
-        self.d.rpc.call("sessions.stop", {"session": session})
-        self.d.wait(lambda: not alive(pid), timeout=30)
-        self.d.wait(lambda: self.record(record["id"])["state"] == "cancelled")
+            self.d.wait(lambda: self.record(request)["state"] == "running")
+            self.d.wait(lambda: "started" in self.run_in(terminal, f"goblin host logs {request}")[0])
+            status = json.loads(re.search(r"\{.*\}", self.run_in(terminal, f"goblin host status {request}")[0])[0])
+            self.assertEqual(status["status"], "running")
+            output, code = self.run_in(terminal, f"goblin host wait {request} --timeout 1")
+            self.assertEqual(code, 124, output)
+            listed = json.loads(re.search(r"\{.*\}", self.run_in(terminal, "goblin host list")[0])[0])["jobs"]
+            self.assertEqual([j["request"] for j in listed if j["status"] == "running"], [request])
+            self.run_in(terminal, f"goblin host cancel {request}")
+            output, code = self.run_in(terminal, f"goblin host wait {request} --timeout 30")
+            self.assertEqual(code, 128 + signal.SIGTERM, output)
+            self.assertEqual(self.record(request)["state"], "cancelled")
+            events = [e["kind"] for e in self.events() if request in json.dumps(e)]
+            self.assertEqual(events[:3], ["operation.requested", "operation.decided", "operation.completed"])
+
+        with step("the host lists and cancels running commands"):
+            self.run_in(terminal, "goblin host run --name sleeper --detach --reason host-cancel -- sleep 300")
+            record = self.pending(session)
+            self.d.decide(record, True)
+            self.d.wait(lambda: self.record(record["id"])["state"] == "running")
+            listed = [j for j in json.loads(self.d.cli("host", "list").stdout)["jobs"] if j["status"] == "running"]
+            self.assertEqual([(j["request"], j["name"]) for j in listed], [(record["id"], "sleeper")])
+            self.assertIsInstance(listed[0]["started_at"], int)
+            # The goblin sees the same name and start.
+            status = self.run_in(terminal, f"goblin host status {record['id']}")[0]
+            shown = json.loads(re.search(r"\{.*\}", status)[0])
+            self.assertEqual((shown["name"], shown["started_at"]), ("sleeper", listed[0]["started_at"]))
+            self.d.cli("host", "cancel", record["id"])
+            self.d.wait(lambda: self.record(record["id"])["state"] == "cancelled")
+            self.assertIn("cancelled by the host", self.record(record["id"])["message"])
+            self.assertNotEqual(self.d.cli("host", "cancel", record["id"], check=False).returncode, 0)
+
+        with step("processes a command leaves behind are stopped, whatever its ending"):
+            leave = "setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > {name}.pid; exit {code}"
+            for name, code in [("success", 0), ("failure", 4)]:
+                marker = self.send(terminal, f"goblin host run --name job --reason cleanup -- "
+                                             f"bash -c '{leave.format(name=name, code=code)}'")
+                self.d.decide(self.pending(session), True)
+                output, status = self.done(terminal, marker)
+                self.assertEqual(status, code, output)
+                pid = int((self.project / f"{name}.pid").read_text())
+                self.assertFalse(alive(pid), f"{name}: background process {pid} survived")
+
+        with step("orphans that exit are reaped while the job runs, as init would"):
+            # An exiting PID namespace waits for its processes' reaping.
+            marker = self.send(terminal, "goblin host run --name job --reason reap -- bash -c "
+                                         "'(sleep 0.1 & echo $! > orphan.pid); "
+                                         "while [ ! -e release ]; do sleep 0.05; done'")
+            self.d.decide(self.pending(session), True)
+            self.d.wait(lambda: (self.project / "orphan.pid").exists())
+            orphan = int((self.project / "orphan.pid").read_text())
+            self.d.wait(lambda: not Path(f"/proc/{orphan}").exists())
+            (self.project / "release").touch()
+            self.assertEqual(self.done(terminal, marker)[1], 0)
+
+        with step("a host command can run a test server of its own"):
+            cli = f"{self.d.binary} --runtime {self.d.manifest}"
+            script = (f"state=$(mktemp -d); {cli} --state-dir $state server start >/dev/null && "
+                      f"{cli} --state-dir $state server status && {cli} --state-dir $state server stop; "
+                      "code=$?; rm -rf $state; exit $code")
+            marker = self.send(terminal, f"goblin host run --name job --reason nested -- bash -c '{script}'")
+            self.d.decide(self.pending(session), True)
+            output, code = self.done(terminal, marker, timeout=120)
+            self.assertEqual(code, 0, output)
+            self.assertEqual(self.d.get(session)["state"], "running")
+
+        with step("stopping the goblin stops its job and what the job started"):
+            stopped = "setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > stopped.pid; exec sleep 300"
+            self.run_in(terminal, f"goblin host run --name job --detach --reason stop -- bash -c '{stopped}'")
+            record = self.pending(session)
+            self.d.decide(record, True)
+            self.d.wait(lambda: (self.project / "stopped.pid").exists())
+            pid = int((self.project / "stopped.pid").read_text())
+            self.assertTrue(alive(pid))
+            self.d.rpc.call("sessions.stop", {"session": session})
+            self.d.wait(lambda: not alive(pid), timeout=30)
+            self.d.wait(lambda: self.record(record["id"])["state"] == "cancelled")
+
+
+class HostJobCrashTests(HostCommandFixture):
+    """A job dies with the daemon or the goblin supervisor that ran it."""
 
     def test_the_daemon_dying_stops_its_jobs(self):
         session, terminal = self.launch()
@@ -276,66 +296,6 @@ class HostCommandTests(unittest.TestCase):
         self.d.wait(lambda: not Path(f"/proc/{pid}").exists())
         self.d.wait(lambda: self.record(record["id"])["state"] == "cancelled")
         self.assertIsNone(self.d.process.poll(), "only the goblin supervisor should die")
-
-    def test_host_commands_name_their_own_server(self):
-        session, terminal = self.launch()
-        cli = f"{self.d.binary} --runtime {self.d.manifest}"
-        marker = self.send(terminal, f"goblin host run --name job --reason guard -- {cli} server status")
-        self.d.decide(self.pending(session), True)
-        output, code = self.done(terminal, marker)
-        self.assertNotEqual(code, 0, output)
-        self.assertIn("pass --state-dir", output)
-        # A test daemon with its own state directory works.
-        script = (f"state=$(mktemp -d); {cli} --state-dir $state server start >/dev/null && "
-                  f"{cli} --state-dir $state server status && {cli} --state-dir $state server stop; "
-                  "code=$?; rm -rf $state; exit $code")
-        marker = self.send(terminal, f"goblin host run --name job --reason nested -- bash -c '{script}'")
-        self.d.decide(self.pending(session), True)
-        output, code = self.done(terminal, marker, timeout=120)
-        self.assertEqual(code, 0, output)
-        self.assertEqual(self.d.get(session)["state"], "running")
-
-    def test_requests_are_shown_whole_or_refused_and_views_stay_healthy(self):
-        owner, _ = self.launch()
-        sessions = [owner]
-        for i in range(12):
-            # Raid members the owner runs, each asking on its own socket.
-            sessions.append(self.d.member(owner, "host", agent_name=f"kid{i}", key=f"c{i}", wait=False)["session"])
-        self.d.wait(lambda: all(self.d.get(s)["state"] == "running" for s in sessions), timeout=120)
-
-        def request(session, quotes):
-            client = RPC(self.d.state / session / "resources/request.sock")
-            try:
-                return client.call("permissions.request", {"kind": "host-command", "reason": "size", "host": {
-                    "argv": ["true", "'" * quotes], "cwd": str(self.project), "detach": True}})
-            except ValueError as error:
-                return error.args[0]
-            finally:
-                client.close()
-        # Too long to show whole: refused, never cut.
-        self.assertIn("too long to show", str(request(sessions[0], 12000)))
-        # Each fits on its own; together they would overflow approval views.
-        results = [request(s, 6000) for s in sessions]
-        accepted = [r for r in results if "request" in r]
-        refused = [r for r in results if "request" not in r]
-        self.assertTrue(accepted and refused, results)
-        self.assertTrue(all("too many large requests" in str(r) for r in refused), refused)
-        # Approval views keep working, and every accepted request is complete.
-        snapshot = self.d.host().call("state.subscribe", {})["snapshot"]
-        records = {r["id"]: r for r in snapshot["permissions"]}
-        # Shown whole: each apostrophe quoted as '\'' by the display quoting.
-        whole = "true '" + "'\\''" * 6000 + "'"
-        for r in accepted:
-            self.assertEqual(records[r["request"]]["preview"]["command"], whole)
-        self.assertLess(len(json.dumps(snapshot)), 1024 * 1024)
-
-    def test_a_goblin_without_host_commands_cannot_ask(self):
-        session, terminal = self.launch("plain")
-        output, code = self.run_in(terminal, "goblin host run --name job --reason no -- true")
-        self.assertEqual(code, 125, output)
-        self.assertIn("may not run host commands", output)
-        self.assertIn("Host commands: none", self.run_in(terminal, "goblin status")[0])
-        self.assertFalse(self.d.permissions(session=session))
 
 
 @unittest.skipUnless(os.environ.get("GOBLINS_TEST_HOST_DOCKER"),

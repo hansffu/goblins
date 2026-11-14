@@ -914,13 +914,15 @@ in
         allowedPackages = [ pkgs.coreutils ];
         env.GOBLINS_TEST_COMPOSER = "  ❯ ";
       };
-      # Host command notices (tests/test_operation_notices.py).
+      # An agent learning the outcome of its requests, host commands
+      # included (tests/test_operation_notices.py).
       host-notifier = mkClaudeGoblin {
         pkg = pkgs.writeScriptBin "claude" (
           "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_claude.py
         );
         allowedDomains = [ ];
-        allowedPackages = [ ];
+        # The tests read the fake's monitor lines with cat.
+        allowedPackages = [ pkgs.coreutils ];
         env.GOBLINS_TEST_COMPOSER = "  ❯ ";
         hostCommands.enable = true;
         rwDirs = [ "$HOME/shared" ];
@@ -1141,7 +1143,7 @@ in
         plain = member { env.PS1 = "nix-test> "; };
       };
     };
-  # Raid members with other configurations (tests/test_run_targets.py).
+  # A coordinator and the members it runs (tests/test_run_targets.py).
   run-target-goblins =
     let
       member =
@@ -1224,16 +1226,6 @@ in
         });
       };
     };
-  # A rebuild that removed every configuration but the coordinator.
-  run-target-goblins-updated = mkGoblins {
-    goblins.coordinator = mkGoblin (
-      base
-      // {
-        allowedRunTargets = [ ];
-        env.TARGET_MARKER = "updated";
-      }
-    );
-  };
   run-targets-manifest =
     let
       manifest = mkGoblins {

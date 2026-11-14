@@ -140,6 +140,31 @@ mod tests {
     }
 
     #[test]
+    fn the_daemon_refuses_requests_it_cannot_open_as_asked() {
+        use serde_json::json;
+        let open = |files: serde_json::Value| -> Open {
+            serde_json::from_value(json!({"files":files,"wait":false})).unwrap()
+        };
+        let many: Vec<_> = (0..33).map(|i| json!({"path":format!("/f{i}")})).collect();
+        for (files, error) in [
+            (json!([{"path":"/tmp/../etc/passwd"}]), "normalized"),
+            (json!([{"path":"relative"}]), "normalized"),
+            (json!([{"path":"/x","column":3}]), "column"),
+            (json!([{"path":"/x","line":0}]), "start at 1"),
+            (json!(many), "files"),
+            (json!([]), "files"),
+        ] {
+            let refused = open(files.clone()).validate().unwrap_err();
+            assert!(refused.contains(error), "{files}: {refused}");
+        }
+        assert!(
+            open(json!([{"path":"/x","line":3,"column":4}]))
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn arguments_positions_and_paths() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let (files, wait) = parse(&args(&["+3:4", "a.txt", "-n", "/tmp/b", "+9", "c"])).unwrap();

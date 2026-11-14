@@ -49,7 +49,7 @@ def serve(path):
         event('item/started', {'threadId': state['thread'], 'turnId': turn, 'item': item, 'startedAtMs': started})
         def work():
             outcome = 'completed'
-            if text in ('busy', 'long-busy'): time.sleep(2 if text == 'busy' else 8)
+            if text == 'busy': time.sleep(2)
             elif text in ('failed', 'interrupted'): outcome = text
             elif text == 'notifier-fail':
                 for path in Path('/proc').glob('[0-9]*/cmdline'):

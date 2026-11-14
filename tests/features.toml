@@ -53,7 +53,7 @@ paths = ["libs/runtime/src/terminal.rs", "libs/supervisor/src/screen.rs", "packa
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"
-python = ["test_scopes", "test_scope_process", "test_scope_cleanup", "test_cleanup", "test_network", "test_run_targets.RunTargetTests.test_member_shares_the_owners_scope"]
+python = ["test_scopes", "test_scope_process", "test_scope_cleanup", "test_cleanup", "test_network", "test_run_targets.CoordinatorWorkflow"]
 checks = ["rust"]
 paths = ["libs/supervisor/src/scope*.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/network.rs", "libs/supervisor/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
 
@@ -65,7 +65,7 @@ paths = ["libs/supervisor/src/docker.rs", "libs/supervisor/src/docker/*", "libs/
 
 [features.devshell]
 description = "Nix access, devshell launch/refresh/diff and flake execution"
-python = ["test_nix", "test_devshell", "test_run_targets.RunTargetTests.test_member_shares_the_owners_dev_shell_generation"]
+python = ["test_nix", "test_devshell", "test_run_targets.DevShellMemberWorkflow", "test_worktrees.DevShellWorktreeWorkflow"]
 checks = ["rust"]
 paths = ["libs/supervisor/src/devshell.rs", "libs/supervisor/src/evaluator.rs", "packages/sandbox-cli/src/preview.rs", "skills/goblins-devshell/*", "skills/goblins-nix/*", "skills/goblins-packages/*"]
 
@@ -82,33 +82,33 @@ checks = ["rust"]
 paths = ["libs/runtime/src/worktrees.rs", "libs/supervisor/src/worktrees.rs", "packages/sandbox-cli/src/worktree.rs", "skills/goblins-worktrees/*"]
 
 [features.messaging]
-description = "Mailboxes, activity and operation completion notices"
-python = ["test_mailbox", "test_activity", "test_operation_notices"]
+description = "Mailboxes, the communications log and operation completion notices"
+python = ["test_raids.CrewWorkflow", "test_raids.OwnerWorkflow", "test_raids.CrewCarriesOnWorkflow", "test_operation_notices"]
 checks = ["rust"]
 paths = ["packages/daemon/src/mailbox*", "packages/daemon/src/messaging.rs", "packages/daemon/src/operation.rs", "skills/goblins-messaging/*"]
 
 [features.history]
 description = "Persistence, recreation and CLI/native/Emacs resume"
-python = ["test_history", "test_recreate", "test_codex_native.NativeProtocol.test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails", "test_codex_native.NativeProtocol.test_a_terminal_resuming_the_conversation_draws_its_history", "test_codex_config.CodexConfigTests.test_recreate_loads_the_recorded_thread_with_the_goblins_policy", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
+python = ["test_history", "test_worktrees.WorktreeWorkflow", "test_codex_native.NativeProtocol.test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails", "test_codex_native.NativeProtocol.test_a_terminal_resuming_the_conversation_draws_its_history", "test_codex_config.CodexConfigTests.test_recreate_loads_the_recorded_thread_with_the_goblins_policy", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
 checks = ["rust"]
 paths = ["packages/daemon/src/history.rs", "packages/daemon/src/records.rs"]
 
 [features.codex]
 description = "Codex configuration, native adapter and operation notices"
-python = ["test_codex_native", "test_codex_config", "test_fake_codex", "test_operation_notices.CodexNotices"]
+python = ["test_codex_native", "test_codex_config", "test_fake_codex", "test_operation_notices.CodexNoticesWorkflow"]
 checks = ["rust"]
 paths = ["packages/adapter-codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix", "tests/fake_codex.py", "tests/codex_wire.py"]
 env = { GOBLINS_TEST_CODEX = "1" }
 
 [features.claude]
 description = "Claude configuration, hooks, mod and operation notices"
-python = ["test_claude_config", "test_claude_rpc", "test_operation_notices.ClaudeNotices"]
+python = ["test_claude_config", "test_claude_rpc", "test_operation_notices.ClaudeNoticesWorkflow"]
 checks = ["rust"]
 paths = ["packages/adapter-claude/*", "nix/goblins/claude/*", "nix/builders/mk-claude.nix", "tests/fake_claude.py"]
 
 [features.host-tools]
 description = "Host commands, editor requests and completion notices"
-python = ["test_host_commands", "test_editor", "test_operation_notices.HostCommandNotices"]
+python = ["test_host_commands", "test_editor", "test_operation_notices.ClaudeNoticesWorkflow"]
 checks = ["rust"]
 paths = ["packages/daemon/src/controller/host.rs", "packages/daemon/src/controller/editor.rs", "packages/sandbox-cli/src/host.rs", "skills/goblins-host/*"]
 

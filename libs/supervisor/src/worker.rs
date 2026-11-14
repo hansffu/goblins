@@ -150,8 +150,7 @@ impl Worker {
                             }
                         };
                         // As a host launch protects them.
-                        let mut protected: Vec<PathBuf> = history.into_iter().collect();
-                        protected.push(std::fs::canonicalize(state)?);
+                        let protected = protected_paths(history, &state)?;
                         let session = Session::member(
                             Member {
                                 handoff,
@@ -243,8 +242,9 @@ impl Worker {
                         }
                         // The scope registry takes the last entry, the daemon's
                         // state, as its realm.
-                        launch.protected_paths.extend(history);
-                        launch.protected_paths.push(std::fs::canonicalize(state)?);
+                        launch
+                            .protected_paths
+                            .extend(protected_paths(history, &state)?);
                         let mut session = Session::new_in(
                             launch,
                             workspace.as_deref(),
@@ -596,6 +596,16 @@ impl Worker {
 fn dev_shell_cwd(cwd: Option<std::path::PathBuf>) -> Result<std::path::PathBuf> {
     Ok(cwd.ok_or("a dev shell needs a host working directory containing the flake")?)
 }
+/// What no goblin may bind: the session history store and the daemon's
+/// state, which stays last (the scope registry takes it as its realm).
+fn protected_paths(
+    history: Option<std::path::PathBuf>,
+    state: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>> {
+    let mut protected: Vec<_> = history.into_iter().collect();
+    protected.push(std::fs::canonicalize(state)?);
+    Ok(protected)
+}
 /// Stage a recreated goblin's record before it starts: Docker, the recorded
 /// grants resolved against the current catalog, and its resume arguments.
 fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreated> {
@@ -743,6 +753,113 @@ mod output_tests {
                 _
             )))
         ));
+    }
+    #[test]
+    fn the_history_store_and_the_state_are_protected_from_binds() {
+        let root = std::fs::canonicalize(goblins_unix::temp_directory().unwrap()).unwrap();
+        let history = root.join("xdg-state/goblins/sessions");
+        let state = root.join("state");
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let protected = protected_paths(Some(history.clone()), &state).unwrap();
+        assert_eq!(protected, [history.clone(), state.clone()]);
+        // Neither they nor a directory holding them can be bound.
+        for source in [&history, &root.join("xdg-state"), &state] {
+            assert!(
+                crate::binds::validate(source, &protected).is_err(),
+                "{source:?}"
+            );
+        }
+        assert!(crate::binds::validate(&root.join("project"), &protected).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_resume_restores_what_still_exists_and_skips_the_rest() {
+        use goblins_runtime::worktrees::Worktree;
+        let root = std::fs::canonicalize(goblins_unix::temp_directory().unwrap()).unwrap();
+        let checkout = root.join("code/api");
+        let folder = root.join("trees/api");
+        let worktree = folder.join("fix");
+        let admin = checkout.join(".git/worktrees/fix");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", admin.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            admin.join("gitdir"),
+            format!("{}\n", worktree.join(".git").display()),
+        )
+        .unwrap();
+        let session = |cwd: &std::path::Path| {
+            let launch: crate::config::Launch = serde_json::from_value(serde_json::json!({"shell":"/unused", "posix_shell":"/unused", "helper":"/unused", "bwrap":"/unused", "flake":"unused", "client_package":"/unused"})).unwrap();
+            let mut session = Session::new(launch, None, Cancel::default()).unwrap();
+            session.launch.cwd = Some(cwd.to_path_buf());
+            session.launch.worktrees_directory = Some(root.join("trees"));
+            session.launch.resume_command = Some(vec!["--resume".into(), "{session_id}".into()]);
+            session
+        };
+        let recreate = |worktree: Option<&str>, docker: bool, session_id: Option<&str>| Recreate {
+            packages: vec![],
+            auto_approve: vec![],
+            docker,
+            variables: session_id
+                .map(|id| ("session_id".to_string(), id.to_string()))
+                .into_iter()
+                .collect(),
+            worktree: worktree.map(|name| Worktree {
+                name: name.into(),
+                path: folder.join(name),
+            }),
+        };
+        // The worktree it worked in still exists: it works there again, and
+        // the agent resumes its conversation.
+        let mut restored = session(&checkout);
+        let staged =
+            prepare_recreate(&mut restored, recreate(Some("fix"), false, Some("c819"))).unwrap();
+        assert!(staged.skipped.is_empty() && staged.fresh.is_none());
+        assert_eq!(restored.worktrees.worktree.as_deref(), Some("fix"));
+        assert_eq!(
+            restored.arguments,
+            Some(vec!["--resume".into(), "c819".into()])
+        );
+        // It worked in the main checkout: relaunched in the worktree it was
+        // first launched in, it does not work in that worktree again.
+        let mut main = session(&worktree);
+        prepare_recreate(&mut main, recreate(None, false, Some("c819"))).unwrap();
+        assert_eq!(main.worktrees.worktree, None);
+        assert_eq!(main.worktrees.checkout.as_deref(), Some(checkout.as_path()));
+        // What is gone is skipped with why: a removed worktree, Docker the
+        // configuration no longer offers, a conversation it cannot resume.
+        let mut gone = session(&checkout);
+        let staged = prepare_recreate(&mut gone, recreate(Some("removed"), true, None)).unwrap();
+        let skipped: Vec<_> = staged
+            .skipped
+            .iter()
+            .map(|s| (s.name.as_str(), s.reason.as_str()))
+            .collect();
+        assert_eq!(
+            skipped,
+            [
+                (
+                    "docker",
+                    "the configuration runs without a scope, so without Docker"
+                ),
+                (
+                    "worktree",
+                    format!("removed no longer exists in {}", folder.display()).as_str()
+                ),
+            ]
+        );
+        assert_eq!(gone.worktrees.worktree, None);
+        assert_eq!(
+            staged.fresh.as_deref(),
+            Some("variable 'session_id' is not recorded")
+        );
+        assert_eq!(gone.arguments, None);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn a_dev_shell_launch_needs_a_host_working_directory() {

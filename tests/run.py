@@ -27,9 +27,10 @@ EXCLUSIVE_MODULES = {
 }
 EXCLUSIVE_CLASSES = {
     "test_devshell.DevShellDockerWorkflow", "test_host_commands.HostDockerAcceptance",
-    "test_run_targets.RunTargetTests", "test_run_targets.RunTargetDockerTests",
+    "test_run_targets.CoordinatorWorkflow", "test_run_targets.DevShellMemberWorkflow",
+    "test_run_targets.RunTargetDockerTests",
 }
-CLASS_GROUPED_MODULES = {"test_devshell", "test_run_targets"}
+CLASS_GROUPED_MODULES = {"test_devshell", "test_run_targets", "test_raids", "test_history", "test_operation_notices"}
 
 
 def exclusive(group):

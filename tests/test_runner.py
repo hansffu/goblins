@@ -154,7 +154,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_exclusive_classes_of_a_class_grouped_module_run_alone(self):
         names = [f"probe_{i}" for i in range(3)]
-        # Three ordinary groups and the pooled raid-member class must all be
+        # Three ordinary groups and the pooled refresh class must all be
         # running at once; the exclusive class of the same module only after.
         for name in names:
             self.module(name, f"(root/'started_{name}').touch()\n"
@@ -162,21 +162,21 @@ class RunnerTests(unittest.TestCase):
                         "while len(list(root.glob('started_*'))) < 4 and time.monotonic()<deadline: time.sleep(.01)\n"
                         "self.assertEqual(len(list(root.glob('started_*'))),4)\n"
                         f"(root/'finished_{name}').touch()")
-        (self.directory / "test_run_targets.py").write_text(
+        (self.directory / "test_devshell.py").write_text(
             "import os,time,unittest\nfrom pathlib import Path\n"
             "root=Path(os.environ['PROBE_DIRECTORY'])\n"
-            "class RaidMemberTests(unittest.TestCase):\n    def test_probe(self):\n"
-            "        (root/'started_raid').touch()\n"
+            "class DevShellRefreshWorkflow(unittest.TestCase):\n    def test_probe(self):\n"
+            "        (root/'started_refresh').touch()\n"
             "        deadline=time.monotonic()+10\n"
             "        while len(list(root.glob('started_*'))) < 4 and time.monotonic()<deadline: time.sleep(.01)\n"
             "        self.assertEqual(len(list(root.glob('started_*'))),4)\n"
-            "        (root/'finished_raid').touch()\n"
-            "class RunTargetTests(unittest.TestCase):\n    def test_probe(self):\n"
+            "        (root/'finished_refresh').touch()\n"
+            "class DevShellDockerWorkflow(unittest.TestCase):\n    def test_probe(self):\n"
             "        self.assertEqual(len(list(root.glob('finished_*'))),4)\n")
-        result = self.run_runner("--jobs", "4", "test_run_targets", *names)
+        result = self.run_runner("--jobs", "4", "test_devshell", *names)
         self.assertIn("Ran 5 tests", result.stdout)
-        self.assertIn("[PASS] test_run_targets.RaidMemberTests", result.stdout)
-        self.assertIn("[PASS] test_run_targets.RunTargetTests", result.stdout)
+        self.assertIn("[PASS] test_devshell.DevShellRefreshWorkflow", result.stdout)
+        self.assertIn("[PASS] test_devshell.DevShellDockerWorkflow", result.stdout)
 
     def test_cleanup_releases_only_fixture_cache_and_keeps_lock_inode(self):
         for name in ("roots", "apps", "last-run"):

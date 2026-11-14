@@ -27,6 +27,7 @@ SESSION = sys.argv[sys.argv.index("--resume") + 1] if RESUMED else str(uuid.uuid
 TRANSCRIPT = Path("/tmp/fake-claude-transcript.jsonl")
 # Every monitor line, for the tests to read back.
 WAKES = Path("/tmp/fake-claude-wakes")
+RELEASE = Path("/tmp/fake-claude-release")
 TRANSCRIPT.write_text(json.dumps({"type": "ai-title", "aiTitle": "Resumed task" if RESUMED else "Fake task",
                                   "sessionId": SESSION}) + "\n")
 
@@ -92,8 +93,11 @@ try:
         sys.stdout.flush()
         if submitted == "busy":
             time.sleep(2)
-        elif submitted == "long-busy":
-            time.sleep(8)
+        elif submitted == "hold":
+            # Busy until the test releases the turn.
+            while not RELEASE.exists():
+                time.sleep(0.05)
+            RELEASE.unlink()
         elif submitted == "notifier-fail":
             for path in Path("/proc").glob("[0-9]*/cmdline"):
                 try:

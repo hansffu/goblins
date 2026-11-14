@@ -1,4 +1,4 @@
-"""Git worktree support through real daemons and sandboxes: folders, mounts, the goblin worktree command, members, dev shells and resume."""
+"""Working on a branch in a Git worktree, as a goblin does: its folder, the goblin worktree command, helpers, a launch in a worktree, resume, and dev shells."""
 import json
 import os
 from pathlib import Path
@@ -9,11 +9,11 @@ import uuid
 
 from build_support import fixture_app
 from daemon_support import Daemon, RPC
-from support import command, lock_flake, pinned_nixpkgs
+from support import command, lock_flake, pinned_nixpkgs, step
 from test_devshell import TEMPLATE
 
 
-class WorktreeTests(unittest.TestCase):
+class WorktreeWorkflow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = fixture_app("worktree-goblins")
@@ -69,255 +69,127 @@ class WorktreeTests(unittest.TestCase):
         return self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None),
                            timeout=60)
 
-    def manifest(self, name, **worktrees):
-        """The fixture manifest with other worktree settings."""
-        config = json.loads(Path(self.d.manifest).read_text())
-        config["worktrees"] = worktrees
-        path = Path(self.d.temp.name) / f"{name}.json"
-        path.write_text(json.dumps(config))
-        return path
-
     def link(self, checkout, name):
         """A worktree of `checkout` in the folder, made by Git on the host."""
         path = self.worktrees / checkout.name / name
         self.git(checkout, "worktree", "add", "-q", "-b", name, str(path))
         return path
 
-    def test_a_launch_at_a_checkouts_root_gets_its_folder(self):
+    def resume(self, session):
+        """Stop a goblin and resume it from its record, as `goblins resume` does."""
+        recorded = self.d.wait(lambda: self.d.record(session))
+        self.d.rpc.call("sessions.stop", {"session": session})
+        self.d.wait_record_released(recorded["id"])
+        launch = json.loads(self.d.cli("resume", "--detached", session).stdout)
+        resumed = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None),
+                              timeout=60)
+        self.assertEqual(resumed["state"], "running", resumed)
+        return resumed
+
+    def test_work_on_a_branch_in_a_worktree(self):
         checkout = self.repository()
-        record = self.launch(checkout)
         folder = self.worktrees / "api"
-        self.assertTrue(folder.is_dir())
-        self.assertIsNone(record["worktree"])
-        self.assertEqual(record["checkout"], str(checkout))
-        self.assertFalse(record.get("detail"))
-        code, out, err = self.run_in(record["id"], 'echo "$GOBLINS_WORKTREES"; echo "$GOBLINS_CHECKOUT"; touch "$GOBLINS_WORKTREES/made"')
-        self.assertEqual((code, out.split("\n")), (0, [str(folder), str(checkout)]), err)
-        self.assertTrue((folder / "made").exists(), "the folder is writable and shared with the host")
-        self.assertEqual(self.d.rpc.call("server.status", {})["worktrees_directory"], str(self.worktrees))
 
-    def test_nothing_changes_below_the_root_or_without_worktrees(self):
-        checkout = self.repository()
-        (checkout / "src").mkdir()
-        off = self.manifest("off")
-        for cwd, name, manifest in ((checkout / "src", "shell", None), (checkout, "plain", None), (checkout, "shell", off)):
-            record = self.launch(cwd, name, manifest)
-            code, out, err = self.run_in(record["id"], 'echo "[${GOBLINS_WORKTREES-unset}${GOBLINS_CHECKOUT-unset}]"')
-            self.assertEqual((code, out), (0, "[unsetunset]"), err)
-            self.assertIsNone(record["checkout"])
+        with step("a goblin launched at a checkout's root gets its worktree folder"):
+            record = self.launch(checkout)
+            owner = record["id"]
+            self.assertTrue(folder.is_dir())
+            self.assertEqual((record["worktree"], record["checkout"]), (None, str(checkout)))
             self.assertFalse(record.get("detail"))
-        self.assertFalse(self.worktrees.exists())
-        code, out, err = self.run_in(record["id"], "goblin worktree fix")
-        self.assertNotEqual(code, 0)
-        self.assertIn("no worktree folder", err)
+            code, out, err = self.run_in(owner, 'echo "$GOBLINS_WORKTREES"; echo "$GOBLINS_CHECKOUT"; '
+                                                'touch "$GOBLINS_WORKTREES/made"')
+            self.assertEqual((code, out.split("\n")), (0, [str(folder), str(checkout)]), err)
+            self.assertTrue((folder / "made").exists(), "the folder is writable and shared with the host")
+            self.assertEqual(self.d.rpc.call("server.status", {})["worktrees_directory"], str(self.worktrees))
 
-    def test_a_launch_in_a_worktree_gets_the_checkout_and_the_folder(self):
-        checkout = self.repository()
-        worktree = self.link(checkout, "fix")
-        (worktree / "src").mkdir()
-        for cwd in (worktree, worktree / "src"):
-            record = self.launch(cwd)
+        with step("goblin worktree makes a branch the goblin works and commits in"):
+            code, out, err = self.run_in(owner, "goblin worktree fix")
+            self.assertEqual((code, out), (0, str(folder / "fix")), err)
+            self.assertIn("fix", self.git(checkout, "branch", "--list", "fix"), "the branch is visible on the host")
+            self.assertEqual(self.d.get(owner)["worktree"], {"name": "fix", "path": str(folder / "fix")})
+            self.assertEqual(self.sandbox(owner, "sessions.status", {})["worktree"]["name"], "fix")
+            code, out, err = self.run_in(owner, f'cd "{folder / "fix"}" && echo x > f && git add f && '
+                                                'git -c user.name=t -c user.email=t@example.com commit -qm x')
+            self.assertEqual(code, 0, err)
+            self.assertIn(" x", self.git(folder / "fix", "log", "--oneline"))
+
+        with step("again nothing is made; an existing branch is checked out, a new one starts at --base"):
+            self.assertEqual(self.run_in(owner, "goblin worktree fix")[:2], (0, str(folder / "fix")))
+            self.git(checkout, "branch", "old")
+            self.assertEqual(self.run_in(owner, "goblin worktree old")[:2], (0, str(folder / "old")))
+            code, out, err = self.run_in(owner, "goblin worktree two --base main")
+            self.assertEqual((code, out), (0, str(folder / "two")), err)
+            self.assertEqual(self.git(folder / "two", "log", "--oneline").count("\n"), 0,
+                             "two starts at main, without fix's commit")
+            self.assertEqual(self.d.get(owner)["worktree"]["name"], "two")
+            self.git(checkout, "worktree", "remove", str(folder / "two"))
+
+        with step("--main goes back to the main checkout, and the record follows"):
+            code, out, err = self.run_in(owner, "goblin worktree --main")
+            self.assertEqual((code, out), (0, str(checkout)), err)
+            self.assertIsNone(self.d.get(owner)["worktree"])
+            record = self.d.wait(lambda: (r if (r := self.d.record(owner)) and r.get("version") == 3 else None))
+            self.assertIsNone(record["worktree"])
+
+        with step("a helper inherits the folder, or starts in a worktree by name"):
+            inherited = self.member(owner)
+            self.assertEqual(inherited["state"], "running", inherited)
+            self.assertEqual(self.run_in(inherited["id"], 'echo "$GOBLINS_WORKTREES"')[1], str(folder))
+            member = self.member(owner, worktree="fix")
+            self.assertEqual(member["state"], "running", member)
+            self.assertEqual((member["cwd"], member["worktree"]),
+                             (str(folder / "fix"), {"name": "fix", "path": str(folder / "fix")}))
+            code, out, err = self.run_in(
+                member["id"], f'pwd; echo "$GOBLINS_WORKTREES"; git -C "{folder / "fix"}" status --short --branch')
+            self.assertEqual((code, out.split("\n")), (0, [str(folder / "fix"), str(folder), "## fix"]), err)
+            refused = self.member(owner, name="plain", worktree="fix")
+            self.assertEqual(refused["state"], "failed")
+            self.assertIn("worktrees are not enabled", refused["detail"])
+
+        with step("a goblin launched inside a worktree gets the checkout and the folder"):
+            worktree = self.link(checkout, "hostfix")
+            (worktree / "src").mkdir()
+            record = self.launch(worktree / "src")
             self.assertFalse(record.get("detail"), record)
-            self.assertEqual(record["worktree"], {"name": "fix", "path": str(worktree)})
-            self.assertEqual(record["checkout"], str(checkout))
+            self.assertEqual((record["worktree"], record["checkout"]),
+                             ({"name": "hostfix", "path": str(worktree)}, str(checkout)))
             code, out, err = self.run_in(
                 record["id"], f'pwd; cat "{checkout}/file"; echo "$GOBLINS_WORKTREES"; echo "$GOBLINS_CHECKOUT"; '
                               f'git -C "{worktree}" status --short --branch')
             self.assertEqual((code, out.split("\n")),
-                             (0, [str(cwd), "main", str(self.worktrees / "api"), str(checkout), "## fix"]), err)
-            # Back to the main checkout, which the command prints, from a launch in a worktree.
+                             (0, [str(worktree / "src"), "main", str(folder), str(checkout), "## hostfix"]), err)
             code, out, err = self.run_in(record["id"], "goblin worktree --main")
             self.assertEqual((code, out), (0, str(checkout)), err)
-            self.assertIsNone(self.d.get(record["id"])["worktree"])
-            self.assertEqual(self.d.get(record["id"])["checkout"], str(checkout))
+            self.assertEqual((self.d.get(record["id"])["worktree"], self.d.get(record["id"])["checkout"]),
+                             (None, str(checkout)))
 
-    def test_a_forged_git_file_is_refused(self):
-        checkout = self.repository()
-        worktree = self.link(checkout, "fix")
-        secret = self.repository("secret")
-        # Pointing the worktree at another repository fails the back-pointer check.
-        (secret / ".git/worktrees/x").mkdir(parents=True)
-        (secret / ".git/worktrees/x/gitdir").write_text("/nowhere/.git\n")
-        (worktree / ".git").write_text(f"gitdir: {secret}/.git/worktrees/x\n")
-        record = self.launch(worktree)
-        self.assertIn("does not point back", record["detail"])
-        self.assertIsNone(record["worktree"])
-        code, out, _ = self.run_in(record["id"], f'echo "[${{GOBLINS_WORKTREES-unset}}]"; test -e "{secret}/file"; echo $?')
-        self.assertEqual(out.split("\n"), ["[unset]", "1"], "the other repository is not mounted")
+        with step("a resumed goblin works in its worktree again"):
+            self.assertEqual(self.run_in(owner, "goblin worktree fix")[0], 0)
+            self.d.wait(lambda: (r := self.d.record(owner)) and r.get("worktree"))
+            resumed = self.resume(owner)
+            self.assertEqual((resumed["worktree"], resumed["skipped"]),
+                             ({"name": "fix", "path": str(folder / "fix")}, []))
 
-    def test_overlapping_layouts_and_protected_paths_are_refused(self):
-        checkout = self.repository()
-        # A directory inside the checkout, and a folder that is the checkout itself.
-        for name, directory in (("inside", checkout / "trees"), ("same", checkout.parent)):
-            record = self.launch(checkout, manifest=self.manifest(name, directory=str(directory)))
-            self.assertIn("must not contain each other", record["detail"], name)
-            code, out, _ = self.run_in(record["id"], 'echo "[${GOBLINS_WORKTREES-unset}]"')
-            self.assertEqual(out, "[unset]")
-        # The daemon's own state is protected like any mount.
-        record = self.launch(checkout, manifest=self.manifest("state", directory=str(self.d.state / "trees")))
-        self.assertTrue(record["detail"], record)
-        code, out, _ = self.run_in(record["id"], 'echo "[${GOBLINS_WORKTREES-unset}]"')
-        self.assertEqual(out, "[unset]")
-
-    def test_the_command_creates_enters_and_leaves_a_worktree(self):
-        checkout = self.repository()
-        owner = self.launch(checkout)["id"]
-        folder = self.worktrees / "api"
-        code, out, err = self.run_in(owner, "goblin worktree fix")
-        self.assertEqual((code, out), (0, str(folder / "fix")), err)
-        self.assertIn("fix", self.git(checkout, "branch", "--list", "fix"), "the branch is visible on the host")
-        self.assertEqual(self.d.get(owner)["worktree"], {"name": "fix", "path": str(folder / "fix")})
-        self.assertEqual(self.sandbox(owner, "sessions.status", {})["worktree"]["name"], "fix")
-        # A worktree the goblin can commit in, from its sandbox.
-        code, out, err = self.run_in(owner, f'cd "{folder / "fix"}" && echo x > f && git add f && '
-                                            'git -c user.name=t -c user.email=t@example.com commit -qm x && git log --oneline')
-        self.assertEqual(code, 0, err)
-        self.assertIn(" x", self.git(folder / "fix", "log", "--oneline"))
-        # Again: nothing is created. An existing branch is checked out; a new one starts at --base.
-        self.assertEqual(self.run_in(owner, "goblin worktree fix")[:2], (0, str(folder / "fix")))
-        self.git(checkout, "branch", "old")
-        self.assertEqual(self.run_in(owner, "goblin worktree old")[:2], (0, str(folder / "old")))
-        code, out, err = self.run_in(owner, "goblin worktree two --base main")
-        self.assertEqual((code, out), (0, str(folder / "two")), err)
-        self.assertEqual(self.git(folder / "two", "log", "--oneline").count("\n"), 0, "two starts at main, without fix's commit")
-        self.assertEqual(self.d.get(owner)["worktree"]["name"], "two")
-        # --main clears it and prints the main checkout, and the record follows.
-        code, out, err = self.run_in(owner, "goblin worktree --main")
-        self.assertEqual((code, out), (0, str(checkout)), err)
-        self.assertIsNone(self.d.get(owner)["worktree"])
-        record = self.d.wait(lambda: (r if (r := self.d.record(owner)) and r.get("version") == 3 else None))
-        self.assertIsNone(record["worktree"])
-        # Bad names and a base for an existing branch are refused; Git does the removal.
-        for bad in ("a/b", "../x", ".git", "-x"):
-            self.assertNotEqual(self.run_in(owner, f"goblin worktree -- {bad}")[0], 0, bad)
-        self.assertEqual(self.run_in(owner, "goblin worktree fix --base main")[0], 0, "an existing worktree needs no base")
-        self.git(checkout, "branch", "third")
-        code, _, err = self.run_in(owner, "goblin worktree third --base main")
-        self.assertNotEqual(code, 0)
-        self.assertIn("--base only applies to a new branch", err)
-        self.git(checkout, "worktree", "remove", str(folder / "two"))
-        self.assertFalse((folder / "two").exists())
-
-    def test_the_daemon_checks_the_name_against_the_callers_folder(self):
-        checkout = self.repository()
-        owner = self.launch(checkout)["id"]
-        plain = self.launch(self.repository("plain-repo"), "plain")["id"]
-        folder = self.worktrees / "api"
-        self.link(checkout, "fix")
-        (folder / "dir").mkdir()
-        (folder / "link").symlink_to(folder / "fix")
-        for bad in ("dir", "link", "missing"):
-            with self.assertRaises(ValueError, msg=bad):
-                self.sandbox(owner, "sessions.set-worktree", {"name": bad})
-        with self.assertRaises(ValueError):
-            self.sandbox(owner, "sessions.set-worktree", {"name": "../api"})
-        self.assertEqual(self.sandbox(owner, "sessions.set-worktree", {"name": "fix"})["worktree"]["name"], "fix")
-        self.assertIsNone(self.sandbox(owner, "sessions.set-worktree", {"name": None})["worktree"])
-        with self.assertRaises(ValueError):
-            self.sandbox(plain, "sessions.set-worktree", {"name": "fix"})
-
-    def test_a_member_starts_in_a_worktree_of_the_owners_folder(self):
-        checkout = self.repository()
-        owner = self.launch(checkout)["id"]
-        folder = self.worktrees / "api"
-        # Without --worktree a member inherits the owner's directory and gets the folder too.
-        inherited = self.member(owner)
-        self.assertEqual(inherited["state"], "running", inherited)
-        self.assertEqual(self.run_in(inherited["id"], 'echo "$GOBLINS_WORKTREES"')[1], str(folder))
-        self.link(checkout, "fix")
-        member = self.member(owner, worktree="fix")
-        self.assertEqual(member["state"], "running", member)
-        self.assertEqual(member["cwd"], str(folder / "fix"))
-        self.assertEqual(member["worktree"], {"name": "fix", "path": str(folder / "fix")})
-        code, out, err = self.run_in(
-            member["id"], f'pwd; echo "$GOBLINS_WORKTREES"; git -C "{folder / "fix"}" status --short --branch')
-        self.assertEqual((code, out.split("\n")), (0, [str(folder / "fix"), str(folder), "## fix"]), err)
-        # Refused: escapes, a name that is not a worktree, and a configuration without worktrees.
-        for bad in ("../api", "a/b", ".git"):
-            with self.assertRaises(ValueError, msg=bad):
-                self.member(owner, worktree=bad)
-        (folder / "plain-dir").mkdir()
-        for name in ("missing", "plain-dir"):
-            failed = self.member(owner, worktree=name)
-            self.assertEqual(failed["state"], "failed", name)
-            self.assertIn("is not a worktree", failed["detail"])
-        # A symlink in the folder to a real worktree of another repository is not one of this folder.
-        elsewhere = self.link(self.repository("other"), "fix")
-        (folder / "swap").symlink_to(elsewhere)
-        swapped = self.member(owner, worktree="swap")
-        self.assertEqual(swapped["state"], "failed", swapped)
-        self.assertIn("is not a worktree", swapped["detail"])
-        refused = self.member(owner, name="plain", worktree="fix")
-        self.assertEqual(refused["state"], "failed")
-        self.assertIn("worktrees are not enabled", refused["detail"])
-        # An owner without a folder cannot ask for one.
-        bare = self.launch(self.repository("bare"), "plain")["id"]
-        with self.assertRaises(ValueError):
-            self.member(bare, worktree="fix")
-
-    def resume(self, change=None):
-        checkout = self.repository()
-        first = self.launch(checkout)["id"]
-        folder = self.worktrees / "api"
-        self.assertEqual(self.run_in(first, "goblin worktree fix")[0], 0)
-        recorded = self.d.wait(lambda: (r if (r := self.d.record(first)) and r.get("worktree") else None))
-        self.assertEqual(recorded["worktree"], {"name": "fix", "path": str(folder / "fix")})
-        self.assertEqual(recorded["version"], 3)
-        self.d.rpc.call("sessions.stop", {"session": first})
-        self.d.wait_record_released(recorded["id"])
-        if change == "removed":
+        with step("resumed after its worktree was removed, it works in the main checkout and says why"):
+            for session in (member["id"], inherited["id"]):
+                self.d.rpc.call("sessions.stop", {"session": session})
+            self.d.wait(lambda: all(self.d.get(s)["state"] == "stopped" for s in (member["id"], inherited["id"])))
             self.git(checkout, "worktree", "remove", str(folder / "fix"))
-        launch = self.d.rpc.call("sessions.start", {
-            "key": uuid.uuid4().hex, "configuration": str(self.d.manifest), "recreate": recorded["id"],
-            "rows": 24, "cols": 100, "detached": True})
-        resumed = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None),
-                              timeout=60)
-        self.assertEqual(resumed["state"], "running", resumed)
-        return resumed, folder
-
-    def test_resume_restores_a_worktree_that_still_exists(self):
-        resumed, folder = self.resume()
-        self.assertEqual(resumed["worktree"], {"name": "fix", "path": str(folder / "fix")})
-        self.assertEqual(resumed["skipped"], [])
-
-    def test_resume_keeps_a_worktree_launch_in_the_main_checkout(self):
-        checkout = self.repository()
-        worktree = self.link(checkout, "fix")
-        first = self.launch(worktree)["id"]
-        self.assertEqual(self.run_in(first, "goblin worktree --main")[0], 0)
-        recorded = self.d.wait(lambda: (r if (r := self.d.record(first)) and r.get("version") == 3
-                                        and r.get("worktree") is None else None))
-        self.d.rpc.call("sessions.stop", {"session": first})
-        self.d.wait_record_released(recorded["id"])
-        launch = self.d.rpc.call("sessions.start", {
-            "key": uuid.uuid4().hex, "configuration": str(self.d.manifest), "recreate": recorded["id"],
-            "rows": 24, "cols": 100, "detached": True})
-        resumed = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None),
-                              timeout=60)
-        self.assertEqual(resumed["state"], "running", resumed)
-        # Relaunched in the worktree, it still works in the main checkout.
-        self.assertEqual(resumed["cwd"], str(worktree))
-        self.assertIsNone(resumed["worktree"])
-        self.assertEqual(resumed["checkout"], str(checkout))
-        self.assertEqual(resumed["skipped"], [])
-
-    def test_resume_skips_a_worktree_that_was_removed(self):
-        resumed, folder = self.resume("removed")
-        self.assertIsNone(resumed["worktree"])
-        self.assertEqual([s["name"] for s in resumed["skipped"]], ["worktree"], resumed)
-        self.assertIn("no longer exists", resumed["skipped"][0]["reason"])
-        # The record follows what the goblin works in now.
-        record = self.d.wait(lambda: (r if (r := self.d.record(resumed["id"])) else None))
-        self.assertIsNone(record["worktree"])
+            again = self.resume(resumed["id"])
+            self.assertIsNone(again["worktree"])
+            self.assertEqual([s["name"] for s in again["skipped"]], ["worktree"], again)
+            self.assertIn("no longer exists", again["skipped"][0]["reason"])
+            # The record follows what the goblin works in now.
+            record = self.d.wait(lambda: (r if (r := self.d.record(again["id"])) and again["id"] in r["sessions"]
+                                          else None))
+            self.assertIsNone(record["worktree"])
 
 
-class DevShellWorktreeTests(WorktreeTests):
+class DevShellWorktreeWorkflow(WorktreeWorkflow):
     """A dev shell whose flake is in a worktree."""
 
-    # The inherited cases ran in the class above.
-    for name in [n for n in dir(WorktreeTests) if n.startswith("test_")]:
-        locals()[name] = None
-    del name
+    # The inherited workflow ran in the class above.
+    test_work_on_a_branch_in_a_worktree = None
 
     def flake(self, directory, marker):
         (directory / "flake.nix").write_text(
