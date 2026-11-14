@@ -106,7 +106,7 @@ Session startup roots the initial closure listing once and uses its registered N
 
 After all tests and standalone test daemons stop, =just test-cache-clean= releases retained fixture roots and removes launchers/logs. It leaves the runner lock in place and does not delete store data. =GOBLINS_TEST_CACHE= selects a different cache directory. =just test-roots-clean= asks Nix to enumerate roots, which also prunes dangling automatic-root links across the store; live roots and store outputs remain. Reclaim unreferenced store data separately through your normal Nix GC policy.
 
-The development shell includes pyte for fullscreen terminal regression tests. Tests need host Nix, Unix sockets and ordinary-user namespace access. Use one runner per checkout/cache so its scheduler controls concurrency. The Codex configuration tests require =GOBLINS_TEST_CODEX=1=; the native protocol tests use a local mock provider whenever =codex= is installed. The Emacs checks are described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests in [[file:USAGE.org::*Docker in a scope][USAGE.org]].
+The development shell includes pyte for fullscreen terminal regression tests. Tests need host Nix, Unix sockets and ordinary-user namespace access. Use one runner per checkout/cache so its scheduler controls concurrency. The default suite runs fake Codex workflows; =just test-feature real-agents= opts into the real Codex App Server and native terminal tests with synthetic credentials and a local mock provider. The Emacs checks are described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests in [[file:USAGE.org::*Docker in a scope][USAGE.org]].
 
 * Repository layout
 

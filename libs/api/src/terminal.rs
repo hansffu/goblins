@@ -199,21 +199,27 @@ pub fn relay_with<C>(
         if !to_terminal.is_empty()
             && fds[2].revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP) != 0
         {
-            let n =
-                unsafe { libc::write(1, to_terminal.as_ptr().cast(), to_terminal.len().min(1024)) };
-            if n > 0 {
-                to_terminal.drain(..n as usize);
-            } else if n == 0
-                || !matches!(
-                    io::Error::last_os_error().kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                )
-            {
-                return Err("terminal output incomplete".into());
-            }
+            write_output(1, &mut to_terminal)?;
         }
     }
     outcome(&mut context)
+}
+
+// A nonblocking writer may make partial progress; an output failure must
+// never become a successful terminal completion.
+fn write_output(fd: RawFd, pending: &mut Vec<u8>) -> Result<()> {
+    let n = unsafe { libc::write(fd, pending.as_ptr().cast(), pending.len().min(1024)) };
+    if n > 0 {
+        pending.drain(..n as usize);
+    } else if n == 0
+        || !matches!(
+            io::Error::last_os_error().kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        )
+    {
+        return Err("terminal output incomplete".into());
+    }
+    Ok(())
 }
 
 // Shared completion phase, kept separate from process-global terminal mode.
@@ -267,6 +273,31 @@ fn wait_outcome(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn a_failed_output_writer_is_not_a_successful_terminal_completion() {
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let mut pending = b"final output".to_vec();
+        assert_eq!(
+            write_output(full.as_raw_fd(), &mut pending)
+                .unwrap_err()
+                .to_string(),
+            "terminal output incomplete"
+        );
+        assert_eq!(pending, b"final output");
+        let sink = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        let mut pending = vec![b'x'; 2048];
+        write_output(sink.as_raw_fd(), &mut pending).unwrap();
+        assert_eq!(pending.len(), 1024);
+        write_output(sink.as_raw_fd(), &mut pending).unwrap();
+        assert!(pending.is_empty());
+    }
+
     fn completion_record(outcome: Value) -> Value {
         let mut record = serde_json::from_str::<Value>(include_str!("../tests/fixtures.json"))
             .unwrap()["host_session"]

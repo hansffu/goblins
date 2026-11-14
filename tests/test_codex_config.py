@@ -49,8 +49,11 @@ HTTPServer(('127.0.0.1', int(sys.argv[1])), Provider).serve_forever()
 """
 
 
-# These run the real Codex, whose prompts change between versions.
-@unittest.skipUnless(os.environ.get("GOBLINS_TEST_CODEX"), "set GOBLINS_TEST_CODEX=1 to test Codex")
+# The native configuration uses real Codex; setup and inbox use fakes.
+real_codex = unittest.skipUnless(os.environ.get("GOBLINS_TEST_CODEX") == "1",
+                                "opt in with just test-feature real-agents")
+
+
 class CodexConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -143,6 +146,7 @@ class CodexConfigTests(unittest.TestCase):
         )
         terminal.expect(r"(?:^|\n)NIX_SKILLS=0\n")
 
+    @real_codex
     def test_custom_directory_and_codex_on_path(self):
         custom = self.home / "custom codex"
         custom.mkdir()
@@ -162,6 +166,7 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual(self.local(native, "status")["thread_id"], thread)
         self.assertEqual((self.codex / "config.toml").read_bytes(), config)
 
+    @real_codex
     def test_codex_exec_on_path_runs_its_own_engine_with_the_goblins_policy(self):
         import subprocess
         native = self.d.start("native", agent_name="native")["session"]
@@ -197,6 +202,7 @@ class CodexConfigTests(unittest.TestCase):
             record = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] == "failed" else None))
             self.assertTrue(record["detail"])
 
+    @real_codex
     def test_plugin_mcp_filter_keeps_valid_transports(self):
         plugin = self.codex / "plugins/cache/test/fixture/local"
         (plugin / ".codex-plugin").mkdir(parents=True)
@@ -394,6 +400,7 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual(refused["exit_code"], 2)
         self.assertIn("--sandbox is not a Codex server option", Path(refused["server_log"]).read_text())
 
+    @real_codex
     def test_native_terminal_attaches_quits_to_detach_and_reattaches(self):
         # Trust only this test workspace in the synthetic native configuration.
         (self.codex / "config.toml").write_text(

@@ -46,8 +46,10 @@ fn execute(cli: Cli) -> Result<i32> {
     let root = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| format!("/run/user/{uid}").into());
-    let completion_default_allowed =
-        cli.state_dir.is_some() || std::env::var_os("GOBLINS_HOST_JOB").is_none();
+    let completion_default_allowed = completion_default_allowed(
+        cli.state_dir.is_some(),
+        std::env::var_os("GOBLINS_HOST_JOB").is_some(),
+    );
     if let Some(refusal) = host_job_refusal(
         cli.state_dir.is_some(),
         std::env::var_os("GOBLINS_HOST_JOB").is_some(),
@@ -530,6 +532,10 @@ fn print_event(event: &serde_json::Value, json: bool) -> Result<()> {
 /// A host command (`goblin host run`) works for a goblin of the default
 /// server. Tests it runs must name their own server, never reach or stop
 /// that one by accident: everything but local help needs `--state-dir`.
+fn completion_default_allowed(explicit_state: bool, host_job: bool) -> bool {
+    explicit_state || !host_job
+}
+
 fn host_job_refusal(state_dir: bool, host_job: bool, command: &Command) -> Option<&'static str> {
     (!state_dir
         && host_job
@@ -566,6 +572,43 @@ mod tests {
         for local in [&["configurations"][..], &["completions", "bash"]] {
             assert!(super::host_job_refusal(false, true, &command(local)).is_none());
         }
+    }
+
+    #[test]
+    fn host_job_completions_query_only_explicit_servers() {
+        use crate::cli::complete_names;
+        use std::os::{fd::AsRawFd, unix::net::UnixListener};
+        let _no_forks = goblins_unix::no_forks();
+        let root = goblins_unix::temp_directory().unwrap();
+        let sentinel = UnixListener::bind(root.join("host.sock")).unwrap();
+        for (explicit, job, allowed) in [
+            (false, true, false),
+            (true, true, true),
+            (false, false, true),
+            (true, false, true),
+        ] {
+            assert_eq!(super::completion_default_allowed(explicit, job), allowed);
+        }
+        let words = |args: &[&str]| args.iter().map(|s| s.to_string()).collect();
+        let default = super::completion_default_allowed(false, true).then_some(root.as_path());
+        assert_eq!(complete_names(default, words(&["goblins", "attach"])), 0);
+        assert!(!goblins_unix::readable(sentinel.as_raw_fd(), 0).unwrap());
+        for position in 0..3 {
+            let daemon = Daemon::start(&[], json!([]));
+            let state = daemon.state.to_str().unwrap();
+            let joined = format!("--state-dir={state}");
+            let (default, args) = match position {
+                0 => (None, words(&["goblins", "--state-dir", state, "attach"])),
+                1 => (None, words(&["goblins", "attach", &joined])),
+                _ => (Some(daemon.state.as_path()), words(&["goblins", "attach"])),
+            };
+            assert_eq!(complete_names(default, args), 0);
+            let call = daemon.call();
+            assert_eq!(call["method"], "sessions.list");
+            assert_eq!(call["params"], json!({}));
+        }
+        drop(sentinel);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

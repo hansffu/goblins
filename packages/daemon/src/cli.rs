@@ -970,6 +970,7 @@ mod tests {
             vec!["goblins", "daemon"],
             vec!["goblins", "serve"],
             vec!["goblins", "list", "--name", "snikk"],
+            vec!["goblins", "run", "shell", "--name"],
             vec!["goblins", "server", "status", "--workspace", "/tmp"],
             vec!["goblins", "run", "shell", "--name", "a", "--name", "b"],
         ] {

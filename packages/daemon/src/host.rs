@@ -281,6 +281,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plain_decisions_require_the_exact_token_of_a_still_pending_request() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../libs/api/tests/fixtures.json")).unwrap();
+        let mut snapshot: Snapshot =
+            serde_json::from_value(fixture["state_snapshot_cases"][0]["value"].clone()).unwrap();
+        let mut permission = fixture["permission_records"][0].clone();
+        permission["id"] = json!("old");
+        permission["approval"] = json!("old-token");
+        permission["state"] = json!("pending");
+        let record = <contract::PermissionRecordReply as Response>::decode(permission).unwrap();
+        snapshot.permissions.push(record.into());
+        assert!(decision("approve old-token", &snapshot).unwrap().1);
+        assert!(!decision(" deny old-token ", &snapshot).unwrap().1);
+        for command in [
+            "approve",
+            "y",
+            "approve old",
+            "approve old-token extra",
+            "allow old-token",
+        ] {
+            assert!(decision(command, &snapshot).is_none(), "{command}");
+        }
+        snapshot.permissions[0].state = "withdrawn".into();
+        let mut replacement = snapshot.permissions[0].clone();
+        replacement.id = "new".into();
+        replacement.approval = "new-token".into();
+        replacement.state = "pending".into();
+        snapshot.permissions.push(replacement);
+        assert!(decision("approve old-token", &snapshot).is_none());
+        let (selected, yes) = decision("approve new-token", &snapshot).unwrap();
+        assert_eq!(selected.id, "new");
+        assert!(yes);
+    }
+
+    #[test]
     fn communications_profile_preserves_requests_and_independent_page_fallbacks() {
         use std::io::Write;
         let fixtures: Value =

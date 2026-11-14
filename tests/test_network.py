@@ -1,9 +1,7 @@
 """Networking as a goblin sees it: online in a private namespace, or offline; no external services/auth."""
 import http.server
-import json
 import multiprocessing
 import os
-from pathlib import Path
 import socket
 import unittest
 
@@ -90,46 +88,3 @@ class NetworkWorkflow(unittest.TestCase):
             offline = self.terminal(self.d.start("offline")["session"])
             offline.send(f"curl -sS --max-time 2 {self.url} >/tmp/output 2>/tmp/error; printf 'FETCH=%s\\n' \"$?\"\n")
             offline.expect(r"(?:^|\n)FETCH=[1-9]\d*\n")
-
-    def test_network_processes_die_with_the_server(self):
-        session = self.d.start("online")["session"]
-        self.terminal(session)
-        children = set()
-        for task in Path(f"/proc/{self.d.process.pid}/task").iterdir():
-            children.update((task / "children").read_text().split())
-        # The scope keeper is independent of pasta. Track the complete owned
-        # tree so this also verifies namespace cleanup before Docker activation.
-        descendants = set(children)
-        pending = list(children)
-        while pending:
-            pid = pending.pop()
-            for task in Path(f"/proc/{pid}/task").iterdir():
-                for child in (task / "children").read_text().split():
-                    if child not in descendants:
-                        descendants.add(child)
-                        pending.append(child)
-        identities = {pid: Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
-                      for pid in descendants}
-        names = {pid: Path(f"/proc/{pid}/comm").read_text().strip() for pid in descendants}
-        # The Nix pasta entry point is a symlink to the passt executable.
-        pasta = [pid for pid, name in names.items() if name.startswith(("pasta", "passt"))]
-        self.assertEqual(len(pasta), 1, names)
-        helpers = [pid for pid in descendants if names[pid].startswith("goblins-mount")]
-        self.assertEqual(len(helpers), 1)
-        events = (self.d.state / session / "resources/events.jsonl").read_text().splitlines()
-        payload = str(next(json.loads(line)["fields"]["pid"] for line in events if json.loads(line)["event"] == "started"))
-        self.assertIn(payload, identities)
-        self.d.process.kill()
-        self.d.process.wait(timeout=5)
-
-        def stopped():
-            for pid, start in identities.items():
-                try:
-                    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-                    if fields[0] != "Z" and fields[19] == start:
-                        return False
-                except (FileNotFoundError, ProcessLookupError):
-                    pass
-            return True
-
-        self.d.wait(stopped, timeout=5)

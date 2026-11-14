@@ -1366,17 +1366,9 @@ just test-cache-clean             # release fixture cache roots after tests stop
 just test-roots-clean             # prune dangling root links; keep store outputs
 #+end_src
 
-Tests require host Nix, Unix sockets and ordinary-user namespace access. An outer
-execution sandbox may require running those checks with its normal host-access
-approval mechanism. The Codex tests (=tests/test_codex_config.py=) run the real
-Codex, so they are skipped unless =GOBLINS_TEST_CODEX=1= is set; set it when
-changing the Codex integration. No production Python is used: Python is a test driver only.
-The ignored Rust Session harness supports fault-injected mount and namespace
-probes; production API/terminal tests use Cargo's incremental host controller and
-Nix-built sandbox executables. =just test-packaged= exercises the same assertions
-with Nix-built controllers and installed scripts; =just test-nix= also verifies
-the packaged completion scripts byte-for-byte. See
-[[file:README.org::*Test][the test workflow]] for fixture caching and resource limits.
+Tests require host Nix, Unix sockets and ordinary-user namespace access. An outer execution sandbox may require running those checks with its normal host-access approval mechanism. The default suite runs fake Codex workflows. =just test-feature real-agents= (or =GOBLINS_TEST_CODEX=1= for direct Python runs) opts into tests against the real Codex App Server and native terminal, with synthetic credentials and a local mock provider. No production Python is used: Python is a test driver only.
+
+The ignored Rust Session harness supports fault-injected mount and namespace probes; production API/terminal tests use Cargo's incremental host controller and Nix-built sandbox executables. =just test-packaged= exercises the same assertions with Nix-built controllers and installed scripts; =just test-nix= also verifies the packaged completion scripts byte-for-byte. See [[file:README.org::*Test][the test workflow]] for fixture caching and resource limits.
 
 * Scope and requirements
 

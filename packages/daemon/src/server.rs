@@ -52,9 +52,13 @@ pub fn foreground(
         thread::sleep(Duration::from_millis(5));
     }
     println!("Goblins server stopping; cleaning up agents");
+    finish(daemon, &mut io::stdout().lock())
+}
+
+fn finish(daemon: Controller, output: &mut dyn Write) -> Result<()> {
     let _shutdown = daemon.shutdown()?;
-    println!("Goblins server stopped");
-    io::stdout().flush()?;
+    writeln!(output, "Goblins server stopped")?;
+    output.flush()?;
     Ok(())
 }
 
@@ -239,4 +243,66 @@ pub fn logs(state: &Path) -> Result<()> {
         Err(e) => return Err(e),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn log_refuses_symlinks_without_touching_the_target() {
+        let root = unix::temp_directory().unwrap();
+        let target = root.join("private");
+        std::fs::write(&target, "unchanged").unwrap();
+        symlink(&target, root.join("server.log")).unwrap();
+        for write in [false, true] {
+            assert!(log_file(&root, write).is_err());
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "unchanged");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shutdown_keeps_the_lock_through_the_final_write_and_flush() {
+        struct Output<'a> {
+            state: &'a Path,
+            bytes: Vec<u8>,
+            flushed: bool,
+            fail: bool,
+        }
+        impl Write for Output<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                assert!(lock_held(self.state).unwrap());
+                assert!(!self.state.join("host.sock").exists());
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                assert!(lock_held(self.state).unwrap());
+                self.flushed = true;
+                if self.fail {
+                    Err(io::ErrorKind::BrokenPipe.into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let _no_forks = unix::no_forks();
+        for fail in [false, true] {
+            let root = unix::temp_directory().unwrap();
+            let daemon = Controller::new(&root, None).unwrap();
+            let mut output = Output {
+                state: &root,
+                bytes: vec![],
+                flushed: false,
+                fail,
+            };
+            assert_eq!(finish(daemon, &mut output).is_err(), fail);
+            assert!(output.flushed);
+            assert_eq!(output.bytes, b"Goblins server stopped\n");
+            assert!(!lock_held(&root).unwrap());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 }

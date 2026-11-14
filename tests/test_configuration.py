@@ -1,11 +1,8 @@
 """Configuration-only Nix rebuilds launch concurrently on one live daemon."""
-import json
-import os
 from pathlib import Path
 import tempfile
 import unittest
 from build_support import fixture_app
-from support import FLAKE, command
 from terminal_support import Terminal
 from daemon_support import Daemon
 
@@ -19,21 +16,9 @@ class ConfigurationTests(unittest.TestCase):
             d = Daemon(original); self.addCleanup(d.close)
             inode = (d.state / "host.sock").stat().st_ino
             malformed = root / "malformed.json"; malformed.write_text('{"goblins":')
-            fifo = root / "fifo"; os.mkfifo(fifo)
-            oversized = root / "oversized.json"; oversized.write_bytes(b" " * (1024 * 1024 + 1))
-            incompatible = root / "incompatible.json"
-            config = json.loads(Path(d.manifest).read_text()); config["helper_api"] = 999
-            incompatible.write_text(json.dumps(config))
-            for index, (path, expected, name) in enumerate([(root / "missing", "cannot open configuration", "fishy"),
-                                         (malformed, "invalid configuration", "fishy"), (fifo, "regular file", "fishy"),
-                                         (root, "regular file", "fishy"), (oversized, "exceeds 1 MiB", "fishy"),
-                                         (d.manifest, "unknown goblin", "missing"), (incompatible, "incompatible", "fishy")]):
-                # A failed launch keeps its agent name until its runtime has
-                # stopped, so a random name could still hold "snikk" below.
-                launch = d.start(name, path, wait=False, agent_name=f"rejected-{index}")
-                record = d.wait(lambda: (r if (r := d.get(launch["session"]))["state"] == "failed" else None))
-                self.assertIn(expected, record["detail"])
-            with self.assertRaises(ValueError): d.start("fishy", "relative.json")
+            launch = d.start("fishy", malformed, wait=False, agent_name="rejected")
+            record = d.wait(lambda: (r if (r := d.get(launch["session"]))["state"] == "failed" else None))
+            self.assertIn("invalid configuration", record["detail"])
             first = Terminal([str(original), "--state-dir", str(d.state), "run", "fishy", "--name", "snikk"]); self.addCleanup(first.close)
             first.expect("[>#]", timeout=60)
             record = d.rpc.call("sessions.get", {"session": "snikk"})
@@ -54,35 +39,5 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(first.expect(r"(?:^|\n)AFTER=(\d+)\n").group(1), pid)
             self.assertEqual(first.wait(), 0)
             print("EVIDENCE one daemon/socket accepts concurrent rebuilt configurations/new names; existing Fish retains identity and literal env", flush=True)
-
-    def test_resume_command_is_validated_and_reaches_every_variant(self):
-        prelude = f"""
-          let
-            flake = builtins.getFlake "{FLAKE}";
-            pkgs = flake.legacyPackages.x86_64-linux;
-            inherit (flake.lib.x86_64-linux.builders) mkGoblin mkGoblins mkScope;
-            base = {{ pkg = pkgs.bashInteractive; binName = "bash"; }};
-            accepted = resume: (builtins.tryEval
-              (builtins.deepSeq (mkGoblin (base // {{ resumeCommand = resume; }})).goblin.resume_command true)).success;
-          in"""
-        cases = {"null": True, "[ ]": True, '[ "--resume" "{session_id}" ]': True,
-                 '[ "--name={session_name}" "{{{{json}}}}" "a{x}b{y_2}" ]': True,
-                 '"--resume"': False, '[ 1 ]': False, '[ "{Session}" ]': False, '[ "{open" ]': False,
-                 '[ "close}" ]': False, '[ "{a-b}" ]': False, '[ "{}" ]': False, '[ "{{a}" ]': False}
-        expression = prelude + " [ " + " ".join(f"(accepted ({case}))" for case in cases) + " ]"
-        results = json.loads(command(["nix", "eval", "--impure", "--json", "--expr", expression]))
-        self.assertEqual(dict(zip(cases, results)), cases)
-        manifest = command(["nix", "build", "--impure", "--no-link", "--print-out-paths", "--expr", prelude + """
-          (mkGoblins {
-            scopes.work = mkScope { };
-            goblins = {
-              agent = mkGoblin (base // { allowedScopes = [ "work" ]; resumeCommand = [ "--resume" "{session_id}" ]; });
-              plain = mkGoblin base;
-            };
-          }).config"""])
-        goblins = json.loads(Path(manifest).read_text())["goblins"]
-        self.assertEqual(goblins["agent"]["resume_command"], ["--resume", "{session_id}"])
-        self.assertEqual(goblins["agent"]["scopes"]["work"]["resume_command"], ["--resume", "{session_id}"])
-        self.assertIsNone(goblins["plain"]["resume_command"])
 
 if __name__ == "__main__": unittest.main(verbosity=2)

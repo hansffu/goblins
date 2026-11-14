@@ -4721,6 +4721,18 @@ mod tests {
         let (mut host, _) = connection(Role::Host);
         let named = launch("positional-key", Some("goblin"));
         let first = d.host(&mut host, "sessions.start", named.clone()).unwrap();
+        let (mut other, _peer) = connection(Role::Host);
+        other.id = 2;
+        let initialized = dispatch(&mut d, &mut other, "initialize", json!({"api":1}), Some(json!(1)));
+        assert!(initialized["result"]["features"].as_array().unwrap().contains(&json!("agent-names")));
+        assert_eq!(d.host(&mut other, "sessions.start", named.clone()).unwrap(), first);
+        assert_eq!(d.instance, initialized["result"]["instance"].as_str().unwrap());
+        let collision = d.host(&mut other, "sessions.start", launch("another-key", Some("goblin"))).unwrap_err();
+        assert_eq!(collision.0, -32009);
+        assert!(collision.1.contains("already in use"));
+        let conflict = d.host(&mut other, "sessions.start", launch("positional-key", Some("another-name"))).unwrap_err();
+        assert_eq!(conflict.0, -32009);
+        assert!(conflict.1.contains("conflicting"));
         let positional = json!([
             "positional-key",
             "/missing-goblins-test-manifest",
@@ -5549,6 +5561,108 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
+    #[test]
+    fn a_session_stuck_starting_does_not_block_other_sessions() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let stalled = session_with_results_id(&mut d, "stalled", vec![]);
+        let (runtime, _events, _commands) = goblins_runtime::Fake::new();
+        let active = d.sessions.get_mut(&stalled).unwrap();
+        active.runtime = Some(Box::new(runtime));
+        active.record.state = "starting".into();
+        active.pending = None;
+        d.permissions.clear();
+        let healthy = session_with_results_id(&mut d, "healthy", vec![]);
+        let active = d.sessions.get_mut(&healthy).unwrap();
+        active.record.agent_name = "healthy".into();
+        active.pending.as_mut().unwrap().detached = true;
+        d.permissions[0].state = "pending".into();
+        d.permissions[0].approved = None;
+        let (mut host, _peer) = connection(Role::Host);
+        assert_eq!(
+            d.host(&mut host, "server.status", json!({})).unwrap()["sessions"],
+            2
+        );
+        let launched = d.host(&mut host, "sessions.start", launch("while-starting", Some("new"))).unwrap();
+        assert_eq!(d.sessions[launched["session"].as_str().unwrap()].record.state, "starting");
+        d.host(
+            &mut host,
+            "permissions.decide",
+            json!([healthy, "r", "a", false]),
+        )
+        .unwrap();
+        assert_eq!(d.permissions[0].state, "denied");
+        d.host(&mut host, "sessions.stop", json!({"session":healthy}))
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.sessions[&stalled].record.state, "starting");
+        assert!(d.sessions[&stalled].runtime.is_some());
+        assert_ne!(d.sessions[&healthy].record.state, "running");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn denied_permissions_keep_the_original_identity_when_a_name_is_reused() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let first = session_with_results_id(&mut d, "first", vec![]);
+        d.permissions[0].state = "pending".into();
+        d.permissions[0].approved = None;
+        d.sessions
+            .get_mut(&first)
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .detached = true;
+        let (mut host, _peer) = connection(Role::Host);
+        let denied = json!([first, "r", "a", false]);
+        d.host(&mut host, "permissions.decide", denied.clone())
+            .unwrap();
+        assert_eq!(d.permissions[0].state, "denied");
+        assert_eq!(
+            d.host(&mut host, "permissions.decide", denied)
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        let old = d.sessions.get_mut(&first).unwrap();
+        old.record.state = "stopped".into();
+        old.runtime.take();
+        assert_eq!(d.allocate_name(Some("snikk")).unwrap(), "snikk");
+        let second = session_with_results_id(&mut d, "second", vec![]);
+        d.permissions[1].id = "fresh".into();
+        d.permissions[1].approval = "fresh-token".into();
+        d.permissions[1].state = "pending".into();
+        d.permissions[1].approved = None;
+        d.sessions
+            .get_mut(&second)
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .id = "fresh".into();
+        let snapshot = d.snapshot();
+        assert_eq!(snapshot.permissions[0].session, first);
+        assert_eq!(snapshot.permissions[0].agent_name, "snikk");
+        assert_eq!(d.resolve_session("snikk").unwrap(), second);
+        assert_eq!(
+            d.host(
+                &mut host,
+                "permissions.decide",
+                json!([first, "r", "a", true])
+            )
+            .unwrap_err()
+            .0,
+            -32009
+        );
+        assert_eq!(d.permissions[1].state, "pending");
+        assert_eq!(d.permissions[1].session, second);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn failed_grant_retains_diagnostic_on_permission_record() {
         let mut d = daemon();

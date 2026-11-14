@@ -263,6 +263,7 @@ let
     { resumeCommand = [ "lone}" ]; }
     { resumeCommand = [ "{session-id}" ]; }
     { resumeCommand = [ "{}" ]; }
+    { resumeCommand = [ "{{a}" ]; }
     { resumeCommand = [ "{${pkgs.lib.fixedWidthString 33 "x" ""}}" ]; }
     { resumeCommand = [ "{attach.pid}" ]; }
     { onAttach = [ "client" ]; }
@@ -354,9 +355,14 @@ let
         args = [ (pkgs.lib.fixedWidthString 40 "x" "") ];
       });
     });
+  codexFake = pkgs.writeScriptBin "codex" (
+    "#!${pkgs.python3}/bin/python3\n"
+    + builtins.readFile ./codex_wire.py
+    + builtins.readFile ./fake_codex.py
+  );
   codexProbe = pkgs.writeShellScriptBin "codex" ''
     if [[ "$1" == --version || "$1" == app-server ]]; then
-      exec ${agents.codex}/bin/codex "$@"
+      exec ${codexFake}/bin/codex "$@"
     fi
     printf 'CODEX_DIR=%s\n' "$CODEX_HOME"
     printf 'CODEX_ARG=%s\n' "$@"
@@ -836,22 +842,14 @@ in
         injectedFiles."goblins-test.conf" = "sandbox-only\n";
       };
       notifier = mkCodexGoblin {
-        pkg = pkgs.writeScriptBin "codex" (
-          "#!${pkgs.python3}/bin/python3\n"
-          + builtins.readFile ./codex_wire.py
-          + builtins.readFile ./fake_codex.py
-        );
+        pkg = codexFake;
         allowedDomains = [ ];
         allowedPackages = [ pkgs.python3 ];
         # A member of its own kind (test_owner_and_member_servers_have_independent_bindings).
         allowedRunTargets = [ "notifier" ];
       };
       profile = mkCodexGoblin {
-        pkg = pkgs.writeScriptBin "codex" (
-          "#!${pkgs.python3}/bin/python3\n"
-          + builtins.readFile ./codex_wire.py
-          + builtins.readFile ./fake_codex.py
-        );
+        pkg = codexFake;
         allowedDomains = [ ];
         allowedPackages = [ pkgs.python3 ];
         args = [
@@ -1395,6 +1393,11 @@ in
     assert !(mkClaudeGoblin { }).goblin.bypass_permissions;
     assert (mkCodexGoblin { bypassPermissions = true; }).goblin.bypass_permissions;
     assert (mkGoblin base).goblin.resume_command == null;
+    assert (mkGoblin (base // { resumeCommand = [ ]; })).goblin.resume_command == [ ];
+    assert
+      (mkGoblin (base // {
+        resumeCommand = [ "--name={session_name}" "{{{{json}}}}" "a{x}b{y_2}" ];
+      })).goblin.resume_command == [ "--name={session_name}" "{{{{json}}}}" "a{x}b{y_2}" ];
     assert (mkGoblin base).goblin.on_attach == null;
     assert
       (
@@ -1795,5 +1798,20 @@ in
           "model=\"x\""
         ];
       }).goblin ? launch_options;
-    pkgs.runCommand "goblins-api-evaluation" { } "touch $out";
+    let
+      resume = mkGoblins {
+        scopes.work = mkScope { };
+        goblins = {
+          agent = mkGoblin (base // {
+            allowedScopes = [ "work" ];
+            resumeCommand = [ "--resume" "{session_id}" ];
+          });
+          plain = mkGoblin base;
+        };
+      };
+    in
+    pkgs.runCommand "goblins-api-evaluation" { nativeBuildInputs = [ pkgs.jq ]; } ''
+      jq -e '.goblins | .agent.resume_command == ["--resume", "{session_id}"] and .agent.scopes.work.resume_command == ["--resume", "{session_id}"] and .plain.resume_command == null' ${resume.config}
+      touch $out
+    '';
 }

@@ -1838,6 +1838,35 @@ mod tests {
         assert!(shows(&draw(&mut view, &snapshot), "Sandboxes [focused]"));
     }
     #[test]
+    fn queued_keys_cannot_approve_an_unseen_replacement_request() {
+        let mut host = Host::start();
+        let mut snapshot = snapshot(
+            vec![session("zoggit")],
+            vec![request("ra", "zoggit", "hello")],
+        );
+        let mut view = View::new();
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Tab), &snapshot, &mut host.client);
+        draw(&mut view, &snapshot);
+        snapshot.permissions[0].state = "withdrawn".into();
+        snapshot.permissions.push(request("rb", "zoggit", "tree"));
+        // An input queued for the old display still names the old request.
+        // The controller, whose identity checks are separate tests, rejects it.
+        view.input(press(KeyCode::Char('y')), &snapshot, &mut host.client);
+        assert_eq!(host.decided(), decision("ra", "zoggit", true));
+        draw(&mut view, &snapshot);
+        view.input(press(KeyCode::Char('y')), &snapshot, &mut host.client);
+        host.nothing_decided();
+        // Down + y in the same batch has not presented the new request yet.
+        view.input(press(KeyCode::Down), &snapshot, &mut host.client);
+        view.input(press(KeyCode::Char('y')), &snapshot, &mut host.client);
+        host.nothing_decided();
+        assert!(shows(&draw(&mut view, &snapshot), "Package: tree"));
+        view.input(press(KeyCode::Char('y')), &snapshot, &mut host.client);
+        assert_eq!(host.decided(), decision("rb", "zoggit", true));
+    }
+
+    #[test]
     fn a_mouse_press_does_not_carry_over_to_a_replacement_request() {
         let mut host = Host::start();
         let mut snapshot = snapshot(

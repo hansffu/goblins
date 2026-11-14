@@ -336,7 +336,7 @@ Build the adapter before running the native smoke tests, which run App Server, t
 
 #+begin_src sh
 cargo build -p goblins-codex
-python3 -m unittest discover -s tests -p test_codex_native.py
+GOBLINS_TEST_CODEX=1 python3 -m unittest discover -s tests -p test_codex_native.py
 GOBLINS_TEST_CODEX=1 python3 -m unittest discover -s tests -p test_codex_config.py
 #+end_src
 

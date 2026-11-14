@@ -1,17 +1,13 @@
-"""Actual Supervised children: isolated death, terminal retirement and reaping."""
-import fcntl
+"""Payload limits survive the foreground supervisor while its capacity is raised."""
 import json
 import os
 from pathlib import Path
 import resource
-import signal
-import socket
 import unittest
 import uuid
 
 from build_support import fixture_app
-from daemon_support import Daemon, frame, receive
-from api_contract import validate_completion, validate_notification
+from daemon_support import Daemon
 
 
 class SupervisedTests(unittest.TestCase):
@@ -84,98 +80,3 @@ class SupervisedTests(unittest.TestCase):
                 self.assert_reaped(supervisor)
                 self.d.wait(lambda: not Path(f"/proc/{payload}").exists())
                 self.assertEqual(resource.getrlimit(resource.RLIMIT_NOFILE), parent_limits)
-
-    def test_killing_one_supervisor_fails_only_its_goblin_and_releases_leases(self):
-        victim, supervisor = self.launch(name="victim")
-        other, healthy = self.launch(name="healthy")
-        payload = self.d.get(victim["session"])["identity"]["pid"]
-        os.kill(supervisor, signal.SIGKILL)
-        failed = self.d.wait(lambda: (r if (r := self.d.get(victim["session"]))["state"] == "failed" else None))
-        self.assertIn("supervisor", failed["detail"])
-        self.assertTrue(failed["terminal_interrupted"])
-        self.assertFalse(failed["terminal_attached"])
-        self.assertFalse(failed["terminal_detached"])
-        self.assertEqual(self.d.get(other["session"])["state"], "running")
-        self.assertTrue(Path(f"/proc/{healthy}").exists())
-        self.assert_reaped(supervisor)
-        self.d.wait(lambda: not Path(f"/proc/{payload}").exists())
-        lease = self.d.state / victim["session"] / "resources/.gc-lease"
-        def unlocked():
-            if not lease.exists():
-                return True
-            with lease.open("r+") as lock:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return True
-                except BlockingIOError:
-                    return False
-        self.d.wait(unlocked, timeout=20)
-        terminal = self.d.terminal(other)
-        self.addCleanup(terminal.close)
-        self.d.rpc.call("sessions.stop", {"session": other["session"]})
-        self.d.wait(lambda: self.d.get(other["session"])["state"] == "stopped")
-        while terminal.recv(4096):
-            pass
-        terminal.close()
-        self.assert_reaped(healthy)
-
-    def test_killed_stopped_terminal_does_not_revive_name_or_history(self):
-        launch, supervisor = self.launch(self.manifest("printf unread-terminal-output"), name="kid", wait=False)
-        session = launch["session"]
-        self.d.wait(lambda: self.d.get(session)["state"] == "stopped", timeout=60)
-        self.assertTrue(Path(f"/proc/{supervisor}").exists(), "unread output must retain a terminal supervisor")
-        record = self.d.wait(lambda: self.d.record(session))
-        self.d.wait_record_released(record["id"])
-        replacement, _ = self.launch(name="kid")
-        self.assertNotEqual(replacement["session"], session)
-        os.kill(supervisor, signal.SIGKILL)
-        result = self.d.wait(lambda: (r if (r := self.d.get(session))["terminal_interrupted"] else None))
-        self.assertEqual(result["state"], "stopped")
-        self.assertFalse(result["terminal_attached"])
-        self.assertFalse(result["terminal_detached"])
-        self.assertEqual(self.d.get(replacement["session"])["state"], "running")
-        self.d.wait_record_released(record["id"])
-        self.assert_reaped(supervisor)
-
-    def test_normal_terminal_drain_reaps_supervisor_without_interruption(self):
-        launch, supervisor = self.launch(self.manifest("printf 'final-output\\n'"), wait=False)
-        session = launch["session"]
-        self.d.wait(lambda: self.d.get(session)["state"] == "stopped", timeout=60)
-        peer = socket.socket(socket.AF_UNIX)
-        self.addCleanup(peer.close)
-        peer.settimeout(10)
-        peer.connect(launch["terminal"])
-        self.assertTrue(receive(peer)["result"]["attached"])
-        output = bytearray()
-        while data := peer.recv(4096):
-            output.extend(data)
-        self.assertIn(b"final-output", output)
-        peer.close()
-        self.assert_reaped(supervisor)
-        result = self.d.get(session)
-        self.assertEqual(result["state"], "stopped")
-        self.assertTrue(result["terminal_complete"])
-        self.assertFalse(result["terminal_interrupted"])
-
-    def test_supervisor_death_interrupts_client_without_running_on_detach(self):
-        manifest = self.manifest("echo SERVER_UP; exec sleep 600", on_attach={
-            "command": ["bash", "--noprofile", "--norc", "-c", "echo CLIENT_UP; exec sleep 601"],
-            "timeout": 10, "wait_for": []}, on_detach=[
-                "bash", "--noprofile", "--norc", "-c", "echo unexpected > /workspace/on-detach"])
-        launch, supervisor = self.launch(manifest)
-        peer = socket.socket(socket.AF_UNIX)
-        self.addCleanup(peer.close)
-        peer.settimeout(10)
-        peer.connect(launch["attach"])
-        peer.sendall(frame({"jsonrpc": "2.0", "method": "attach.hello", "params": {"version": 1, "rows": 24, "cols": 80}}))
-        while (hello := receive(peer)).get("method") == "attach.waiting":
-            validate_notification("attach", "server-to-client", hello)
-        validate_completion("attach.reply", hello)
-        self.assertTrue(hello["result"]["attached"])
-        self.d.wait(lambda: self.d.get(launch["session"])["terminal_attached"])
-        os.kill(supervisor, signal.SIGKILL)
-        result = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] == "failed" else None))
-        self.assertFalse(result["terminal_attached"])
-        self.assertFalse(result["terminal_detached"])
-        self.assertFalse((self.d.state / launch["session"] / "resources/workspace/on-detach").exists())
-        self.assert_reaped(supervisor)

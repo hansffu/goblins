@@ -44,7 +44,8 @@ class Client:
             self.events.append(self.wire.receive())
         raise AssertionError('missing event: ' + method)
 
-@unittest.skipUnless(shutil.which('codex'), 'native Codex unavailable')
+@unittest.skipUnless(os.environ.get('GOBLINS_TEST_CODEX') == '1' and shutil.which('codex'),
+                     'opt in with just test-feature real-agents (requires codex)')
 class NativeProtocol(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='goblins-native-')

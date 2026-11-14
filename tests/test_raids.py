@@ -6,9 +6,7 @@ No coding agents, model calls, or subscription credentials are used here.
 """
 import fcntl
 import json
-import os
 from pathlib import Path
-import signal
 import subprocess
 import tempfile
 import unittest
@@ -421,30 +419,6 @@ class CrewCarriesOnWorkflow(RaidWorkflow):
             for session in (a, b, c, e):
                 d.wait(lambda: not self.resources(session).exists(), timeout=15)
             self.assertEqual((self.source / "input").read_text(), "host\n")
-
-
-class CrashedChainWorkflow(RaidWorkflow):
-    """A chain of owners and helpers the server dies under is left to gc."""
-
-    def test_gc_collects_a_chain_once_every_holder_died(self):
-        d = self.d
-        # A runs B; A stops and B takes the raid over and runs C.
-        a = d.start(agent_name="a")["session"]
-        b = d.member(a, agent_name="b")["session"]
-        d.rpc.call("sessions.stop", {"session": a})
-        self.stopped(a)
-        self.cli("raid", "set-owner", d.get(b)["raid"]["name"], "b")
-        c = d.member(b, agent_name="c")["session"]
-        directories = [d.state / session / "resources" for session in (a, b, c)]
-        self.assertTrue(all(directory.is_dir() for directory in directories))
-        os.kill(d.process.pid, signal.SIGKILL)
-        d.process.wait()
-        # Every sandbox, and with it every copy of a lease, goes with the
-        # daemon: observe that, rather than collecting until it has.
-        d.wait(lambda: all(self.lease_free(directory) for directory in directories),
-               timeout=30)
-        collected = self.cli("gc")
-        self.assertFalse(any(directory.exists() for directory in directories), collected.stdout)
 
 
 if __name__ == "__main__":

@@ -340,10 +340,10 @@ class ClaudeConfigTests(unittest.TestCase):
         events = self.d.rpc.call("communications.list", {})["events"]
         self.assertFalse(any(e["kind"].startswith("integration.") for e in events))
         self.d.wait(lambda: self.integration(receiver)["state"] == "ready")
-        # The fake's Stop settles idle; the monitor's heartbeat keeps it fresh past expiry.
+        # Heartbeat refresh and expiry are covered with an injected clock in
+        # controller::tests::expired_activity_reaches_subscribers_and_heartbeats_do_not.
+        # This workflow waits for the user-visible idle transition.
         self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
-        time.sleep(32)
-        self.assertEqual(self.d.get(receiver)["agent_state"], "idle")
         # Its hooks recorded the conversation; recreating resumes it.
         recorded = self.d.record(receiver)["variables"]
         self.assertEqual(recorded["session_name"], "Fake task")

@@ -37,7 +37,11 @@ class PackageApprovalWorkflow(unittest.TestCase):
             snikk = Terminal(self.host("run", "shell", "--name", "snikk"))
             self.addCleanup(snikk.close)
             snikk.expect("[>#]", timeout=60)
-            d.start(agent_name="grub")
+            first = d.rpc.call("sessions.get", {"session": "snikk"})["id"]
+            grub = json.loads(d.cli("run", "shell", "--name", "grub", "--detached").stdout)
+            d.wait(lambda: d.get(grub["session"])["state"] == "running")
+            listed = json.loads(d.cli("list").stdout)
+            self.assertEqual({r["agent_name"] for r in listed}, {"snikk", "grub"})
             snikk.send("printf 'BEFORE=%s\\n' $fish_pid; command -q cowsay; printf 'ABSENT=%s\\n' $status\n")
             pid = snikk.expect(r"(?:^|\n)BEFORE=(\d+)\n").group(1)
             snikk.expect(r"(?:^|\n)ABSENT=127\n")
@@ -143,6 +147,29 @@ class PackageApprovalWorkflow(unittest.TestCase):
             snikk.expect(r"(?:^|\n)FRONTENDS_CLOSED\n")
             self.assertEqual(snikk.wait(), 0)
             self.assertEqual(self.goblin("grub", "true").returncode, 0)
+
+        with step("a freed name is reused, and the host stops by name and by id"):
+            d.wait(lambda: not (d.state / first / "resources").exists())
+            replacement = json.loads(d.cli("run", "shell", "--name", "snikk", "--detached").stdout)
+            self.assertNotEqual(replacement["session"], first)
+            d.wait(lambda: d.get(replacement["session"])["state"] == "running")
+            for target, session in [("snikk", replacement["session"]), (grub["session"], grub["session"])]:
+                self.assertEqual(json.loads(d.cli("stop", target).stdout), {"accepted": True})
+                d.wait(lambda: d.get(session)["state"] == "stopped")
+
+
+        with step("a one-shot run prints all output and exits successfully"):
+            config = json.loads(Path(d.manifest).read_text())
+            config["goblins"]["shell"]["args"] = ["--no-config", "-c",
+                "string repeat -n 50000 x; printf 'FINAL-MARKER\\n'"]
+            path = Path(d.temp.name) / "one-shot.json"
+            path.write_text(json.dumps(config))
+            one_shot = Terminal([d.binary, "--runtime", str(path), "--state-dir", str(d.state),
+                                 "run", "shell"], env=d.env)
+            self.addCleanup(one_shot.close)
+            output = one_shot.expect(r"^(x+)\nFINAL-MARKER\n", timeout=60)
+            self.assertEqual(output.group(1), b"x" * 50000)
+            self.assertEqual(one_shot.wait(), 0)
 
 
 if __name__ == "__main__":

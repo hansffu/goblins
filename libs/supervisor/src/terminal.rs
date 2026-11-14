@@ -506,6 +506,25 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn a_resize_before_the_pty_exists_is_applied_when_it_arrives() {
+        let _no_forks = unix::no_forks();
+        let root = unix::temp_directory().unwrap();
+        let mut terminal = Terminal::new(&root.join("terminal.sock")).unwrap();
+        terminal.resize(40, 110).unwrap();
+        assert!(terminal.master.is_none());
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        terminal.master(master).unwrap();
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCGWINSZ, &mut size) },
+            0
+        );
+        assert_eq!((size.ws_row, size.ws_col), (40, 110));
+        drop(terminal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn generated_completion_payload_keeps_private_nonzero_response_ids() {
         let _no_forks = unix::no_forks();
         let mut f = Fixture::new();

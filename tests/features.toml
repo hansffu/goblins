@@ -4,7 +4,7 @@
 [merge]
 checks = ["rust", "rust-host", "emacs", "nix", "packaged"]
 packaged = ["test_server", "test_exec", "test_isolation"]
-env = { GOBLINS_TEST_CODEX = "1" }
+env = {}
 
 [routing]
 # These affect shared authority, lifecycle or test execution. Unknown paths
@@ -35,7 +35,7 @@ paths = ["libs/supervisor/src/binds.rs", "libs/supervisor/src/snapshot.rs", "lib
 
 [features.lifecycle]
 description = "Daemon management, configuration, names and responsiveness"
-python = ["test_daemon", "test_server", "test_cleanup", "test_configuration", "test_agent_names", "test_responsiveness", "test_supervised", "test_maintenance"]
+python = ["test_server", "test_crashes", "test_cleanup", "test_configuration", "test_supervised", "test_maintenance"]
 checks = ["rust"]
 paths = ["packages/daemon/src/server.rs", "libs/supervisor/src/cleanup.rs", "packages/daemon/src/goblin-names.txt"]
 
@@ -53,7 +53,7 @@ paths = ["libs/runtime/src/terminal.rs", "libs/supervisor/src/screen.rs", "packa
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage; cleanup and startup kernel backstops are Rust host tests"
-python = ["test_scopes", "test_scope_process", "test_cleanup", "test_network", "test_run_targets.CoordinatorWorkflow"]
+python = ["test_scopes", "test_scope_process", "test_cleanup", "test_network", "test_crashes.CrashWorkflows.test_the_daemon_dies", "test_run_targets.CoordinatorWorkflow"]
 checks = ["rust", "rust-host"]
 paths = ["libs/supervisor/src/scope*.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/cleanup/*", "libs/supervisor/src/entry/*", "libs/supervisor/src/network.rs", "libs/supervisor/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
 
@@ -71,7 +71,7 @@ paths = ["libs/supervisor/src/devshell.rs", "libs/supervisor/src/evaluator.rs", 
 
 [features.raids]
 description = "Raid membership, ownership and spawning run targets"
-python = ["test_raids", "test_run_targets"]
+python = ["test_raids", "test_crashes.CrashWorkflows.test_the_daemon_dies", "test_run_targets"]
 checks = ["rust"]
 paths = ["packages/daemon/src/raid.rs", "packages/daemon/src/controller/raids.rs", "skills/goblins-raids/*", "skills/goblins-spawn/*"]
 
@@ -98,6 +98,12 @@ description = "Codex configuration, native adapter and operation notices"
 python = ["test_codex_native", "test_codex_config", "test_fake_codex", "test_operation_notices.CodexNoticesWorkflow"]
 checks = ["rust"]
 paths = ["packages/adapter-codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix", "tests/fake_codex.py", "tests/codex_wire.py"]
+
+[features.real-agents]
+description = "Opt-in real Codex App Server and native terminal checks with synthetic credentials"
+python = ["test_codex_native", "test_codex_config"]
+checks = ["rust"]
+paths = []
 env = { GOBLINS_TEST_CODEX = "1" }
 
 [features.claude]
@@ -108,7 +114,7 @@ paths = ["packages/adapter-claude/*", "nix/goblins/claude/*", "nix/builders/mk-c
 
 [features.host-tools]
 description = "Host commands, editor requests and completion notices"
-python = ["test_host_commands", "test_editor", "test_operation_notices.ClaudeNoticesWorkflow"]
+python = ["test_host_commands", "test_crashes", "test_editor", "test_operation_notices.ClaudeNoticesWorkflow"]
 checks = ["rust"]
 paths = ["packages/daemon/src/controller/host.rs", "packages/daemon/src/controller/editor.rs", "packages/sandbox-cli/src/host.rs", "skills/goblins-host/*"]
 

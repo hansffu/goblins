@@ -76,14 +76,15 @@ class FeatureTests(unittest.TestCase):
         self.assertEqual(recommend(["docs/USAGE.org"], data)[0], ("docs",))
         self.assertIn("exec", recommend(["tests/test_exec.py"], data)[0])
 
-    def test_full_plan_includes_every_suite_and_enables_codex_checks(self):
+    def test_full_plan_includes_every_suite_and_keeps_real_agents_opt_in(self):
         data = load_manifest()
         plan = make_plan(("exec", "full"), data)
         self.assertIsNone(plan.selectors)
         self.assertEqual([label for label, _ in commands(plan, 4, data)],
                          ["Rust", "Rust host", "Python", "emacs", "nix", "Packaged smoke"])
-        self.assertEqual(plan.env["GOBLINS_TEST_CODEX"], "1")
-        self.assertEqual(make_plan(("codex",), data).env["GOBLINS_TEST_CODEX"], "1")
+        self.assertNotIn("GOBLINS_TEST_CODEX", plan.env)
+        self.assertNotIn("GOBLINS_TEST_CODEX", make_plan(("codex",), data).env)
+        self.assertEqual(make_plan(("real-agents",), data).env["GOBLINS_TEST_CODEX"], "1")
         with self.assertRaisesRegex(ValueError, "Unknown features"):
             make_plan(("exce",), data)
 
