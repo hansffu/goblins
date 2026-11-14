@@ -5234,9 +5234,13 @@ programs started, each as (ARGS IDENTITY BUFFER)."
       (with-current-buffer goblins--popup-buffer-name
         (should (string-match-p "gribble wants to open in Emacs\n +/tmp/r1" (buffer-string)))
         (goblins-request-popup-deny))
-      (goblins-test--wait (lambda () (not (process-live-p editor))))
+      ;; The process can be reported as exited before Emacs has read its
+      ;; last output, so wait for the message as well as the exit.
+      (goblins-test--wait
+       (lambda () (and (not (process-live-p editor))
+                       (string-match-p "refused" (with-current-buffer (process-buffer editor)
+                                                   (buffer-string))))))
       (should-not (eq (process-exit-status editor) 0))
-      (should (string-match-p "refused" (with-current-buffer (process-buffer editor) (buffer-string))))
       (should-not (get-file-buffer "/goblins:gribble:/tmp/r1"))
       (should-not (get-buffer-window goblins--popup-buffer-name)))
     ;; goblins-editor blocks until every file is done with C-x #.
