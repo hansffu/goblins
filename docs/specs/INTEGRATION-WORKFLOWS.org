@@ -1,0 +1,174 @@
+#+title: Plan: integration tests as user workflows
+#+date: 2026-11-14
+
+Status: in progress. Phase 1 (dev shells) is implemented; the others are not. It follows [[file:TEST-SUITE-SPEEDUP.org][TEST-SUITE-SPEEDUP.org]], whose tasks are done, and reverses one of its conclusions: that plan found no assertions worth moving to unit tests because it judged tests by why they were slow. This plan judges them by what they test.
+
+* Goal
+
+The Python host suites should simulate what a person or an agent does with goblins, as a small number of workflow tests. Checks of implementation details (protocol validation, parameter and error-code checks, races, internal state and bookkeeping) belong in Rust unit tests, ERT or Nix checks. Moving those checks is as important as writing the workflows. The aim is a much faster suite, not a few giant tests: a workflow is split where the user's story or the setup differs, for example when a step kills the daemon.
+
+Rules for every workflow test:
+
+- It drives goblins the way a user does: the =goblins= and =goblin= CLIs, the TUI, Emacs, an agent inside the sandbox. It asserts what the user can observe.
+- Kernel and sandbox properties the user relies on (isolation, hidden paths, read-only mounts, process cleanup) are user-visible and stay, as steps in a workflow.
+- Steps are labelled (=subTest= or a step helper) so a failure names the step.
+- It waits on events, not sleeps.
+- A check is removed from the Python suite only after the unit test that replaces it exists, or after it is shown to be covered already.
+
+* Where the suite is today
+
+485 Python test methods in 50 modules; 995 s of summed per-test time in =target/test-fixtures/timings.json= (1041 s by group). The analysis behind this plan read every test body and classified each one as a workflow step, a unit test (already covered or new), or a drop.
+
+| Area                                         | Tests | Time today | Workflow tests after | Time after (estimate) |
+|----------------------------------------------+-------+------------+----------------------+-----------------------|
+| Daemon, server, names, configuration, cleanup |    69 | 82 s       | 7                    | 16–20 s               |
+| Sandbox, exec, attachment, terminals, TUI    |    60 | 131 s      | 11                   | 33–38 s               |
+| Scopes, network, Nix, Docker, dev shells     |    74 | 283 s      | 12                   | 110–140 s             |
+| Raids, worktrees, messaging, history, host tools, editor |    75 | 230 s      | 13                   | 60–70 s               |
+| Codex, Claude, Emacs                         |    50 | 230 s      | 8                    | 35 s (+25 s opt-in real Codex) |
+| API contract and test tooling                |   157 | 50 s       | 0 (static tier)      | about 10 s            |
+| *Total*                                      |   485 | about 1000 s | about 50           | about 270–310 s       |
+
+The areas overlap (package approval, daemon crashes and resume appear in several); the workflow list below merges them, so the real count is about 45.
+
+* Decisions
+
+1. *No backward compatibility* (decided 2026-11-14). Goblins is experimental: clients do not support older daemons, and nothing keeps old wire forms alive. The =HistoricalClientTests= legacy and API-1 cases, the Python =NORMALIZATIONS= model and =compatibility=True= checks in =tests/api_contract.py=, and the compatibility fallbacks in the readers and CLIs are removed, together with the promises in =docs/API.org= and the legacy =terminal.sock= fallback (=ARCHITECTURE-REVIEW.org=, lines 123–126). What the CLIs do with current replies moves to Rust unit tests.
+2. *Real agents are opt-in* (decided 2026-11-14). Tests against the real Codex App Server, or a real Claude, run only when asked for, for example on an agent upgrade. The default suite uses the fakes.
+3. *A slow tier for real tools* (decided 2026-11-14). Gradle, Docker Compose with online networking and Testcontainers move to an opt-in slow tier. The behaviour they rely on stays in the normal suite in a faster form: members of one scope share a PID namespace, loopback and home directory, and coordinate through a lock and a loopback socket in that home (Gradle); containers on a user-defined network resolve each other by name, publish ports to the goblin's own network, and an offline goblin reaches nothing even from a build, using local images (Compose); a client that talks to the Docker API socket and has its containers reaped when it goes away (Testcontainers).
+4. *Kernel backstops become Rust host tests* (decided 2026-11-14, option B in [[*Kernel backstops][Kernel backstops]]).
+
+* Workflows
+
+Each item is one test. "Folds in" names the current tests whose user-visible checks become steps; their other checks go to unit tests (see [[*Unit test work][Unit test work]]).
+
+** Daemon and server
+
+- *Two goblins ask for packages.* Run two goblins (one by =--name=); =goblins list=; each requests a package; open =tui --plain=, close and reopen it, requests still pending; approve one in the plain TUI and deny the other in the fullscreen popup (default No); the approved command works in the same shell, the other goblin cannot see it; a missing package shows its diagnostic; quitting the TUI restores the tty; stop by name and by id; a one-shot =goblins run= prints all output. Folds in: =test_daemon= simultaneous/stale-input/slow-reader/post-approval, =test_agent_names= CLI and TUI parts, =test_connected=, =test_tui= failed-package and popup, =test_integration= live grant and symlink-shaped output.
+- *Server lifecycle.* =server status/logs/stop= with nothing running, =start=, start again, launch goblins, status counts them, logs and log mode, =server stop= reaps payloads at once (the test process is an idle subreaper), restart keeps logs. Folds in: =test_server= background start, =ShutdownReapingTests=, post-approval shutdown.
+- *Shell completion.* Help and installed completions without a server; live names and resume ids in bash, fish and zsh; a stopped goblin's name disappears.
+- *Reconfigure without restarting.* A running shell keeps its pid and environment while a rebuilt configuration serves new launches on the same socket; one invalid configuration gives a clear error. Folds in: =test_configuration=.
+- *The daemon dies.* Goblins with network, a raid member and a running host job; SIGKILL the daemon; every payload, pasta and job dies; =goblins gc --dry-run= then =gc= removes leftovers and keeps history, logs and the communications log; the server starts again. Folds in: =test_responsiveness= abrupt death, =test_network= daemon death, =test_run_targets= gc chain, =test_host_commands= daemon death, =test_cleanup= gc, =test_integration= controller death.
+- *One goblin's supervisor dies.* Kill one supervisor while a client is attached and a host job runs: that goblin fails, its client is interrupted without running =onDetach=, its job dies, the other goblin keeps working, the name can be reused. Folds in: =test_supervised= killing-one and client-interrupt, =test_host_commands= supervisor death.
+- *Scope data maintenance.* =scope clear= refused while in use; =gc= leaves a running goblin alone; dry run then clear of a retired scope; clear after stop; =--all=.
+
+** Using a goblin
+
+- *Interactive goblin.* =configurations=; run in a project, edits go both ways; set shell state, =goblin detach=, reattach with the same pid and state; host detach while busy; Ctrl-C relayed; resize; a second attach refused; =goblins kill= while attached; another goblin unaffected; exit codes propagate.
+- *Isolation audit.* One probe script through =goblins exec= checks hidden paths (host secret, =host.sock=, another goblin's sockets, the Nix daemon socket, unlisted GC references), capabilities, =mount/unshare/setns= refused, store mounts read-only/nosuid/nodev, no host sockets or leaked descriptors, a non-dumpable init. Folds in: =test_integration= authority, =test_exec= control channel, =test_roots= unlisted reference.
+- *Configured binds.* Fish config, read-only and read-write binds, host edits visible live, a symlink to a secret hidden, one protected-overlap launch refused. Needs one merged fixture.
+- *Snapshot workspace.* A daemon with =workspace==: the snapshot has the files only, symlink escapes don't resolve, writes stay private.
+- *Exec.* Pipes, exit codes, binary data, =-w=, =-e=, =-t= with resize; killing the client kills the remote group; one forwarded signal; stdin EOF; =kill_execs= kills escaped jobs but not the agent; UTF-8 locale.
+- *The agent exits.* Agent exits 5: execs, escaped jobs and terminals end, exit code recorded, GC roots removed, the name is free.
+- *Background terminals.* A person creates, attaches, detaches, sends, reattaches to the full screen; =run/wait/read/send=; =wait --exit=; closing kills descendants; an agent creates its own terminals, drives the person's, cannot close it, and gets one inbox notice on exit; fish answers terminal queries with nobody attached.
+- *Server agent with attach handlers.* "Starting…" until ready, client sized to the terminal, detach runs =onDetach= and kills a stubborn client and its escapee but not the server, reattach at a new size, stop kills the client, resume runs the resume command.
+
+** Scopes, network, Nix, Docker, dev shells
+
+- *A team in one scope.* Two goblins in =work= share a server, processes and cache but cannot read each other's init; two in =private= share the network only; an unscoped goblin has no scope; a member inherits its owner's scope; a goblin exiting takes its processes with it; temporary scope data is gone on relaunch and persistent data kept.
+- *Gradle team* (slow tier, decision 3). Unchanged; the fast form of its checks joins the team-in-one-scope workflow.
+- *Network.* An online goblin fetches, Ctrl-C works, a member has its own network namespace; an offline goblin cannot reach the host.
+- *Use Nix in a goblin.* =nix build= (the result is a host GC root), =nix shell=, through a forwarded daemon socket; a member with another configuration has no Nix.
+- *Docker on demand* (one goblin). Deny then approve =enable-docker=; a running server stays reachable; load, build and run images; an entrypoint that switches user; read-only and read-write binds, secret refused, privileged containers cannot remount; =gc= mid-run keeps everything; a package granted later runs in a container; a second goblin in another scope sees no images and survives the first one exiting; resume attaches Docker before the first command; the daemon is started with a long =TMPDIR=.
+- *Docker in a shared scope* (the user's example). A and B share a scope, C does not, U has no Docker scope. U is refused; A builds an image, writes a volume, publishes a port; B sees all three and its extra read-only grant stays read-only; C sees none; a raid member and an eager member join; after A exits B still mounts A's workspace; when everyone exits the engine stops and a fresh goblin sees the volume; =scope clear= refused in use, then works. The daemon runs with a low descriptor limit.
+- *Docker Compose online* (slow tier, decision 3). =shared_session_network= as it is; the fast form of its checks joins the Docker workflows.
+- *Docker with a dev shell.* A flake app and a refreshed dev shell tool run in containers.
+- *Dev shell refresh* (the user's example). Launch with =--dev-shell=: environment, hook, packages; a member uses the same generation even after the flake is edited; =diff= shows nothing, then the edit; =flake run= refuses until refreshed; refresh denied changes nothing; refresh again, edit while pending, approve: the approved generation is the one previewed, the running environment is unchanged until re-entered; a new member and a member refresh get the new generation; =flake run= with arguments; add an input: =diff --lock=, =refresh --lock=, lock written; hand-edit the lock: refused until =restore-lock=. Run on a monorepo layout (a flake in a subdirectory reading a file beside it).
+- *Dev shell confinement.* Evaluation cannot read files outside the flake, a flake app cannot leak them, import-from-derivation is never built before approval.
+- *Testcontainers* (slow tier). Unchanged; the fast form joins the Docker workflows.
+
+** Raids, worktrees, messaging, history, host tools
+
+- *A crew of host goblins.* =raid invite=, =raid members=, goblins message each other by name, the host sends and reads its inbox, the sidebar count, =communications-log=, =raid kick=, =server stop= and the offline log.
+- *An owner runs helpers.* =goblin raid create=, =goblin run=, status and completions, members share the workspace, =--file= crosses the private =/tmp=, an approval reaches a later member, =goblin stop= shows the reason.
+- *The owner leaves, the crew carries on.* The raid pauses, a member's send is refused with a warning, =raid set-owner=, the resume notice, a member of a member still uses the first owner's snapshot after both stop and =gc= runs, =raid destroy --stop-members= removes resources.
+- *A coordinator runs a reviewer.* =goblin targets=, a launch option, the reviewer's own environment and binds that the coordinator does not get, a shared scope, an auto-approved request, a broken target fails alone. The Docker variant stays its own test.
+- *Work on a branch in a worktree.* =goblin worktree fix=, commit, the branch on the host, =--base=, =--main=, a member started in a worktree, a goblin launched inside a worktree. A dev-shell variant stays its own test.
+- *Resume yesterday's goblin.* Approve, deny, set a variable, stop; =goblins history=; remove the worktree; =goblins resume= by an old id: the resume command gets its variable, packages are back in order, skipped items are listed, a second resume is refused; =history prune=; offline =history=.
+- *Two servers and a crash keep history safe.* A second daemon runs without history; SIGKILL the first; the record is intact; the second takes the store over and records its running goblin.
+- *An agent runs a command on the host.* Approved with streaming output and exit code, denied, withdrawn with Ctrl-C, a detached job with logs, status, wait and cancel, =goblins host list/cancel=, orphans killed and zombies reaped, stopping the goblin kills its job, a nested test daemon.
+- *An agent learns the outcome of its request.* Claude: an idle agent is woken by a denial, a working agent handles it before its turn ends. Codex: one idle-denial test.
+- *Edit a goblin's files in host Emacs.* =EDITOR= in scoped and unscoped goblins, =+line:col=, a blocking edit, an aborted edit, a member's edit under its name, cancelling kills =emacsclient=, stopping ends pending edits.
+
+** Agents and Emacs
+
+- *Codex goblin handles its inbox* (fake App Server). A message while detached is processed; attach and quit detaches; pause and handle a message by hand; resume; a member replies without moving the owner's thread; stop and resume the same thread; the adapter dying stops the goblin.
+- *Codex goblin setup.* Credentials visible and rotated in owner and member, host config untouched, secret hidden.
+- *Work in real Codex* (opt-in, decision 2). =goblins run native=, =codex login status= and =codex exec= inside, =/quit= detaches, reattach draws the history, =goblins-codex bind=.
+- *Claude goblin handles its inbox.* A message wakes the agent through the monitor, it replies and goes idle; attach and exit; resume continues the same conversation; credentials, read-only mounts and the hidden secret.
+- *Emacs status buffer.* Activity in overview, sidebar and details; accept and deny; a message thread updates; resume a recorded conversation; close.
+- *Terminal Emacs workspace.* The existing =-nw= scenario plus launching a goblin in Ghostel.
+- *Start the server from Emacs.* Unchanged.
+- *Edit and shell over =/goblins:=.* Visit and save, eshell, =goblins-editor= approval and =C-x #=, =goblins-shell= detach and reattach, stopping the goblin closes its buffers. Profile the current 47 s test first; its edge cases move to ERT with stubs.
+
+* Kernel backstops
+
+About ten checks need a real kernel (user and mount namespaces, subordinate ids, the real mount helper) but are not something a user does. They guard against data loss or stuck resources after a crash.
+
+| Check                                                                 | Today                         | Time  | Protects against |
+|-----------------------------------------------------------------------+-------------------------------+-------+------------------|
+| =gc= and relaunch cleanup refuse to delete through a same-device bind mount, or to open a lock in a mounted root (4 cases) | =test_scope_cleanup=, in =bwrap=; relaunch cleanup goes through the Rust =host_driver= | 0.04 s | deleting host data that is bind-mounted into a scope directory |
+| The mount helper exits and releases inherited locks when its supervisor is killed, before and after id mapping (2 cases) | =test_maintenance.MaintenanceHelperTests= | 4.1 s | a scope or session that stays locked forever after a crash |
+| The scope process closes unrelated descriptors, dies with its parent even when stopped, and refuses an unexpected parent (3 cases) | =test_scope_process=, runs the binary | 0.04 s | a scope process that leaks descriptors, outlives the daemon or obeys another process |
+| A bind source swapped between check and mount (one variant kept) | =test_bind_race= | 1.5 s | a goblin mounting a path it was not granted |
+
+Options:
+
+- *A: one small Python module.* Move these into =tests/test_kernel.py= and keep them in the integration stage. The setup exists, so it is the least work; about 6 s. The relaunch-cleanup case keeps going through the Rust =host_driver=, which only exists to be driven from Python.
+- *B: Rust host tests.* Write them as =#[ignore]= Rust tests next to the code (=cleanup.rs=, =entry.rs=, =binds.rs=, the mount helper), and add a host stage, for example =just test-rust-host= running the ignored tests of =host= modules (=cargo test -- --ignored host::=; other ignored tests are subprocess helpers and must not run on their own) outside the Nix build sandbox, which has no user namespaces or =newuidmap=. They become ordinary unit tests that happen to need the host, and the Python plumbing (=host_driver=, =rust_driver()=, the fixture apps these tests build) goes away. It needs the new stage in the merge gate, and each test sets up its own namespace with =unshare= or =bwrap=.
+
+Decision: B. These are implementation checks, so they belong beside the code, and the =host_driver= exists only to let Python call Rust internals.
+
+* Unit test work
+
+Checks marked "covered" in the analysis already have a Rust or ERT test and need nothing. These need new tests before the Python check is removed.
+
+** New test harnesses
+
+- =libs/supervisor/src/cleanup.rs=: a tempdir-based module for every gc and scope-clear rule (name classes, symlinked roots, top-level symlinks, locks checked first and kept, hardlinks, mode-0 directories, guardian leases). One test today.
+- =packages/daemon/src/attachment.rs=: a fake host socket for identity and instance mismatch, the 3 s handshake bound, EINTR on resize. No tests today.
+- =packages/daemon/src/tui.rs= and =plain.rs=: a ratatui =TestBackend= with event injection for the popup, paste, mouse identity, hidden-popup keys, member labels and stale queued input.
+- =packages/adapter-codex=: a scripted fake App Server in Rust for =open=, =approval=, =enforce=, =join= and =catch_up=, and a testable =run()= loop.
+- =libs/supervisor= session and worker: a harness like the daemon's fake runtime for recreate skips (Docker no longer offered, removed worktree, failed packages retried), worktree refusals and partial-mount retry.
+- Shell code (=nix/goblins/claude/hook.sh=, =nix/goblins/codex/launcher.nix=, =nix/goblins/codex/mcp.sh=): Nix =runCommand= checks with stubbed commands, or port the logic into the Rust adapters.
+
+** New tests in existing harnesses
+
+- Controller (fake runtime and =sandbox_call=): startup of one goblin does not block another; Docker request validation, duplicates and withdraw-then-decide; dev-shell decide before preview; =dev_shell= refused from the sandbox; Nix =request-package= creates no request; exec pin errors; initialization parameter forms and pre-initialize refusal; the terminal socket answers while a goblin starts; detach keeps a pending approval; a workspace server refuses to resume.
+- =packages/daemon/src/server.rs=: final log line before the lock is released; a symlinked log refused. =main.rs=: move the =GOBLINS_HOST_JOB= guard into a testable function.
+- =controller/host.rs=: request size and pending budget.
+- =libs/runtime/src/binds.rs=: state directory, its parent, the history directory and a symlink alias are protected.
+- =libs/supervisor/src/snapshot.rs= (no tests today): what a snapshot excludes. =devshell.rs=, =evaluator.rs=, =process.rs=: missing lock, source tree outside the working directory, pending candidate rooted, missing Nix socket, the import-from-derivation setting, evaluation timeout, denial cancels evaluation.
+- =packages/sandbox-cli=: =flake run= serves only the dev-shell flake, "outcome unknown" exits 2, =--base= only for a new branch, editor path parsing, and the request building and output that =HistoricalClientTests= check today.
+- History and raids: file modes, the offline prune lock, the raid outbox flushing without other traffic and on stop.
+- Manifest fields (=resumeCommand=, args, hooks, =skillOverrides=): eval asserts in =tests/checks.nix=, next to the existing ones.
+- Before dropping the 32 s Claude heartbeat check: confirm the daemon has a unit test for activity expiry against the heartbeat.
+
+* Contract and tooling tests
+
+These are not integration tests and cost about 50 s in total; they move to a fast static tier that needs no daemon.
+
+- Keep =just api-check= (meta-schema, descriptors, dangling references, Emacs reader freshness).
+- Replace about 40 hand-written schema-instance loops with one data-driven test over the =*_cases= keys in =libs/api/tests/fixtures.json=. Rust never validates against the JSON Schema, so this stays.
+- Drop the migration scaffolding: the =c13b3= constructor-scanner self-tests, the =c15= coverage-scanner self-tests, description-text drift detectors, phase-manifest and "pending" checks, codegen-metadata drift that =build.rs= already rejects, =test_dependencies= retired-module guards, =test_supervised= retired debug variable, and unused =c17*= fixtures.
+- Drop the =compatibility=True= checks: they test a Python model of the Rust readers, which Rust already tests.
+- Later, replace the coverage source scanner with compile-time exhaustive dispatch; until then it keeps running inside =api-check=.
+- =ContractBoundaryTests= become controller unit tests. =HistoricalClientTests= lose their legacy cases (decision 1); what remains becomes sandbox-cli and daemon CLI unit tests.
+- The test-tooling tests (=test_features=, =test_runner=, =test_rust_tests=, =test_terminal_support=, =test_process_discovery=, =test_fake_codex=, =test_api_playground=) stay, in the fast tier. The Claude mod and =rpc.sh= checks move to the Claude feature's fast tier; =test_claude_mod= becomes the Nix check it already builds.
+
+* Order of work
+
+One area per phase, each its own reviewed change: write the missing unit tests, write the workflow tests, delete the replaced tests, update =tests/features.toml=, and compare =timings.json= before and after. Suggested order:
+
+1. Dev shells: the user's first example. Done: 29 tests became three workflow tests, and the checks they dropped are Rust unit tests.
+2. Docker: the user's second example, and the largest remaining group.
+3. Contract and tooling cleanup, with the removal of backward compatibility: little time saved, but it removes over 100 tests and is independent.
+4. Raids, history and host tools.
+5. Sandbox, exec and terminals.
+6. Daemon and server.
+7. Codex, Claude and Emacs.
+
+* Notes from the analysis
+
+- =tests/run.py:258= special-cases the =test_scope_cleanup= module name.
+- Dev-shell refresh previews still cost about 9–10 s of evaluation each; after this plan they are the largest remaining cost.
