@@ -1,0 +1,300 @@
+#+title: Remote goblins
+
+Status: planned, 2026-11-15. Nothing is implemented.
+
+This is a handoff document. It is written so that an implementer who was not part of the planning can carry it out step by step. Read it whole before starting, and follow =AGENTS.md= for testing, review and commits. Line numbers refer to master at commit =9c380b1=; find the code by the function names if they have moved.
+
+* Goal
+
+From one Emacs, attach to and manage goblins and raids that run on another machine. The remote machine runs today's daemon unchanged. The local =goblins= CLI reaches it by running the remote =goblins= CLI through ssh, and Emacs keeps calling the local CLI. The same mechanism addresses a second daemon on one machine, which is how the remote code path is tested.
+
+* Context
+
+Everything assumes today that the client and the daemon share one host, one uid and one filesystem.
+
+- Emacs opens =STATE/host.sock= itself with =make-network-process= and speaks JSON-RPC on it (=goblins--connect-now= in =emacs/goblins.el=). That one connection carries its calls and the =state.changed= subscription.
+- For everything else Emacs runs the local CLI as =goblins-executable --state-dir DIRECTORY …=: =attach= and =terminal attach= in ghostel, =exec= as the TRAMP login program and for =process-file=, =server start= and =stop=, =configurations=, and =rpc= and =list= in the TRAMP code.
+- =sessions.exec= passes file descriptors to the daemon with =SCM_RIGHTS=, and each session's =attach.sock= is a host path returned in RPC results. Neither can cross a network.
+- Launches send host paths (working directory, manifest, dev shell flake), and Emacs uses returned host paths itself (manifest, host-job logs, checkout and worktree directories).
+- Emacs identifies a daemon by its state directory. The buffer-local =goblins--directory= is the key of status buffers (=*Goblins: DIRECTORY*=), terminal buffers, pins and the sidebar, in about sixty places.
+- Two goblins with the same name on two daemons are already kept apart: =/goblins:HOST:= is pinned to =(DIRECTORY INSTANCE SESSION)= in =goblins--pins=, and =goblins--pin-or-id= uses the session ID as the TRAMP host when the name is pinned to another goblin. Session IDs start with the daemon's random instance, so they never collide.
+- Several daemons on one machine already work, one per =--state-dir=.
+
+Running the CLI on the daemon's machine keeps every socket, passed descriptor and host path on that machine. Only stdio streams cross ssh.
+
+* Decisions already made
+
+Do not reopen these; ask the user if one turns out to be impossible.
+
+- Remoteness lives in the client. The daemon learns nothing about ssh or other daemons, and no daemon-to-daemon link is added.
+- ssh is the only transport. Goblins adds no networking code, no authentication and no listener.
+- The CLI gets two features: =goblins rpc --stdio=, and a global =--host DESTINATION= that re-runs the same command on another machine through ssh. Quoting and the terminal decision live there, in Rust, in one tested place.
+- Emacs connects through =goblins rpc --stdio= for every daemon, the local one included, so there is one code path.
+- Emacs keeps identifying a daemon by its state directory. A remote daemon's key is that directory as a TRAMP file name, =/ssh:DESTINATION:STATE-DIR=. =goblins--directory= keeps its name and its role.
+- Endpoints are configured in Emacs with the user option =goblins-endpoints=. There is no discovery. A remote endpoint must name its state directory.
+- The =/goblins:= TRAMP syntax does not change. The pin carries the daemon.
+- The code lives only on the remote machine. Nothing is synced from the client.
+- This work comes before libghostty-vt ([[file:LIBGHOSTTY-VT.org][LIBGHOSTTY-VT.org]] on branch =libghostty-vt=) and does not depend on it.
+- No backward compatibility is needed. Keep it simple: fix real defects, add no machinery beyond what this document asks for.
+
+* Out of scope
+
+- Messaging or raids across daemons, and a butler goblin that manages raids.
+- A sidebar or workspace that shows several daemons at once. The workspace shows one daemon, chosen when it is opened, as today.
+- Project grouping in the sidebar for a remote daemon's goblins. They appear ungrouped.
+- Moving the host work Emacs does itself (reading the manifest, =git worktree add=, opening logs) behind RPC. It works remotely through TRAMP.
+- Reconnecting a terminal after the link drops. An ssh drop is a detach; the user attaches again.
+- Typing =/goblins:NAME:= by hand for a goblin of a remote daemon. An unpinned name is looked up on the default daemon, as today. Remote goblins are reached through the commands that take a status buffer (=goblins-dired=, =goblins-find-file=, =goblins-shell= and the terminals), which pin first.
+- Starting a remote daemon at boot. That is machine configuration.
+- Launching with =goblins --host … run= from a local directory. The command works but starts in the remote login directory.
+
+* Design
+
+** The CLI: =goblins rpc --stdio=
+
+=goblins rpc --stdio= connects to =STATE/host.sock= and copies bytes both ways between the socket and its standard input and output. It does not parse frames. It ends with status 0 as soon as either side reaches end of file. A missing socket fails with the same message as =Client::connect= (=packages/daemon/src/host.rs=).
+
+The daemon cannot tell such a client from one that opened the socket itself, so limits, the =initialize= handshake and subscriptions are unchanged. As with =goblins rpc=, =sessions.exec= cannot be called this way because it needs passed descriptors.
+
+** The CLI: =--host= and =--remote-program=
+
+=goblins --host DESTINATION ARGS…= does nothing locally except run:
+
+#+begin_example
+ssh (-t | -T) DESTINATION PROGRAM QUOTED-ARGS…
+#+end_example
+
+- =DESTINATION= is an ssh destination, as typed after =ssh=. One that is empty or starts with =-= is refused.
+- =PROGRAM= is =goblins=, or the value of =--remote-program=. =--remote-program= requires =--host=.
+- The ssh program is =ssh=, or the value of the environment variable =GOBLINS_SSH=. The variable exists for the tests.
+- =-t= is passed when standard input and standard output are both terminals, otherwise =-T=. This matches =exec --tty=auto= and keeps piped output free of terminal translation.
+- =QUOTED-ARGS= are the process's own arguments after the program name, with three options removed together with their values: =--host=, =--remote-program= and =--runtime=. Both the =--flag VALUE= and the =--flag=VALUE= forms are removed. Removal stops at the first argument that is exactly =--=, so a command line for =exec= passes through untouched. =--runtime= is removed because the packaged wrapper adds the local manifest, and the remote wrapper adds its own.
+- The local process is replaced with ssh (=exec=), so ssh's exit status, which is the remote command's, becomes the command's status.
+
+ssh joins its arguments with spaces and gives the line to the user's login shell on the remote machine. =PROGRAM= and each remaining argument are therefore quoted with a rule that POSIX shells and fish read alike:
+
+- An empty word becomes =''=.
+- Otherwise, each run of characters other than ='= and =\= is wrapped in single quotes, and each ='= or =\= is written outside the quotes with a backslash before it.
+
+For example the word =a'b\c d= becomes ='a'\''b'\\'c d'=. The rule was checked during planning in =sh=, =bash= and =fish 4.7.1= with a word containing a quote, single and double backslashes, double quotes, =$HOME=, a space and a newline. Plain single-quoting (='\''= only) is wrong in fish, which treats =\\= inside single quotes as one backslash.
+
+** Daemon keys in Emacs
+
+A daemon key is a string. For a local daemon it is the state directory, as today. For a remote daemon it is =/ssh:DESTINATION:STATE-DIR=. Everything that compares, stores or displays =goblins--directory= keeps working unchanged, including the status buffer name and the pin table.
+
+Three helpers turn a key into what a call site needs. Put them in =emacs/goblins.el= near =goblins--default-directory=.
+
+#+begin_src elisp
+(defun goblins--daemon-destination (directory)
+  "The ssh destination of daemon DIRECTORY, or nil for a local daemon."
+  (when-let* ((host (file-remote-p directory 'host)))
+    (let ((user (file-remote-p directory 'user)))
+      (if user (concat user "@" host) host))))
+
+(defun goblins--daemon-arguments (directory)
+  "The CLI arguments that select daemon DIRECTORY."
+  (let ((destination (goblins--daemon-destination directory))
+        (program (plist-get (cdr (goblins--endpoint directory)) :program)))
+    (append (and destination (list "--host" destination))
+            (and destination program (list "--remote-program" program))
+            (list "--state-dir" (file-local-name directory)))))
+
+(defun goblins--host-file (directory path)
+  "PATH, a file on the machine of daemon DIRECTORY, as an Emacs file name."
+  (concat (or goblins--file-prefix-override (file-remote-p directory) "") path))
+#+end_src
+
+- =file-remote-p= with an identification does not open a connection.
+- =goblins--endpoint= returns the entry of =goblins-endpoints= whose key equals =DIRECTORY=, or nil.
+- =goblins--file-prefix-override= is an internal variable, nil by default. The tests bind it to the empty string, so a fake remote daemon's files are read locally and no real ssh connection is attempted.
+
+Every place that runs the CLI for a daemon builds its command as =goblins-executable= followed by =(goblins--daemon-arguments DIRECTORY)= and the subcommand words. No place in Emacs runs ssh itself or quotes for a shell.
+
+** Endpoints
+
+#+begin_src elisp
+(defcustom goblins-endpoints nil
+  "Named Goblins daemons, as a list of (NAME . PLIST).
+PLIST has :host (an ssh destination; absent for a daemon on this machine),
+:state-dir (the daemon's state directory there; required with :host) and
+:program (the goblins executable there; with :host only, default \"goblins\")."
+  :type '(alist :key-type string :value-type plist))
+#+end_src
+
+#+begin_src elisp
+(setq goblins-endpoints
+      '(("buildbox" :host "buildbox" :state-dir "/run/user/1000/goblins")
+        ("scratch"  :state-dir "/run/user/1000/goblins-dev/state")
+        ("big"      :host "hans@big.example" :state-dir "/var/lib/goblins"
+                    :program "/home/hans/.nix-profile/bin/goblins")))
+#+end_src
+
+- The key of an entry is =(directory-file-name (expand-file-name STATE-DIR))= without =:host=, and =(concat "/ssh:" HOST ":" (directory-file-name STATE-DIR))= with it. An entry with =:host= and no absolute =:state-dir=, or with a =:host= containing =:=, =/= or whitespace, signals a =user-error= that names the entry when it is used.
+- There is no type field: an entry with =:host= is remote, one without is local.
+- User, port, jump hosts and connection sharing belong in =~/.ssh/config=, which ssh and TRAMP both read.
+- The default daemon needs no entry. With an empty list everything behaves as today.
+- Emacs connects to a daemon when it is first used, not at startup.
+
+=goblins--read-daemon PROMPT= replaces the five =read-directory-name "Goblins state directory: "= prompts (=goblins-status=, =goblins-workspace=, =goblins-messages=, =goblins-switch= and =goblins--choose-record=). It completes over the endpoint names and returns the chosen entry's key. Input that is not an endpoint name is taken as a state directory and returned through =expand-file-name=, so an unlisted local directory still works.
+
+=goblins--resolve-directory= (=emacs/goblins.el:1785=) chooses the daemon in this order: its argument; the buffer-local =goblins--directory=; when =default-directory= is remote and not a =/goblins:= name, the key of the first endpoint on the same machine; =goblins-state-directory=; the default. Two file names are on the same machine when =file-remote-p= gives them the same =host= and the same =user=; the TRAMP method is ignored. The places that spell out =(or goblins--directory goblins-state-directory (goblins--default-directory))= (lines 1618, 1693, 1710, and =goblins-tramp--state-directory= stays as it is) call =goblins--resolve-directory= instead.
+
+** The JSON-RPC connection
+
+=goblins--connect-now= (=emacs/goblins.el:1032=) replaces =make-network-process= with a process running the command for =rpc --stdio=. =jsonrpc-process-connection= couples the stderr buffer to the connection's name, so the process must be created exactly like this:
+
+#+begin_src elisp
+(let ((name (format "goblins %s" goblins--directory))
+      (command (cons goblins-executable
+                     (append (goblins--daemon-arguments goblins--directory)
+                             '("rpc" "--stdio")))))
+  (make-instance
+   'jsonrpc-process-connection
+   :name name
+   :process (lambda ()
+              (let ((default-directory (expand-file-name "~/")))
+                (make-process
+                 :name "goblins" :command command
+                 :connection-type 'pipe :coding 'binary :noquery t
+                 :stderr (get-buffer-create (format "*%s stderr*" name)))))
+   …))
+#+end_src
+
+- Without =:stderr= the client's messages would be mixed into the JSON stream. jsonrpc renames the buffer to the hidden = *goblins DIRECTORY stderr*=.
+- A failure to connect no longer raises in =make-network-process=. The process starts, prints a message and exits, and =:on-shutdown= runs. When the connection shuts down before =goblins--subscription= was set, the notice is =Cannot connect: = followed by the last non-empty line of the stderr buffer, or =Disconnected= when it is empty. The existing reconnect handling is otherwise unchanged.
+- The two loops that wait three seconds for the first snapshot (=goblins--connect= and =goblins--ensure-connected=) wait fifteen seconds when =(file-remote-p goblins--directory)= is non-nil, because a first ssh connection is slow.
+- =initialize= already answers an unsupported API version with =-32002= and Emacs already shows =Incompatible Goblins daemon=. Nothing more is needed for a version mismatch.
+
+** Server commands and one-shot CLI calls
+
+- =goblins--server-command= (=emacs/goblins.el:901=) builds its command from =goblins--daemon-arguments=. =server start= redirects the daemon's output to its log, so ssh returns when the command does.
+- =goblins-tramp--cli= (=emacs/goblins-tramp.el:64=) does the same.
+- =goblins--configurations= (=emacs/goblins.el:1504=) takes the daemon key as an argument, runs =configurations= for it with =call-process= from the home directory instead of =process-file=, and returns the remote manifest path unchanged. Its callers (=goblins-run=, =goblins-resume=, and any other the compiler shows) pass the daemon they launch on.
+
+** Terminals
+
+The three =ghostel-exec= calls (=goblins--open-terminal= at =emacs/goblins.el:1578=, =goblins-tramp--exec-shell= and =goblins-tramp--attach-terminal= at =emacs/goblins-tramp.el:678= and =:701=) pass =(goblins--daemon-arguments DIRECTORY)= in place of ="--state-dir" DIRECTORY=. Ghostel gives the client a terminal, so the CLI passes =-t= to ssh and the remote client attaches as it does locally. Resizes reach the remote client as window size changes.
+
+Ghostel runs its program through TRAMP when the buffer's =default-directory= is remote. =goblins--open-terminal= therefore sets the buffer's =default-directory= to the home directory before =ghostel-exec= and to the goblin's directory after it, as =goblins-tramp--open-buffer= already does.
+
+** Sandbox files and commands
+
+The TRAMP method (=emacs/goblins-tramp.el:144=) gets two optional argument groups in front, and the state directory becomes the local part of the pin's directory:
+
+#+begin_src elisp
+(tramp-login-args (("--host" "%H") ("--remote-program" "%P")
+                   ("--state-dir" "%D") ("exec") ("--tty=auto")
+                   ("--instance" "%I") ("--session" "%S")
+                   ("%h") ("--") ("%l")))
+#+end_src
+
+- =tramp-extra-expand-args= gains =?H= (the destination of the pin's directory, or the empty string) and =?P= (the endpoint's =:program= when the daemon is remote, else the empty string). =?D= becomes =(file-local-name DIRECTORY)=.
+- TRAMP drops an argument group in which any word expands to the empty string (=tramp-expand-args=, TRAMP 2.8.2), so a local daemon's login command is exactly today's.
+- =goblins-tramp--process-file= (=emacs/goblins-tramp.el:375=) builds its arguments from =goblins--daemon-arguments= of the pin's directory.
+- =goblins-pin-host= (=emacs/goblins.el:1296=) is called by the daemon through =emacsclient= with the daemon's own state directory, which is not the key of a remote daemon. Before storing the pin it replaces =DIRECTORY= with the =goblins--directory= of the status buffer whose =goblins--instance= equals =INSTANCE=, when there is one. Instances are 128 random bits, so the match is unambiguous.
+
+** Launching and host paths
+
+=goblins-run= (=emacs/goblins.el:1601=):
+
+- It refuses only a =/goblins:= directory. The check for other remote directories is removed.
+- The daemon is =(goblins--resolve-directory)=. The launch directory and the daemon must be on the same machine (the rule under [[*Endpoints][Endpoints]]; a local name and a local daemon are on the same machine). Otherwise it signals =No Goblins endpoint for HOST; add one to goblins-endpoints= when the directory is remote, and =DIRECTORY is not on this server's machine= when the daemon is remote and the directory is local.
+- =sessions.start= receives =:cwd= and =:dev_shell= through =file-local-name=. The terminal's directory stays the full Emacs file name.
+
+Host paths that Emacs turns into file names go through =goblins--host-file= with the daemon's key:
+
+| Place | Change |
+|-------+--------|
+| =goblins--agent-directory= and =goblins--follow-worktrees= (=emacs/goblins.el:1425=, =:1437=) | The directory from =goblins--session-directory= is prefixed before it becomes =default-directory=. =goblins--session-directory= itself keeps returning the daemon's path. |
+| =goblins-resume= (=emacs/goblins-completion.el:358=) | The record's =cwd= is prefixed before it becomes the terminal's directory. |
+| =goblins-host-job-log= (=emacs/goblins-views.el:141=) | The log path is prefixed. For a remote file the buffer also sets =auto-revert-remote-files= to t locally. |
+| =goblins--worktree-folder=, =goblins--worktree-path=, =goblins-run-with-worktree= (=emacs/goblins.el:1660= to =:1730=) | The folder is prefixed for =file-directory-p=, =make-directory=, =directory-files= and =goblins-run=. The path given to =git worktree add= goes through =file-local-name=. Git already runs on the remote machine, because =process-file= follows =default-directory=. |
+| =goblins--session-integration= (=emacs/goblins.el:457=) | See below. |
+| Callers of =goblins--sidebar-project= (=emacs/goblins-workspace.el:171=) | They pass the prefixed directory. The function already returns nil for a remote one. |
+
+Paths that are only displayed (the raid and status views) stay as the daemon gives them.
+
+=goblins--session-integration= reads a manifest during rendering, so it must never open an ssh connection. It takes the status buffer's key, prefixes the manifest path, and binds =non-essential= to t around the read, which makes TRAMP refuse to connect instead of prompting. =goblins--read-integration= returns the symbol =unread= when the read signals an error, and that result is not cached, so the icon appears on a later render once TRAMP has a connection. The cache key gains the daemon key.
+
+** Open-in-editor
+
+The daemon runs the configured =emacsclient= on its own machine (=packages/daemon/src/controller/editor.rs=). No code changes besides the =goblins-pin-host= rule above. The user forwards the Emacs server socket to the remote machine in =~/.ssh/config=, for example:
+
+#+begin_example
+Host buildbox
+  RemoteForward /run/user/1000/emacs/server /run/user/1000/emacs/server
+#+end_example
+
+The remote =emacsclient= then reaches the local Emacs, which opens the =/goblins:= names through the pinned remote daemon. This was not tried during planning (the planning sandbox has no ssh). It is checked by hand in step 5 and documented as optional, with one warning: anything running as that user on the remote machine can then evaluate Lisp in the local Emacs.
+
+** Lifecycle
+
+=server start= and =stop= go through the same arguments as every other command. A daemon started over ssh loses its default state directory when the user's last session ends, unless lingering is enabled (=loginctl enable-linger=) or =--state-dir= is outside =$XDG_RUNTIME_DIR=. This is documentation only.
+
+* Steps
+
+Each step is one change with its own review and commit, in this order. Before presenting a step, choose the feature tasks with =just test-plan --changed master= and run them as =AGENTS.md= says. Python suites that start sessions do not run inside a goblin; run them with =goblin host run=.
+
+** Step 1: =goblins rpc --stdio=
+
+1. =packages/daemon/src/cli.rs=: =Command::Rpc= becomes ={ stdio: bool, method: Option<String>, params_json: Option<String> }=. =--stdio= conflicts with both positional arguments, and both are required without it (=required_unless_present = "stdio"=).
+2. =packages/daemon/src/host.rs=: add =pub fn relay(socket: UnixStream, input: impl Read + Send + 'static, output: impl Write + Send + 'static) -> io::Result<()>=. One thread copies =input= to the socket and one copies the socket to =output=, each with a 64 KiB buffer. The output side calls =flush= after every write: Rust's standard output is line-buffered and JSON-RPC frames have no trailing newline. Each thread reports on a channel when its source reaches end of file or a write fails, and =relay= returns after the first report.
+3. =packages/daemon/src/main.rs=: with =--stdio=, connect to =state.join("host.sock")= with the error text =Client::connect= uses, call =relay= with standard input and output, and return 0. The process then exits through =main=, which ends the thread still blocked on the other side.
+4. Tests, in Rust: =relay= over =UnixStream::pair()= passes bytes both ways without a newline at the end, returns when the input ends, and returns when the socket closes. One test against =fake_daemon.rs= sends an =initialize= frame through the CLI function and reads the reply.
+5. Documentation: =docs/USAGE.org= where =goblins rpc= is described, and the sentence about =goblins rpc= in =docs/API.org= (line 38).
+
+** Step 2: =--host=
+
+1. =packages/daemon/src/cli.rs=: add the global options =--host DESTINATION= and =--remote-program PROGRAM= (=requires = "host"=) to =Cli=.
+2. New =packages/daemon/src/remote.rs=, declared in the crate, with three pure functions and one that does not return on success:
+   - =quote(word: &str) -> String=, the rule under [[*The CLI: =--host= and =--remote-program=][The CLI]].
+   - =forwarded(args: &[String]) -> Vec<String>=, which removes the three options as described there.
+   - =command(destination, program, args, terminal: bool) -> Result<Vec<String>>=, which returns the ssh arguments (=-t= or =-T=, the destination, the quoted program, the quoted arguments) and refuses a bad destination.
+   - =run(…) -> io::Error=, which reads =GOBLINS_SSH=, decides =terminal= with =isatty= on descriptors 0 and 1, and replaces the process with =std::os::unix::process::CommandExt::exec=.
+3. =packages/daemon/src/main.rs=: in =main=, after =Cli::parse()= and before =execute=, when =host= is set, collect =std::env::args()= without the first, and call =remote::run=. Arguments that are not UTF-8 are an error.
+4. New =tests/fake-ssh=, executable, used wherever a test needs a remote daemon:
+   #+begin_src sh
+   #!/bin/sh
+   # Stands in for ssh in tests: same argument shape, same word joining, no network.
+   while [ $# -gt 0 ]; do case "$1" in -t|-T) shift ;; *) break ;; esac; done
+   shift
+   exec sh -c "$*"
+   #+end_src
+5. Tests, in Rust (=remote.rs=): =quote= for the empty word, a plain word, and the planning example; =forwarded= for both option forms, for =--runtime=, and for an =exec= command line that has =--host= after =--=; =command= for both terminal values and for a destination starting with =-=.
+6. Tests, in Python: new =tests/test_remote.py= with one workflow, =test_manage_a_goblin_on_another_machine_from_the_cli=. It starts a =Daemon=, sets =GOBLINS_SSH= to =tests/fake-ssh=, and runs the app wrapper as =APP --host fake --remote-program APP --state-dir STATE …=:
+   - =list= shows a goblin the test started.
+   - =exec NAME -- sh -c 'printf %s "$1"' sh WORD= prints =WORD= exactly, for the planning example word.
+   - =rpc --stdio= as a subprocess answers =initialize= and =state.subscribe=, delivers a =state.changed= notification when the test starts a second goblin, and exits 0 when its input is closed.
+   - =attach NAME= in a pty shows the goblin's terminal, using the helpers =tests/test_attachment.py= uses.
+7. =tests/features.toml=: new feature =remote= with =python = ["test_remote"]=, =checks = ["rust"]= and =paths = ["packages/daemon/src/remote.rs", "tests/fake-ssh"]=. Run =just test-feature-check=.
+8. Documentation: a new section "Goblins on another machine" in =docs/USAGE.org= covering =--host=, =--remote-program=, the need for key or agent authentication (a command without a terminal cannot ask for a password), connection sharing (=ControlMaster=, =ControlPersist=) and lingering. Add a row for the ssh hop to the channel table in =docs/architecture/components.org=.
+
+** Step 3: Emacs connects through the CLI
+
+1. =emacs/goblins.el=: add =goblins-endpoints=, =goblins--file-prefix-override=, =goblins--endpoint=, the three helpers, the endpoint key function and =goblins--read-daemon=. Change =goblins--resolve-directory= and the five prompts.
+2. Change =goblins--connect-now=, the two waiting loops, =goblins--server-command= and =goblins-tramp--cli= as described under [[*The JSON-RPC connection][The JSON-RPC connection]] and [[*Server commands and one-shot CLI calls][Server commands]].
+3. Tests, ERT without a daemon: the helpers for a local key, a remote key with and without a user, and an endpoint with =:program=; endpoint validation; =goblins--resolve-directory= from a remote =default-directory= with and without a matching endpoint. Adjust existing tests that expect a socket connection or the old command lines.
+4. Tests, live: =tests/test_emacs.py= exports =GOBLINS_SSH= as =tests/fake-ssh= to the Emacs it starts. The scenario that already uses =GOBLINS_TEST_OTHER_STATE= binds =goblins-endpoints= to =(("other" :host "fake" :state-dir OTHER :program APP))= and =goblins--file-prefix-override= to the empty string, connects to the key =/ssh:fake:OTHER=, and sees the goblin =gribble= that the suite started on the other daemon.
+5. Documentation: =emacs/README.org= describes =goblins-endpoints= and choosing a daemon.
+
+** Step 4: terminals, TRAMP, launching and files
+
+1. Terminals and TRAMP as under [[*Terminals][Terminals]] and [[*Sandbox files and commands][Sandbox files and commands]].
+2. Launching and host paths as under [[*Launching and host paths][Launching and host paths]].
+3. Tests, ERT without a daemon: =goblins--host-file= with and without the override; the launch checks of =goblins-run= for a local directory on a remote daemon and a remote directory without an endpoint; =goblins-pin-host= replacing the directory by instance.
+4. Tests, live, in the same scenario as step 3, against the fake remote daemon: attach to =gribble='s agent terminal; open a shell with =goblins-shell=; write a file through its =/goblins:= name and read it back with =exec=; launch a goblin with =goblins-run= from the remote status buffer and stop it.
+5. Documentation: =emacs/README.org= (launching from a remote directory, the limits listed under [[*Out of scope][Out of scope]]).
+
+** Step 5: check against a real machine
+
+The suites cannot cover real ssh. Write the checklist below into =docs/USAGE.org= as the setup instructions, then ask the user to run it against a real remote machine and report. Do not mark the work done before that. If a check fails, report what happened to the user instead of working around it.
+
+- =goblins --host HOST list= works from a shell, with the remote login shell being fish.
+- The status buffer of a remote endpoint connects, shows approvals, and a decision reaches the daemon.
+- An agent terminal attaches, resizes with the window, and can be attached again after the ssh connection is killed.
+- =goblins-dired= and Magit work inside a remote goblin, and a language server started over =/goblins:= gets a clean stream.
+- =goblins-run= from a =/ssh:HOST:= project directory launches there, and Magit in the agent terminal works on the remote checkout.
+- A host-job log opens and follows the file.
+- With a large state (many goblins), the connection stays up on a slow link. The daemon drops a subscriber that reads too slowly.
+- With the =RemoteForward= line, =goblins-editor= in a remote goblin opens the file in the local Emacs.
+- After logging out of the remote machine with lingering enabled, the daemon and its goblins are still there.
