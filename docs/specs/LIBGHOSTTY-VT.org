@@ -1,83 +1,267 @@
 #+title: Terminal emulation with libghostty-vt
 
-Status: planned, 2026-11-15. Nothing is implemented. Inspired by the Rex multiplexer, which keeps terminal state on its server with libghostty and brings a client up to date with a binary snapshot.
+Status: planned, 2026-11-15. Nothing is implemented. Implementation waits for a release of the Rust bindings that covers libghostty-vt 1.0 (see [[*Before you start][Before you start]]).
+
+This is a handoff document. It is written so that an implementer who was not part of the planning can carry it out step by step. Read it whole before starting, and follow =AGENTS.md= for testing, review and commits.
 
 * Context
 
-Terminal emulation lives in the per-goblin supervisor, not the daemon. =libs/supervisor/src/screen.rs= wraps the =vt100= crate and serves only the named terminals of [[file:SANDBOX-TERMINALS.org][SANDBOX-TERMINALS.org]], which the code calls panes. The main agent terminal (=libs/supervisor/src/terminal.rs=) has no emulator: while detached it keeps the newest 64 KiB of raw PTY bytes, cut at an arbitrary byte, and replays them on attach without restoring modes, the alternate screen or the cursor.
+Terminal emulation lives in the per-goblin supervisor (crate =libs/supervisor=, binary =goblins-supervisor-bwrap=), not in the daemon. =libs/supervisor/src/screen.rs= wraps the =vt100= crate and serves only the named terminals of [[file:SANDBOX-TERMINALS.org][SANDBOX-TERMINALS.org]] (=goblin terminal create=), which the code calls panes. The main agent terminal (=libs/supervisor/src/terminal.rs=) has no emulator: while detached it keeps the newest 64 KiB of raw PTY bytes (=CAP=), cut at an arbitrary byte, and replays them on attach without restoring modes, the alternate screen or the cursor.
 
-libghostty-vt reached a stable 1.0 on 2026-11-06. It is the engine ghostel renders with, it answers terminal queries itself, it can format a screen as VT text, and it can encode the whole terminal state as a binary snapshot. Ghostel 0.64 and later can restore such a snapshot into a terminal that has no process.
+libghostty-vt reached a stable 1.0 on 2026-11-06. It is the engine ghostel renders with. It answers terminal queries itself, formats a screen as VT text, and encodes the whole terminal state as a binary snapshot. Ghostel 0.65 can restore such a snapshot into a terminal that has no process. The Rex multiplexer works this way (snapshot on attach, then raw PTY bytes), and [[https://github.com/dakra/rexel][rexel]], by ghostel's author, is an Emacs client for it.
 
 * Outcome
 
 One emulator, libghostty-vt, behind both the named terminals and the main agent terminal, with two ways to bring a frontend up to date on attach.
 
 - VT replay, the default. The supervisor writes VT text that redraws the screen, then raw bytes. It works in any terminal, and the Python suites that drive the CLI in a pty keep working unchanged.
-- Snapshot replay, with =--snapshot= on the attach commands. The supervisor writes a binary snapshot, then raw bytes. It is for ghostel, which decodes the snapshot itself; a plain terminal, the Ghostty application included, cannot take one.
+- Snapshot replay, with =--snapshot= on the attach commands. The supervisor writes a binary snapshot, then raw bytes. It is for ghostel, which decodes the snapshot itself. A plain terminal, the Ghostty application included, cannot take one.
 
-* Decisions
+* Decisions already made
 
-- The Rust binding is [[https://github.com/Uzaaft/libghostty-rs/][Uzaaft/libghostty-rs]] (=libghostty-vt= and =libghostty-vt-sys=), the one Ghostty's author promotes.
-- Both the named terminals and the main agent terminal move to the new emulator, in separate steps.
-- VT replay stays the default and snapshot replay is opt-in, because the existing tests and any plain terminal need VT.
+Do not reopen these; ask the user if one turns out to be impossible.
 
-* Unverified assumptions
+- The Rust binding is [[https://github.com/Uzaaft/libghostty-rs/][Uzaaft/libghostty-rs]] (crates =libghostty-vt= and =libghostty-vt-sys=), the one Ghostty's author promotes. No other crate, no in-repo binding.
+- Named terminals and the main agent terminal both move to the new emulator, as separate steps and commits.
+- VT replay stays the default; snapshot replay is opt-in per attach command.
+- While a frontend is attached it answers the program's terminal queries, in both replays. The supervisor answers only while nobody is attached. This is today's rule and it stays.
+- No backward compatibility is needed: the project is experimental. Old wire forms and their tests may be dropped when they are in the way.
+- Keep it simple. Fix real defects; do not add machinery because a reviewer suggests it.
 
-Step 0 settles these. If one fails, stop and report before step 1.
+* Out of scope
 
-- =libghostty-rs= covers libghostty-vt 1.0.x with the terminal, formatter and snapshot APIs. Its last published release seen during planning, 0.2.2, predates 1.0 and showed no snapshot module; if its main branch lacks one too, snapshot replay needs it added upstream or a small addition on the =-sys= crate.
-- The formatter or grid references can read scrollback, which =read --recent=, =wait= and the VT replay need. The header only promises the active screen.
-- The binding's types are neither =Send= nor =Sync=, so the supervisor must touch each terminal from one thread.
-- A snapshot encoded by our build decodes in ghostel's build at the same libghostty-vt version.
+- =goblins exec -t= shells (=packages/daemon/src/exec.rs=), the server-mode log (=libs/supervisor/src/server_log.rs=) and the terminals of onAttach clients (=Terminal::client=) stay unemulated.
+- No =read=, =send= or =wait= for the main agent terminal.
+- No in-band control messages, no reconnect or resume, no several frontends on one terminal. Rexel has all three; we need none.
+- Replacing =key_bytes= (=libs/runtime/src/terminal.rs=) with libghostty's key encoder.
 
-* Steps
+* Before you start
 
-Each step is one commit, made after its review.
+1. Check that =libghostty-vt= on crates.io has a release that builds against libghostty-vt 1.0.x and has a =snapshot= module (=Terminal::encode_snapshot=, =snapshot::Decoder=). During planning the newest release was 0.2.2 from 2026-09-28, which predates 1.0 and has neither; the repository's main branch (commit =483ea3d=, 2026-11-14) pinned =vt-1.0.1= and had both. If there is still no such release, stop and tell the user. A git dependency is possible but needs =cargoLock.outputHashes= in =nix/builders/rust.nix=, so only use one if the user says so.
+2. Check the crate's minimum Rust version against =nix develop --command rustc --version=. At planning time the crate needed Rust 1.96 and the shell had 1.95.0. If the toolchain is too old, bumping the pinned =nixpkgs= in =flake.nix= is its own change, with its own review, full test gate and commit, before step 0.
+3. Create a worktree or continue on the branch =libghostty-vt=, which holds this document.
 
-** 0. Build spike
+The API names below were read from the binding at commit =483ea3d=. It was still changing weekly then, so check each name against the released version's documentation and adjust; the behaviour asked for here is what counts, not the names.
 
-- Add libghostty-vt 1.0.x to =flake.nix= from the Ghostty flake at its =vt-= tag; nixpkgs carried a pre-1.0 commit during planning. The build needs Zig 0.17.
-- Extend =nix/builders/rust.nix= with optional native and build inputs, pass them from the supervisor packages, and add them to the development shell. This is the repository's first native dependency.
-- Add the binding to =libs/supervisor/Cargo.toml= with one test: feed bytes, format as text, encode a snapshot, decode it into a second terminal, compare.
-- Resolve the assumptions above.
+* Reference: the binding (as of =483ea3d=)
 
-** 1. Named terminals on libghostty-vt
+#+begin_src rust
+use libghostty_vt::{Terminal, fmt::{Formatter, Format, Extras}, mode::Mode, point::{Point, Coordinate}};
 
-=Screen= is already a facade, so its public API stays and =vt100= goes. This step changes no wire format.
+let mut t = Terminal::new(cols, rows)?;          // NOTE: cols first. Goblins passes (rows, cols) everywhere.
+t.on_pty_write(|_term, bytes: &[u8]| { /* query replies for the PTY */ })?;
+t.vt_write(bytes);                               // feed program output
+t.resize(cols, rows, cell_width_px, cell_height_px)?;   // reflows the primary screen
+t.set_scrollback_max_lines(Some(n))?;
+t.set_continuation_max_bytes(n)?;                // needed before input, for snapshots taken mid-sequence
+t.rows()?; t.cols()?; t.cursor_x()?; t.cursor_y()?; t.is_cursor_pending_wrap()?;
+t.active_screen()?;                              // screen::Screen::{Primary, Alternate}
+t.mode(Mode::BRACKETED_PASTE)?; t.mode(Mode::DECCKM)?;
+t.total_rows()?; t.scrollback_rows()?;
+t.grid_ref(Point::Screen(Coordinate { x, y }))?; // .row()?.is_wrapped()?, .cell()?, .graphemes(&mut buf)?
+t.encode_snapshot(&mut writer)?;                 // binary snapshot, starts with b"GHOSTSNP"
 
-- Feeding and queries: =feed= writes into the libghostty terminal and =take_replies= drains what the =WRITE_PTY= callback collected. Replies still reach the PTY only when nobody is attached.
-- Resize uses the library's resize, and the scratch-parser shrink hack goes. This changes behaviour: the primary screen reflows.
-- Text reads: =visible=, =recent=, =find= and =last_lines= use the plain-text formatter. The caps and limits in =libs/runtime/src/terminal.rs= stay.
-- Input: the bracketed-paste and application-cursor modes are read from the terminal. =key_bytes= stays as it is.
-- Redraw uses the formatter's VT output, a scrollback pass and then the active screen with its extras. The hand-built cursor and pending-wrap code goes.
-- The =screen.rs= tests are rewritten against the new engine: round trip through a second =Screen=, pending wrap, wide characters, resize in the middle of a sequence, multibyte text, and what is now answered to queries.
+let mut f = Formatter::new(&t)?;                 // "a terminal's active screen"
+f.set_format(Format::Vt)?.set_extras(extras)?;   // also Format::Plain, set_unwrap, set_trim
+let bytes = f.format_alloc(None)?;
 
-** 2. The main agent terminal
+let restored = libghostty_vt::snapshot::Decoder::new_buf(&snapshot)?.decode()?;
+#+end_src
 
-- The main PTY terminal gets a =Screen=, at the default size until the first hello. The server-mode log pipe and the terminals of onAttach clients stay unemulated.
-- It then behaves like a named terminal: it always reads, answers queries while detached, redraws on attach, then resizes and makes the program repaint.
-- This removes the backpressure before the first attachment and the 64 KiB tail. The tail tests in =terminal.rs= become tests of screen restoration.
+- Other callbacks exist (=on_device_attributes=, =on_xtversion=, =on_title_changed=, =on_clipboard_write= and more). Register only what a step asks for.
+- =Terminal= carries two lifetimes and is neither =Send= nor =Sync=. Store it as =Terminal<'static, 'static>= with callbacks that own their state (for example an =Rc<RefCell<Vec<u8>>>= for replies).
+- Building: the crate's =pkg-config= feature links an installed =libghostty-vt= (static by default) instead of compiling Ghostty with Zig in the build script. Use that feature; a Nix build has no network for the default path.
+- The snapshot format is versioned separately from the library's ABI. Encoder and decoder must come from the same libghostty-vt version.
 
-** 3. Snapshot replay on the wire and the CLI
+* Reference: ghostel's bridged terminal (0.65.0)
 
-- =attach.hello= gains an optional =replay= parameter, ="vt"= (default) or ="snapshot"=. The schema in =libs/api/schema/=, =docs/API.org= and the generated readers change in the same commit.
-- The daemon carries it to the supervisor, which queues either the VT redraw or a new =Screen::snapshot()=.
-- Framing after the ={"attached":true}= reply: a 4-byte big-endian length, the snapshot, then raw output as today.
-- =goblins attach= and =goblins terminal attach= gain =--snapshot=. With it the CLI copies the stream to its standard output unchanged, reads input from its standard input without needing a tty, and leaves resizing to the client's =sessions.resize= or =terminals.resize= call.
-- Tests that need no Emacs: Rust unit tests that decode the snapshot in a second terminal and keep feeding both, and a small headless client in the Rust host tests that runs =attach --snapshot= and dumps the screen as text.
+#+begin_src elisp
+(ghostel-make-terminal BUFFER-OR-NAME :size '(COLS . ROWS) :send FN :resize FN)
+;; Makes a terminal without a process and returns its buffer.
+;; SEND gets outbound bytes (typed input and query replies) as one unibyte string.
+;; RESIZE gets (COLS . ROWS) fitting the buffer's windows, also when unchanged.
+;; After creation only `ghostel-set-size' resizes the terminal.
+(ghostel-restore-snapshot DATA)   ; unibyte string; call before the terminal has seen any output
+(ghostel-write-output BYTES)      ; unibyte program output; replies go to SEND
+(ghostel-set-size '(COLS . ROWS))
+(ghostel-end-terminal)            ; the other side is gone; the buffer stays as a read-only snapshot
+#+end_src
 
-** 4. Ghostel bridge in Emacs
+=lisp/rexel.el= in rexel shows all of these in use (=rexel--attach-block-buffer=, =rexel--restore-snapshot=, =rexel--on-live-bytes=). Rexel passes a second argument to =ghostel-write-output= to drop replies because its server answers queries; we do not pass it.
 
-- A =goblins-terminal-snapshot= option, off by default. When on, Emacs runs the CLI with =--snapshot= as a pipe process and bridges it to =ghostel-make-terminal=, =ghostel-restore-snapshot= and =ghostel-write-output=; typed input goes to the process and window sizes go to the resize calls.
-- The flake's test Emacs needs ghostel 0.64 or later. A user's own Emacs needs the same before turning the option on.
-- One ERT smoke test that attaches with the option and checks the restored buffer text, then a live check through the =just emacs= setup.
+* Step 0: build spike
 
-* Documentation
+Goal: the supervisor crate links libghostty-vt and one test proves the APIs this plan depends on. No behaviour changes.
 
-=docs/API.org= in step 3, [[file:SANDBOX-TERMINALS.org][SANDBOX-TERMINALS.org]] in steps 1 to 3 (what a reattach restores, reflow on resize, the main terminal no longer being a byte tail), =emacs/README.org= in step 4, and =tests/features.toml= for new tests.
+1. =flake.nix=: add the Ghostty flake as an input, pinned to the commit the chosen =libghostty-vt-sys= release builds against (=GHOSTTY_COMMIT= in its =build.rs=; =108cacb17ed8990840cd14abfce43d8ed8503ca1= for =vt-1.0.1=). Take its =libghostty-vt= package for =x86_64-linux=. Check the attribute name with =nix flake show=; the planning research found =libghostty-vt= but did not build it. nixpkgs' own =libghostty-vt= was a pre-1.0 commit at planning time; use it only if it has caught up to the same version.
+2. =nix/builders/rust.nix=: add optional =nativeBuildInputs ? [ ]= and =buildInputs ? [ ]= arguments and pass them to =buildRustPackage=. In =libs/supervisor/default.nix= and =packages/supervisor-bwrap/default.nix= pass =pkgs.pkg-config= and the library. Find any other derivation that compiles =libs/supervisor= (search the =.nix= files for =libs/supervisor= and =testPackages=) and give it the same inputs.
+3. Development shell in =flake.nix=: add =pkgs.pkg-config= and the library, so =cargo build= works inside =nix develop=.
+4. =libs/supervisor/Cargo.toml=: add =libghostty-vt= with =default-features = false= and =features = ["pkg-config"]= (add back any default feature the build turns out to need). Keep =vt100= for now. Update =Cargo.lock=.
+5. Add =libs/supervisor/src/ghostty_spike.rs= as a =#[cfg(test)]= module with tests that settle the questions below. The file is deleted again in step 1; its findings go into the commit message and, where they change this plan, into this document.
 
-* Verification
+Questions the spike must answer, each with a test:
 
-- Per step: =just test-plan --changed master=, then the listed feature tasks in one run. Steps 2 and 3 touch shared protocol and lifecycle code and will likely need =full=.
-- Before merge: =just test-merge= on the final candidate.
-- By hand: start a goblin detached, let the agent draw a full-screen interface, then attach in ghostel with and without the option, detach, reattach and resize. The screen, the cursor and the input modes come back.
+- Query replies: feed =\x1b[c= (device attributes), =\x1b[5n= and =\x1b[6n=. Which of them reach =on_pty_write= with no other callback registered? A shell (fish in particular) waits at startup for the device attributes reply, so that one must be answered: if it needs =on_device_attributes=, note the callback and what to return (today's answer is =\x1b[?62;22c=).
+- Scrollback text: write 200 numbered lines into a 10-row terminal. Can they all be read back, oldest first, through =grid_ref(Point::Screen(..))= and =Row::is_wrapped=? Does a =Formatter= with =Format::Plain= include the scrollback or only the active area?
+- VT replay: does =Format::Vt= output include the scrollback? Feed its output into a second terminal and compare the plain text, the cursor position and the =BRACKETED_PASTE= and =DECCKM= modes. Try it on the alternate screen as well. Note whether the title, the cursor shape (DECSCUSR) and synchronized output (mode 2026) need handling; zmx found the first two missing and turns the third off by hand.
+- Resize: does =resize= accept =0= for the cell size in pixels? If not, use a constant such as 8 by 16.
+- Snapshot: =encode_snapshot=, decode into a second terminal, compare as above. Then take a snapshot in the middle of an escape sequence (feed =\x1b[3= first) with =set_continuation_max_bytes= set, decode it, feed =1mX= to both, compare.
+- Threads: does the crate compile into the supervisor as is? If the compiler says a type must be =Send=, find where =Terminals= or =Terminal= crosses a thread (=libs/supervisor/src/worker.rs= spawns one) and report to the user before working around it.
+
+Verification: =nix develop --command cargo test -p goblins-supervisor ghostty_spike=, then =git add= every new file and run =nix flake check= (the flake builds from Git and ignores untracked files). =flake.nix=, =flake.lock= and =Cargo.lock= are broad paths, so the feature run is =full=.
+
+If a question has no workable answer, stop and report to the user with what you found.
+
+* Step 1: named terminals on libghostty-vt
+
+Goal: =Screen= uses libghostty-vt instead of =vt100=. Only =libs/supervisor/src/screen.rs= and =Cargo.toml= change in substance; =terminal.rs= and =terminals.rs= keep calling the same methods. No wire format changes.
+
+Keep this public API exactly (callers: =terminal.rs= lines around 176 to 267 and 437 to 442, =terminals.rs=):
+
+#+begin_src rust
+pub fn new(rows: u16, cols: u16) -> Self
+pub fn feed(&mut self, bytes: &[u8])
+pub fn take_replies(&mut self) -> Vec<u8>
+pub fn resize(&mut self, rows: u16, cols: u16)
+pub fn alternate(&self) -> bool
+pub fn size(&self) -> (u16, u16)                       // (rows, cols)
+pub fn visible(&self) -> Vec<String>
+pub fn recent(&mut self, want: usize) -> Vec<String>
+pub fn read(&mut self, source: Source, lines: Option<usize>) -> Value
+pub fn find(&mut self, matcher: &Matcher, lines: usize) -> Option<(String, bool)>
+pub fn last_lines(&mut self, lines: usize) -> (String, bool)
+pub fn input(&self, text: Option<&str>, keys: &[String]) -> Vec<u8>
+pub fn redraw(&mut self) -> Vec<u8>
+#+end_src
+
+Implementation, method by method:
+
+- =new=: create the terminal (mind the argument order), set the scrollback limit to =SCROLLBACK= lines (=libs/runtime/src/terminal.rs=, 5000), set =set_continuation_max_bytes= to 65536 (used in step 3), and register =on_pty_write= to append to a shared reply buffer. Register the device-attributes callback only if the spike showed it is needed. Constructors that can fail: the public =new= stays infallible, so =expect= with a message; allocation failure at this size is not a case to handle.
+- =feed= is =vt_write=. =take_replies= drains the reply buffer. Do not change the rule in =Terminal::tick= (=terminal.rs= around line 439) that replies reach the PTY only when no frontend is attached and the queue has room.
+- =resize=: return early when the size is unchanged, else call the library's =resize=. Delete the scratch-parser code. The primary screen now reflows; that is an intended behaviour change.
+- =alternate=: the active screen is the alternate one. =size=: =(rows, cols)= from the terminal.
+- Text reading: write one private helper that returns a row's text and whether it is soft-wrapped, from grid references. A wide character's spacer cell adds nothing; an empty cell is a space; trailing spaces are trimmed as =vt100= did (the existing tests pin the exact text).
+  - =visible=: the rows of the active area, one string per row, trailing blank rows dropped (=drop_blank=).
+  - =recent=: walk rows upwards from the last row of the whole screen (=Point::Screen=) until =want= logical lines are complete or the top is reached, joining soft-wrapped rows; on the alternate screen that is the screen alone. Do not format the entire scrollback on every call: =find= runs after every chunk of output while a =wait= is pending.
+  - =read=, =find=, =last_lines=, =cap=, =clip=, =drop_blank= and =Matcher= stay as they are.
+- =input=: read =Mode::BRACKETED_PASTE= and =Mode::DECCKM= from the terminal; keep the manual =\x1b[200~= and =\x1b[201~= wrapping and =terminal::key_bytes=.
+- =redraw=: =Formatter= with =Format::Vt=. On the alternate screen the output starts with =\x1b[?1049h=. On the primary screen the scrollback comes first, then the active area, in whatever way the spike found to work. Extras: modes, scrolling region, keyboard, Kitty keyboard, cursor, style, hyperlink, protection and character sets. Leave out =PALETTE= (it would overwrite the frontend's theme colours with the supervisor's defaults), =PWD= and =TABSTOPS=. Add by hand what the spike found missing. Delete =scrollback_formatted= and the hand-written cursor and pending-wrap code.
+- Remove =vt100= from =libs/supervisor/Cargo.toml= and the mention of it in the module comment. Delete =ghostty_spike.rs=.
+
+Tests in =screen.rs= (line 390 onwards):
+
+- Must pass unchanged, because they pin text behaviour: =generated_read_results_preserve_public_dimension_boundaries=, =visible_is_the_screen_without_trailing_blank_lines=, =recent_includes_scrollback_and_joins_wrapped_rows=, =recent_pages_through_more_scrollback_than_the_screen_holds=, =the_alternate_screen_is_read_like_the_visible_one=, =long_text_keeps_the_newest_lines_and_says_so=, =find_sees_the_newest_match_on_screen_and_in_scrollback=, =input_follows_the_modes_the_program_set=, =multibyte_text_reads_and_redraws_unchanged=, =single_characters_are_typed_after_the_text_and_never_pasted=. If one fails on a difference that is correct terminal behaviour, change the expectation and say so in the report; never delete an assertion to get a pass.
+- Keep the intent, adapt the expectation: =the_redraw_reproduces_the_screen_and_the_modes=, =the_redraw_keeps_a_pending_wrap=, =the_redraw_keeps_a_pending_wrap_after_a_wide_character=, =the_alternate_screen_redraw_enters_it_first= (all round-trip a redraw through a second =Screen=), =shrinking_keeps_the_newest_output_and_its_cursor= (now reflow: the newest output and the cursor's line stay visible, older lines are in =recent=), =a_resize_in_the_middle_of_a_sequence_does_not_cut_into_it=, =it_answers_the_device_attributes_status_and_cursor_position_queries= (the exact device-attributes bytes may change; the three queries must still be answered).
+- Replace =it_answers_nothing_else= with a test of what is answered now, for example a mode query (=\x1b[?2004$p=), so a later library upgrade that changes it is noticed.
+- Add: a redraw fed to a second =Screen= gives the same =recent(100)= as the original with scrollback present.
+- The tests in =terminals.rs= (from line 567) and =terminal.rs= (from line 502) must pass; some compare redraw bytes literally and need their expectations rewritten against a second =Screen=.
+
+Also update: =docs/specs/SANDBOX-TERMINALS.org= (the engine, reflow on resize, what a redraw now restores; today it lists scroll margins, origin mode and the saved cursor as not restored) and the pyte-side helpers in =tests/terminal_support.py= only if a Python suite fails on a legitimate difference.
+
+Verification: =just test-plan --changed master=; expect =full=. Run the Rust tier first (=just test-rust=), then the rest. By hand: =goblin terminal create=, run =htop= or =vim= in it, detach, reattach, resize the window.
+
+* Step 2: the main agent terminal
+
+Goal: the main PTY terminal has a =Screen= and behaves like a named terminal on attach and while detached.
+
+Where:
+
+- =libs/supervisor/src/terminal.rs=: add a method that gives an existing terminal a screen (the main terminal is built by =Terminal::new= or =from_listener= before its PTY exists, unlike =emulated=). Size: the stored =dimensions= if a resize arrived before the PTY, else =goblins_runtime::terminal::DEFAULT_SIZE=; check what size =libs/supervisor/src/worker.rs= opens the PTY with (=unix::pty(dimensions)=, around line 123) and use the same.
+- =libs/supervisor/src/terminals.rs=, =Terminals::started= (around line 342): in the branch that is not server mode, give the main terminal its screen before =main.io.master(master)=. The server branch (=ServerLog=) and =Terminals::process= (onAttach clients) stay as they are.
+- Move the redraw into =Terminal::attach= itself (queue =screen.redraw()= into =to_peer= when a screen exists) and drop the explicit =entry.io.redraw()= in =Terminals::attach= (around line 411). That also covers the legacy listener path inside =Terminal::tick=. Keep the order: redraw at the old size, then =resize=, then =winch()=. Change the two =if entry.pane.is_some()= conditions there to "the terminal has a screen", so the main terminal's program is made to repaint as well.
+
+What changes by itself, because =tick= and =refresh_peer= already branch on =self.screen.is_some()=:
+
+- The main terminal always reads its PTY, attached or not. The lossless backpressure before the first attachment and the 64 KiB tail are gone for it.
+- Queries are answered while nobody is attached.
+- A frontend that disconnects without a detach no longer marks the terminal =interrupted=.
+
+That last point is the risk in this step. Search for every use of =interrupted=, =connected=, =detached= and =can_evict= for =TerminalId::Main= in =libs/supervisor/src/engine.rs=, =libs/runtime= and =packages/daemon/src/controller/attach.rs=, and for what the daemon reports to a CLI whose terminal vanished (=wait_outcome= in =libs/api/src/terminal.rs=). Decide case by case whether the main terminal should keep the old meaning; when unsure, keep today's daemon-visible behaviour and only change what is replayed.
+
+Tests:
+
+- =terminal.rs=: =detached_output_is_bounded_and_connection_loss_allows_reattachment= and =detached_launch_drains_output_before_first_attachment= pin the tail. Keep them for an unemulated terminal if they still describe one (onAttach clients use that path); add the main-terminal versions: output while detached is on the screen after reattaching, a full-screen program's alternate screen and modes come back, and a program that exits while detached still shows its last screen and then completes.
+- =terminals.rs=: the main terminal answers a device-attributes query while detached and not while attached.
+- The Python suites =test_attachment=, =test_crashes=, =test_server= and both agent setup suites exercise this path; expect to adjust expectations that match raw replayed bytes.
+
+Also update =docs/specs/SANDBOX-TERMINALS.org= or the document that describes the agent terminal's detach behaviour (search =docs/= for "64 KiB" and "tail"), and =docs/API.org= where it describes what an attachment replays.
+
+Verification: =full=. By hand: start a goblin detached with Claude or Codex, wait for its interface, attach, detach, attach again, resize.
+
+* Step 3: snapshot replay on the wire and the CLI
+
+Goal: =goblins attach --snapshot= and =goblins terminal attach --snapshot= get a binary snapshot before the raw bytes.
+
+Wire, frontend to daemon (=attach.sock=):
+
+- =attach.hello= gains an optional fifth parameter =replay=, a string, ="vt"= (default) or ="snapshot"=. Edit =libs/api/schema/attach.openrpc.json= and the three =AttachHelloParams= entries in =libs/api/schema/common.json= (the object form, the positional form with =maxItems=, and the request constraints). Rust types are generated by =libs/api/build.rs=; run =just api-generate= for the Emacs readers and =just api-check=.
+- After the ={"attached":true}= reply frame, a snapshot attachment gets a 4-byte big-endian length and that many bytes of snapshot, then raw output as today. For a terminal without a screen (an onAttach client's) the length is 0 and the frontend restores nothing. A VT attachment is unchanged.
+
+Daemon to supervisor:
+
+- =Command::Attach= in =libs/runtime/src/lib.rs= (around line 208) gains =replay=, a two-variant enum defined beside it. It crosses the supervisor protocol: =SupervisorCommandAttachParams= in =common.json= and =supervisor.openrpc.json=, the encoder in =libs/runtime/src/supervisor.rs= (around line 513), the decoder in =libs/supervisor/src/supervisor_process.rs= (around line 216), and the queue logic in =libs/runtime/src/supervisor/outbound.rs=. The compiler finds the remaining match arms.
+- Daemon: =packages/daemon/src/controller/attach.rs= reads the hello (around line 229); carry =replay= in =Hello= beside =size= and =terminal= to both places that send =Command::Attach= (there and =packages/daemon/src/controller/terminals.rs= around line 204).
+- Supervisor: =Terminals::attach= and =Terminal::attach= take the replay. =Terminal::attach= queues either =screen.redraw()= or the length and =screen.snapshot()=; the legacy listener path always uses VT. Add =Screen::snapshot(&mut self) -> Vec<u8>= on =encode_snapshot=. The resize and =winch()= after it stay for both replays.
+
+CLI (=packages/daemon/src/cli.rs=, =attachment.rs=, =terminal.rs=, and =relay_with= in =libs/api/src/terminal.rs=):
+
+- =--snapshot= on =Attach= and on =terminal attach=, with =--size COLSxROWS=, which it requires. Add both to the help text, the fish completions in =cli.rs= and =docs/USAGE.org=.
+- With =--snapshot= the command is a byte bridge for a program, not for a person at a terminal: it does not require a tty, sends =replay: "snapshot"= and the given size in the hello instead of asking the tty, does not put the tty in raw mode, does not react to SIGWINCH and does not request the initial resize (=RESIZE.store(true)=). It copies the socket to standard output unchanged, so the first bytes it prints are the length and the snapshot, and standard input to the socket. End of input ends the command; the terminal goes on, as when a frontend closes today. The exit status and the outcome lookup stay as they are.
+- Messages for people, such as "Starting…", already go to standard error; make sure nothing else is written to standard output in this mode.
+- The frontend resizes with =sessions.resize= or =terminals.resize=, which exist.
+
+Tests:
+
+- =libs/supervisor/src/terminals.rs=: attach a pane with the snapshot replay over a =UnixStream::pair=, read the reply frame, the length and the snapshot, decode it with =snapshot::Decoder= into a second terminal and compare text, cursor and modes with the pane's screen. Then let the program print more, feed the raw bytes that follow into the decoded terminal, and compare again. The same for the main terminal. A terminal without a screen gives length 0.
+- =libs/runtime= and =libs/supervisor=: the =Command.Attach= wire tests (=libs/runtime/src/supervisor/tests.rs= around lines 113, 3209 and 3513) cover the new field in both values.
+- =packages/daemon=: a hello with =replay= is accepted and carried; an unknown value is refused as an invalid hello.
+- One Python workflow in =tests/test_terminals.py=: create a terminal, print a marker, run =goblins terminal attach --snapshot --size 80x24= with pipes, check that standard output starts with a 4-byte length followed by =GHOSTSNP=, send a command on standard input and see its output after the snapshot. Decoding is covered in Rust; Python only checks the workflow and the framing.
+
+Documentation in the same commit: =docs/API.org= (the hello parameter, the frame, which terminals give an empty snapshot, the supervisor command) and =docs/specs/SANDBOX-TERMINALS.org=. Keep =tests/features.toml= current (=just test-feature-check=).
+
+Verification: =full=.
+
+* Step 4: ghostel bridge in Emacs
+
+Goal: with an option set, agent and named-terminal buffers are ghostel bridged terminals fed by =goblins … --snapshot=.
+
+1. Ghostel 0.65 or later in the flake's test Emacs (=testEmacs= in =flake.nix=, from =nixpkgs-unstable=). Update that input if its ghostel is older; if nixpkgs has not caught up, override the package's source. Confirm that this ghostel's libghostty-vt is the same version as the supervisor's; if they differ, align the supervisor's pin, since the snapshot format follows the library version.
+2. =emacs/goblins.el=: =defcustom goblins-terminal-snapshot= (boolean, default nil), and one function that both attach sites call instead of =ghostel-exec=: =goblins--open-terminal= (around line 1577) and =goblins-tramp--attach-terminal= (=emacs/goblins-tramp.el= around line 701). The =exec -t= shell at =goblins-tramp.el= line 678 keeps =ghostel-exec=. With the option off the function calls =ghostel-exec= exactly as today.
+3. With the option on:
+   - Make the terminal: =(ghostel-make-terminal buffer :size SIZE :send SEND :resize RESIZE)=, with =SIZE= from the window that shows the buffer.
+   - Start the CLI with =make-process=: the same arguments as today plus =--snapshot --size COLSxROWS=, =:connection-type 'pipe=, =:coding 'binary=, =:noquery t=, a =:stderr= buffer of its own, a filter and a sentinel.
+   - Filter: collect bytes until the 4-byte length and the snapshot are complete; call =ghostel-restore-snapshot= when the length is not 0; then =ghostel-set-size= with the current size, since a restored terminal keeps the snapshot's size; then pass everything after it, and all later output, to =ghostel-write-output=. All strings are unibyte.
+   - =SEND=: =process-send-string= to the CLI.
+   - =RESIZE=: call =sessions.resize= or =terminals.resize= through =goblins--host-call= (see =goblins-tramp--create-terminal= for a call), then =ghostel-set-size=. Skip the call when the size is unchanged.
+   - Sentinel: =ghostel-end-terminal=, show what the CLI wrote to standard error (a refused attachment's message must stay readable in the buffer, as it does today), and run what =ghostel-exit-functions= ran for this buffer before.
+4. The rest of the Emacs code assumes a ghostel process. Search =emacs/= for =ghostel--process=, =ghostel-exit-functions=, =ghostel-identity= and =ghostel-kill-buffer-on-exit= and make each place work for a bridged buffer: set =ghostel-identity= buffer-locally yourself (ghostel-exec did that), and where liveness or killing uses =ghostel--process=, go through one helper that returns the bridge's CLI process instead. Killing the buffer must end the CLI process, which detaches.
+5. =goblins--require-ghostel= checks =ghostel-make-terminal= and =ghostel-restore-snapshot= when the option is on and says which ghostel version is needed.
+
+Tests: unit tests in =emacs/goblins-tests.el= for the filter's framing (length split across chunks, zero length, output following in the same chunk) with the ghostel functions stubbed, as the existing tests stub them; one test with the real module, guarded like the one at line 3957, that restores a snapshot produced by the CLI and checks the buffer text. Then check the real launch by hand, which ERT does not cover: open a goblin through the =just emacs= setup in =emacs -nw= inside a pty (never a graphical Emacs), with the option on and off, attach, type, resize, detach by killing the buffer, reattach.
+
+Documentation: =emacs/README.org= (the option, the ghostel version it needs).
+
+Verification: the =emacs= checks plus what =just test-plan= lists.
+
+* Working rules for the implementer
+
+These are in =AGENTS.md= or were learned in this repository; they are repeated because they are easy to miss.
+
+- Work inside =nix develop= from the Git-backed flake. New files must be staged before a Nix build sees them.
+- One test runner at a time per checkout. Run suites serially and send output to a log file.
+- Python suites that start sessions cannot run inside a goblin sandbox (Operation not permitted); run them on the host with =goblin host run=.
+- Order tests by cost: fast Rust tests first, slow host suites only when those pass. When a slow suite finds a defect, add a fast Rust regression test for it.
+- Each step: make the change, run its feature tasks, send the uncommitted diff to the reviewer of the other model with the intent and this document, fix until nothing remains, then commit. One commit per step, no amending, no pushing.
+- Before merge, =just test-merge= on the final candidate.
+- Documentation prose is one line per paragraph. =docs/API.org= changes in the same commit as any RPC change.
+- Never fake a pass: no removed assertions, disabled cases or added retries.
+- Do not edit the user's own Emacs or Nix configuration; say what needs changing there (ghostel 0.65 for the option in step 4).
+- Stop and ask the user when a decision above cannot be kept, when the spike answers a question with "no", or when step 2's =interrupted= analysis finds daemon behaviour that must change.
+
+* Sources read during planning
+
+- This repository at =9c380b1=.
+- =Uzaaft/libghostty-rs= at =483ea3d= (2026-11-14): =crates/libghostty-vt/src/{terminal,fmt,snapshot,effect,mode,point,grid_ref}.rs=, =README.md=.
+- =dakra/ghostel= at =98be9d9= (0.65.0): =lisp/ghostel.el=.
+- =dakra/rexel= as of 2026-11-15: =lisp/rexel.el=.
+- Not run or built: nothing above was compiled against this repository. Rex itself is closed source; its design is known from rexel and its documentation.
