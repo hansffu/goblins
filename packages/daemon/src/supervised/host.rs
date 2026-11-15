@@ -14,6 +14,7 @@ use std::{
     process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
+mod package_work;
 struct Root(PathBuf);
 impl Drop for Root {
     fn drop(&mut self) {
