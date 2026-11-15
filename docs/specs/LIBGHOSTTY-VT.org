@@ -1,0 +1,83 @@
+#+title: Terminal emulation with libghostty-vt
+
+Status: planned, 2026-11-15. Nothing is implemented. Inspired by the Rex multiplexer, which keeps terminal state on its server with libghostty and brings a client up to date with a binary snapshot.
+
+* Context
+
+Terminal emulation lives in the per-goblin supervisor, not the daemon. =libs/supervisor/src/screen.rs= wraps the =vt100= crate and serves only the named terminals of [[file:SANDBOX-TERMINALS.org][SANDBOX-TERMINALS.org]], which the code calls panes. The main agent terminal (=libs/supervisor/src/terminal.rs=) has no emulator: while detached it keeps the newest 64 KiB of raw PTY bytes, cut at an arbitrary byte, and replays them on attach without restoring modes, the alternate screen or the cursor.
+
+libghostty-vt reached a stable 1.0 on 2026-11-06. It is the engine ghostel renders with, it answers terminal queries itself, it can format a screen as VT text, and it can encode the whole terminal state as a binary snapshot. Ghostel 0.64 and later can restore such a snapshot into a terminal that has no process.
+
+* Outcome
+
+One emulator, libghostty-vt, behind both the named terminals and the main agent terminal, with two ways to bring a frontend up to date on attach.
+
+- VT replay, the default. The supervisor writes VT text that redraws the screen, then raw bytes. It works in any terminal, and the Python suites that drive the CLI in a pty keep working unchanged.
+- Snapshot replay, with =--snapshot= on the attach commands. The supervisor writes a binary snapshot, then raw bytes. It is for ghostel, which decodes the snapshot itself; a plain terminal, the Ghostty application included, cannot take one.
+
+* Decisions
+
+- The Rust binding is [[https://github.com/Uzaaft/libghostty-rs/][Uzaaft/libghostty-rs]] (=libghostty-vt= and =libghostty-vt-sys=), the one Ghostty's author promotes.
+- Both the named terminals and the main agent terminal move to the new emulator, in separate steps.
+- VT replay stays the default and snapshot replay is opt-in, because the existing tests and any plain terminal need VT.
+
+* Unverified assumptions
+
+Step 0 settles these. If one fails, stop and report before step 1.
+
+- =libghostty-rs= covers libghostty-vt 1.0.x with the terminal, formatter and snapshot APIs. Its last published release seen during planning, 0.2.2, predates 1.0 and showed no snapshot module; if its main branch lacks one too, snapshot replay needs it added upstream or a small addition on the =-sys= crate.
+- The formatter or grid references can read scrollback, which =read --recent=, =wait= and the VT replay need. The header only promises the active screen.
+- The binding's types are neither =Send= nor =Sync=, so the supervisor must touch each terminal from one thread.
+- A snapshot encoded by our build decodes in ghostel's build at the same libghostty-vt version.
+
+* Steps
+
+Each step is one commit, made after its review.
+
+** 0. Build spike
+
+- Add libghostty-vt 1.0.x to =flake.nix= from the Ghostty flake at its =vt-= tag; nixpkgs carried a pre-1.0 commit during planning. The build needs Zig 0.17.
+- Extend =nix/builders/rust.nix= with optional native and build inputs, pass them from the supervisor packages, and add them to the development shell. This is the repository's first native dependency.
+- Add the binding to =libs/supervisor/Cargo.toml= with one test: feed bytes, format as text, encode a snapshot, decode it into a second terminal, compare.
+- Resolve the assumptions above.
+
+** 1. Named terminals on libghostty-vt
+
+=Screen= is already a facade, so its public API stays and =vt100= goes. This step changes no wire format.
+
+- Feeding and queries: =feed= writes into the libghostty terminal and =take_replies= drains what the =WRITE_PTY= callback collected. Replies still reach the PTY only when nobody is attached.
+- Resize uses the library's resize, and the scratch-parser shrink hack goes. This changes behaviour: the primary screen reflows.
+- Text reads: =visible=, =recent=, =find= and =last_lines= use the plain-text formatter. The caps and limits in =libs/runtime/src/terminal.rs= stay.
+- Input: the bracketed-paste and application-cursor modes are read from the terminal. =key_bytes= stays as it is.
+- Redraw uses the formatter's VT output, a scrollback pass and then the active screen with its extras. The hand-built cursor and pending-wrap code goes.
+- The =screen.rs= tests are rewritten against the new engine: round trip through a second =Screen=, pending wrap, wide characters, resize in the middle of a sequence, multibyte text, and what is now answered to queries.
+
+** 2. The main agent terminal
+
+- The main PTY terminal gets a =Screen=, at the default size until the first hello. The server-mode log pipe and the terminals of onAttach clients stay unemulated.
+- It then behaves like a named terminal: it always reads, answers queries while detached, redraws on attach, then resizes and makes the program repaint.
+- This removes the backpressure before the first attachment and the 64 KiB tail. The tail tests in =terminal.rs= become tests of screen restoration.
+
+** 3. Snapshot replay on the wire and the CLI
+
+- =attach.hello= gains an optional =replay= parameter, ="vt"= (default) or ="snapshot"=. The schema in =libs/api/schema/=, =docs/API.org= and the generated readers change in the same commit.
+- The daemon carries it to the supervisor, which queues either the VT redraw or a new =Screen::snapshot()=.
+- Framing after the ={"attached":true}= reply: a 4-byte big-endian length, the snapshot, then raw output as today.
+- =goblins attach= and =goblins terminal attach= gain =--snapshot=. With it the CLI copies the stream to its standard output unchanged, reads input from its standard input without needing a tty, and leaves resizing to the client's =sessions.resize= or =terminals.resize= call.
+- Tests that need no Emacs: Rust unit tests that decode the snapshot in a second terminal and keep feeding both, and a small headless client in the Rust host tests that runs =attach --snapshot= and dumps the screen as text.
+
+** 4. Ghostel bridge in Emacs
+
+- A =goblins-terminal-snapshot= option, off by default. When on, Emacs runs the CLI with =--snapshot= as a pipe process and bridges it to =ghostel-make-terminal=, =ghostel-restore-snapshot= and =ghostel-write-output=; typed input goes to the process and window sizes go to the resize calls.
+- The flake's test Emacs needs ghostel 0.64 or later. A user's own Emacs needs the same before turning the option on.
+- One ERT smoke test that attaches with the option and checks the restored buffer text, then a live check through the =just emacs= setup.
+
+* Documentation
+
+=docs/API.org= in step 3, [[file:SANDBOX-TERMINALS.org][SANDBOX-TERMINALS.org]] in steps 1 to 3 (what a reattach restores, reflow on resize, the main terminal no longer being a byte tail), =emacs/README.org= in step 4, and =tests/features.toml= for new tests.
+
+* Verification
+
+- Per step: =just test-plan --changed master=, then the listed feature tasks in one run. Steps 2 and 3 touch shared protocol and lifecycle code and will likely need =full=.
+- Before merge: =just test-merge= on the final candidate.
+- By hand: start a goblin detached, let the agent draw a full-screen interface, then attach in ghostel with and without the option, detach, reattach and resize. The screen, the cursor and the input modes come back.
