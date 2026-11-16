@@ -45,6 +45,12 @@ python = ["test_exec", "test_attachment", "test_attach_handlers", "test_terminal
 checks = ["rust"]
 paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs", "packages/daemon/src/host.rs", "libs/runtime/src/exec.rs", "libs/api/src/init.rs", "libs/unix/src/ancillary.rs"]
 
+[features.remote]
+description = "Goblins on another machine: the --host option and the ssh hop"
+python = ["test_remote"]
+checks = ["rust"]
+paths = ["packages/daemon/src/remote.rs", "tests/fake-ssh"]
+
 [features.terminals]
 description = "Terminals in the sandbox: supervisor-emulated PTYs, their host and sandbox APIs, attachment, exit notices and CLIs"
 python = ["test_terminals"]

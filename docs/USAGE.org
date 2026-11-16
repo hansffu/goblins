@@ -515,6 +515,31 @@ Generating them reads the selected runtime manifest and does not connect to or
 start the server. Regenerate manually installed scripts after changing Nix
 configuration names. Live session names are not included in these static scripts.
 
+* Goblins on another machine
+
+=--host DESTINATION= runs a command on another machine through ssh, against the server running there. It works with every command; nothing else in Goblins uses the network.
+
+#+begin_src sh
+goblins --host buildbox list
+goblins --host buildbox attach grub
+goblins --host hans@big.example --remote-program /opt/goblins/bin/goblins --state-dir /var/lib/goblins exec grub -- make test
+#+end_src
+
+=DESTINATION= is what you would type after =ssh=: a host name, =user@host=, or a =Host= alias from =~/.ssh/config=. Goblins runs =ssh DESTINATION goblins ARGS…= and becomes that ssh process, so the command's output and exit status are the remote command's. ssh gets a terminal (=-t=) when both standard input and standard output are terminals, and none (=-T=) otherwise, so piped output arrives unchanged. Arguments reach the remote command exactly as typed, whether the login shell there is a POSIX shell or fish.
+
+Everything else on the command line is meant for the other machine: =--state-dir= names a directory there, and paths in arguments are paths there. =run= starts the goblin in the remote login directory, not in a copy of the current one. The server must already be running there; start it with =goblins --host DESTINATION server start=.
+
+- =--remote-program PROGRAM= :: The executable to run on the other machine when =goblins= is not on the =PATH= of a non-interactive ssh command there. It needs =--host=.
+- Authentication :: Use a key or an agent. A command without a terminal, such as one run by Emacs or in a pipe, cannot ask for a password.
+- Connection sharing :: Every command opens its own ssh connection. Sharing one makes them start quickly:
+  #+begin_src conf
+  Host buildbox
+    ControlMaster auto
+    ControlPath ~/.ssh/control-%C
+    ControlPersist 10m
+  #+end_src
+- Lingering :: The server's default state directory is under =$XDG_RUNTIME_DIR=, which systemd removes, together with the user's processes, when their last session ends. Run =loginctl enable-linger= once on the other machine so the server and its goblins outlive the ssh connection.
+
 * Agent names
 
 Configuration/preset names and agent names are separate. =run CONFIG= selects a

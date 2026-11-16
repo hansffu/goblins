@@ -8,6 +8,7 @@ mod exec;
 mod fake_daemon;
 mod plain;
 mod records;
+mod remote;
 mod server;
 mod terminal;
 mod tui;
@@ -459,9 +460,17 @@ fn execute(cli: Cli) -> Result<i32> {
     Ok(0)
 }
 fn main() {
-    goblins_unix::raise_descriptor_limit();
-    signals();
-    let code = match execute(Cli::parse()) {
+    let cli = Cli::parse();
+    // Before anything is set up here: ssh inherits this process as it is.
+    let result = match &cli.host {
+        Some(host) => Err(remote(host, cli.remote_program.as_deref()).into()),
+        None => {
+            goblins_unix::raise_descriptor_limit();
+            signals();
+            execute(cli)
+        }
+    };
+    let code = match result {
         Ok(code) => code,
         Err(e) => {
             eprintln!("goblins: {e}");
@@ -469,6 +478,20 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// `--host`: hand this command line to the other machine. Returns only when
+/// that failed.
+fn remote(host: &str, program: Option<&str>) -> std::io::Error {
+    let args: std::result::Result<Vec<String>, _> =
+        std::env::args_os().skip(1).map(|arg| arg.into_string()).collect();
+    match args {
+        Ok(args) => remote::run(host, program.unwrap_or("goblins"), &args),
+        Err(_) => std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "--host needs arguments that are valid UTF-8",
+        ),
+    }
 }
 
 /// `rpc --stdio`: the caller speaks JSON-RPC itself, `initialize` included,

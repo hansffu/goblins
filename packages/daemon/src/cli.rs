@@ -16,6 +16,12 @@ pub struct Cli {
     /// Private server state directory (default: $XDG_RUNTIME_DIR/goblins)
     #[arg(long, global = true, value_name = "DIRECTORY", value_hint = ValueHint::DirPath)]
     pub state_dir: Option<PathBuf>,
+    /// Run this command on another machine through ssh
+    #[arg(long, global = true, value_name = "DESTINATION")]
+    pub host: Option<String>,
+    /// The goblins executable on that machine (default: goblins)
+    #[arg(long, global = true, value_name = "PROGRAM", requires = "host")]
+    pub remote_program: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
