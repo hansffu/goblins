@@ -1360,6 +1360,56 @@ request ID as the `goblins-request' property."
          (buffer-list))
         (lambda (a b) (string< (buffer-name a) (buffer-name b)))))
 
+(declare-function goblins--sidebar-ensure-source "goblins-workspace" ())
+(declare-function goblins--default-source "goblins-views" ())
+
+(defun goblins--read-attachment ()
+  "Choose an attached agent or terminal; return (SOURCE SESSION TERMINAL).
+TERMINAL is nil for the agent.  Include every connected daemon."
+  (require 'goblins-views)
+  (let ((sources (or (goblins--connected-sources) (list (goblins--default-source))))
+        (seen (make-hash-table :test #'equal)) choices)
+    (dolist (source sources)
+      (dolist (session (append (plist-get (buffer-local-value 'goblins--snapshot source)
+                                         :sessions) nil))
+        (dolist (target (append
+                         (when (eq (plist-get session :terminal_attached) t) '(nil))
+                         (cl-remove-if-not
+                          (lambda (r) (eq (plist-get r :attached) t))
+                          (append (plist-get session :terminals) nil))))
+          (let* ((label (format "%s: %s @%s"
+                                (goblins--safe (plist-get session :agent_name))
+                                (if target (goblins--terminal-label target) "agent")
+                                (goblins--safe (goblins--daemon-name
+                                               (buffer-local-value 'goblins--directory source)))))
+                 (candidate label)
+                 (number 1))
+            (while (gethash candidate seen)
+              (setq candidate (format "%s <%d>" label (cl-incf number))))
+            (puthash candidate t seen)
+            (push (cons candidate (list source (plist-get session :id)
+                                        (plist-get target :id))) choices)))))
+    (goblins--choose "Detach: " (nreverse choices) "No attached agents or terminals")))
+
+;;;###autoload
+(defun goblins-detach (source session &optional terminal)
+  "Detach SESSION's agent terminal, or TERMINAL, from SOURCE's daemon.
+On a goblin or terminal line in the sidebar, detach that attachment.
+Else choose among attached agents and terminals on every connected daemon.
+The goblin and its terminals keep running."
+  (interactive
+   (if (derived-mode-p 'goblins-sidebar-mode)
+       (let* ((position (line-beginning-position))
+              (terminal (get-text-property position 'goblins-session-terminal))
+              (id (or (car terminal) (get-text-property position 'goblins-id))))
+         (if id
+             (list (goblins--sidebar-ensure-source) id (cdr terminal))
+           (goblins--read-attachment)))
+     (goblins--read-attachment)))
+  (goblins--host-call source (if terminal 'terminals.detach 'sessions.detach)
+                      (append (list :session session)
+                              (when terminal (list :terminal terminal)))))
+
 (defun goblins--request-choices (sources)
   "The pending requests of SOURCES, status buffers, as a list of
 \(CANDIDATE SOURCE RECORD).  With several SOURCES each candidate ends in its

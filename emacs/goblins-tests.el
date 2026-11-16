@@ -6701,6 +6701,54 @@ status buffer that could not connect; second and big have none.  `remote' and
              (with-current-buffer buffer (setq goblins--connection nil))
              (kill-buffer buffer)))))))
 
+(ert-deftest goblins-detach-chooses-attached-agents-and-terminals-across-daemons ()
+  (goblins-test--daemons
+    (let (offered calls)
+      (with-current-buffer source
+        (setq goblins--subscription "sub-a"
+              goblins--snapshot
+              (plist-put goblins--snapshot :sessions
+                         (vector (goblins-test--session "session-a" :agent_name "same"
+                                                       :terminal_attached t)))))
+      (with-current-buffer remote
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :sessions
+                         (vector (goblins-test--session
+                                  "b-2" :agent_name "same" :terminal_attached t
+                                  :terminals [(:id "t1" :label "shell" :attached t)
+                                              (:id "t2" :label "idle" :attached :json-false)])))))
+      (cl-letf (((symbol-function 'goblins--host-call)
+                 (lambda (src method params) (push (list src method params) calls)))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt choices &rest _)
+                   (setq offered (mapcar #'car choices))
+                   (substring-no-properties (car (last offered))))))
+        ;; Outside the sidebar completion includes both daemons and only attachments.
+        (with-temp-buffer (call-interactively #'goblins-detach))
+        (should (equal offered '("same: agent @home" "same: agent @buildbox"
+                                 "same: shell @buildbox")))
+        (should (equal (car calls) (list remote 'terminals.detach
+                                        '(:session "b-2" :terminal "t1"))))
+        ;; The agent from completion uses sessions.detach on its own daemon.
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) (cadr offered))))
+          (with-temp-buffer (call-interactively #'goblins-detach)))
+        (should (equal (car calls) (list remote 'sessions.detach '(:session "b-2"))))
+        ;; A sidebar goblin is used directly, even from M-x, without prompting.
+        (goblins--sidebar-render)
+        (goto-char (goblins--sidebar-find '(id . "b-2")))
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) (ert-fail "Unexpected prompt"))))
+          (call-interactively #'goblins-detach))
+        (should (equal (car calls) (list remote 'sessions.detach '(:session "b-2"))))
+        ;; Duplicate daemon names still give each attachment a distinct choice.
+        (let ((goblins-local-daemon-name "buildbox"))
+          (with-temp-buffer (call-interactively #'goblins-detach))
+          (should (equal offered '("same: agent @buildbox" "same: agent @buildbox <2>"
+                                   "same: shell @buildbox"))))
+        ;; A dropped subscription excludes the daemon's stale attachments.
+        (with-current-buffer remote (setq goblins--subscription nil))
+        (with-temp-buffer (call-interactively #'goblins-detach))
+        (should (equal offered '("same: agent @home")))))))
+
 (ert-deftest goblins-sidebar-lists-every-daemon-under-its-heading ()
   (goblins-test--daemons
     ;; Your own daemon first, then the connected ones, then the rest, each in

@@ -136,6 +136,7 @@ Some things stay as they are for the default daemon only:
 - Messages and raids do not cross daemons.
 - The sidebar does not look up projects on another machine: its goblins are grouped by directory, shown as a path. A goblin's icon there appears once TRAMP has a connection to the machine, because Emacs reads the configuration from it.
 - A terminal whose ssh connection drops is detached, not reconnected; attach it again.
+- =M-x goblins-detach= chooses among attached agent terminals and other terminals on every connected daemon, then detaches the selected attachment. On a goblin line in the sidebar it detaches that goblin's agent terminal directly; on one of its terminal lines it detaches that terminal. The goblin and its terminals keep running, and the detached frontend keeps its last screen. Use this to release an attachment on another machine before attaching here.
 - =goblins-editor= inside a remote goblin runs =emacsclient= on that machine. It reaches this Emacs only if you forward the Emacs server socket there, for example with =RemoteForward /run/user/1000/emacs/server /run/user/1000/emacs/server= under the host in =~/.ssh/config=. Anything running as you on that machine can then evaluate Lisp in this Emacs, so leave it out unless you want that.
 
 This package starts a daemon only when you run =goblins-start-server=. It does not install
