@@ -133,12 +133,6 @@ A bar's colour is its face's foreground." :group 'goblins)
   "The status buffer of this sidebar's own daemon, which it lists first.
 The other daemons it lists are those of `goblins-endpoints'.")
 
-(defcustom goblins-local-daemon-name nil
-  "The name of your own daemon in a sidebar that lists several daemons.
-Nil means this machine's host name.  A daemon of `goblins-endpoints' goes by
-its name there."
-  :type '(choice (const :tag "This machine's host name" nil) string)
-  :group 'goblins)
 (defcustom goblins-sidebar-show-finished nil
   "Whether the sidebar lists stopped and failed goblins.
 The status buffer always lists them."
@@ -820,14 +814,6 @@ connected, then the rest, each in the order of `goblins-endpoints'."
 the sidebar's own daemon, whose group keys stay as they are without daemons."
   (and key (not (equal key goblins--directory)) key))
 
-(defun goblins--sidebar-daemon-name (key)
-  "The name of daemon KEY in the sidebar: its endpoint's, else
-`goblins-local-daemon-name' or this machine's host name."
-  (or (car (goblins--endpoint key))
-      (goblins--daemon-destination key)
-      goblins-local-daemon-name
-      (system-name)))
-
 (defun goblins--sidebar-insert-daemon (key source own folds)
   "Insert the heading of daemon KEY and return non-nil unless it is folded.
 SOURCE is its status buffer, or nil when it has none, and OWN the key of the
@@ -836,7 +822,7 @@ sidebar's own daemon."
          (pending (cl-count-if (lambda (r) (equal (plist-get r :state) "pending"))
                                (append (plist-get snapshot :permissions) nil)))
          (label (concat (propertize (concat (if (file-remote-p key) "⇄" "⌂") " "
-                                            (goblins--safe (goblins--sidebar-daemon-name key)))
+                                            (goblins--safe (goblins--daemon-name key)))
                                     'face 'goblins-sidebar-daemon)
                         (if source "" (propertize " · not connected" 'face 'goblins-dim)))))
     (let ((group (list 'daemon (and (not (equal key own)) key))))

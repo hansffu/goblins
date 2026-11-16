@@ -6681,6 +6681,7 @@ status buffer that could not connect; second and big have none.  `remote' and
                (goblins-status-mode)
                (setq goblins--directory "/ssh:buildbox:/run/goblins"
                      goblins--instance "daemon-b"
+                     goblins--subscription "sub-b"
                      goblins--snapshot
                      (list :instance "daemon-b"
                            :sessions (vector (goblins-test--session
@@ -6831,6 +6832,48 @@ status buffer that could not connect; second and big have none.  `remote' and
             (goto-char (point-min))
             (should (equal (goblins--raid-context) (cons remote "b-2"))))
         (kill-buffer terminal)))))
+
+(ert-deftest goblins-requests-lists-the-requests-of-every-connected-daemon ()
+  (goblins-test--daemons
+    (let (offered annotations shown decided)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt table &rest _)
+                   (let ((choices (goblins-test--choices table))
+                         (annotate (completion-metadata-get
+                                    (completion-metadata "" table nil) 'annotation-function)))
+                     (setq offered (mapcar #'substring-no-properties choices)
+                           annotations (mapcar annotate choices))
+                     ;; As a completion UI hands it back: without properties.
+                     (substring-no-properties (car (last choices))))))
+                ((symbol-function 'goblins--decide-record)
+                 (lambda (record approved &optional _shown)
+                   (setq decided (list goblins--directory (plist-get record :id) approved))))
+                ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+        ;; Each request names its daemon; one that is not connected has none.
+        (with-current-buffer source (setq goblins--subscription "sub-a"))
+        (call-interactively #'goblins-requests)
+        (should (equal offered '("session-a: hello @home" "maggit: hello @buildbox")))
+        (should (cl-every #'stringp annotations))
+        (with-current-buffer shown
+          (should (eq goblins--view-source remote))
+          (should (equal goblins--view-session "b-2")))
+        ;; The decision goes to the daemon the request is from.
+        (call-interactively #'goblins-request-accept)
+        (should (equal decided '("/ssh:buildbox:/run/goblins" "r9" t)))
+        ;; Two daemons that go by one name, with requests that read alike.
+        (with-current-buffer remote
+          (setq goblins--snapshot
+                (plist-put goblins--snapshot :sessions
+                           (vector (goblins-test--session "b-2" :agent_name "session-a")))))
+        (let ((goblins-local-daemon-name "buildbox"))
+          (call-interactively #'goblins-request-deny)
+          (should (equal offered '("session-a: hello @buildbox" "session-a: hello @buildbox <2>")))
+          (should (equal decided '("/ssh:buildbox:/run/goblins" "r9" nil))))
+        ;; A daemon whose connection dropped offers nothing to decide.
+        (with-current-buffer remote (setq goblins--subscription nil))
+        (call-interactively #'goblins-request-deny)
+        (should (equal offered '("session-a: hello")))
+        (should (equal decided '("/tmp/goblins-test" "a" nil)))))))
 
 (ert-deftest goblins-sidebar-runs-a-goblin-on-the-daemon-of-its-line ()
   (goblins-test--daemons

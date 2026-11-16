@@ -201,10 +201,11 @@ directory."
 ;;;; Permission requests
 
 (defun goblins--choose-request (prompt)
-  "Read a pending request of the server at hand with PROMPT; return
-\(SOURCE RECORD), for an `interactive' form."
-  (let ((source (goblins--default-source)))
-    (list source (goblins--read-request prompt source))))
+  "Read a pending request with PROMPT; return (SOURCE RECORD), for an
+`interactive' form.  The requests are those of every connected daemon; when
+none is connected, the server at hand is connected first."
+  (goblins--read-request-among
+   prompt (or (goblins--connected-sources) (list (goblins--default-source)))))
 
 ;;;###autoload
 (defun goblins-requests (source record)

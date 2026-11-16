@@ -362,6 +362,21 @@ all other files in a collapsed section of their own."
                 (equal (ignore-errors (goblins--endpoint-key entry)) directory))
               goblins-endpoints))
 
+(defcustom goblins-local-daemon-name nil
+  "The name of your own daemon where several daemons are listed.
+Nil means this machine's host name.  A daemon of `goblins-endpoints' goes by
+its name there."
+  :type '(choice (const :tag "This machine's host name" nil) string)
+  :group 'goblins)
+
+(defun goblins--daemon-name (key)
+  "The name of daemon KEY for display: its endpoint's, else
+`goblins-local-daemon-name' or this machine's host name."
+  (or (car (goblins--endpoint key))
+      (goblins--daemon-destination key)
+      goblins-local-daemon-name
+      (system-name)))
+
 (defun goblins--endpoint-on-machine (directory)
   "The key of the first endpoint on the machine of remote DIRECTORY, or nil.
 Two file names are on one machine when their host and user are the same."
@@ -1335,32 +1350,67 @@ request ID as the `goblins-request' property."
                       'face 'goblins-dim)
           " " (goblins--safe (or (plist-get record :reason) ""))))
 
-(defun goblins--read-request (prompt source)
-  "Choose a pending request of SOURCE's server with PROMPT; return its record.
-Candidates are in the `goblins-request' completion category."
-  (let* ((records (cl-remove-if-not
-                   (lambda (request) (equal (plist-get request :state) "pending"))
-                   (append (plist-get (buffer-local-value 'goblins--snapshot source)
-                                      :permissions)
-                           nil)))
-         (candidates (with-current-buffer source (goblins--request-candidates records)))
+(defun goblins--connected-sources ()
+  "The status buffers that are connected and have a snapshot, by name."
+  (sort (cl-remove-if-not
+         (lambda (buffer)
+           (and (eq (buffer-local-value 'major-mode buffer) 'goblins-status-mode)
+                (buffer-local-value 'goblins--subscription buffer)
+                (buffer-local-value 'goblins--snapshot buffer)))
+         (buffer-list))
+        (lambda (a b) (string< (buffer-name a) (buffer-name b)))))
+
+(defun goblins--request-choices (sources)
+  "The pending requests of SOURCES, status buffers, as a list of
+\(CANDIDATE SOURCE RECORD).  With several SOURCES each candidate ends in its
+daemon's name, like \"gribble: jq @buildbox\"; two daemons that go by one
+name have their candidates numbered apart."
+  (cl-loop
+   with seen = (make-hash-table :test #'equal)
+   for source in sources
+   append (let* ((records (cl-remove-if-not
+                           (lambda (request) (equal (plist-get request :state) "pending"))
+                           (append (plist-get (buffer-local-value 'goblins--snapshot source)
+                                              :permissions)
+                                   nil)))
+                 (name (and (cdr sources)
+                            (propertize
+                             (format " @%s" (goblins--safe
+                                             (goblins--daemon-name
+                                              (buffer-local-value 'goblins--directory source))))
+                             'face 'goblins-dim))))
+            (cl-mapcar (lambda (candidate record)
+                         (let* ((label (if name (concat candidate name) candidate))
+                                (count (puthash label (1+ (gethash label seen 0)) seen)))
+                           (list (if (> count 1) (format "%s <%d>" label count) label)
+                                 source record)))
+                       (with-current-buffer source (goblins--request-candidates records))
+                       records))))
+
+(defun goblins--read-request-among (prompt sources)
+  "Choose a pending request of SOURCES, status buffers, with PROMPT; return
+\(SOURCE RECORD).  Candidates are in the `goblins-request' completion category."
+  (let* ((choices (goblins--request-choices sources))
+         (candidates (mapcar #'car choices))
          (annotate (lambda (candidate)
-                     (when-let* ((record (cl-find (get-text-property 0 'goblins-request candidate)
-                                                  records :key (lambda (r) (plist-get r :id))
-                                                  :test #'equal)))
-                       (goblins--request-annotation record)))))
-    (unless records (user-error "No pending requests"))
-    (let* ((choice (completing-read
-                    prompt
-                    (lambda (string predicate action)
-                      (if (eq action 'metadata)
-                          `(metadata (category . goblins-request)
-                                     (annotation-function . ,annotate))
-                        (complete-with-action action candidates string predicate)))
-                    nil t))
-           (found (car (member choice candidates))))
+                     (when-let* ((choice (assoc candidate choices)))
+                       (goblins--request-annotation (nth 2 choice))))))
+    (unless choices (user-error "No pending requests"))
+    (let ((found (assoc (completing-read
+                         prompt
+                         (lambda (string predicate action)
+                           (if (eq action 'metadata)
+                               `(metadata (category . goblins-request)
+                                          (annotation-function . ,annotate))
+                             (complete-with-action action candidates string predicate)))
+                         nil t)
+                        choices)))
       (unless found (user-error "Select a request"))
-      (nth (cl-position found candidates :test #'equal) records))))
+      (cdr found))))
+
+(defun goblins--read-request (prompt source)
+  "Choose a pending request of SOURCE's server with PROMPT; return its record."
+  (cadr (goblins--read-request-among prompt (list source))))
 
 (declare-function goblins--review-request "goblins-views" (source record))
 (declare-function goblins--popup-show "goblins-views" (source id))
