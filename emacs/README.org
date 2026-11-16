@@ -128,10 +128,12 @@ Everything you do from a status buffer, the sidebar or a goblin's terminal works
 
 =goblins-run= launches on the machine its directory is on. From a =/ssh:buildbox:/src/app/= buffer it starts the goblin in =/src/app= on =buildbox=, through the first endpoint with that host and user; without one it says =No Goblins endpoint for buildbox; add one to goblins-endpoints=. A directory on one machine cannot be launched on a daemon on another: nothing is copied between machines, so from the sidebar or status buffer of a remote daemon a local directory is refused. =goblins-run-with-worktree= makes its worktree with the Git of the repository's machine, under the same rule. The configurations offered are those of the daemon's machine.
 
+With endpoints the sidebar lists every daemon under a heading of its own: =⌂= for one on this machine, =⇄= for one reached through ssh. The workspace's own daemon comes first (the default one, or the one chosen with a prefix argument), named by =goblins-local-daemon-name= or, when that is nil, this machine's host name. Then come the endpoints by their names: the connected ones, then the rest, each in the order of =goblins-endpoints=. Nothing connects by itself. =M-x goblins-remote-connect= asks for an endpoint and connects it, and so does =RET= on the heading of one that says =not connected=; a daemon that could not connect shows why under its heading. On a connected daemon's heading =RET= shows its status buffer, =TAB= folds the daemon, =g= reconnects it and =c= runs a goblin in a directory you choose on its machine. Every other key acts on the daemon the line is listed under, and =n=, =N= and the workspace's next and previous goblin move across daemons. A heading carries the number of requests waiting in that daemon. Without endpoints the sidebar has no daemon headings.
+
 Some things stay as they are for the default daemon only:
 
 - =/goblins:NAME:= typed by hand names a goblin of the default daemon. Reach a goblin of another daemon through the commands above, which pin the name first.
-- The workspace and the sidebar show one daemon, the one chosen when they open, and messages and raids do not cross daemons.
+- Messages and raids do not cross daemons.
 - The sidebar does not look up projects on another machine: its goblins are grouped by directory, shown as a path. A goblin's icon there appears once TRAMP has a connection to the machine, because Emacs reads the configuration from it.
 - A terminal whose ssh connection drops is detached, not reconnected; attach it again.
 - =goblins-editor= inside a remote goblin runs =emacsclient= on that machine. It reaches this Emacs only if you forward the Emacs server socket there, for example with =RemoteForward /run/user/1000/emacs/server /run/user/1000/emacs/server= under the host in =~/.ssh/config=. Anything running as you on that machine can then evaluate Lisp in this Emacs, so leave it out unless you want that.
@@ -184,7 +186,7 @@ Agents that do not run in Goblins can be listed too.  =M-x goblins-external-agen
 | =m m=                        | the goblin's messages; on a raid, the messages sent within it |
 | =m f= / =m t=                | the messages the goblin sent / received                  |
 | =c= / =C=                    | run a goblin in the project at point / a project you choose |
-| =g= / =gr=                   | reconnect                                                |
+| =g= / =gr=                   | reconnect the daemon of the line                         |
 | =?=                          | key help                                                 |
 | =q=                          | leave the workspace                                      |
 

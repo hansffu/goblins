@@ -5516,6 +5516,12 @@ drops what was typed before it took over the terminal."
         ;; It is another daemon than the first one.
         (should-not (equal (buffer-local-value 'goblins--instance remote)
                            (buffer-local-value 'goblins--instance source)))
+        ;; The first daemon's sidebar lists this one's goblin under its heading.
+        (require 'goblins-workspace)
+        (let ((text (substring-no-properties (goblins--sidebar-text source nil))))
+          (should (string-match "^▾ ⇄ other$" text))
+          (should (string-match-p "gribble" (substring text (match-end 0))))
+          (should (string-match-p "gribble" (substring text 0 (match-beginning 0)))))
         (let* ((work (file-name-as-directory (getenv "GOBLINS_TEST_OTHER_WORK")))
                (session (cl-find "gribble"
                                  (append (plist-get (buffer-local-value 'goblins--snapshot remote)
@@ -6633,9 +6639,11 @@ recorded: `launched' is its arguments, `where' the directory asked about, and
       (let (chosen)
         (with-current-buffer source (setq goblins--directory "/ssh:buildbox:/run/goblins"))
         (setq goblins--directory "/ssh:buildbox:/run/goblins")
+        (goblins--sidebar-render)
         (cl-letf (((symbol-function 'project-prompt-project-dir) (lambda () chosen)))
           ;; The row holds the daemon's path; the launch is asked about there.
           (goto-char (point-min))
+          (re-search-forward "/p/one")
           (should (equal (goblins--sidebar-directory-at-point) "/p/one"))
           (goblins-sidebar-run)
           (should (equal where "/ssh:buildbox:/p/one/"))
@@ -6651,6 +6659,209 @@ recorded: `launched' is its arguments, `where' the directory asked about, and
             (setq chosen project)
             (should-error (goblins-sidebar-run-in-project) :type 'user-error))
           (should-not launched))))))
+
+(defmacro goblins-test--daemons (&rest body)
+  "Run BODY in a sidebar of the daemon \"home\" with goblin session-a in /p/one,
+which also lists four endpoints.  buildbox is connected, with bork of raid
+crew in /src/api and maggit, who waits for a decision, in /p/one; down has a
+status buffer that could not connect; second and big have none.  `remote' and
+`down' are those status buffers."
+  (declare (indent 0))
+  `(goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one"))
+     (let* ((goblins-endpoints '(("second" :state-dir "/tmp/goblins-second")
+                                 ("buildbox" :host "buildbox" :state-dir "/run/goblins")
+                                 ("big" :host "hans@big.example" :state-dir "/var/lib/goblins")
+                                 ("down" :host "down" :state-dir "/run/goblins")))
+            (goblins-local-daemon-name "home")
+            (remote (generate-new-buffer "*Goblins: /ssh:buildbox:/run/goblins*"))
+            (down (generate-new-buffer "*Goblins: /ssh:down:/run/goblins*")))
+       (unwind-protect
+           (progn
+             (with-current-buffer remote
+               (goblins-status-mode)
+               (setq goblins--directory "/ssh:buildbox:/run/goblins"
+                     goblins--instance "daemon-b"
+                     goblins--snapshot
+                     (list :instance "daemon-b"
+                           :sessions (vector (goblins-test--session
+                                              "b-1" :agent_name "bork" :cwd "/src/api"
+                                              :raid '(:id "r1" :name "crew"))
+                                             (goblins-test--session
+                                              "b-2" :agent_name "maggit" :cwd "/p/one"))
+                           :permissions (vector (goblins-test--request-in "r9" "b-2" "pending")))))
+             (with-current-buffer down
+               (goblins-status-mode)
+               (setq goblins--directory "/ssh:down:/run/goblins"
+                     goblins--notice "Cannot connect: ssh: no route; r to reconnect"))
+             (goblins--sidebar-render)
+             ,@body)
+         (dolist (buffer (list remote down (get-buffer "*Goblins: /tmp/goblins-second*")))
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer (setq goblins--connection nil))
+             (kill-buffer buffer)))))))
+
+(ert-deftest goblins-sidebar-lists-every-daemon-under-its-heading ()
+  (goblins-test--daemons
+    ;; Your own daemon first, then the connected ones, then the rest, each in
+    ;; the order of `goblins-endpoints'.
+    (should (equal (goblins-test--sidebar-plain)
+                   (concat "▾ ⌂ home !1\n"
+                           "  ▾ /p/one/ !1\n"
+                           "    › session-a\n"
+                           "      ! hello (package)\n"
+                           "\n▾ ⇄ buildbox !1\n"
+                           "  ▾ ⚔ crew · /src/api/\n"
+                           "    › bork\n"
+                           "\n  ▾ /p/one/ !1\n"
+                           "    › maggit\n"
+                           "      ! hello (package)\n"
+                           "\n▸ ⌂ second · not connected\n"
+                           "▸ ⇄ big · not connected\n"
+                           "▾ ⇄ down\n"
+                           "  Cannot connect: ssh: no route; g to reconnect\n")))
+    ;; The same directory in two daemons folds apart, and a daemon folds whole.
+    (goto-char (point-min))
+    (goblins-sidebar-next)
+    (goblins-sidebar-fold)
+    (should (string-match-p "\\`▾ ⌂ home !1\n  ▸ /p/one/ !1\n▾ ⇄ buildbox !1\n  ▾ ⚔ crew · /src/api/\n    › bork\n\n  ▾ /p/one/ !1\n    › maggit\n"
+                            (goblins-test--sidebar-plain)))
+    (goblins-sidebar-fold)
+    (re-search-forward "buildbox")
+    (goblins-sidebar-fold)
+    (should (string-match-p "› session-a\n.*\n\n▸ ⇄ buildbox !1\n▸ ⌂ second"
+                            (goblins-test--sidebar-plain)))
+    ;; No view folds a daemon; it stays as you left it.
+    (goblins-sidebar-fold)
+    (goblins-sidebar-cycle)
+    (goblins-sidebar-cycle)
+    (should (equal (goblins-test--sidebar-plain)
+                   (concat "▾ ⌂ home !1\n  ▸ /p/one/ !1\n"
+                           "▾ ⇄ buildbox !1\n  ▸ ⚔ crew · /src/api/\n  ▸ /p/one/ !1\n"
+                           "▸ ⌂ second · not connected\n▸ ⇄ big · not connected\n"
+                           "▾ ⇄ down\n  Cannot connect: ssh: no route; g to reconnect\n")))
+    ;; A daemon that connects moves up, and one that drops moves down.
+    (with-current-buffer down
+      (setq goblins--snapshot (list :instance "daemon-d" :sessions [] :permissions []))
+      (run-hooks 'goblins-snapshot-hook))
+    (with-current-buffer remote
+      (setq goblins--snapshot nil goblins--notice "Disconnected; r to reconnect")
+      (run-hooks 'goblins-snapshot-hook))
+    (should (equal (goblins-test--sidebar-plain)
+                   (concat "▾ ⌂ home !1\n  ▸ /p/one/ !1\n"
+                           "▾ ⇄ down\n  No running goblins\n"
+                           "\n▸ ⌂ second · not connected\n"
+                           "▾ ⇄ buildbox\n  Disconnected; g to reconnect\n"
+                           "\n▸ ⇄ big · not connected\n")))
+    ;; An endpoint for your own daemon alone still gives it its heading.
+    (let ((goblins-endpoints '(("mine" :state-dir "/tmp/goblins-test"))))
+      (goblins--sidebar-render)
+      (should (equal (goblins-test--sidebar-plain) "▾ ⌂ mine !1\n  ▸ /p/one/ !1\n")))
+    ;; Without endpoints the sidebar is as it was.
+    (let ((goblins-endpoints nil))
+      (goblins--sidebar-render)
+      (should (equal (goblins-test--sidebar-plain) "▸ /p/one/ !1\n")))))
+
+(ert-deftest goblins-sidebar-keys-act-on-the-daemon-of-their-line ()
+  (goblins-test--daemons
+    (let (refreshed shown)
+      (cl-letf (((symbol-function 'goblins-refresh)
+                 (lambda () (push goblins--directory refreshed)))
+                ((symbol-function 'goblins--display-main)
+                 (lambda (buffer) (setq shown buffer))))
+        ;; A goblin belongs to the daemon it is listed under.
+        (goto-char (point-min))
+        (re-search-forward "session-a")
+        (should (equal (goblins--sidebar-goblin-at-point) (cons source "session-a")))
+        (re-search-forward "maggit")
+        (should (equal (goblins--sidebar-goblin-at-point) (cons remote "b-2")))
+        (goblins-sidebar-refresh)
+        (should (equal refreshed '("/ssh:buildbox:/run/goblins")))
+        ;; RET on a connected daemon shows its status buffer.
+        (re-search-backward "buildbox")
+        (goblins-sidebar-dwim)
+        (should (eq shown remote))
+        (should (equal refreshed '("/ssh:buildbox:/run/goblins")))
+        ;; On one that is not connected it connects, as the command does.
+        (setq refreshed nil shown nil)
+        (re-search-forward "second")
+        (goblins-sidebar-dwim)
+        (should (equal refreshed '("/tmp/goblins-second")))
+        (should-not shown)
+        (should (get-buffer "*Goblins: /tmp/goblins-second*"))
+        (should (string-match-p "^▾ ⌂ second$" (goblins-test--sidebar-plain)))
+        (setq refreshed nil)
+        (should (equal (buffer-name (goblins-remote-connect "big"))
+                       "*Goblins: /ssh:hans@big.example:/var/lib/goblins*"))
+        (should (equal refreshed '("/ssh:hans@big.example:/var/lib/goblins")))
+        (kill-buffer "*Goblins: /ssh:hans@big.example:/var/lib/goblins*")
+        (should-error (goblins-remote-connect "nowhere") :type 'user-error)))
+    ;; Moving to who waits, and through the goblins, crosses daemons.
+    (goto-char (point-min))
+    (re-search-forward "session-a")
+    (beginning-of-line)
+    (goblins-sidebar-next-pending)
+    (should (equal (get-text-property (point) 'goblins-id) "b-2"))
+    (goblins-sidebar-next-pending)
+    (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+    (should (equal (goblins--sidebar-order source) '("session-a" "b-1" "b-2")))
+    (should (eq (goblins--sidebar-source-of source "b-1") remote))
+    ;; A folded daemon opens for the goblin shown in it.
+    (re-search-forward "buildbox")
+    (goblins-sidebar-fold)
+    (should-not (goblins--sidebar-find '(id . "b-1")))
+    (goblins--sidebar-reveal remote "b-1" (current-buffer))
+    (should (equal (get-text-property (point) 'goblins-id) "b-1"))
+    ;; Your own daemon too; folding it leaves point on its heading.
+    (goto-char (goblins--sidebar-find '(id . "session-a")))
+    (goblins--sidebar-toggle '(daemon nil))
+    (goblins--sidebar-render)
+    (should (equal (get-text-property (point) 'goblins-daemon-heading) "/tmp/goblins-test"))
+    (should-not (goblins--sidebar-find '(id . "session-a")))
+    (goblins--sidebar-reveal source "session-a" (current-buffer))
+    (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+    ;; A raid for the goblin shown beside the sidebar is made in that goblin's
+    ;; daemon, whatever line point is on.
+    (let ((terminal (generate-new-buffer " *goblins test shown*")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'goblins--main-window) #'selected-window)
+                    ((symbol-function 'window-buffer) (lambda (&rest _) terminal)))
+            (with-current-buffer terminal
+              (setq-local goblins--session-key
+                          '("/ssh:buildbox:/run/goblins" "daemon-b" "b-2")))
+            (goto-char (point-min))
+            (should (equal (goblins--raid-context) (cons remote "b-2"))))
+        (kill-buffer terminal)))))
+
+(ert-deftest goblins-sidebar-runs-a-goblin-on-the-daemon-of-its-line ()
+  (goblins-test--daemons
+    (goblins-test--launching
+      (let ((goblins-endpoints '(("buildbox" :host "buildbox" :state-dir "/run/goblins")))
+            asked)
+        (goblins--sidebar-render)
+        (cl-letf (((symbol-function 'read-directory-name)
+                   (lambda (_prompt directory &rest _)
+                     (setq asked directory)
+                     "/ssh:buildbox:/src/new/")))
+          ;; On a goblin: its directory, on its daemon's machine.
+          (goto-char (point-min))
+          (re-search-forward "bork")
+          (goblins-sidebar-run)
+          (should (equal where "/ssh:buildbox:/src/api/"))
+          (should (equal (seq-take launched 4)
+                         '("/ssh:buildbox:/run/goblins" "plain" "/remote.json" "/src/api/")))
+          (should-not asked)
+          ;; On the daemon's heading: a directory you choose there.
+          (re-search-backward "buildbox")
+          (goblins-sidebar-run)
+          (should (equal asked "/ssh:buildbox:~/"))
+          (should (equal (seq-take launched 4)
+                         '("/ssh:buildbox:/run/goblins" "plain" "/remote.json" "/src/new/")))
+          ;; The same directory under your own daemon stays here.
+          (goto-char (point-min))
+          (re-search-forward "session-a")
+          (goblins-sidebar-run)
+          (should (equal (seq-take launched 4)
+                         '("/tmp/goblins-test" "plain" "/here.json" "/p/one/"))))))))
 
 (ert-deftest goblins-a-pin-from-the-daemon-gets-its-status-buffers-key ()
   (let ((goblins--pins (make-hash-table :test #'equal))

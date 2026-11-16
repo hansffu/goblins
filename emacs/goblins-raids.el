@@ -20,6 +20,7 @@
 (require 'goblins-views)
 
 (declare-function goblins--sidebar-ensure-source "goblins-workspace" ())
+(declare-function goblins--sidebar-key-source "goblins-workspace" (key))
 (declare-function goblins--main-window "goblins-views" ())
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
@@ -361,7 +362,10 @@ window, or the goblin whose terminal is the current buffer."
       (cond ((get-text-property (line-beginning-position) 'goblins-id)
              (cons (goblins--sidebar-ensure-source)
                    (get-text-property (line-beginning-position) 'goblins-id)))
-            (shown (cons (goblins--sidebar-ensure-source) (nth 2 shown))))))
+            ;; The shown goblin's own daemon, which need not be this line's.
+            (shown (cons (or (goblins--sidebar-key-source (car shown))
+                             (goblins--sidebar-ensure-source))
+                         (nth 2 shown))))))
    (goblins--session-key
     (cons (goblins--status-buffer (car goblins--session-key))
           (nth 2 goblins--session-key)))))

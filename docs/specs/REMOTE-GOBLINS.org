@@ -1,6 +1,6 @@
 #+title: Remote goblins
 
-Status: in progress. Planned 2026-11-15; steps 1 (commit =630b599=), 2 (commit =65dba6f=), 3 (commit =82c4117=), 4 (commit =8e5667e=) and 5 are implemented; step 6, the check against a real machine, is open. Each later step updates this line in its own change.
+Status: in progress. Planned 2026-11-15; steps 1 (commit =630b599=), 2 (commit =65dba6f=), 3 (commit =82c4117=), 4 (commit =8e5667e=), 5 (commit =4570fde=) and 5a are implemented; step 6, the check against a real machine, is open. Each later step updates this line in its own change.
 
 This is a handoff document. It is written so that an implementer who was not part of the planning can carry it out step by step. Read it whole before starting, and follow =AGENTS.md= for testing, review and commits. Line numbers refer to master at commit =9c380b1=; find the code by the function names if they have moved.
 
@@ -40,7 +40,7 @@ Do not reopen these; ask the user if one turns out to be impossible.
 * Out of scope
 
 - Messaging or raids across daemons, and a butler goblin that manages raids.
-- A sidebar or workspace that shows several daemons at once. The workspace shows one daemon, chosen when it is opened, as today.
+- A workspace layout per daemon. The sidebar lists every daemon since step 5a; the workspace keeps one own daemon, chosen when it is opened.
 - Project grouping in the sidebar for a remote daemon's goblins. They appear ungrouped.
 - Moving the host work Emacs does itself (reading the manifest, =git worktree add=, opening logs) behind RPC. It works remotely through TRAMP.
 - Reconnecting a terminal after the link drops. An ssh drop is a detach; the user attaches again.
@@ -300,6 +300,20 @@ Moved ahead of =--host= on 2026-11-16 so that the new command is in daily use be
 3. Tests, ERT without a daemon: =goblins--host-file= with and without the override; =goblins-run= with =goblins--configurations=, =goblins--launch-location= and =goblins--launch= replaced by stubs, for a local directory on a remote daemon (refused), a remote directory without an endpoint (refused), and a remote directory with one (=goblins--launch= receives the daemon's key and the local parts of the directory and dev shell); =goblins-sidebar-run= on a remote sidebar passing the row's directory with the prefix; =goblins-sidebar-run-in-project= on a remote sidebar passing a project on the same remote host unchanged, and being refused by =goblins-run= for a project on another remote host and for a local project; =goblins-pin-host= replacing the directory by instance.
 4. Tests, live, in the same scenario as step 4, against the fake remote daemon. The suite starts =gribble= there in a known temporary directory. Attach to =gribble='s agent terminal with =goblins--attach= and check that the buffer's =default-directory= is that directory (the override makes the prefix empty); open a shell with =goblins-shell=; write a file through its =/goblins:= name and read it back with =exec=; launch a goblin with =goblins--launch= on the remote key, with the configuration from =(goblins--configurations KEY)= and the same temporary directory as =CWD=, then stop it. Do not weaken the same-machine check of =goblins-run= to reach it from the live test.
 5. Documentation: =emacs/README.org= (launching from a remote directory, the limits listed under [[*Out of scope][Out of scope]]).
+
+** Step 5a: every daemon in the sidebar
+
+Added on 2026-11-16 at the user's request, after a design shown on a web page; it replaces the "one daemon" item that was out of scope. Only =emacs/= changes.
+
+- With a non-empty =goblins-endpoints= the sidebar lists every daemon under a top-level heading: =⌂ NAME= for a daemon on this machine, =⇄ NAME= for a remote one. The groups and goblins of a daemon sit one level deeper. With no endpoints there are no daemon headings and the text is exactly as before.
+- Order: the sidebar's own daemon (the one the workspace was opened with), then the endpoints that have a status buffer with a snapshot, then the others, each in the order of =goblins-endpoints=.
+- Names: an endpoint's name; for a daemon without an entry the user option =goblins-local-daemon-name=, where nil means =(system-name)=.
+- Nothing connects by itself. =M-x goblins-remote-connect= reads an endpoint name and connects its status buffer without waiting; =RET= on a heading without a snapshot does the same, and on a connected one shows the status buffer. A daemon without a status buffer reads =· not connected= and is drawn folded; one whose buffer has no snapshot shows the buffer's notice under the heading.
+- A daemon's heading folds with =TAB= and is never folded by the sidebar's views. It carries the count of pending requests of that daemon.
+- Every line has the text property =goblins-daemon= with its daemon's key. =goblins--sidebar-ensure-source= returns the status buffer of the line at point, so the existing commands act on the right daemon. Group keys of a daemon other than the sidebar's own end with its key, so equal raids and directories in two daemons fold apart; the own daemon's keys are unchanged.
+- =n=, =N= and the workspace's next, previous and waiting goblin commands go through all listed daemons. =g= reconnects the daemon of the line. =c= on a daemon's heading asks for a directory on its machine.
+- External agents are listed with the sidebar's own daemon.
+- Tests, ERT: the text for a connected, a failed and two unconnected endpoints, with the order changing when one connects and one drops; folding; the keys on a goblin and on a heading; =goblins-remote-connect=; moving across daemons; running on the daemon of the line. Live: the sidebar text of the first daemon lists the fake remote daemon's goblin under its heading.
 
 ** Step 6: check against a real machine
 

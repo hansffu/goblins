@@ -433,6 +433,21 @@ directory on this machine.  Empty input is the daemon in use."
           ;; A directory on this machine, also from a remote buffer.
           (t (expand-file-name input (and (file-remote-p default-directory) "~/"))))))
 
+;;;###autoload
+(defun goblins-remote-connect (name)
+  "Connect to the daemon called NAME in `goblins-endpoints'.
+The sidebar then lists its goblins under its heading.  Return its status
+buffer, which is not displayed."
+  (interactive (list (completing-read "Connect to Goblins daemon: "
+                                      (mapcar #'car goblins-endpoints) nil t)))
+  (let ((source (goblins--status-buffer
+                 (goblins--endpoint-key (or (assoc name goblins-endpoints)
+                                            (user-error "No Goblins endpoint %s" name))))))
+    (with-current-buffer source
+      (unless (or goblins--connection (process-live-p goblins--server-process))
+        (goblins-refresh)))
+    source))
+
 (defun goblins--safe (value)
   "Render VALUE on one line, escaping control and bidi formatting characters."
   (replace-regexp-in-string

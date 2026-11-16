@@ -112,6 +112,8 @@ of `goblins-agent-icons'.  A buffer sets its own with
 `goblins-external-agent-icon'."
   :type '(plist :options ((:svg file) (:color (choice color face)) (:text string)))
   :group 'goblins)
+(defface goblins-sidebar-daemon '((t :inherit font-lock-constant-face :weight bold))
+  "A daemon's heading in a sidebar that lists several." :group 'goblins)
 (defface goblins-sidebar-selected '((t :inherit region :extend t))
   "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
 (defface goblins-sidebar-active '((t))
@@ -128,7 +130,15 @@ A bar's colour is its face's foreground." :group 'goblins)
   "A goblin's pending permission requests, and the counts of them." :group 'goblins)
 
 (defvar-local goblins--sidebar-source nil
-  "The status buffer whose snapshot this sidebar shows.")
+  "The status buffer of this sidebar's own daemon, which it lists first.
+The other daemons it lists are those of `goblins-endpoints'.")
+
+(defcustom goblins-local-daemon-name nil
+  "The name of your own daemon in a sidebar that lists several daemons.
+Nil means this machine's host name.  A daemon of `goblins-endpoints' goes by
+its name there."
+  :type '(choice (const :tag "This machine's host name" nil) string)
+  :group 'goblins)
 (defcustom goblins-sidebar-show-finished nil
   "Whether the sidebar lists stopped and failed goblins.
 The status buffer always lists them."
@@ -195,6 +205,8 @@ pair; nil FOLDS unfolds everything."
   (and folds
        (not (eq (not (member key (cdr folds)))
                 (not (pcase (car folds)
+                       ;; A view folds what is inside a daemon, never the daemon.
+                       ((guard (eq (car key) 'daemon)) nil)
                        ('overview t)
                        ('contents (eq (car key) 'goblin))
                        (_ nil)))))))
@@ -388,13 +400,17 @@ holding it, for restoring point when a fold hides the line."
   (let* ((p (save-excursion (goto-char pos) (line-beginning-position)))
          (owner (get-text-property p 'goblins-parent))
          (group (or (get-text-property p 'goblins-in-group)
-                    (get-text-property p 'goblins-group))))
+                    (get-text-property p 'goblins-group)))
+         (daemon (get-text-property p 'goblins-daemon)))
     (delete-dups
      (delq nil (list (goblins--sidebar-key-at pos)
                      (and owner (cons 'id owner))
                      (and group (cons 'group group))
                      (and (eq (car-safe group) 'dir) (cadr group)
-                          (cons 'group (list 'raid (cadr group)))))))))
+                          (cons 'group (append (list 'raid (cadr group))
+                                               (nthcdr 3 group))))
+                     (and daemon
+                          (cons 'group (list 'daemon (goblins--sidebar-daemon-tag daemon)))))))))
 
 (defun goblins--sidebar-find (key)
   "Return the start of the line identified by KEY, or nil."
@@ -766,92 +782,176 @@ the shells follow it.  Only the name and the shells are stops for movement."
         sessions
       (cl-remove-if #'goblins--sidebar-finished-p sessions))))
 
-(defun goblins--sidebar-group-keys (session)
-  "The keys of the groups that contain SESSION."
+(defun goblins--sidebar-group-keys (session &optional tag)
+  "The keys of the raid and directory groups that contain SESSION, outermost
+first.  TAG is its daemon's, see `goblins--sidebar-daemon-tag'."
   (let* ((rkey (goblins--session-raid-id session))
-         (dir (goblins--sidebar-directory session)))
-    (delq nil (list (and rkey (list 'raid rkey)) (list 'dir rkey dir)))))
+         (dir (goblins--sidebar-directory session))
+         (tail (and tag (list tag))))
+    (delq nil (list (and rkey (append (list 'raid rkey) tail))
+                    (append (list 'dir rkey dir) tail)))))
+
+;;;; Daemons
+
+(defun goblins--sidebar-daemon-source (key)
+  "The status buffer of daemon KEY, or nil when it has none."
+  (get-buffer (format "*Goblins: %s*" key)))
+
+(defun goblins--sidebar-daemon-connected-p (key)
+  "Whether daemon KEY has a status buffer with a snapshot."
+  (let ((source (goblins--sidebar-daemon-source key)))
+    (and source (buffer-local-value 'goblins--snapshot source) t)))
+
+(defun goblins--sidebar-daemons (source)
+  "The keys of the daemons a sidebar of SOURCE lists.
+SOURCE's own comes first, then the others of `goblins-endpoints': those
+connected, then the rest, each in the order of `goblins-endpoints'."
+  (let* ((own (buffer-local-value 'goblins--directory source))
+         (others (delete-dups
+                  (delq nil (mapcar (lambda (entry)
+                                      (let ((key (ignore-errors (goblins--endpoint-key entry))))
+                                        (and key (not (equal key own)) key)))
+                                    goblins-endpoints))))
+         (connected (cl-remove-if-not #'goblins--sidebar-daemon-connected-p others)))
+    (cons own (append connected (cl-remove-if #'goblins--sidebar-daemon-connected-p others)))))
+
+(defun goblins--sidebar-daemon-tag (key)
+  "What tells daemon KEY's groups from this sidebar's own: KEY, or nil for
+the sidebar's own daemon, whose group keys stay as they are without daemons."
+  (and key (not (equal key goblins--directory)) key))
+
+(defun goblins--sidebar-daemon-name (key)
+  "The name of daemon KEY in the sidebar: its endpoint's, else
+`goblins-local-daemon-name' or this machine's host name."
+  (or (car (goblins--endpoint key))
+      (goblins--daemon-destination key)
+      goblins-local-daemon-name
+      (system-name)))
+
+(defun goblins--sidebar-insert-daemon (key source own folds)
+  "Insert the heading of daemon KEY and return non-nil unless it is folded.
+SOURCE is its status buffer, or nil when it has none, and OWN the key of the
+sidebar's own daemon."
+  (let* ((snapshot (and source (buffer-local-value 'goblins--snapshot source)))
+         (pending (cl-count-if (lambda (r) (equal (plist-get r :state) "pending"))
+                               (append (plist-get snapshot :permissions) nil)))
+         (label (concat (propertize (concat (if (file-remote-p key) "⇄" "⌂") " "
+                                            (goblins--safe (goblins--sidebar-daemon-name key)))
+                                    'face 'goblins-sidebar-daemon)
+                        (if source "" (propertize " · not connected" 'face 'goblins-dim)))))
+    (let ((group (list 'daemon (and (not (equal key own)) key))))
+      (goblins--sidebar-insert-group
+       group 0
+       (truncate-string-to-width label (max 1 (goblins--sidebar-room 0 pending)) nil nil "…")
+       ;; A daemon that is not connected has nothing to unfold.
+       (if source folds (list 'all group))
+       (list 'goblins-daemon-heading key) pending))))
+
+(defun goblins--sidebar-insert-contents (source externals folds base tag)
+  "Insert the goblins of SOURCE's snapshot, and the EXTERNALS agents, folded
+as FOLDS says, indented by BASE columns.  TAG is the daemon's, see
+`goblins--sidebar-daemon-tag'."
+  (let* ((snapshot (and (buffer-live-p source)
+                        (buffer-local-value 'goblins--snapshot source)))
+         (sessions (and snapshot (goblins--sidebar-sessions snapshot)))
+         (tail (and tag (list tag)))
+         (margin (make-string base ?\s)))
+    (cond
+     ((not snapshot)
+      (insert margin
+              (propertize
+               (format "%s\n" (goblins--safe
+                               (if (buffer-live-p source)
+                                   (replace-regexp-in-string
+                                    "\\<r\\( to reconnect\\| now\\)" "g\\1"
+                                    (buffer-local-value 'goblins--notice source))
+                                 "No server; g to reconnect")))
+               'face 'goblins-dim)))
+     ((and (null sessions) (null externals))
+      (insert margin (propertize "No running goblins\n" 'face 'goblins-dim))))
+    (when (or sessions externals)
+      (let* ((shells (if snapshot (goblins--sidebar-shells source)
+                       (make-hash-table :test #'equal)))
+             (permissions (append (plist-get snapshot :permissions) nil))
+             (count (lambda (members)
+                      (apply #'+ (mapcar (lambda (s) (goblins--sidebar-pending
+                                                      (plist-get s :id) permissions))
+                                         (cl-remove-if #'bufferp members)))))
+             (raids (append (plist-get snapshot :raids) nil)))
+        (dolist (raid (goblins--sidebar-groups sessions externals))
+          (let* ((rkey (car raid))
+                 ;; A raid whose goblins share one directory has one
+                 ;; heading for both; its goblins sit under the raid.
+                 (merged (and rkey (null (cdr (cddr raid)))))
+                 (indent (+ base (if (and rkey (not merged)) 2 0)))
+                 ;; A paused raid's prompt is its former owner's,
+                 ;; which may no longer be a member.
+                 (pending (and rkey
+                               (+ (funcall count (apply #'append (mapcar #'cdr (cddr raid))))
+                                  (goblins--sidebar-raid-prompts rkey permissions)))))
+            (when (or (null rkey)
+                      (let ((label (goblins--sidebar-raid-label
+                                    (or (cadr raid) rkey)
+                                    (eq (plist-get (cl-find rkey raids
+                                                            :key (lambda (r) (plist-get r :id))
+                                                            :test #'equal)
+                                                   :paused)
+                                        t)
+                                    (and merged (car (nth 2 raid)))
+                                    (and merged
+                                         (goblins--sidebar-group-worktree
+                                          (car (nth 2 raid)) (cdr (nth 2 raid))))
+                                    (goblins--sidebar-room base pending))))
+                        (goblins--sidebar-insert-group
+                         (append (list 'raid rkey) tail) base (car label)
+                         folds
+                         (append (list 'goblins-raid (or (cadr raid) rkey))
+                                 (and merged (list 'goblins-directory (car (nth 2 raid)))))
+                         pending (cdr label))))
+              (dolist (dir (cddr raid))
+                (let ((gkey (append (list 'dir rkey (car dir)) tail)))
+                  (when (or merged
+                            (goblins--sidebar-insert-group
+                             gkey indent
+                             (goblins--sidebar-directory-label
+                              (car dir) (goblins--sidebar-room indent (funcall count (cdr dir)))
+                              (goblins--sidebar-group-worktree (car dir) (cdr dir)))
+                             folds (list 'goblins-directory (car dir))
+                             (funcall count (cdr dir))))
+                    (dolist (session (cdr dir))
+                      (if (bufferp session)
+                          (goblins--sidebar-insert-external
+                           session (1+ (/ indent 2)) gkey)
+                        (goblins--sidebar-insert-goblin
+                         session (1+ (/ indent 2)) gkey permissions shells folds)))))))))))))
 
 (defun goblins--sidebar-text (source folds)
-  "Return the sidebar text for SOURCE's snapshot, folded as FOLDS says.
-FOLDS is a sidebar's `goblins--sidebar-folds'; nil unfolds everything.  The
-text is built apart from the sidebar so a failure cannot blank it."
-  (with-temp-buffer
-    ;; The daemon whose paths the labels and icons look up.
-    (setq goblins--directory (and (buffer-live-p source)
-                                  (buffer-local-value 'goblins--directory source)))
-    (let* ((snapshot (and (buffer-live-p source)
-                          (buffer-local-value 'goblins--snapshot source)))
-           ;; External agents show even without a server.
-           (externals (goblins--external-agents))
-           (sessions (and snapshot (goblins--sidebar-sessions snapshot))))
-      (cond
-       ((not snapshot)
-        (insert (propertize
-                 (format "%s\n" (goblins--safe
-                                 (if (buffer-live-p source)
-                                     (replace-regexp-in-string
-                                      "\\<r\\( to reconnect\\| now\\)" "g\\1"
-                                      (buffer-local-value 'goblins--notice source))
-                                   "No server; g to reconnect")))
-                 'face 'goblins-dim)))
-       ((and (null sessions) (null externals))
-        (insert (propertize "No running goblins\n" 'face 'goblins-dim))))
-      (when (or sessions externals)
-        (let* ((shells (if snapshot (goblins--sidebar-shells source)
-                         (make-hash-table :test #'equal)))
-               (permissions (append (plist-get snapshot :permissions) nil))
-               (count (lambda (members)
-                        (apply #'+ (mapcar (lambda (s) (goblins--sidebar-pending
-                                                        (plist-get s :id) permissions))
-                                           (cl-remove-if #'bufferp members)))))
-               (raids (append (plist-get snapshot :raids) nil)))
-          (dolist (raid (goblins--sidebar-groups sessions externals))
-            (let* ((rkey (car raid))
-                   ;; A raid whose goblins share one directory has one
-                   ;; heading for both; its goblins sit under the raid.
-                   (merged (and rkey (null (cdr (cddr raid)))))
-                   (indent (if (and rkey (not merged)) 2 0))
-                   ;; A paused raid's prompt is its former owner's,
-                   ;; which may no longer be a member.
-                   (pending (and rkey
-                                 (+ (funcall count (apply #'append (mapcar #'cdr (cddr raid))))
-                                    (goblins--sidebar-raid-prompts rkey permissions)))))
-              (when (or (null rkey)
-                        (let ((label (goblins--sidebar-raid-label
-                                      (or (cadr raid) rkey)
-                                      (eq (plist-get (cl-find rkey raids
-                                                              :key (lambda (r) (plist-get r :id))
-                                                              :test #'equal)
-                                                     :paused)
-                                          t)
-                                      (and merged (car (nth 2 raid)))
-                                      (and merged
-                                           (goblins--sidebar-group-worktree
-                                            (car (nth 2 raid)) (cdr (nth 2 raid))))
-                                      (goblins--sidebar-room 0 pending))))
-                          (goblins--sidebar-insert-group
-                           (list 'raid rkey) 0 (car label)
-                           folds
-                           (append (list 'goblins-raid (or (cadr raid) rkey))
-                                   (and merged (list 'goblins-directory (car (nth 2 raid)))))
-                           pending (cdr label))))
-                (dolist (dir (cddr raid))
-                  (let ((gkey (list 'dir rkey (car dir))))
-                    (when (or merged
-                              (goblins--sidebar-insert-group
-                               gkey indent
-                               (goblins--sidebar-directory-label
-                                (car dir) (goblins--sidebar-room indent (funcall count (cdr dir)))
-                                (goblins--sidebar-group-worktree (car dir) (cdr dir)))
-                               folds (list 'goblins-directory (car dir))
-                               (funcall count (cdr dir))))
-                      (dolist (session (cdr dir))
-                        (if (bufferp session)
-                            (goblins--sidebar-insert-external
-                             session (1+ (/ indent 2)) gkey)
-                          (goblins--sidebar-insert-goblin
-                           session (1+ (/ indent 2)) gkey permissions shells folds)))))))))))
+  "Return the sidebar text for SOURCE's daemon, folded as FOLDS says.
+With `goblins-endpoints' it lists every daemon under a heading of its own,
+see `goblins--sidebar-daemons'.  FOLDS is a sidebar's `goblins--sidebar-folds';
+nil unfolds everything.  The text is built apart from the sidebar so a
+failure cannot blank it."
+  (let* ((own (and (buffer-live-p source) (buffer-local-value 'goblins--directory source)))
+         (daemons (and own (goblins--sidebar-daemons source)))
+         ;; External agents show even without a server, with your own daemon.
+         (externals (goblins--external-agents)))
+    (with-temp-buffer
+      ;; Daemon headings come with endpoints, even when all name this daemon.
+      (if (or (null daemons) (null goblins-endpoints))
+          (progn
+            ;; The daemon whose paths the labels and icons look up.
+            (setq goblins--directory own)
+            (goblins--sidebar-insert-contents source externals folds 0 nil)
+            (when own (put-text-property (point-min) (point-max) 'goblins-daemon own)))
+        (dolist (key daemons)
+          (let ((start (point))
+                (daemon (if (equal key own) source (goblins--sidebar-daemon-source key))))
+            (setq goblins--directory key)
+            (when (and (goblins--sidebar-insert-daemon key daemon own folds) daemon)
+              (goblins--sidebar-insert-contents
+               daemon (and (equal key own) externals) folds 2
+               (and (not (equal key own)) key)))
+            (put-text-property start (point) 'goblins-daemon key))))
       (buffer-string))))
 
 (defun goblins--sidebar-render ()
@@ -974,9 +1074,11 @@ column before it in a terminal."
       (forward-line 1))))
 
 (defun goblins--sidebar-render-for (source)
-  "Redraw every sidebar showing SOURCE."
+  "Redraw every sidebar that lists SOURCE's daemon."
   (dolist (buffer (buffer-list))
-    (when (eq (buffer-local-value 'goblins--sidebar-source buffer) source)
+    (when (and (buffer-local-value 'goblins--sidebar-source buffer)
+               (or (eq (buffer-local-value 'goblins--sidebar-source buffer) source)
+                   (goblins--endpoint (buffer-local-value 'goblins--directory source))))
       (with-current-buffer buffer
         (condition-case err (goblins--sidebar-render)
           (error (message "goblins sidebar: %s" (error-message-string err))))))))
@@ -1036,6 +1138,21 @@ else every 30 seconds."
 (defun goblins--sidebar-window ()
   (get-buffer-window goblins--sidebar-buffer-name))
 
+(defun goblins--sidebar-key-source (key)
+  "In a sidebar, the status buffer of daemon KEY, or nil when it has none.
+A nil KEY is the sidebar's own daemon."
+  (if (or (null key) (equal key goblins--directory))
+      goblins--sidebar-source
+    (goblins--sidebar-daemon-source key)))
+
+(defun goblins--sidebar-source-at (pos)
+  "The status buffer of the daemon of the sidebar line at POS, or nil."
+  (goblins--sidebar-key-source (get-text-property pos 'goblins-daemon)))
+
+(defun goblins--sidebar-buffer-source (buffer)
+  "In a sidebar, the status buffer of the daemon goblin BUFFER belongs to."
+  (goblins--sidebar-key-source (buffer-local-value 'goblins--directory buffer)))
+
 (defun goblins--sidebar-update-active ()
   "Draw the bars of the sidebar's goblins and shells, and mark those shown.
 A goblin's block has a bar in `goblins-sidebar-bar-shown' while its terminal
@@ -1056,9 +1173,9 @@ shells also get `goblins-sidebar-active'."
                    ;; buffer whose client ended is shown but detached.
                    (let ((session (alist-get 'session
                                              (buffer-local-value 'ghostel-identity shown))))
-                     (when (and (buffer-live-p goblins--sidebar-source)
+                     (when (and (buffer-live-p (goblins--sidebar-buffer-source shown))
                                 (eq (goblins--session-terminal-buffer
-                                     goblins--sidebar-source session terminal)
+                                     (goblins--sidebar-buffer-source shown) session terminal)
                                     shown))
                        (push (cons session terminal) shown-terminals))))
                   ((buffer-local-value 'goblins--shell-number shown)
@@ -1079,8 +1196,8 @@ shells also get `goblins-sidebar-active'."
                 (when id
                   (setq block-end (goblins--sidebar-block-end (point))
                         goblin (cond ((member id shown-ids) 'goblins-sidebar-bar-shown)
-                                     ((and (buffer-live-p goblins--sidebar-source)
-                                           (with-current-buffer goblins--sidebar-source
+                                     ((and (buffer-live-p (goblins--sidebar-source-at (point)))
+                                           (with-current-buffer (goblins--sidebar-source-at (point))
                                              (goblins--terminal-buffer id)))
                                       'goblins-sidebar-bar-attached)))
                   (when (eq goblin 'goblins-sidebar-bar-shown)
@@ -1099,9 +1216,10 @@ shells also get `goblins-sidebar-active'."
                               ((and terminal (member terminal shown-terminals))
                                (goblins--sidebar-mark-shown (point) line-end)
                                'goblins-sidebar-bar-shown)
-                              ((and terminal (buffer-live-p goblins--sidebar-source)
+                              ((and terminal (buffer-live-p (goblins--sidebar-source-at (point)))
                                     (goblins--session-terminal-buffer
-                                     goblins--sidebar-source (car terminal) (cdr terminal)))
+                                     (goblins--sidebar-source-at (point))
+                                     (car terminal) (cdr terminal)))
                                'goblins-sidebar-bar-attached))))
                   (when (or goblin inner)
                     (setq goblins--sidebar-active-overlays
@@ -1216,18 +1334,61 @@ A goblin's detail lines and blank lines are passed by."
   (interactive "p")
   (goblins-sidebar-next (- (or n 1))))
 
-(defun goblins--sidebar-ensure-source ()
-  "Return this sidebar's status buffer, recreating and reconnecting it if killed."
+(defun goblins--sidebar-daemon-at-point ()
+  "The key of the daemon of the line at point: this sidebar's own unless the
+line is under another daemon's heading."
+  (or (get-text-property (line-beginning-position) 'goblins-daemon) goblins--directory))
+
+(defun goblins--sidebar-own-source ()
+  "Return the status buffer of this sidebar's own daemon, recreating and
+reconnecting it if killed."
   (unless (buffer-live-p goblins--sidebar-source)
     (setq goblins--sidebar-source (goblins--status-buffer goblins--directory))
     (with-current-buffer goblins--sidebar-source (goblins-refresh)))
   goblins--sidebar-source)
 
+(defun goblins--sidebar-ensure-source ()
+  "Return the status buffer of the daemon of the line at point.
+It is recreated and reconnected if it was killed."
+  (let ((key (goblins--sidebar-daemon-at-point)))
+    (if (equal key goblins--directory)
+        (goblins--sidebar-own-source)
+      (or (goblins--sidebar-daemon-source key)
+          (let ((source (goblins--status-buffer key)))
+            (with-current-buffer source (goblins-refresh))
+            source)))))
+
 (defun goblins--sidebar-session (id)
-  (cl-find id (append (plist-get (buffer-local-value 'goblins--snapshot goblins--sidebar-source)
-                                 :sessions)
-                      nil)
-           :key (lambda (s) (plist-get s :id)) :test #'equal))
+  "The record of goblin ID of the daemon of the line at point."
+  (goblins--snapshot-session
+   (buffer-local-value 'goblins--snapshot (goblins--sidebar-ensure-source)) id))
+
+(defun goblins--sidebar-source-of (source id)
+  "The status buffer, among the daemons a sidebar of SOURCE lists, whose
+snapshot has goblin ID; SOURCE when none has."
+  (or (cl-some (lambda (key)
+                 (let ((daemon (if (equal key (buffer-local-value 'goblins--directory source))
+                                   source
+                                 (goblins--sidebar-daemon-source key))))
+                   (and daemon
+                        (goblins--snapshot-session
+                         (buffer-local-value 'goblins--snapshot daemon) id)
+                        daemon)))
+               (goblins--sidebar-daemons source))
+      source))
+
+(defun goblins-sidebar-daemon ()
+  "Connect the daemon on this heading, or show its status buffer once it is
+connected."
+  (interactive)
+  (let* ((key (or (get-text-property (line-beginning-position) 'goblins-daemon-heading)
+                  (user-error "Select a daemon's heading")))
+         (source (goblins--status-buffer key)))
+    (if (buffer-local-value 'goblins--snapshot source)
+        (goblins--display-main source)
+      (with-current-buffer source
+        (unless (process-live-p goblins--server-process) (goblins-refresh)))
+      (goblins--sidebar-render))))
 
 (defun goblins-sidebar-fold ()
   "Fold or unfold the group or goblin at point.
@@ -1285,6 +1446,8 @@ the sidebar as needed."
     (goblins-open-session (goblins--sidebar-ensure-source)
                           (or (get-text-property (line-beginning-position) 'goblins-id)
                               (get-text-property (line-beginning-position) 'goblins-detail))))
+   ((get-text-property (line-beginning-position) 'goblins-daemon-heading)
+    (goblins-sidebar-daemon))
    ((get-text-property (line-beginning-position) 'goblins-raid)
     (goblins--display-main
      (goblins-raid-buffer (goblins--sidebar-ensure-source)
@@ -1366,11 +1529,16 @@ On a raid heading, invite a goblin you choose into that raid."
     (goblins-run directory)))
 
 (defun goblins-sidebar-run ()
-  "Run a new goblin in the project of the goblin or directory at point."
+  "Run a new goblin in the project of the goblin or directory at point.
+On a daemon's heading, in a directory you choose on its machine."
   (interactive)
   (goblins--sidebar-run-in
-   ;; The sidebar holds paths on the daemon's machine.
-   (goblins--host-file goblins--directory (goblins--sidebar-directory-at-point))))
+   (if-let* ((key (get-text-property (line-beginning-position) 'goblins-daemon-heading)))
+       ;; A daemon's heading has no directory: ask for one on its machine.
+       (read-directory-name "Run a goblin in: " (goblins--host-file key "~/"))
+     ;; The sidebar holds paths on the daemon's machine.
+     (goblins--host-file (goblins--sidebar-daemon-at-point)
+                         (goblins--sidebar-directory-at-point)))))
 
 (defun goblins-sidebar-run-in-project ()
   "Choose a project, then run a new goblin there."
@@ -1402,14 +1570,17 @@ the one before it.  Wrap around, but never return the goblin on that line."
   "Put the point of SIDEBAR, by default the sidebar, on goblin ID of SOURCE,
 unfolding its groups."
   (when-let* ((sidebar (or sidebar (get-buffer goblins--sidebar-buffer-name)))
-              ((eq (buffer-local-value 'goblins--sidebar-source sidebar) source))
+              (own (buffer-local-value 'goblins--sidebar-source sidebar))
+              ((memq source (list own (goblins--sidebar-source-of own id))))
               (session (goblins--snapshot-session
                         (buffer-local-value 'goblins--snapshot source) id)))
     (with-current-buffer sidebar
       ;; Outermost first, and only until the goblin shows: a raid merged
       ;; with its one directory has no directory heading to open, and that
       ;; directory's fold must outlive the merge.
-      (dolist (key (goblins--sidebar-group-keys session))
+      (dolist (key (let ((tag (goblins--sidebar-daemon-tag
+                               (buffer-local-value 'goblins--directory source))))
+                     (cons (list 'daemon tag) (goblins--sidebar-group-keys session tag))))
         (when (and (not (goblins--sidebar-find (cons 'id id)))
                    (goblins--sidebar-folded-p key (goblins--sidebar-folds)))
           (goblins--sidebar-toggle key)
@@ -1423,7 +1594,9 @@ unfolding its groups."
   "Put the sidebar's point on the external agent BUFFER, unfolding its group."
   (when-let* ((sidebar (get-buffer goblins--sidebar-buffer-name)))
     (with-current-buffer sidebar
-      (let ((key (list 'dir nil (goblins--external-agent-directory buffer))))
+      ;; Its daemon's heading, if there is one, then its directory.
+      (dolist (key (list (list 'daemon nil)
+                         (list 'dir nil (goblins--external-agent-directory buffer))))
         (when (and (not (goblins--sidebar-find (cons 'external buffer)))
                    (goblins--sidebar-folded-p key (goblins--sidebar-folds)))
           (goblins--sidebar-toggle key)
@@ -1434,11 +1607,12 @@ unfolding its groups."
           (set-window-point window pos))))))
 
 (defun goblins--sidebar-move-to-waiting (backward)
-  (let* ((source (goblins--sidebar-ensure-source))
+  (let* ((source (goblins--sidebar-own-source))
          (target (goblins--sidebar-next-waiting source (goblins--sidebar-key-at (point))
                                                 backward)))
     (if target
-        (goblins--sidebar-reveal source target (current-buffer))
+        (goblins--sidebar-reveal (goblins--sidebar-source-of source target) target
+                                 (current-buffer))
       (message "No other goblin is waiting for a decision"))))
 
 (defun goblins-sidebar-next-pending ()
@@ -1534,14 +1708,19 @@ running; with a prefix argument STOP, they are stopped too."
                  ("m t" . "the messages the goblin received"))
      ("Run" ("c" . "run a goblin in the project at point")
             ("C" . "run a goblin in a project you choose"))
-     ("Workspace" ("g" . "reconnect") ("q" . "leave") ("?" . "this help")))))
+     ("Daemons" ("RET" . "on a daemon: connect it; once connected, its status buffer")
+                ("c" . "on a daemon: run a goblin in a directory on its machine")
+                ("g" . "reconnect the daemon at point"))
+     ("Workspace" ("q" . "leave") ("?" . "this help")))))
 
 (defun goblins-sidebar-refresh ()
-  "Reconnect the server buffer for a fresh snapshot."
+  "Reconnect the daemon of the line at point for a fresh snapshot."
   (interactive)
-  (if (buffer-live-p goblins--sidebar-source)
-      (with-current-buffer goblins--sidebar-source (goblins-refresh))
-    (goblins--sidebar-ensure-source)))
+  (let ((source (goblins--sidebar-source-at (line-beginning-position))))
+    (if (buffer-live-p source)
+        (with-current-buffer source (goblins-refresh))
+      ;; Recreated, which reconnects it.
+      (goblins--sidebar-ensure-source))))
 
 (defun goblins-workspace-default-quit ()
   "Close the sidebar and restore the saved window configuration."
@@ -1633,10 +1812,9 @@ them, the next."
                      (goblins--right-window)))))
 
 (defun goblins--sidebar-order (source)
-  "The IDs of SOURCE's running goblins, and the buffers of the external agents,
-in the order of the unfolded sidebar."
-  (let ((snapshot (buffer-local-value 'goblins--snapshot source))
-        ids)
+  "The IDs of the running goblins a sidebar of SOURCE lists, and the buffers of
+the external agents, in the order of the unfolded sidebar."
+  (let (ids)
     (with-temp-buffer
       (insert (goblins--sidebar-text source nil))
       (goto-char (point-min))
@@ -1646,26 +1824,31 @@ in the order of the unfolded sidebar."
           (when (and id (not (member id ids))
                      (or (bufferp id)
                          (not (goblins--sidebar-finished-p
-                               (goblins--snapshot-session snapshot id)))))
+                               (goblins--snapshot-session
+                                (buffer-local-value 'goblins--snapshot
+                                                    (goblins--sidebar-source-of source id))
+                                id)))))
             (push id ids)))
         (forward-line 1)))
     (nreverse ids)))
 
 (defun goblins--workspace-current (source)
-  "The ID of the selected goblin, if it is one of SOURCE's server, or the
-buffer of the selected external agent."
+  "The ID of the selected goblin, if a sidebar of SOURCE lists its daemon, or
+the buffer of the selected external agent."
   (cond ((eq (car goblins--last-goblin) 'external) (cdr goblins--last-goblin))
-        ((equal (car goblins--last-goblin) (buffer-local-value 'goblins--directory source))
+        ((member (car goblins--last-goblin) (goblins--sidebar-daemons source))
          (cdr goblins--last-goblin))))
 
 (defun goblins--workspace-goto (source id)
-  "Show goblin ID of SOURCE beside the sidebar, its line selected there.
-ID may be an external agent's buffer instead."
+  "Show goblin ID beside the sidebar, its line selected there.
+It is a goblin of SOURCE's daemon or of another one its sidebar lists.  ID
+may be an external agent's buffer instead."
   (if (bufferp id)
       (progn (goblins--sidebar-reveal-external id)
              (goblins-select-external id))
-    (goblins--sidebar-reveal source id)
-    (goblins-open-session source id)))
+    (let ((source (goblins--sidebar-source-of source id)))
+      (goblins--sidebar-reveal source id)
+      (goblins-open-session source id))))
 
 (defun goblins-workspace-next-goblin (&optional n)
   "Show the next goblin in sidebar order, N times; wrap around."
