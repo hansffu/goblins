@@ -388,3 +388,11 @@ The daemon can wake an agent by pasting the inbox prompt into its terminal: =int
 * TODO Share compiled Rust dependencies between the Nix derivations
 
 After a change to the root =Cargo.toml= or to =libs/api= the Nix check stage rebuilds all twelve, or ten of the twelve, =checks.rust-*= derivations (=tests/checks.nix=, built by =nix/builders/rust.nix=), and each compiles its dependencies from nothing: about 450 s of the 697 s full rebuild at one job with two cores is compiling before the tests ([[file:../RESULTS.org][RESULTS.org]], "Nix check stage after a Rust change"). Build the third-party dependencies once, in a dependency-only derivation used as a Cargo target seed, and let the twelve derivations start from it. It must keep the property the comments in =nix/builders/rust.nix= describe, that a package's source contains only itself and its declared libraries. Measure the gain with a prototype first: =just test-nix= already builds four derivations at once, and the fixtures still build one at a time.
+
+* TODO State stream on a slow link to a remote daemon
+
+Found while implementing [[file:REMOTE-GOBLINS.org][REMOTE-GOBLINS.org]] step 1, 2026-11-16. Decide after remote goblins is in; it may wait until libghostty-vt is in as well.
+
+Every state change sends each subscriber a full replacement snapshot of up to 900 KiB (=Controller::publish= in =packages/daemon/src/controller.rs=), and the daemon drops a connection whose unsent output passes 2 MiB (=QUEUE=). Locally Emacs reads fast enough. Through =goblins --host … rpc --stdio= the ssh link sets the pace, so a busy daemon on a slow link can drop the connection, and Emacs then reconnects and receives a fresh snapshot, possibly in a loop.
+
+Nothing was changed for this. First measure it in the real-machine check of the spec's step 5. Options, cheapest first: recommend =Compression yes= for the host in =~/.ssh/config= (JSON compresses well); send changes instead of replacement snapshots; or let the relay drop superseded snapshots, which needs Emacs to accept a gap in the sequence.
