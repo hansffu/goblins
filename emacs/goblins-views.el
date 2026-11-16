@@ -586,25 +586,15 @@ A goblin attached elsewhere is detached there first, after asking."
       (unless session (user-error "The daemon no longer retains this goblin"))
       (when (member (plist-get session :state) '("stopped" "failed"))
         (user-error "This goblin has finished"))
-      (let ((attached-p (lambda ()
-                          (eq (plist-get (goblins--snapshot-session
-                                          (buffer-local-value 'goblins--snapshot source) id)
-                                         :terminal_attached)
-                              t)))
-            (open (let ((directory
-                         (if-let* ((directory (goblins--session-directory session)))
-                             (file-name-as-directory
-                              (goblins--host-file goblins--directory directory))
-                           default-directory)))
-                    (lambda ()
-                      (goblins--open-terminal id (plist-get session :agent_name)
-                                              directory display)))))
-        ;; No buffer of this Emacs is attached, or it would have been shown.
-        (if (goblins--take-attachment
-             source (goblins--safe (plist-get session :agent_name)) attached-p
-             (lambda () (goblins--host-call source 'sessions.detach (list :session id))))
-            (goblins--attach-until-held source attached-p open)
-          (funcall open))))))
+      (goblins--open-terminal
+       id (plist-get session :agent_name)
+       (if-let* ((directory (goblins--session-directory session)))
+           (file-name-as-directory (goblins--host-file goblins--directory directory))
+         default-directory)
+       display
+       ;; No buffer of this Emacs is attached, or it would have been shown.
+       (goblins--take-over-arguments (goblins--safe (plist-get session :agent_name))
+                                     (eq (plist-get session :terminal_attached) t))))))
 
 (defun goblins-open-session (source id)
   "Show the terminal of session ID of SOURCE's server, attaching if needed.

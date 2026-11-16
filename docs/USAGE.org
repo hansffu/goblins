@@ -623,6 +623,11 @@ terminal client exit 0. An unknown or already unattached session returns an erro
 
 Only one terminal can attach at a time; a competing attachment fails. Closing
 a terminal unexpectedly also leaves the sandbox available for attachment.
+=goblins attach NAME --force= takes over a goblin that is attached elsewhere,
+such as from another machine: that terminal is detached and its client exits,
+and this one is attached once it has left. If it has not left after
+=--timeout SECONDS= (default 2), its connection is closed. =goblins terminal
+attach GOBLIN TERMINAL --force= does the same for one of a goblin's terminals.
 Detached output retains a tail of up to 64 KiB; older bytes can be discarded so
 background writers keep running. This is raw output, not full terminal screen
 restoration or durable scrollback. An attached slow reader still backpressures
@@ -635,7 +640,7 @@ requested it, or an owner exiting. When shutdown leaves no payload exit code,
 
 ** Goblins that start a client at each attach
 
-A goblin configured with =onAttach= (see [[*Nix API][Nix API]]) works differently: its main command runs in the background without a terminal for the goblin's whole life, and each attach starts a fresh client on a new terminal of the attaching terminal's size. Detaching (=goblins detach=, =goblin detach= or closing the terminal) runs =onDetach= if set, then stops the client and everything it started; the main command keeps running. Quitting the client also detaches; use =goblins kill= or the frontends' stop actions to stop the goblin. Only one attachment at a time; a second is refused.
+A goblin configured with =onAttach= (see [[*Nix API][Nix API]]) works differently: its main command runs in the background without a terminal for the goblin's whole life, and each attach starts a fresh client on a new terminal of the attaching terminal's size. Detaching (=goblins detach=, =goblin detach= or closing the terminal) runs =onDetach= if set, then stops the client and everything it started; the main command keeps running. Quitting the client also detaches; use =goblins kill= or the frontends' stop actions to stop the goblin. Only one attachment at a time; a second is refused. With =--force= the client that runs is detached as =goblins detach= does, and the new attachment waits until it has gone; =--timeout= does not apply, since ending the client has its own time limits.
 
 An attach first waits, showing =Starting…=, until the goblin has set every variable the client needs during this run (=goblin variable set=), up to =onAttach.timeout= seconds. A value a recreated goblin starts with from its record does not count. If they are not set in time, the attach fails with the missing names and the path of the server log, and the goblin keeps running; restart it with =goblins kill= and =goblins resume=. An attach to such a goblin that has stopped also names its server log, which says why it stopped. The main command's output goes to that log (=server_log= in =goblins rpc sessions.get=, at most 1 MiB plus one rotated =server.log.1=). =goblin status= shows whether a client is attached. Frontends older than this feature cannot attach such a goblin and are told to upgrade.
 

@@ -210,6 +210,10 @@ pub enum Command {
         stream: Fd,
         rows: u16,
         cols: u16,
+        /// Take a held terminal over: its frontend is detached, this one
+        /// waits until it has left, and after this many seconds the
+        /// holder's stream is closed.
+        force: Option<u16>,
     },
     Detach {
         terminal: TerminalId,

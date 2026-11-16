@@ -738,13 +738,24 @@ impl Engine {
                 stream,
                 rows,
                 cols,
-            } => self.terminals.attach(
-                terminal,
-                OwnedFd::from(stream).into(),
-                rows,
-                cols,
-                &mut self.events,
-            ),
+                force,
+            } => match force {
+                Some(seconds) => self.terminals.take_over(
+                    terminal,
+                    OwnedFd::from(stream).into(),
+                    rows,
+                    cols,
+                    std::time::Duration::from_secs(seconds.into()),
+                    &mut self.events,
+                ),
+                None => self.terminals.attach(
+                    terminal,
+                    OwnedFd::from(stream).into(),
+                    rows,
+                    cols,
+                    &mut self.events,
+                ),
+            },
             Command::Detach { terminal } => self.terminals.detach(terminal, &mut self.events),
             Command::Resize {
                 terminal,
@@ -1216,6 +1227,7 @@ mod tests {
                 stream: OwnedFd::from(stream).into(),
                 rows: 30,
                 cols: 100,
+                force: None,
             })
             .unwrap();
         assert!(
@@ -2132,6 +2144,7 @@ mod tests {
                 stream: OwnedFd::from(stream).into(),
                 rows: 24,
                 cols: 80,
+                force: None,
             }
         };
         local.send(attach(7)).unwrap();

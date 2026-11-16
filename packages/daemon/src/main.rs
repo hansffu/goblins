@@ -445,8 +445,13 @@ fn execute(cli: Cli) -> Result<i32> {
                 },
             );
         }
-        Command::Attach { session, instance } => {
-            return attachment::attach(state, session, instance);
+        Command::Attach {
+            session,
+            instance,
+            force,
+            timeout,
+        } => {
+            return attachment::attach(state, session, instance, cli::force_after(force, timeout));
         }
         Command::Terminal { command } => return terminal::run(state, command),
         Command::Completions { shell } => cli::completions(shell, cli.runtime.as_deref())?,

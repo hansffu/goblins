@@ -13,8 +13,14 @@ pub fn run(state: PathBuf, command: TerminalCommand) -> Result<i32> {
     if !client.features.iter().any(|f| f == "terminals") {
         return Err("this daemon has no terminals; restart it".into());
     }
-    if let TerminalCommand::Attach { goblin, terminal } = command {
-        return attach(client, goblin, terminal);
+    if let TerminalCommand::Attach {
+        goblin,
+        terminal,
+        force,
+        timeout,
+    } = command
+    {
+        return attach(client, goblin, terminal, crate::cli::force_after(force, timeout));
     }
     let output = call(&mut client, command)?;
     print!("{}", output.stdout);
@@ -222,7 +228,12 @@ fn report(terminal: &str, result: &contract::TerminalWaitReply, output: &mut Out
 
 /// Connect this terminal to `terminal`. Leaving detaches; the goblin and its
 /// terminal go on.
-fn attach(mut client: Client, goblin: String, terminal: String) -> Result<i32> {
+fn attach(
+    mut client: Client,
+    goblin: String,
+    terminal: String,
+    force: Option<u16>,
+) -> Result<i32> {
     if unsafe { libc::isatty(0) != 1 } {
         return Err("goblins terminal attach requires terminal input".into());
     }
@@ -234,6 +245,7 @@ fn attach(mut client: Client, goblin: String, terminal: String) -> Result<i32> {
         &session,
         &serde_json::to_value(record)?,
         Some(&terminal),
+        force,
     )?;
     // The frontend's window is applied once the stream is relayed.
     RESIZE.store(true, Ordering::Relaxed);

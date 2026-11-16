@@ -515,6 +515,7 @@ fn encode_command(command: &Command, b: &mut Builder) -> io::Result<()> {
             stream,
             rows,
             cols,
+            force,
         } => {
             // Keep terminal serialization before stream duplication.
             serde_json::to_value(terminal)?;
@@ -525,6 +526,7 @@ fn encode_command(command: &Command, b: &mut Builder) -> io::Result<()> {
                     stream,
                     rows: *rows,
                     cols: *cols,
+                    force: *force,
                 },
             )?;
         }
@@ -738,12 +740,14 @@ fn decode_command(method: &str, mut p: Params, d: &mut Descriptors) -> io::Resul
                 stream: descriptor,
                 rows: p.take("rows")?,
                 cols: p.take("cols")?,
+                force: p.take("force")?,
             };
             Command::Attach {
                 terminal: wire.terminal,
                 stream,
                 rows: wire.rows,
                 cols: wire.cols,
+                force: wire.force,
             }
         }
         name if name == contract::supervisor_notifications::CommandDetach::NAME => {

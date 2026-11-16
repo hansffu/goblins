@@ -139,6 +139,13 @@ pub enum Command {
         /// Require this daemon instance and an exact session ID (for editors)
         #[arg(long)]
         instance: Option<String>,
+        /// Take the terminal over when it is attached elsewhere
+        #[arg(long)]
+        force: bool,
+        /// With --force: seconds to let the other frontend leave before its
+        /// connection is closed (default 2)
+        #[arg(long, requires = "force", value_name = "SECONDS")]
+        timeout: Option<u16>,
     },
     /// Run a command inside a running goblin's sandbox (its own $SHELL by default)
     Exec {
@@ -289,7 +296,17 @@ pub enum TerminalCommand {
     /// End a terminal's program
     Close { goblin: String, terminal: String },
     /// Connect this terminal to one; leaving it detaches
-    Attach { goblin: String, terminal: String },
+    Attach {
+        goblin: String,
+        terminal: String,
+        /// Take the terminal over when it is attached elsewhere
+        #[arg(long)]
+        force: bool,
+        /// With --force: seconds to let the other frontend leave before its
+        /// connection is closed (default 2)
+        #[arg(long, requires = "force", value_name = "SECONDS")]
+        timeout: Option<u16>,
+    },
     /// Disconnect whoever is attached to a terminal; it keeps running
     Detach { goblin: String, terminal: String },
 }
@@ -307,6 +324,13 @@ impl TerminalCommand {
             | Self::Detach { goblin, .. } => goblin,
         }
     }
+}
+/// How long a forced attachment lets the other frontend leave, in seconds.
+pub const FORCE_TIMEOUT: u16 = 2;
+/// What `--force` and `--timeout` ask of an attachment: nothing, or the
+/// seconds after which the other frontend's connection is closed.
+pub fn force_after(force: bool, timeout: Option<u16>) -> Option<u16> {
+    force.then(|| timeout.unwrap_or(FORCE_TIMEOUT))
 }
 fn parse_size(text: &str) -> std::result::Result<(u16, u16), String> {
     let (rows, cols) = text
@@ -541,6 +565,7 @@ fn completion_target(words: Vec<String>) -> Option<(Option<PathBuf>, Slot)> {
         Command::Attach {
             session,
             instance: None,
+            ..
         } if session == TARGET => Slot::Goblin,
         Command::Exec {
             goblin,
@@ -938,8 +963,31 @@ mod tests {
     fn terminal_lifecycle_host_commands() {
         assert!(
             matches!(Cli::try_parse_from(["goblins", "attach", "snikk"]).unwrap().command,
-            Some(Command::Attach { session, instance: None }) if session == "snikk")
+            Some(Command::Attach { session, instance: None, force: false, timeout: None }) if session == "snikk")
         );
+        // --force takes a goblin over; --timeout belongs to it.
+        assert!(matches!(
+            Cli::try_parse_from(["goblins", "attach", "snikk", "--force"]).unwrap().command,
+            Some(Command::Attach { force: true, timeout: None, .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["goblins", "attach", "snikk", "--force", "--timeout", "9"])
+                .unwrap()
+                .command,
+            Some(Command::Attach { force: true, timeout: Some(9), .. })
+        ));
+        assert!(Cli::try_parse_from(["goblins", "attach", "snikk", "--timeout", "9"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["goblins", "terminal", "attach", "snikk", "t1", "--force"])
+                .unwrap()
+                .command,
+            Some(Command::Terminal {
+                command: TerminalCommand::Attach { force: true, timeout: None, .. }
+            })
+        ));
+        assert_eq!(force_after(false, None), None);
+        assert_eq!(force_after(true, None), Some(FORCE_TIMEOUT));
+        assert_eq!(force_after(true, Some(0)), Some(0));
         assert!(
             matches!(Cli::try_parse_from(["goblins", "kill", "snikk"]).unwrap().command,
             Some(Command::Kill { id_or_name, .. }) if id_or_name == "snikk")

@@ -115,6 +115,7 @@ fn all_commands_roundtrip_their_parameters_and_stdio_shapes() {
             stream: null(),
             rows: 25,
             cols: 95,
+            force: None,
         },
         Command::Detach {
             terminal: TerminalId::Main,
@@ -469,6 +470,7 @@ fn stdio_capabilities_reach_their_exact_streams_and_unused_or_duplicate_fds_fail
             stream: null(),
             rows: 24,
             cols: 80,
+            force: None,
         }))
         .unwrap();
     let mut frame = encoded.frames.pop_front().unwrap();
@@ -3211,10 +3213,11 @@ fn c17b2_frame_cases() -> Vec<(Message, &'static str, Value, Vec<&'static str>)>
                 stream: null(),
                 rows: 0,
                 cols: u16::MAX,
+                force: Some(2),
             }),
             "Command.Attach",
-            json!({"terminal":"Main","stream":{"$fd":0},"rows":0,"cols":65535}),
-            vec!["terminal", "stream", "rows", "cols"],
+            json!({"terminal":"Main","stream":{"$fd":0},"rows":0,"cols":65535,"force":2}),
+            vec!["terminal", "stream", "rows", "cols", "force"],
         ),
         (
             Message::Command(Command::Detach {
@@ -3515,6 +3518,7 @@ fn c17b2_attach_capability_lifetimes_and_rejection_order_are_preserved() {
                 stream: writer.into(),
                 rows: 24,
                 cols: 80,
+                force: None,
             }))
             .unwrap();
         let mut frame = prepared.frames.pop_front().unwrap();

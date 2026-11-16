@@ -110,6 +110,19 @@ class InteractiveGoblinWorkflow(unittest.TestCase):
             second.expect("terminal is already attached")
             self.assertEqual(second.wait(), 1)
 
+        with step("attach --force takes the goblin over, and the frontend that held it leaves"):
+            taker = self.terminal("attach", "snikk", "--force")
+            self.assertEqual(client.wait(), 0)
+            taker.send("printf 'STATE=%s,%s\\n' $fish_pid $saved_value\n")
+            taker.expect(rf"(?:^|\n)STATE={pid},retained\n")
+            self.assertTrue(d.get(snikk)["terminal_attached"])
+            # Without waiting for it to leave: its connection is closed.
+            client = self.terminal("attach", "snikk", "--force", "--timeout", "0")
+            taker.wait()
+            client.send("printf 'STATE=%s,%s\\n' $fish_pid $saved_value\n")
+            client.expect(rf"(?:^|\n)STATE={pid},retained\n")
+            self.raw(client)
+
         with step("the goblin follows the terminal's size"):
             client.resize(33, 91)
             deadline = time.monotonic() + 10
@@ -132,6 +145,17 @@ class InteractiveGoblinWorkflow(unittest.TestCase):
             screen = self.cli("terminal", "read", "grub", "fish", "--source", "recent").stdout
             self.assertNotIn("could not read response", screen)
             self.assertNotIn("warning", screen)
+
+        with step("a terminal of a goblin is taken over the same way"):
+            holder = self.terminal("terminal", "attach", "grub", "fish")
+            d.wait(lambda: any(t["attached"] for t in d.get(grub)["terminals"]))
+            refused = self.terminal("terminal", "attach", "grub", "fish")
+            refused.expect("terminal is already attached")
+            taker = self.terminal("terminal", "attach", "grub", "fish", "--force")
+            holder.wait()
+            taker.send("echo TOOK_OVER\n")
+            taker.expect(r"(?:^|\n)TOOK_OVER\r?\n")
+            taker.close()
 
         with step("killing an attached goblin ends its client and leaves the other running"):
             killed = json.loads(self.cli("kill", "snikk").stdout)

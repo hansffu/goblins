@@ -13,7 +13,7 @@
       "sender": "frontend",
       "receiver": "daemon attach.sock",
       "connection-state": "first frame only, before raw terminal bytes",
-      "description": "attach.sock begins with a frontend-to-daemon attach.hello notification (no id); named and ordered version,rows,cols,terminal positional parameters retain the existing Serde forms. Version 1 and nonzero u16 dimensions are checked after structural decoding; bad version or zero dimensions retain the unsupported-version diagnostic. A supplied terminal requires 1..500 dimensions during target attachment, after the existing state/policy checks. Hello has a 4 KiB body and 3-second frame deadline, eight pending hellos per goblin and at most four accepts per tick. The daemon reads exactly the hello frame and consumes no following raw bytes.",
+      "description": "attach.sock begins with a frontend-to-daemon attach.hello notification (no id); named and ordered version,rows,cols,terminal,force positional parameters retain the existing Serde forms. Version 1 and nonzero u16 dimensions are checked after structural decoding; bad version or zero dimensions retain the unsupported-version diagnostic. A supplied terminal requires 1..500 dimensions during target attachment, after the existing state/policy checks. Hello has a 4 KiB body and 3-second frame deadline, eight pending hellos per goblin and at most four accepts per tick. The daemon reads exactly the hello frame and consumes no following raw bytes. A non-null force takes the terminal over from the frontend that holds it: that one is detached, this hello waits for it to leave, and after force seconds its stream is closed. Without force a held terminal refuses.",
       "paramStructure": "either",
       "params": [
         {
@@ -42,6 +42,13 @@
           "required": false,
           "schema": {
             "$ref": "common.json#/definitions/AttachHelloParams/properties/terminal"
+          }
+        },
+        {
+          "name": "force",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/AttachHelloParams/properties/force"
           }
         }
       ],

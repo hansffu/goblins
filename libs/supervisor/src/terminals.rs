@@ -52,6 +52,38 @@ struct Entry {
     exposed: bool,
     exited: bool,
     pane: Option<Pane>,
+    /// A frontend that takes the terminal over from the one that holds it.
+    taking: Option<Taking>,
+}
+
+/// A frontend waiting for the terminal's holder, which was detached, to
+/// leave. At `deadline` the holder's stream is closed.
+struct Taking {
+    stream: UnixStream,
+    rows: u16,
+    cols: u16,
+    deadline: Instant,
+}
+
+/// Answer `stream` with a refusal of its attachment.
+fn refuse(stream: &mut UnixStream, message: &str) {
+    let _ = stream.set_nonblocking(true);
+    let error = contract::completion_error::<contract::attach_exchanges::Reply>(message);
+    if let Ok(bytes) = goblins_jsonrpc::encode(&error) {
+        let _ = stream.write_all(&bytes);
+    }
+}
+
+/// The frontend of `stream` closed its end.
+fn gone(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut state = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLRDHUP,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut state, 1, 0) };
+    state.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) != 0
 }
 
 fn matched(line: String, cut: bool) -> Value {
@@ -196,6 +228,7 @@ impl Terminals {
                 exposed,
                 exited: false,
                 pane: None,
+                taking: None,
             },
         );
     }
@@ -386,20 +419,16 @@ impl Terminals {
             }
         }
     }
-    pub fn attach(
-        &mut self,
-        id: TerminalId,
+    /// Give `stream` the terminal of `entry`, or answer it with a refusal.
+    /// Return what went wrong after it was accepted, if anything.
+    fn admit(
+        entry: Option<&mut Entry>,
         mut stream: UnixStream,
         rows: u16,
         cols: u16,
-        events: &mut VecDeque<Event>,
-    ) {
-        assert!(
-            events.len() < crate::engine::EVENTS,
-            "attach needs event capacity"
-        );
+    ) -> Option<String> {
         let mut diagnostic = None;
-        let result: crate::Result<()> = match self.entries.get_mut(&id) {
+        let result: crate::Result<()> = match entry {
             Some(entry) => {
                 entry.exposed = true;
                 stream.try_clone().map_err(Into::into).and_then(|peer| {
@@ -425,14 +454,11 @@ impl Terminals {
         if let Err(error) = result {
             // The daemon has already reserved the slot; report the actual
             // state even when the terminal disappeared before Attach arrived.
-            let _ = stream.set_nonblocking(true);
-            let error = contract::completion_error::<contract::attach_exchanges::Reply>(
-                &error.to_string(),
-            );
-            if let Ok(bytes) = goblins_jsonrpc::encode(&error) {
-                let _ = stream.write_all(&bytes);
-            }
+            refuse(&mut stream, &error.to_string());
         }
+        diagnostic
+    }
+    fn report(&mut self, id: TerminalId, error: Option<String>, events: &mut VecDeque<Event>) {
         let status = self
             .entries
             .get(&id)
@@ -447,8 +473,57 @@ impl Terminals {
         events.push_back(Event::Terminal {
             terminal: id,
             status,
-            error: diagnostic,
+            error,
         });
+    }
+    pub fn attach(
+        &mut self,
+        id: TerminalId,
+        stream: UnixStream,
+        rows: u16,
+        cols: u16,
+        events: &mut VecDeque<Event>,
+    ) {
+        assert!(
+            events.len() < crate::engine::EVENTS,
+            "attach needs event capacity"
+        );
+        let diagnostic = Self::admit(self.entries.get_mut(&id), stream, rows, cols);
+        self.report(id, diagnostic, events);
+    }
+    /// Attach `stream` to a terminal another frontend may hold. That one is
+    /// detached, and `stream` gets the terminal once it has left; after
+    /// `force` its stream is closed instead. A frontend that waited for the
+    /// same terminal gives way.
+    pub fn take_over(
+        &mut self,
+        id: TerminalId,
+        stream: UnixStream,
+        rows: u16,
+        cols: u16,
+        force: Duration,
+        events: &mut VecDeque<Event>,
+    ) {
+        let Some(entry) = self.entries.get_mut(&id).filter(|e| e.io.connected()) else {
+            return self.attach(id, stream, rows, cols, events);
+        };
+        assert!(
+            events.len() < crate::engine::EVENTS,
+            "attach needs event capacity"
+        );
+        // Not attached means the holder is already leaving.
+        let _ = entry.io.detach();
+        if let Some(mut earlier) = entry.taking.take() {
+            refuse(&mut earlier.stream, "another frontend took the terminal over");
+        }
+        entry.exposed = true;
+        entry.taking = Some(Taking {
+            stream,
+            rows,
+            cols,
+            deadline: Instant::now() + force,
+        });
+        self.report(id, None, events);
     }
     pub fn resize(&mut self, id: TerminalId, rows: u16, cols: u16, events: &mut VecDeque<Event>) {
         if let Some(entry) = self.entries.get_mut(&id) {
@@ -497,9 +572,21 @@ impl Terminals {
             }
             self.cursor = Some(id);
             let entry = self.entries.get_mut(&id).unwrap();
-            let error = entry.io.tick().err().map(|e| e.to_string());
+            let mut error = entry.io.tick().err().map(|e| e.to_string());
             if error.is_some() {
                 entry.io.interrupted = true;
+            }
+            // A take-over: the holder has left, or its time is up.
+            if entry.taking.as_ref().is_some_and(|t| gone(&t.stream)) {
+                entry.taking = None;
+            }
+            if let Some(taking) = entry
+                .taking
+                .take_if(|t| !entry.io.connected() || Instant::now() >= t.deadline)
+            {
+                entry.io.close_stream();
+                let diagnostic = Self::admit(Some(entry), taking.stream, taking.rows, taking.cols);
+                error = error.or(diagnostic);
             }
             let mut left = false;
             if let TerminalId::Process(process) = id
@@ -544,7 +631,9 @@ impl Terminals {
                 entry.reported = status;
             }
             if remove {
-                self.entries.remove(&id);
+                if let Some(mut taking) = self.entries.remove(&id).and_then(|e| e.taking) {
+                    refuse(&mut taking.stream, "terminal already completed");
+                }
             }
         }
         cancel
@@ -681,6 +770,78 @@ mod tests {
             matches!(events.back(), Some(Event::Terminal { status, .. }) if status.complete && !status.connected)
         );
         fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn a_take_over_waits_for_the_holder_and_closes_its_stream_when_time_is_up() {
+        let mut terminals = Terminals::default();
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        terminals.process(9, master, 24, 80).unwrap();
+        let id = TerminalId::Process(9);
+        let mut events = VecDeque::new();
+        let reply = |stream: &mut UnixStream| goblins_jsonrpc::read(stream).unwrap();
+        let size = || {
+            let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+            unix::cvt(unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCGWINSZ, &mut size) })
+                .unwrap();
+            (size.ws_row, size.ws_col)
+        };
+        // A free terminal is attached at once, as without a take-over.
+        let (server, mut holder) = UnixStream::pair().unwrap();
+        terminals.take_over(id, server, 30, 100, Duration::from_secs(60), &mut events);
+        terminals.tick(false, &mut events);
+        assert_eq!(reply(&mut holder)["result"]["attached"], true);
+        assert_eq!(size(), (30, 100));
+        // A held one: the holder is detached, and the new frontend waits
+        // without an answer and without changing the size.
+        let (server, mut taker) = UnixStream::pair().unwrap();
+        terminals.take_over(id, server, 40, 120, Duration::from_secs(60), &mut events);
+        let status = terminals.entries[&id].io.status();
+        assert!(status.connected && status.detached && !status.attached);
+        assert!(
+            matches!(events.back(), Some(Event::Terminal { status, .. }) if status.detached && status.connected)
+        );
+        assert_eq!(holder.read(&mut [0; 1]).unwrap(), 0, "the holder is told to leave");
+        terminals.tick(false, &mut events);
+        assert!(!unix::readable(taker.as_raw_fd(), 0).unwrap());
+        assert_eq!(size(), (30, 100));
+        // A frontend that takes it over meanwhile displaces the one waiting.
+        let (server, mut second) = UnixStream::pair().unwrap();
+        terminals.take_over(id, server, 50, 140, Duration::from_secs(60), &mut events);
+        assert_eq!(
+            reply(&mut taker)["error"]["message"],
+            "another frontend took the terminal over"
+        );
+        // Once the holder has left, the terminal is handed on.
+        drop(holder);
+        terminals.tick(false, &mut events);
+        terminals.tick(false, &mut events);
+        assert_eq!(reply(&mut second)["result"]["attached"], true);
+        assert_eq!(size(), (50, 140));
+        let status = terminals.entries[&id].io.status();
+        assert!(status.connected && status.attached && !status.detached);
+        assert!(
+            matches!(events.back(), Some(Event::Terminal { status, .. }) if status.attached)
+        );
+        // A holder that does not leave loses its stream when the time is up.
+        let (server, mut third) = UnixStream::pair().unwrap();
+        terminals.take_over(id, server, 24, 80, Duration::ZERO, &mut events);
+        terminals.tick(false, &mut events);
+        terminals.tick(false, &mut events);
+        assert_eq!(reply(&mut third)["result"]["attached"], true);
+        let mut rest = vec![];
+        second.set_nonblocking(false).unwrap();
+        second.read_to_end(&mut rest).unwrap();
+        assert!(terminals.entries[&id].io.status().attached);
+        // A frontend that gave up while waiting gets nothing, and the
+        // terminal is free once the holder has left.
+        let (server, fourth) = UnixStream::pair().unwrap();
+        terminals.take_over(id, server, 24, 80, Duration::from_secs(60), &mut events);
+        drop(fourth);
+        terminals.tick(false, &mut events);
+        assert!(terminals.entries[&id].taking.is_none());
+        drop(third);
+        terminals.tick(false, &mut events);
+        assert!(!terminals.entries[&id].io.connected());
     }
     #[test]
     fn a_server_log_drains_after_stop_before_the_runtime_ends() {

@@ -164,6 +164,7 @@ impl Active {
         mut stream: UnixStream,
         designator: &str,
         size: (u16, u16),
+        force: Option<u16>,
     ) {
         let refused = (|| {
             if self.record.state != "running" {
@@ -180,7 +181,9 @@ impl Active {
                 .terminals
                 .find(designator)
                 .ok_or_else(|| format!("no terminal {designator}"))?;
-            if self.terminals.entries[index].record.attached {
+            // A frontend that takes the terminal over is not refused: the
+            // runtime detaches the holder and hands the terminal on.
+            if self.terminals.entries[index].record.attached && force.is_none() {
                 return Err("terminal is already attached".into());
             }
             Ok(index)
@@ -199,6 +202,7 @@ impl Active {
         };
         // Reserve before sending, so another hello cannot take it.
         let entry = &mut self.terminals.entries[index];
+        let (held, was) = (entry.record.attached, (entry.record.rows, entry.record.cols));
         entry.record.attached = true;
         (entry.record.rows, entry.record.cols) = size;
         if let Err(Command::Attach { stream, .. }) = runtime.send(Command::Attach {
@@ -206,10 +210,14 @@ impl Active {
             stream: OwnedFd::from(stream).into(),
             rows: size.0,
             cols: size.1,
+            force,
         }) {
             let mut stream = UnixStream::from(OwnedFd::from(stream));
             super::attach::refuse(&mut stream, "the goblin cannot take more work right now");
-            self.terminals.entries[index].record.attached = false;
+            // The holder, if any, keeps the terminal and its size.
+            let entry = &mut self.terminals.entries[index];
+            entry.record.attached = held;
+            (entry.record.rows, entry.record.cols) = was;
         }
         self.sync_terminals();
     }

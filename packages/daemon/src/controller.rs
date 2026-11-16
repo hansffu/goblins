@@ -8596,6 +8596,7 @@ mod tests {
                         stream,
                         rows,
                         cols,
+                        ..
                     } => {
                         assert!([20, 30].contains(&rows));
                         assert_eq!(cols, 80);
@@ -8819,10 +8820,23 @@ mod tests {
         };
         assert!(d.attach_event("a", spawned(id, 44)).is_none());
         assert_eq!(answer(&mut d, &mut third)["result"]["attached"], true);
-        d.detach("a").unwrap();
+        // A frontend that takes the goblin over detaches the client that
+        // runs, as `sessions.detach` does, and waits for it to go.
+        let mut taker = UnixStream::connect(&socket).unwrap();
+        taker
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":20,"cols":80,"force":2}}))
+                .unwrap(),
+            )
+            .unwrap();
         let Command::Spawn { id: on_detach, .. } = command(&mut d) else {
             panic!("expected onDetach's spawn");
         };
+        assert!(!d.sessions["a"].record.terminal_attached);
+        let notice = answer(&mut d, &mut taker);
+        assert_eq!(notice["method"], "attach.waiting");
+        assert_eq!(notice["params"]["missing"], json!([]));
         assert!(
             d.attach_event(
                 "a",
@@ -8841,8 +8855,9 @@ mod tests {
         step(&mut d);
         step(&mut d);
         assert!(d.sessions["a"].record.terminal_detached);
+        // The client has gone: the frontend that took over gets its own.
         // A client init cannot start is refused with init's reason.
-        let mut refused = hello(20);
+        let mut refused = taker;
         let Command::Spawn { id, .. } = command(&mut d) else {
             panic!("expected a new client");
         };
@@ -8857,8 +8872,14 @@ mod tests {
             )
             .is_none()
         );
+        let outcome = loop {
+            let frame = answer(&mut d, &mut refused);
+            if frame["method"] != "attach.waiting" {
+                break frame;
+            }
+        };
         assert_eq!(
-            answer(&mut d, &mut refused)["error"]["message"],
+            outcome["error"]["message"],
             "cannot start the attach client: not found"
         );
         // Init going away fails a starting attachment and frees the slot.
@@ -8966,6 +8987,7 @@ mod tests {
             stream,
             rows: 24,
             cols: 80,
+            ..
         } = received.lock().unwrap().pop_front().unwrap()
         else {
             panic!("expected main attachment");
@@ -8992,6 +9014,68 @@ mod tests {
             "terminal is already attached"
         );
         assert!(!d.sessions["a"].record.terminal_attached);
+        // A frontend that takes the terminal over is not refused: the
+        // runtime is told how long the holder gets to leave.
+        let mut taker = UnixStream::connect(&socket).unwrap();
+        taker
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                "params":{"version":1,"rows":30,"cols":90,"force":2}}))
+                .unwrap(),
+            )
+            .unwrap();
+        d.tick().unwrap();
+        let Some(Command::Attach {
+            terminal: TerminalId::Main,
+            stream,
+            rows: 30,
+            cols: 90,
+            force: Some(2),
+        }) = received.lock().unwrap().pop_front()
+        else {
+            panic!("expected a forced attachment");
+        };
+        drop(stream);
+        assert!(d.sessions["a"].terminal.connected);
+        // What the runtime reports while the holder leaves, then hands on.
+        events
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    connected: true,
+                    detached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(!d.sessions["a"].record.terminal_attached);
+        events
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    connected: true,
+                    attached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(d.sessions["a"].record.terminal_attached);
+        events
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    connected: true,
+                    detached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
         events
             .send(Event::Terminal {
                 terminal: TerminalId::Main,

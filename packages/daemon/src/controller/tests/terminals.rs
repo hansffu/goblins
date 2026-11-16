@@ -494,6 +494,25 @@ fn a_hello_naming_a_terminal_attaches_it_beside_the_goblins_own_attachment() {
         assert_eq!(rpc::read(&mut second).unwrap()["error"]["message"], "terminal is already attached");
     }
     assert!(received.lock().unwrap().is_empty());
+    // One that takes the terminal over goes to the runtime, with how long
+    // the holder gets to leave; the terminal stays attached throughout.
+    let mut taker = UnixStream::connect(&socket).unwrap();
+    taker
+        .write_all(&rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+            "params":{"version":1,"rows":40,"cols":120,"terminal":"app","force":0}})).unwrap())
+        .unwrap();
+    for _ in 0..50 {
+        step(&mut d);
+        if !received.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+    let Command::Attach { terminal, rows, cols, force, .. } = take(&received) else {
+        panic!("expected a forced attachment")
+    };
+    assert_eq!((terminal, rows, cols, force), (TerminalId::Process(exec), 40, 120, Some(0)));
+    assert!(d.sessions["a"].record.terminals[0].attached);
+    drop(taker);
     // The supervisor reports it released.
     d.process_event(
         "a",

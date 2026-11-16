@@ -3908,6 +3908,21 @@
             }
           ],
           "default": null
+        },
+        "force": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -11515,13 +11530,28 @@
         },
         "cols": {
           "$ref": "#/definitions/SupervisorDimension"
+        },
+        "force": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "terminal",
         "stream",
         "rows",
-        "cols"
+        "cols",
+        "force"
       ],
       "additionalProperties": false
     },
@@ -15601,10 +15631,25 @@
             }
           ],
           "default": null
+        },
+        {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       ],
       "minItems": 3,
-      "maxItems": 4
+      "maxItems": 5
     },
     "AttachWaitingParams": {
       "type": "array",

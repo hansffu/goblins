@@ -42,6 +42,9 @@ struct Hello {
     size: Option<(u16, u16)>,
     /// The terminal it asked for, once its hello arrived.
     terminal: Option<String>,
+    /// It takes the terminal over from whoever holds it, closing that
+    /// frontend's stream after this many seconds.
+    force: Option<u16>,
     notice: Instant,
 }
 
@@ -183,6 +186,7 @@ impl Attach {
                             decoder: rpc::Decoder::new(4096, Some(now)),
                             size: None,
                             terminal: None,
+                            force: None,
                             notice: now,
                         });
                     }
@@ -229,6 +233,7 @@ impl Attach {
                 Ok(p) if p.version == contract::ATTACH_VERSION && p.rows > 0 && p.cols > 0 => {
                     hello.size = Some((p.rows, p.cols));
                     hello.terminal = p.terminal;
+                    hello.force = p.force;
                     true
                 }
                 Ok(_) => {
@@ -334,6 +339,21 @@ impl Active {
             },
         )
     }
+    /// Detach the attached client's frontend and end the client. `id` is the
+    /// exec ID `onDetach` would use.
+    fn leave_client(&mut self, id: u64) {
+        self.end_client(id, true);
+        if let Some(Client::Running(running)) = &mut self.attach.client {
+            if let Some(runtime) = &mut self.runtime {
+                let _ = runtime.send(Command::Detach {
+                    terminal: TerminalId::Process(running.exec),
+                });
+            }
+            running.terminal.attached = false;
+            running.terminal.detached = true;
+        }
+        self.record.terminal_attached = false;
+    }
     /// Begin a detach: run `onDetach` when asked and set, then cancel the
     /// client. `id` is the exec ID `onDetach` would use.
     fn end_client(&mut self, id: u64, on_detach: bool) {
@@ -391,7 +411,7 @@ impl Controller {
         a.attach.hellos = own;
         for hello in terminal {
             let size = hello.size.unwrap();
-            a.attach_terminal(hello.stream, &hello.terminal.unwrap(), size);
+            a.attach_terminal(hello.stream, &hello.terminal.unwrap(), size, hello.force);
             self.dirty = true;
         }
         let now = Instant::now();
@@ -466,7 +486,10 @@ impl Controller {
                 let size = hello.size.unwrap();
                 match &a.handlers {
                     None => {
-                        if a.terminal.connected || a.terminal.complete {
+                        // A held terminal refuses, unless this frontend takes
+                        // it over: the runtime then detaches the holder and
+                        // hands the terminal on.
+                        if a.terminal.complete || (a.terminal.connected && hello.force.is_none()) {
                             refuse(
                                 &mut hello.stream,
                                 if a.terminal.complete {
@@ -478,26 +501,55 @@ impl Controller {
                         } else if let Some(runtime) = &mut a.runtime {
                             // Reserve before sending, so another hello in this
                             // same batch cannot acquire the terminal.
+                            // While a holder leaves, the runtime's reports say
+                            // who is attached.
+                            let held = a.terminal.connected;
                             a.terminal.connected = true;
-                            a.terminal.attached = true;
-                            a.terminal.detached = false;
+                            if !held {
+                                a.terminal.attached = true;
+                                a.terminal.detached = false;
+                            }
                             if let Err(Command::Attach { stream, .. }) =
                                 runtime.send(Command::Attach {
                                     terminal: TerminalId::Main,
                                     stream: OwnedFd::from(hello.stream).into(),
                                     rows: size.0,
                                     cols: size.1,
+                                    force: hello.force,
                                 })
                             {
                                 let mut stream =
                                     UnixStream::from(std::os::fd::OwnedFd::from(stream));
                                 refuse(&mut stream, "the goblin cannot take more work right now");
-                                a.terminal.connected = false;
-                                a.terminal.attached = false;
+                                // The holder, if any, is still there.
+                                if !held {
+                                    a.terminal.connected = false;
+                                    a.terminal.attached = false;
+                                }
                             }
                         } else {
                             refuse(&mut hello.stream, "the goblin has stopped");
                         }
+                    }
+                    // Taking over a client that runs: it is detached as
+                    // `sessions.detach` does, and this frontend waits until it
+                    // has gone. Its frontend's stream is not closed by force.
+                    Some(_)
+                        if hello.force.is_some()
+                            && matches!(a.attach.client, Some(Client::Running(_))) =>
+                    {
+                        if a.attach.attached() {
+                            let id = self.number();
+                            a.leave_client(id);
+                            self.dirty = true;
+                        }
+                        if now >= hello.notice {
+                            hello.notice = now + NOTICE;
+                            if !waiting(&mut hello.stream, &[]) {
+                                continue;
+                            }
+                        }
+                        a.attach.hellos.push(hello);
                     }
                     Some(_) if a.attach.client.is_some() => {
                         refuse(&mut hello.stream, "terminal is already attached")
@@ -632,6 +684,7 @@ impl Controller {
                             stream: OwnedFd::from(stream).into(),
                             rows: size.0,
                             cols: size.1,
+                            force: None,
                         })
                         .is_ok()
                 });
@@ -732,17 +785,7 @@ impl Controller {
         if !a.attach.attached() {
             return Err("terminal is not attached".into());
         }
-        a.end_client(id, true);
-        if let Some(Client::Running(running)) = &mut a.attach.client {
-            if let Some(runtime) = &mut a.runtime {
-                let _ = runtime.send(Command::Detach {
-                    terminal: TerminalId::Process(running.exec),
-                });
-            }
-            running.terminal.attached = false;
-            running.terminal.detached = true;
-        }
-        a.record.terminal_attached = false;
+        a.leave_client(id);
         self.dirty = true;
         Ok(())
     }

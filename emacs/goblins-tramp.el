@@ -700,10 +700,10 @@ buffer is killed and the error re-signalled."
     (goblins-tramp--shells-changed)
     buffer))
 
-(defun goblins-tramp--attach-terminal (source session record display)
+(defun goblins-tramp--attach-terminal (source session record display &optional arguments)
   "Open a Ghostel buffer attached to RECORD, a terminal of goblin SESSION.
 SOURCE is the status buffer of the goblin's daemon and DISPLAY shows the
-buffer.  The buffer's process is `goblins terminal attach': killing the
+buffer.  ARGUMENTS are further arguments of `goblins terminal attach'.  The buffer's process is `goblins terminal attach': killing the
 buffer detaches the terminal, which keeps running."
   (let* ((terminal (plist-get record :id))
          (buffer (goblins-tramp--open-buffer
@@ -714,7 +714,8 @@ buffer detaches the terminal, which keeps running."
                   (lambda (buffer directory instance id host)
                     (ghostel-exec buffer goblins-executable
                                   (append (goblins--daemon-arguments directory)
-                                          (list "terminal" "attach" id terminal))
+                                          (list "terminal" "attach" id terminal)
+                                          arguments)
                                   `((kind . goblins-shell) (session . ,id) (instance . ,instance)
                                     (directory . ,directory) (host . ,host)
                                     (terminal . ,terminal)))))))
@@ -781,26 +782,12 @@ Return the buffer."
            buffer)
           ((null record) (user-error "This terminal has ended"))
           (t
-           (let* ((id (plist-get session :id))
-                  (attached-p (lambda ()
-                                (eq (plist-get (goblins--session-terminal
-                                                (goblins--snapshot-session
-                                                 (buffer-local-value 'goblins--snapshot source)
-                                                 id)
-                                                terminal)
-                                               :attached)
-                                    t)))
-                  (attach (lambda ()
-                            (goblins-tramp--attach-terminal source session record display))))
-             (if (goblins--take-attachment
-                  source (format "%s of %s" (goblins--terminal-label record)
-                                 (goblins--safe (plist-get session :agent_name)))
-                  attached-p
-                  (lambda ()
-                    (goblins--host-call source 'terminals.detach
-                                        (list :session id :terminal terminal))))
-                 (goblins--attach-until-held source attached-p attach)
-               (funcall attach)))))))
+           (goblins-tramp--attach-terminal
+            source session record display
+            (goblins--take-over-arguments
+             (format "%s of %s" (goblins--terminal-label record)
+                     (goblins--safe (plist-get session :agent_name)))
+             (eq (plist-get record :attached) t))))))
 
 ;;;###autoload
 (defun goblins-terminal-attach (&optional terminal session display source)

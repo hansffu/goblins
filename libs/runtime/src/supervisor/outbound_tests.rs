@@ -385,6 +385,7 @@ fn resize_stays_in_place_and_does_not_cross_attach_or_detach() {
             stream: null(),
             rows: 24,
             cols: 80,
+            force: None,
         },
     );
     push(

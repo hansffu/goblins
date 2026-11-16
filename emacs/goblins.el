@@ -1309,57 +1309,22 @@ Daemon refusals become `user-error's and leave the connection alone."
       (jsonrpc-error
        (user-error "%s" (or (alist-get 'jsonrpc-error-message (cdr err)) "Request failed"))))))
 
-(defun goblins--take-attachment (source name attached-p detach)
-  "Free what NAME describes for an attachment here, when it is attached.
-Call when this Emacs has no buffer attached to it, so whoever is attached is
-elsewhere, and one frontend at a time can be.  ATTACHED-P is called without
-arguments and says whether SOURCE's snapshot shows it attached.  Then ask;
-on yes call DETACH, which asks the daemon to end that attachment, and wait
-until the snapshot shows it free.  Signal a `user-error' on no, and when it
-stays attached.  Return non-nil when it was detached: attach it with
-`goblins--attach-until-held' then."
-  (when (funcall attached-p)
+(defcustom goblins-take-over-timeout 2
+  "Seconds another frontend gets to leave a terminal you take over.
+When you attach a terminal that is attached elsewhere and say so, that
+frontend is detached; if it has not left after this long, the daemon closes
+its connection."
+  :type 'natnum :group 'goblins)
+
+(defun goblins--take-over-arguments (name attached)
+  "The CLI arguments that attach NAME: none, or those that take it over.
+ATTACHED says the daemon shows it attached, which is then elsewhere, since
+this Emacs has no buffer for it.  Ask first, and signal a `user-error' on no."
+  (when attached
     (unless (y-or-n-p (format "%s is attached elsewhere.  Detach it there and attach here? "
                               name))
       (user-error "%s stays attached elsewhere" name))
-    (funcall detach)
-    (let ((deadline (+ (float-time) (with-current-buffer source (goblins--wait-seconds)))))
-      (while (and (funcall attached-p) (< (float-time) deadline))
-        (accept-process-output nil 0.05))
-      (when (funcall attached-p)
-        (user-error "%s is still attached elsewhere; try again" name)))
-    t))
-
-(defun goblins--attach-until-held (source attached-p attach)
-  "Attach what `goblins--take-attachment' just detached, and return its buffer.
-ATTACH is called without arguments in SOURCE, starts the client and returns
-its terminal buffer.  The daemon shows a detached terminal as free at once but
-refuses a new client until the old one has closed its end, so a client that
-ends before ATTACHED-P says SOURCE's snapshot shows the terminal attached
-was refused: its buffer is killed and ATTACH called again.  After
-`goblins--wait-seconds' a client that still runs is left to attach, and one
-that was refused leaves no buffer and signals a `user-error'."
-  (let ((deadline (+ (float-time) (with-current-buffer source (goblins--wait-seconds))))
-        (live (lambda (buffer)
-                (process-live-p (with-current-buffer buffer
-                                  (or (bound-and-true-p ghostel--process)
-                                      (get-buffer-process buffer))))))
-        buffer held)
-    (while (not held)
-      ;; Showing the last client's buffer may have changed the current one.
-      (setq buffer (with-current-buffer source (funcall attach)))
-      (while (and (not (funcall attached-p))
-                  (funcall live buffer)
-                  (< (float-time) deadline))
-        (accept-process-output nil 0.05))
-      (if (or (funcall attached-p) (funcall live buffer))
-          (setq held t)
-        ;; Refused: nothing later may take this buffer for the terminal.
-        (let ((kill-buffer-query-functions nil))
-          (kill-buffer buffer))
-        (unless (< (float-time) deadline)
-          (user-error "Still held elsewhere; try attaching again"))))
-    buffer))
+    (list "--force" "--timeout" (number-to-string goblins-take-over-timeout))))
 
 (defun goblins--section-shows-p (section)
   "Whether SECTION, a request section, shows its whole request: rendered
@@ -1865,11 +1830,11 @@ paints those with the underlined `nobreak-space' face."
                (fboundp 'ghostel-exec))
     (user-error "Goblins terminals require installed Ghostel with its native module")))
 
-(defun goblins--open-terminal (session agent-name cwd &optional display)
+(defun goblins--open-terminal (session agent-name cwd &optional display arguments)
   "Attach a new Ghostel buffer to SESSION and return it.
 Call in a connected status buffer.  AGENT-NAME names the buffer and CWD is its
 `default-directory'.  DISPLAY, default `goblins--display-new-agent', shows
-the new buffer.
+the new buffer.  ARGUMENTS are further arguments of `goblins attach'.
 On failure the buffer is killed and the error re-signalled."
   (goblins--require-ghostel)
   (let* ((instance goblins--instance)
@@ -1885,7 +1850,8 @@ On failure the buffer is killed and the error re-signalled."
           (let ((ghostel-kill-buffer-on-exit nil))
             (ghostel-exec buffer executable
                           (append (goblins--daemon-arguments (car key))
-                                  (list "attach" session "--instance" instance))
+                                  (list "attach" session "--instance" instance)
+                                  arguments)
                           `((kind . goblins) (session . ,session) (instance . ,instance))))
           (with-current-buffer buffer
             (setq default-directory cwd)
