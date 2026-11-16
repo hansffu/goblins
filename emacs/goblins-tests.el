@@ -3392,7 +3392,10 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                      ('sessions.start (list :session "new-1" :agent_name "nikka")))))
                 ((symbol-function 'goblins--require-ghostel) #'ignore)
                 ((symbol-function 'goblins--configurations)
-                 (lambda () '(:configuration "/m.json" :names ("claude"))))
+                 (lambda (daemon)
+                   ;; Those of the daemon the record is on.
+                   (should (equal daemon "/tmp/goblins-test"))
+                   '(:configuration "/m.json" :names ("claude"))))
                 ((symbol-function 'goblins--open-terminal)
                  (lambda (session agent cwd &optional _) (setq opened (list session agent cwd))))
                 ((symbol-function 'completing-read)
@@ -4357,6 +4360,42 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
       (delete-directory default-directory t)
       (delete-directory root t))))
 
+(ert-deftest goblins-a-worktree-for-a-remote-daemon-is-made-on-its-machine ()
+  (let ((goblins-endpoints '(("box" :host "buildbox" :state-dir "/run/goblins")))
+        (status (generate-new-buffer " *goblins test status*"))
+        git made launched)
+    (with-current-buffer status (setq goblins--directory "/ssh:buildbox:/run/goblins"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'goblins--connect) (lambda (&optional _) status))
+                  ((symbol-function 'goblins--host-call)
+                   (lambda (&rest _) (list :worktrees_directory "/w")))
+                  ((symbol-function 'goblins-run)
+                   (lambda (directory &optional _) (push directory launched) nil))
+                  ((symbol-function 'file-directory-p) (lambda (_) nil))
+                  ((symbol-function 'make-directory) (lambda (dir &rest _) (push dir made)))
+                  ((symbol-function 'process-file)
+                   (lambda (_program _in _out _display &rest arguments)
+                     (push (cons default-directory arguments) git)
+                     (cond ((equal (car arguments) "rev-parse") (insert "/code/api/.git\n") 0)
+                           ((equal (car arguments) "show-ref") 1)
+                           (t 0)))))
+          ;; Git runs where the repository is and gets the path as it is
+          ;; there; Emacs's own file operations get the remote name.
+          (let ((default-directory "/ssh:buildbox:/code/api/"))
+            (goblins-run-with-worktree "fix"))
+          (should (equal made '("/ssh:buildbox:/w/api/")))
+          (should (equal (car git) '("/ssh:buildbox:/code/api/"
+                                     "worktree" "add" "-b" "fix" "/w/api/fix")))
+          (should (equal launched '("/ssh:buildbox:/w/api/fix")))
+          ;; A repository here cannot get a worktree on that machine.
+          (setq git nil)
+          (with-temp-buffer
+            (setq goblins--directory "/ssh:buildbox:/run/goblins"
+                  default-directory "/code/api/")
+            (should-error (goblins-run-with-worktree "fix") :type 'user-error))
+          (should-not git))
+      (kill-buffer status))))
+
 (ert-deftest goblins-run-with-worktree-completes-the-repository-worktrees ()
   (let* ((root (file-name-as-directory (make-temp-file "goblins-worktrees" t)))
          (folder (expand-file-name "api" root))
@@ -5257,6 +5296,17 @@ programs started, each as (ARGS IDENTITY BUFFER)."
 (defun goblins-test--pin (host)
   (goblins-pin host))
 
+(defun goblins-test--type-until (input regexp)
+  "Type INPUT into this terminal once a second until its text matches REGEXP.
+A client behind the slow fake ssh starts seconds after its process does, and
+drops what was typed before it took over the terminal."
+  (let ((deadline (+ (float-time) 30)))
+    (while (and (not (string-match-p regexp (buffer-string))) (< (float-time) deadline))
+      (ghostel-send-string input)
+      (accept-process-output nil 1))
+    (unless (string-match-p regexp (buffer-string))
+      (ert-fail (list 'buffer 'lacks regexp (buffer-name) (buffer-string))))))
+
 (defun goblins-test--tramp-scenario ()
   (let* ((directory (getenv "GOBLINS_TEST_STATE"))
          (other (getenv "GOBLINS_TEST_OTHER_STATE"))
@@ -5466,6 +5516,57 @@ programs started, each as (ARGS IDENTITY BUFFER)."
         ;; It is another daemon than the first one.
         (should-not (equal (buffer-local-value 'goblins--instance remote)
                            (buffer-local-value 'goblins--instance source)))
+        (let* ((work (file-name-as-directory (getenv "GOBLINS_TEST_OTHER_WORK")))
+               (session (cl-find "gribble"
+                                 (append (plist-get (buffer-local-value 'goblins--snapshot remote)
+                                                    :sessions)
+                                         nil)
+                                 :key (lambda (s) (plist-get s :agent_name)) :test #'equal))
+               (id (plist-get session :id))
+               ;; Pinned to the daemon there, as the commands below pin it.
+               (host (goblins-tramp--session-host remote session))
+               (tmp (format "/goblins:%s:/tmp/" host)))
+          (should (equal host "gribble"))
+          (should (equal (goblins-test--pin "gribble")
+                         (list key (buffer-local-value 'goblins--instance remote) id)))
+          ;; Its files are written and its commands run through the CLI.
+          (write-region "from afar\n" nil (concat tmp "afar.txt"))
+          (should (equal (let ((default-directory tmp))
+                           (with-temp-buffer
+                             (process-file "cat" nil t nil "afar.txt")
+                             (buffer-string)))
+                         "from afar\n"))
+          (should (equal (goblins-test--in other "gribble" "cat /tmp/afar.txt") "from afar\n"))
+          (when ghostel-used
+            ;; The agent's terminal, in the goblin's directory on that machine.
+            (let ((terminal (goblins--attach remote id #'pop-to-buffer)))
+              (with-current-buffer terminal
+                (should (equal default-directory work))
+                (should (equal goblins--directory key))
+                (goblins-test--type-until "echo AFAR-$((6*7))\n" "AFAR-42"))
+              (kill-buffer terminal))
+            ;; A shell inside it.
+            (let ((shell (goblins-shell session #'pop-to-buffer remote)))
+              (with-current-buffer shell
+                (should (equal default-directory "/goblins:gribble:/"))
+                (goblins-test--type-until "cat /tmp/afar.txt | tr a-z A-Z\n" "FROM AFAR"))
+              (kill-buffer shell))
+            ;; A new goblin there, with that machine's configurations.
+            (let* ((configs (goblins--configurations key))
+                   (terminal (goblins--launch key "plain" (plist-get configs :configuration)
+                                              (directory-file-name work) nil #'pop-to-buffer))
+                   (launched (nth 2 (buffer-local-value 'goblins--session-key terminal))))
+              (should (member "plain" (plist-get configs :names)))
+              (should (equal (buffer-local-value 'default-directory terminal) work))
+              (goblins-test--wait
+               (lambda ()
+                 (let ((record (goblins--snapshot-session
+                                (buffer-local-value 'goblins--snapshot remote) launched)))
+                   (and (equal (plist-get record :state) "running")
+                        (equal (plist-get record :cwd) (directory-file-name work))))))
+              (goblins-test--stop-goblin remote launched)
+              (kill-buffer terminal)))
+          (goblins-tramp-release host))
         (kill-buffer remote)))
     (if ghostel-used "ok ghostel" "ok")))
 
@@ -6473,6 +6574,227 @@ m2, and m3, which failed when beta stopped."
     (should (equal (goblins--host-file "/run/goblins-dev" "/src/a") "/src/a"))
     (let ((goblins--file-prefix-override ""))
       (should (equal (goblins--host-file "/ssh:buildbox:/run/goblins" "/src/a") "/src/a")))))
+
+(defmacro goblins-test--launching (&rest body)
+  "Run BODY with the questions of `goblins-run' answered and `goblins--launch'
+recorded: `launched' is its arguments, `where' the directory asked about, and
+`flake' non-nil makes that directory the dev shell."
+  (declare (indent 0))
+  `(let ((goblins-endpoints '(("box" :host "buildbox" :state-dir "/run/goblins")))
+         (goblins-state-directory "/tmp/goblins-test")
+         launched where flake)
+     (cl-letf (((symbol-function 'goblins--require-ghostel) #'ignore)
+               ((symbol-function 'goblins--configurations)
+                (lambda (daemon)
+                  (list :configuration (if (file-remote-p daemon) "/remote.json" "/here.json")
+                        :names '("plain"))))
+               ((symbol-function 'goblins--read-configuration) #'car)
+               ((symbol-function 'goblins--launch-location)
+                (lambda (&optional _)
+                  (setq where default-directory)
+                  (cons default-directory
+                        (and flake (directory-file-name default-directory)))))
+               ((symbol-function 'goblins--launch)
+                (lambda (&rest arguments) (setq launched arguments) 'terminal)))
+       ,@body)))
+
+(ert-deftest goblins-run-launches-on-the-machine-of-its-directory ()
+  (goblins-test--launching
+    (with-temp-buffer
+      ;; A directory here: the default daemon, as before.
+      (should (eq (goblins-run "/src/app") 'terminal))
+      (should (equal launched '("/tmp/goblins-test" "plain" "/here.json" "/src/app/" nil nil)))
+      ;; A directory on another machine: its endpoint's daemon, which gets
+      ;; the paths as they are there.
+      (setq flake t)
+      (goblins-run "/ssh:buildbox:/src/app" 'show)
+      (should (equal where "/ssh:buildbox:/src/app/"))
+      (should (equal launched '("/ssh:buildbox:/run/goblins" "plain" "/remote.json"
+                                "/src/app/" "/src/app" show)))
+      ;; The TRAMP method does not matter, the user does.
+      (goblins-run "/scp:buildbox:/src/other")
+      (should (equal (nth 3 launched) "/src/other/"))
+      (setq launched nil)
+      (should (equal (cadr (should-error (goblins-run "/ssh:elsewhere:/src/app")
+                                         :type 'user-error))
+                     "No Goblins endpoint for elsewhere; add one to goblins-endpoints"))
+      (should-error (goblins-run "/ssh:root@buildbox:/src/app") :type 'user-error)
+      ;; This buffer's daemon is on another machine than the directory.
+      (setq goblins--directory "/ssh:buildbox:/run/goblins")
+      (should (equal (cadr (should-error (goblins-run "/src/app") :type 'user-error))
+                     (format-message "/src/app/ is not on this server's machine")))
+      (should-error (goblins-run "/ssh:elsewhere:/src/app") :type 'user-error)
+      (should-error (goblins-run "/goblins:gribble:/workspace/") :type 'user-error)
+      (should-not launched))))
+
+(ert-deftest goblins-a-remote-sidebar-runs-on-its-machine ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one"))
+    (goblins-test--launching
+      (let (chosen)
+        (with-current-buffer source (setq goblins--directory "/ssh:buildbox:/run/goblins"))
+        (setq goblins--directory "/ssh:buildbox:/run/goblins")
+        (cl-letf (((symbol-function 'project-prompt-project-dir) (lambda () chosen)))
+          ;; The row holds the daemon's path; the launch is asked about there.
+          (goto-char (point-min))
+          (should (equal (goblins--sidebar-directory-at-point) "/p/one"))
+          (goblins-sidebar-run)
+          (should (equal where "/ssh:buildbox:/p/one/"))
+          (should (equal (seq-take launched 4)
+                         '("/ssh:buildbox:/run/goblins" "plain" "/remote.json" "/p/one/")))
+          ;; A chosen project is already an Emacs file name.
+          (setq chosen "/ssh:buildbox:/src/api/")
+          (goblins-sidebar-run-in-project)
+          (should (equal where "/ssh:buildbox:/src/api/"))
+          (should (equal (nth 3 launched) "/src/api/"))
+          (setq launched nil)
+          (dolist (project '("/ssh:elsewhere:/src/api/" "/src/api/"))
+            (setq chosen project)
+            (should-error (goblins-sidebar-run-in-project) :type 'user-error))
+          (should-not launched))))))
+
+(ert-deftest goblins-a-pin-from-the-daemon-gets-its-status-buffers-key ()
+  (let ((goblins--pins (make-hash-table :test #'equal))
+        (status (generate-new-buffer " *goblins test status*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer status
+            (goblins-status-mode)
+            (setq goblins--directory "/ssh:buildbox:/run/goblins" goblins--instance "inst-b"))
+          ;; The daemon names its own state directory.
+          (should (equal (goblins-pin-host "gribble" "/run/goblins" "inst-b" "inst-b-s1")
+                         "gribble"))
+          (should (equal (goblins-pin "gribble")
+                         '("/ssh:buildbox:/run/goblins" "inst-b" "inst-b-s1")))
+          ;; Emacs pins the same goblin by the key: the same pin.
+          (should (equal (goblins--pin-or-id "gribble" "/ssh:buildbox:/run/goblins"
+                                             "inst-b" "inst-b-s1")
+                         "gribble"))
+          ;; A daemon without a status buffer keeps what it said.
+          (goblins-pin-host "zorg" "/run/other" "inst-c" "inst-c-s1")
+          (should (equal (goblins-pin "zorg") '("/run/other" "inst-c" "inst-c-s1"))))
+      (kill-buffer status))))
+
+(ert-deftest goblins-tramp-reaches-a-remote-daemons-goblin-through-the-cli ()
+  (let* ((goblins-endpoints '(("big" :host "hans@big.example" :state-dir "/var/lib/goblins"
+                               :program "/opt/bin/goblins")))
+         (goblins--pins (make-hash-table :test #'equal))
+         (vec (tramp-dissect-file-name "/goblins:gribble:/tmp/"))
+         (tramp-current-connection (list vec))
+         (default-directory "/goblins:gribble:/tmp/")
+         (exec '("exec" "--tty=auto" "--instance" "inst" "--session" "sess" "gribble"
+                 "--" "/bin/sh"))
+         (login (lambda (directory)
+                  (puthash "gribble" (list directory "inst" "sess") goblins--pins)
+                  (with-temp-buffer
+                    (setq-local tramp-extra-expand-args
+                                (alist-get 'tramp-extra-expand-args
+                                           goblins-tramp-connection-local-variables))
+                    (let ((buffer (current-buffer)))
+                      (cl-letf (((symbol-function 'tramp-get-connection-buffer)
+                                 (lambda (&rest _) buffer)))
+                        (tramp-expand-args vec 'tramp-login-args nil
+                                           ?h "gribble" ?l "/bin/sh"))))))
+         calls)
+    ;; The login command: today's for a daemon here, through ssh otherwise.
+    (should (equal (funcall login "/run/goblins")
+                   (append '("--state-dir" "/run/goblins") exec)))
+    (should (equal (funcall login "/ssh:buildbox:/run/goblins")
+                   (append '("--host" "buildbox" "--state-dir" "/run/goblins") exec)))
+    (should (equal (funcall login "/ssh:hans@big.example:/var/lib/goblins")
+                   (append '("--host" "hans@big.example" "--remote-program" "/opt/bin/goblins"
+                             "--state-dir" "/var/lib/goblins")
+                           exec)))
+    ;; One command, the same way.
+    (cl-letf (((symbol-function 'goblins-tramp--process-environment) (lambda (_) nil))
+              ((symbol-function 'goblins-tramp--program) (lambda () "/cli"))
+              ((symbol-function 'call-process) (lambda (&rest args) (push args calls) 0)))
+      (goblins-tramp--process-file #'ignore "true")
+      (should (equal (car calls)
+                     '("/cli" nil nil nil "--host" "hans@big.example"
+                       "--remote-program" "/opt/bin/goblins" "--state-dir" "/var/lib/goblins"
+                       "exec" "--instance" "inst" "--session" "sess" "--workdir" "/tmp/"
+                       "gribble" "--" "true"))))))
+
+(ert-deftest goblins-terminals-of-a-remote-daemon-attach-through-the-cli ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :agent_name "gribble"
+                                                      :cwd "/src/app"))
+    (let ((goblins--pins (make-hash-table :test #'equal))
+          (key "/ssh:buildbox:/run/goblins")
+          execs buffers)
+      (with-current-buffer source (setq goblins--directory key))
+      (cl-letf (((symbol-function 'goblins--require-ghostel) #'ignore)
+                ((symbol-function 'goblins--render-status-buffers) #'ignore)
+                ((symbol-function 'ghostel-exec)
+                 (lambda (buffer _program args &rest _)
+                   ;; Never started from a remote directory: Ghostel would
+                   ;; run the client through TRAMP.
+                   (push (cons (buffer-local-value 'default-directory buffer) args) execs))))
+        (unwind-protect
+            (let ((session (goblins--snapshot-session
+                            (buffer-local-value 'goblins--snapshot source) "session-a"))
+                  (home (expand-file-name "~/")))
+              ;; The agent's terminal, which then works in the goblin's directory there.
+              (push (goblins--attach source "session-a" #'ignore) buffers)
+              (should (equal (car execs)
+                             (list home "--host" "buildbox" "--state-dir" "/run/goblins"
+                                   "attach" "session-a" "--instance" "daemon-a")))
+              (with-current-buffer (car buffers)
+                (should (equal default-directory "/ssh:buildbox:/src/app/"))
+                (should (equal goblins--directory key))
+                ;; A snapshot keeps it there.
+                (setq-local ghostel-identity '((kind . goblins) (session . "session-a")
+                                               (instance . "daemon-a")))
+                (with-current-buffer source (goblins--follow-worktrees))
+                (should (equal default-directory "/ssh:buildbox:/src/app/"))
+                (should (equal (goblins--agent-directory) "/ssh:buildbox:/src/app/")))
+              ;; A shell and a terminal inside the goblin.
+              (push (goblins-tramp--exec-shell source session #'ignore) buffers)
+              (should (equal (seq-take (car execs) 6)
+                             (list home "--host" "buildbox" "--state-dir" "/run/goblins" "exec")))
+              (push (goblins-tramp--attach-terminal
+                     source session (goblins-test--terminal-record "t1" "app" "host") #'ignore)
+                    buffers)
+              (should (equal (car execs)
+                             (list home "--host" "buildbox" "--state-dir" "/run/goblins"
+                                   "terminal" "attach" "session-a" "t1"))))
+          (mapc #'kill-buffer buffers))))))
+
+(ert-deftest goblins-a-remote-daemons-configurations-and-manifest-stay-on-its-machine ()
+  (let ((goblins-executable "/cli") calls)
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (&rest args)
+                 (should (equal default-directory (expand-file-name "~/")))
+                 (push args calls)
+                 (insert "{\"configuration\":\"/nix/store/x-config.json\",\"names\":[\"plain\"]}")
+                 0)))
+      (let ((default-directory "/ssh:buildbox:/src/app/"))
+        (should (equal (goblins--configurations "/ssh:buildbox:/run/goblins")
+                       '(:configuration "/nix/store/x-config.json" :names ("plain")))))
+      (should (equal (car calls)
+                     '("/cli" nil t nil "--host" "buildbox" "--state-dir" "/run/goblins"
+                       "configurations")))))
+  ;; Rendering never connects: the icon of a goblin there is unknown until
+  ;; TRAMP has a connection, and is then read from that machine.
+  (goblins-test--manifest file "{\"goblins\":{\"goblins-claude\":{\"integration\":\"claude\"}}}"
+    (let ((session (list :configuration file :name "goblins-claude")) read)
+      (with-temp-buffer
+        (setq goblins--directory "/ssh:buildbox:/run/goblins")
+        (cl-letf (((symbol-function 'goblins--read-integration)
+                   (lambda (path _name) (push path read) "claude")))
+          (should-not (goblins--session-integration session))
+          (should-not read)
+          (should (zerop (hash-table-count goblins--integrations))))
+        (let ((goblins--file-prefix-override ""))
+          ;; A read that fails, as when the link drops, is tried again.
+          (cl-letf (((symbol-function 'insert-file-contents)
+                     (lambda (&rest _) (signal 'file-error '("Link dropped")))))
+            (should-not (goblins--session-integration session)))
+          (should (zerop (hash-table-count goblins--integrations)))
+          (should (equal (goblins--session-integration session) "claude")))
+        ;; Kept apart from a daemon here with the same store path.
+        (setq goblins--directory "/tmp/goblins-test")
+        (with-temp-file file (insert "{}"))
+        (should-not (goblins--session-integration session))))))
 
 (ert-deftest goblins-an-endpoint-has-a-key-or-says-what-is-wrong ()
   (should (equal (goblins--endpoint-key '("scratch" :state-dir "/run/goblins-dev/state/"))

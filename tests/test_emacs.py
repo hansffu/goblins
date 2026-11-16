@@ -237,7 +237,10 @@ class EmacsTests(unittest.TestCase):
         self.addCleanup(daemon.close)
         other = Daemon(application, env=client_env)
         self.addCleanup(other.close)
-        other.start(name="plain", agent_name="gribble")
+        # The other daemon's goblin works in a directory the test Emacs knows.
+        work = Path(temp.name) / "work"
+        work.mkdir()
+        other.start(name="plain", agent_name="gribble", cwd=work)
         result = Path(temp.name) / "result"
         argv = [EMACS, EMACS_HOME, "-nw", "-Q", "-l", EMACS_INIT,
                 "-l", "goblins-tests",
@@ -246,6 +249,7 @@ class EmacsTests(unittest.TestCase):
                "GOBLINS_APP": str(application),
                "GOBLINS_TEST_STATE": str(daemon.state),
                "GOBLINS_TEST_OTHER_STATE": str(other.state),
+               "GOBLINS_TEST_OTHER_WORK": str(work),
                # The other daemon is also reached as one on another machine,
                # over a link slower than a local daemon is given to answer.
                "GOBLINS_SSH": str(Path(__file__).resolve().parent / "fake-ssh"),

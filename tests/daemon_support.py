@@ -168,9 +168,10 @@ class Daemon:
             time.sleep(.02)
         raise AssertionError("daemon condition timed out")
 
-    def start(self, name="shell", manifest=None, key=None, wait=True, agent_name=None):
+    def start(self, name="shell", manifest=None, key=None, wait=True, agent_name=None, cwd=None):
         result = self.rpc.call("sessions.start", {"key": key or uuid.uuid4().hex, "name": name, "agent_name": agent_name,
-                                                  "configuration": str(manifest or self.manifest), "rows": 24, "cols": 100})
+                                                  "configuration": str(manifest or self.manifest), "rows": 24, "cols": 100,
+                                                  **({"cwd": str(cwd)} if cwd else {})})
         if wait:
             # Initial GC roots may cover hundreds of store outputs. Allow cold
             # startup longer than ordinary RPC/lifecycle transitions.

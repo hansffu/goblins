@@ -366,8 +366,8 @@ shows the new terminal.  With a prefix argument, prompt for the daemon state
 directory."
   (interactive (goblins--choose-record "Resume conversation: "))
   (goblins--require-ghostel)
-  (let* ((configs (let ((default-directory (expand-file-name "~/")))
-                    (goblins--configurations)))
+  (let* ((daemon (buffer-local-value 'goblins--directory source))
+         (configs (goblins--configurations daemon))
          (launch (goblins--host-call
                   source 'sessions.start
                   (list :key (goblins--launch-key)
@@ -380,7 +380,10 @@ directory."
       (goblins--report-resumed)
       (condition-case err
           (goblins--open-terminal session (plist-get launch :agent_name)
-                                  (file-name-as-directory (expand-file-name (if (stringp cwd) cwd "~")))
+                                  (file-name-as-directory
+                                   (if (stringp cwd)
+                                       (goblins--host-file daemon cwd)
+                                     (expand-file-name "~")))
                                   display)
         (error
          (ignore-errors

@@ -429,7 +429,8 @@ name.  For a WORKTREE, (REPOSITORY . NAME), the name is \"goblins ⎇ fix-login\
                       (cons (format "%s ⎇ %s" (goblins--safe (car worktree))
                                     (goblins--safe (cdr worktree)))
                             dir)
-                    (goblins--sidebar-project dir)))
+                    ;; DIR is a path on the daemon's machine.
+                    (goblins--sidebar-project (goblins--host-file goblins--directory dir))))
          (path (if (string-empty-p dir) "unknown"
                  (abbreviate-file-name (file-name-as-directory dir))))
          (cut (lambda (text room)
@@ -776,6 +777,9 @@ the shells follow it.  Only the name and the shells are stops for movement."
 FOLDS is a sidebar's `goblins--sidebar-folds'; nil unfolds everything.  The
 text is built apart from the sidebar so a failure cannot blank it."
   (with-temp-buffer
+    ;; The daemon whose paths the labels and icons look up.
+    (setq goblins--directory (and (buffer-live-p source)
+                                  (buffer-local-value 'goblins--directory source)))
     (let* ((snapshot (and (buffer-live-p source)
                           (buffer-local-value 'goblins--snapshot source)))
            ;; External agents show even without a server.
@@ -1364,7 +1368,9 @@ On a raid heading, invite a goblin you choose into that raid."
 (defun goblins-sidebar-run ()
   "Run a new goblin in the project of the goblin or directory at point."
   (interactive)
-  (goblins--sidebar-run-in (goblins--sidebar-directory-at-point)))
+  (goblins--sidebar-run-in
+   ;; The sidebar holds paths on the daemon's machine.
+   (goblins--host-file goblins--directory (goblins--sidebar-directory-at-point))))
 
 (defun goblins-sidebar-run-in-project ()
   "Choose a project, then run a new goblin there."

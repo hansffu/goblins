@@ -392,8 +392,26 @@ Two file names are on one machine when their host and user are the same."
             (list "--state-dir" (file-local-name directory)))))
 
 (defun goblins--host-file (directory path)
-  "PATH, a file on the machine of daemon DIRECTORY, as an Emacs file name."
-  (concat (or goblins--file-prefix-override (file-remote-p directory) "") path))
+  "PATH, a file on the machine of daemon DIRECTORY, as an Emacs file name.
+A nil DIRECTORY is a daemon on this machine."
+  (concat (or goblins--file-prefix-override
+              (and directory (file-remote-p directory))
+              "")
+          path))
+
+(defun goblins--same-machine-p (one other)
+  "Whether file names ONE and OTHER are on one machine: same host, same user."
+  (and (equal (file-remote-p one 'host) (file-remote-p other 'host))
+       (equal (file-remote-p one 'user) (file-remote-p other 'user))))
+
+(defun goblins--check-launch-directory (daemon directory)
+  "Signal a `user-error' unless DIRECTORY is on the machine of DAEMON."
+  (unless (goblins--same-machine-p daemon directory)
+    (if (file-remote-p directory)
+        (user-error "No Goblins endpoint for %s; add one to goblins-endpoints"
+                    (file-remote-p directory 'host))
+      (user-error "%s is not on this server's machine"
+                  (abbreviate-file-name directory)))))
 
 (defun goblins--wait-seconds ()
   "How long to wait for this buffer's daemon to answer while connecting.
@@ -532,10 +550,11 @@ empty image."
   :group 'goblins)
 
 (defvar goblins--integrations (make-hash-table :test #'equal)
-  "(CONFIGURATION . NAME) to that configuration's integration, or nil.")
+  "(DAEMON CONFIGURATION NAME) to that configuration's integration, or nil.")
 
 (defun goblins--read-integration (file name)
-  "The integration of configuration NAME in the manifest FILE, or nil."
+  "The integration of configuration NAME in the manifest FILE, or nil.
+The symbol `unread' when FILE cannot be read or is no manifest."
   (condition-case nil
       (with-temp-buffer
         (insert-file-contents file)
@@ -543,21 +562,30 @@ empty image."
                (goblin (gethash name (gethash "goblins" manifest)))
                (integration (gethash "integration" goblin)))
           (and (stringp integration) integration)))
-    (error nil)))
+    (error 'unread)))
 
 (defun goblins--session-integration (session)
   "The integration of SESSION's configuration, such as \"claude\", or nil.
+SESSION belongs to the daemon of the current buffer's `goblins--directory'.
 It is read from the configuration's manifest once per Emacs session: a
-configuration lives in the Nix store and never changes."
+configuration lives in the Nix store and never changes.  This runs while
+rendering, so the manifest of a daemon on another machine is read only once
+TRAMP has a connection there, and is unknown until then."
   (let ((file (plist-get session :configuration))
         (name (plist-get session :name)))
     (when (and (stringp file) (stringp name) (file-name-absolute-p file)
                (not (file-remote-p file)))
-      (let* ((key (cons file name))
+      (let* ((daemon goblins--directory)
+             (path (goblins--host-file daemon file))
+             (key (list daemon file name))
              (known (gethash key goblins--integrations 'unread)))
-        (if (eq known 'unread)
-            (puthash key (goblins--read-integration file name) goblins--integrations)
-          known)))))
+        (cond ((not (eq known 'unread)) known)
+              ((and (file-remote-p path) (not (file-remote-p path nil t))) nil)
+              (t (let* ((non-essential t)
+                        (read (goblins--read-integration path name)))
+                   ;; A failed read is tried again: the link may be back.
+                   (unless (eq read 'unread)
+                     (puthash key read goblins--integrations)))))))))
 
 (defvar goblins--icon-images (make-hash-table :test #'equal)
   "Icon images by file, colour and the pixel sizes they were made for.")
@@ -1448,8 +1476,16 @@ Return HOST, or signal an error when HOST is pinned to another goblin.  The
 daemon calls this through emacsclient before opening a goblin's files."
   (unless (and (stringp host) (stringp directory) (stringp instance) (stringp session))
     (error "Goblins: invalid pin"))
-  (let ((pin (list directory instance session))
-        (old (gethash host goblins--pins)))
+  (let* ((source (cl-find-if
+                  (lambda (buffer)
+                    (and (eq (buffer-local-value 'major-mode buffer) 'goblins-status-mode)
+                         (equal (buffer-local-value 'goblins--instance buffer) instance)))
+                  (buffer-list)))
+         ;; The daemon gives its own state directory, which is not the key
+         ;; of a daemon on another machine.
+         (directory (if source (buffer-local-value 'goblins--directory source) directory))
+         (pin (list directory instance session))
+         (old (gethash host goblins--pins)))
     (cond ((null old) (puthash host pin goblins--pins) host)
           ((equal old pin) host)
           (t (error "Goblins: /goblins:%s: is pinned to another goblin" host)))))
@@ -1579,7 +1615,7 @@ That is the project, bound at the same path inside the sandbox, so
 works in its own /workspace, which only exists inside it."
   (let ((directory (goblins--session-directory (goblins--terminal-session))))
     (if directory
-        (file-name-as-directory directory)
+        (file-name-as-directory (goblins--host-file goblins--directory directory))
       (when-let* ((host (goblins--pinned-terminal-host)))
         (format "/goblins:%s:/workspace/" host)))))
 
@@ -1604,7 +1640,8 @@ the goblin works."
                                         :test #'equal)))
                  (target (and session
                               (equal (plist-get session :state) "running")
-                              (goblins--session-directory session))))
+                              (when-let* ((path (goblins--session-directory session)))
+                                (goblins--host-file directory path)))))
             (when (and target
                        (not (equal (file-name-as-directory target) default-directory)))
               (setq default-directory (file-name-as-directory target)))))))))
@@ -1650,10 +1687,14 @@ On other status sections, toggle their visibility."
       (pop-to-buffer (goblins--choose "Goblin terminal: " choices
                                      "No Emacs-launched terminal buffers for this server")))))
 
-(defun goblins--configurations ()
-  "Read current configuration names and manifest from the packaged CLI."
+(defun goblins--configurations (directory)
+  "Read the configuration names and manifest of daemon DIRECTORY's machine.
+The manifest is a path on that machine."
   (with-temp-buffer
-    (let ((code (process-file goblins-executable nil t nil "configurations")))
+    (let* ((default-directory (expand-file-name "~/"))
+           (code (apply #'call-process goblins-executable nil t nil
+                        (append (goblins--daemon-arguments directory)
+                                '("configurations")))))
       (unless (eq code 0)
         (user-error "Cannot list goblins: %s" (string-trim (buffer-string))))
       (goto-char (point-min))
@@ -1720,14 +1761,17 @@ On failure the buffer is killed and the error re-signalled."
          (buffer (generate-new-buffer (format "*Goblin: %s*" agent-name))))
     (condition-case err
         (progn
-          (with-current-buffer buffer (setq default-directory cwd))
+          ;; Spawn from a local directory: Ghostel would otherwise run the
+          ;; client itself through TRAMP.
+          (with-current-buffer buffer (setq default-directory (expand-file-name "~/")))
           (funcall (or display #'goblins--display-new-agent) buffer)
           (let ((ghostel-kill-buffer-on-exit nil))
             (ghostel-exec buffer executable
-                          (list "--state-dir" (car key) "attach" session
-                                "--instance" instance)
+                          (append (goblins--daemon-arguments (car key))
+                                  (list "attach" session "--instance" instance))
                           `((kind . goblins) (session . ,session) (instance . ,instance))))
           (with-current-buffer buffer
+            (setq default-directory cwd)
             (setq-local goblins--session-key key)
             (setq-local goblins--directory (car key))
             (setq-local ghostel-kill-buffer-on-exit nil)
@@ -1747,11 +1791,38 @@ On failure the buffer is killed and the error re-signalled."
   "A fresh idempotency key for `sessions.start'."
   (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid)))))
 
+(defun goblins--launch (daemon name configuration cwd dev-shell display)
+  "Start goblin NAME of manifest CONFIGURATION on DAEMON and attach a terminal.
+CWD, its working directory, and DEV-SHELL, a flake directory or nil, are
+paths on the daemon's machine.  DISPLAY shows the terminal, whose buffer is
+returned.  The goblin is stopped again if the terminal fails."
+  (with-current-buffer (goblins--connect daemon)
+    (let* ((connection goblins--connection)
+           (launch (jsonrpc-request
+                    connection 'sessions.start
+                    (append
+                     (list :key (goblins--launch-key)
+                           :name name :configuration configuration
+                           :cwd cwd :rows 24 :cols 80)
+                     (and dev-shell (list :dev_shell dev-shell)))
+                    :timeout 3))
+           (session (plist-get launch :session)))
+      (condition-case err
+          (goblins--open-terminal session (plist-get launch :agent_name)
+                                  (file-name-as-directory (goblins--host-file daemon cwd))
+                                  display)
+        (error
+         (ignore-errors
+           (jsonrpc-request connection 'sessions.stop (list :session session) :timeout 3))
+         (signal (car err) (cdr err)))))))
+
 (defun goblins-run (&optional directory display)
   "Choose a configured goblin and launch it in a new Ghostel buffer.
 Launch from the current project's root, or the current directory outside a
 project; see `goblins--launch-location' for the dev shell choice.  Use this
-status buffer's server, or the default server outside a status buffer.
+status buffer's server, or outside one the server on the directory's machine:
+the first of `goblins-endpoints' there for a remote directory, else the
+default server.
 DIRECTORY, if given, replaces the current directory as the launch location,
 and DISPLAY, default `goblins--display-new-agent', shows the new terminal.
 The status buffer is never displayed.
@@ -1759,36 +1830,19 @@ Only launches made here are linked by the terminal command."
   (interactive)
   (let ((default-directory (file-name-as-directory
                             (expand-file-name (or directory default-directory)))))
-    (when (file-remote-p default-directory)
-      (user-error (if (string-prefix-p "/goblins:" default-directory)
-                      "This buffer is inside a goblin; run goblins from a local directory"
-                    "Goblins requires a local working directory")))
+    (when (string-prefix-p "/goblins:" default-directory)
+      (user-error "This buffer is inside a goblin; run goblins from a directory outside it"))
     (goblins--require-ghostel)
-    (let* ((state-directory (goblins--resolve-directory))
-           (configs (goblins--configurations))
-           (name (goblins--read-configuration (plist-get configs :names)))
-           (location (goblins--launch-location
-                      (member name (plist-get configs :nix))))
-           (cwd (car location))
-           (dev-shell (cdr location))
-           (status (goblins--connect state-directory)))
-      (with-current-buffer status
-        (let* ((connection goblins--connection)
-               (launch (jsonrpc-request
-                        connection 'sessions.start
-                        (append
-                         (list :key (goblins--launch-key)
-                               :name name :configuration (plist-get configs :configuration)
-                               :cwd cwd :rows 24 :cols 80)
-                         (and dev-shell (list :dev_shell dev-shell)))
-                        :timeout 3))
-               (session (plist-get launch :session)))
-          (condition-case err
-              (goblins--open-terminal session (plist-get launch :agent_name) cwd display)
-            (error
-             (ignore-errors
-               (jsonrpc-request connection 'sessions.stop (list :session session) :timeout 3))
-             (signal (car err) (cdr err)))))))))
+    (let ((daemon (goblins--resolve-directory)))
+      (goblins--check-launch-directory daemon default-directory)
+      (let* ((configs (goblins--configurations daemon))
+             (name (goblins--read-configuration (plist-get configs :names)))
+             (location (goblins--launch-location
+                        (member name (plist-get configs :nix)))))
+        (goblins--launch daemon name (plist-get configs :configuration)
+                         (file-local-name (car location))
+                         (and (cdr location) (file-local-name (cdr location)))
+                         display)))))
 
 (defconst goblins--worktree-name-regexp "\\`[A-Za-z0-9][A-Za-z0-9._-]\\{0,99\\}\\'"
   "What a worktree's name looks like: its branch and its directory name.")
@@ -1807,7 +1861,7 @@ runs Git on the host; this is Emacs doing so, as the user."
 
 (defun goblins--worktree-folder (status)
   "The worktree folder of the current repository on STATUS's server.
-That is DIRECTORY/REPO: beneath `worktrees_directory', named after the main
+It is an Emacs file name, remote when the server is.  That is DIRECTORY/REPO: beneath `worktrees_directory', named after the main
 checkout.  Signal a `user-error' when worktrees are off or the current
 directory is in no repository."
   (let* ((directory (plist-get (goblins--host-call status 'server.status (make-hash-table))
@@ -1820,7 +1874,8 @@ directory is in no repository."
          (checkout (and (string-suffix-p "/.git" common)
                         (directory-file-name (file-name-directory common)))))
     (unless checkout (user-error "Not in a Git repository with a .git directory"))
-    (expand-file-name (file-name-nondirectory checkout) directory)))
+    (goblins--host-file (buffer-local-value 'goblins--directory status)
+                        (expand-file-name (file-name-nondirectory checkout) directory))))
 
 (defun goblins--worktree-path (status name)
   "The directory of worktree NAME of the current repository on STATUS's server."
@@ -1855,7 +1910,10 @@ Return the goblin's terminal buffer."
   (unless (string-match-p goblins--worktree-name-regexp name)
     (user-error "A worktree name uses letters, digits, `.', `_' and `-', starting with a letter or digit"))
   (let* ((state-directory (goblins--resolve-directory))
-         (status (goblins--connect state-directory))
+         (status (progn
+                   ;; Git runs where this directory is.
+                   (goblins--check-launch-directory state-directory default-directory)
+                   (goblins--connect state-directory)))
          (path (goblins--worktree-path status name)))
     (unless (file-directory-p path)
       (make-directory (file-name-directory path) t)
@@ -1863,8 +1921,10 @@ Return the goblin's terminal buffer."
                       (eq 0 (process-file "git" nil t nil "show-ref" "--verify" "--quiet"
                                           (concat "refs/heads/" name))))))
         (if exists
-            (goblins--git-output default-directory "worktree" "add" path name)
-          (goblins--git-output default-directory "worktree" "add" "-b" name path))))
+            (goblins--git-output default-directory "worktree" "add"
+                                 (file-local-name path) name)
+          (goblins--git-output default-directory "worktree" "add" "-b" name
+                               (file-local-name path)))))
     (let ((buffer (goblins-run path display)))
       (when (and prompt (buffer-live-p buffer))
         (goblins--host-call status 'messages.send

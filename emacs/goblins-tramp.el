@@ -117,6 +117,13 @@ not resolve the name anew."
   "Field N of the current connection's pin, for `tramp-extra-expand-args'."
   (nth n (goblins-tramp--pin (car tramp-current-connection))))
 
+(defun goblins-tramp--remote-program (directory)
+  "The Goblins executable on the machine of remote daemon DIRECTORY, when its
+endpoint names one, else the empty string."
+  (or (and (file-remote-p directory)
+           (plist-get (cdr (goblins--endpoint directory)) :program))
+      ""))
+
 (defun goblins-tramp--program ()
   "The local Goblins executable the login program runs."
   (or (executable-find goblins-executable) goblins-executable))
@@ -132,7 +139,9 @@ not resolve the name anew."
   '(;; Evaluated by `tramp-expand-args' for every connection and process.
     (tramp-extra-expand-args
      ?G (goblins-tramp--program)
-     ?D (goblins-tramp--pin-field 0)
+     ?H (or (goblins--daemon-destination (goblins-tramp--pin-field 0)) "")
+     ?P (goblins-tramp--remote-program (goblins-tramp--pin-field 0))
+     ?D (file-local-name (goblins-tramp--pin-field 0))
      ?I (goblins-tramp--pin-field 1)
      ?S (goblins-tramp--pin-field 2))
     ;; Each async process is its own `goblins exec', without the shell.
@@ -146,7 +155,10 @@ not resolve the name anew."
                (tramp-login-program "%G")
                ;; A terminal only when TRAMP gives the client one: the shell
                ;; connection, not pipe processes such as eglot's.
-               (tramp-login-args (("--state-dir" "%D") ("exec") ("--tty=auto")
+               ;; TRAMP drops a group with an empty word: the first two
+               ;; are there only for a daemon on another machine.
+               (tramp-login-args (("--host" "%H") ("--remote-program" "%P")
+                                  ("--state-dir" "%D") ("exec") ("--tty=auto")
                                   ("--instance" "%I") ("--session" "%S")
                                   ("%h") ("--") ("%l")))
                (tramp-direct-async ("/bin/sh" "-c"))
@@ -377,7 +389,8 @@ on another host."
                           args)
                 (cons program args)))
              (arguments
-              (append (list "--state-dir" (nth 0 pin) "exec" "--instance" (nth 1 pin)
+              (append (goblins--daemon-arguments (nth 0 pin))
+                      (list "exec" "--instance" (nth 1 pin)
                             "--session" (nth 2 pin)
                             "--workdir" (tramp-file-local-name
                                          (expand-file-name default-directory)))
@@ -676,7 +689,8 @@ buffer is killed and the error re-signalled."
                   (format "*Goblin shell: %s*" (plist-get session :agent_name)) display
                   (lambda (buffer directory instance id host)
                     (ghostel-exec buffer goblins-executable
-                                  (append (list "--state-dir" directory "exec" "-t" "--instance" instance
+                                  (append (goblins--daemon-arguments directory)
+                                          (list "exec" "-t" "--instance" instance
                                                 "--session" id host)
                                           (and goblins-shell-program
                                                (cons "--" (ensure-list goblins-shell-program))))
@@ -699,7 +713,8 @@ buffer detaches the terminal, which keeps running."
                   display
                   (lambda (buffer directory instance id host)
                     (ghostel-exec buffer goblins-executable
-                                  (list "--state-dir" directory "terminal" "attach" id terminal)
+                                  (append (goblins--daemon-arguments directory)
+                                          (list "terminal" "attach" id terminal))
                                   `((kind . goblins-shell) (session . ,id) (instance . ,instance)
                                     (directory . ,directory) (host . ,host)
                                     (terminal . ,terminal)))))))

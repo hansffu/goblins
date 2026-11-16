@@ -124,7 +124,17 @@ With a prefix argument, =goblins-status=, =goblins-workspace=, =goblins-messages
 
 A daemon on another machine is identified as =/ssh:DESTINATION:STATE-DIR=, which is what its status buffer is called. Emacs connects when the daemon is first used and gives it fifteen seconds to answer, since a first ssh connection is slow. The server commands (=goblins-start-server=, =goblins-stop-server=) run there too. ssh must log in without asking, with a key or an agent. If the other machine's Goblins speaks another API version, the status buffer says =Incompatible Goblins daemon=.
 
-So far only what travels over that connection works on such a daemon: the status buffer and its decisions, messages and raids. Its terminals, the =/goblins:= files, launching, resuming and everything that opens a file on the other machine do not yet.
+Everything you do from a status buffer, the sidebar or a goblin's terminal works on such a daemon as on the default one. Terminals attach through the same ssh command. Files and commands inside a goblin use the usual =/goblins:NAME:= names, which Emacs ties to that daemon when you open them with =goblins-dired=, =goblins-find-file=, =goblins-shell= or a terminal. The files Emacs opens on the daemon's machine itself, such as an agent terminal's directory, a worktree or a host command's log, are TRAMP names on that machine (=/ssh:DESTINATION:…=), so Magit and =project-find-file= in an agent's terminal work on the checkout there.
+
+=goblins-run= launches on the machine its directory is on. From a =/ssh:buildbox:/src/app/= buffer it starts the goblin in =/src/app= on =buildbox=, through the first endpoint with that host and user; without one it says =No Goblins endpoint for buildbox; add one to goblins-endpoints=. A directory on one machine cannot be launched on a daemon on another: nothing is copied between machines, so from the sidebar or status buffer of a remote daemon a local directory is refused. =goblins-run-with-worktree= makes its worktree with the Git of the repository's machine, under the same rule. The configurations offered are those of the daemon's machine.
+
+Some things stay as they are for the default daemon only:
+
+- =/goblins:NAME:= typed by hand names a goblin of the default daemon. Reach a goblin of another daemon through the commands above, which pin the name first.
+- The workspace and the sidebar show one daemon, the one chosen when they open, and messages and raids do not cross daemons.
+- The sidebar does not look up projects on another machine: its goblins are grouped by directory, shown as a path. A goblin's icon there appears once TRAMP has a connection to the machine, because Emacs reads the configuration from it.
+- A terminal whose ssh connection drops is detached, not reconnected; attach it again.
+- =goblins-editor= inside a remote goblin runs =emacsclient= on that machine. It reaches this Emacs only if you forward the Emacs server socket there, for example with =RemoteForward /run/user/1000/emacs/server /run/user/1000/emacs/server= under the host in =~/.ssh/config=. Anything running as you on that machine can then evaluate Lisp in this Emacs, so leave it out unless you want that.
 
 This package starts a daemon only when you run =goblins-start-server=. It does not install
 dependencies, run a package manager, or alter your Emacs configuration.

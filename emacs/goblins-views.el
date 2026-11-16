@@ -144,7 +144,9 @@ The buffer is read-only and follows the file as it grows; it stays with the
 final contents when the job ends.  The file is the job's, so what it holds
 is never acted on: no mode, format, local variable or evaluation applies to it."
   (let* ((record (goblins--host-job-record source request))
-         (log (plist-get record :log)))
+         (log (and (stringp (plist-get record :log))
+                   (goblins--host-file (buffer-local-value 'goblins--directory source)
+                                       (plist-get record :log)))))
     (unless record (user-error "The daemon no longer retains this host command"))
     (unless (and (stringp log) (file-readable-p log))
       (user-error "No output yet"))
@@ -161,6 +163,7 @@ is never acted on: no mode, format, local variable or evaluation applies to it."
       (with-current-buffer buffer
         (setq-local format-alist nil)
         (setq buffer-read-only t)
+        (when (file-remote-p log) (setq-local auto-revert-remote-files t))
         (auto-revert-tail-mode 1)
         (goto-char (point-max)))
       (goblins--display-main buffer)
@@ -585,7 +588,7 @@ BUFFER's saved windows come back; outside it, pop BUFFER up."
       (goblins--open-terminal
        id (plist-get session :agent_name)
        (if-let* ((directory (goblins--session-directory session)))
-           (file-name-as-directory directory)
+           (file-name-as-directory (goblins--host-file goblins--directory directory))
          default-directory)
        display))))
 
