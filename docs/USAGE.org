@@ -623,6 +623,8 @@ goblins rpc permissions.list '{}'
 goblins rpc sessions.get '{"session":"SESSION_ID"}'
 #+end_src
 
+=goblins rpc METHOD 'PARAMS'= makes one call and prints its result. =goblins rpc --stdio= instead connects its standard input and output to the server's host socket and stays until either side closes, for a program that speaks JSON-RPC itself and wants to follow the server's state. [[file:API.org][API.org]] describes the protocol.
+
 Typing =exit= in Fish naturally ends its session. Connected terminal output is
 drained before =run= returns the payload exit code. Broken output delivery or
 daemon death reports failure. Use =goblins server stop= to stop the server and all its sessions. Frontend quit does not stop it.

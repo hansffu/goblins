@@ -37,6 +37,8 @@ Every connection starts with =initialize=. A host connection may make up to 4096
 
 =goblins rpc METHOD 'PARAMS'= opens a host connection, makes one call and prints the result. It cannot follow =state.subscribe=, and cannot call =sessions.exec=, which needs passed file descriptors.
 
+=goblins rpc --stdio= opens the host socket and copies bytes both ways between it and its standard input and output, without parsing frames. The caller speaks the protocol itself, starting with =initialize=, and is an ordinary host connection to the daemon, so it can hold a state subscription. It ends with status 0 when either side closes. It cannot call =sessions.exec= either.
+
 ** Terminal attachment
 
 Each session has two attachment sockets beside each other in its state directory; =sessions.get= returns their paths as =terminal= and =attach=. Frontends attach every goblin through =attach.sock=; the host =features= include =attach-handlers=. =terminal.sock= still serves the older protocol until its listener is removed, but no current frontend uses it.

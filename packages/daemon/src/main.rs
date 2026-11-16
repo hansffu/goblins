@@ -288,12 +288,24 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
             );
         }
+        Command::Rpc { stdio: true, .. } => {
+            // The relay blocks in reads: let a signal end it, as it ends
+            // any filter.
+            for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                unsafe { libc::signal(signal, libc::SIG_DFL) };
+            }
+            rpc_stdio(&state, std::io::stdin(), std::io::stdout())?;
+        }
         Command::Rpc {
             method,
             params_json,
+            ..
         } => println!(
             "{}",
-            Client::connect(&state)?.call(&method, serde_json::from_str(&params_json)?)?
+            Client::connect(&state)?.call(
+                &method.ok_or("rpc requires a method")?,
+                serde_json::from_str(&params_json.ok_or("rpc requires parameters")?)?
+            )?
         ),
         Command::Run {
             config,
@@ -459,6 +471,20 @@ fn main() {
     std::process::exit(code);
 }
 
+/// `rpc --stdio`: the caller speaks JSON-RPC itself, `initialize` included,
+/// over this process's standard input and output.
+fn rpc_stdio(
+    state: &std::path::Path,
+    input: impl std::io::Read + Send + 'static,
+    output: impl std::io::Write + Send + 'static,
+) -> Result<()> {
+    Ok(goblins_controller::host::relay(
+        goblins_controller::host::socket(state)?,
+        input,
+        output,
+    )?)
+}
+
 fn mailbox_command(
     state: &std::path::Path,
     method: &str,
@@ -572,6 +598,53 @@ mod tests {
         for local in [&["configurations"][..], &["completions", "bash"]] {
             assert!(super::host_job_refusal(false, true, &command(local)).is_none());
         }
+    }
+
+    #[test]
+    fn rpc_stdio_carries_the_callers_own_session() {
+        use goblins_jsonrpc as rpc;
+        use std::{io::Write, os::unix::net::UnixStream, time::Duration};
+        let daemon = Daemon::start(&[], json!({"answer": 42}));
+        let (mut stdin, input) = UnixStream::pair().unwrap();
+        let (output, mut stdout) = UnixStream::pair().unwrap();
+        stdout
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let state = daemon.state.clone();
+        let relay = std::thread::spawn(move || super::rpc_stdio(&state, input, output).unwrap());
+        let mut call = |id: u64, method: &str, params: Value| {
+            let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+            stdin.write_all(&rpc::encode(&request).unwrap()).unwrap();
+            rpc::read(&mut stdout).unwrap()
+        };
+        let init = call(1, "initialize", json!({"api": 1}));
+        assert_eq!(init["result"], fixtures()["host_initialize"]);
+        assert_eq!(
+            call(2, "sessions.list", json!({}))["result"],
+            json!({"answer": 42})
+        );
+        // The daemon closed after its one call: the relay ends by itself.
+        relay.join().unwrap();
+        assert_eq!(daemon.call()["method"], "sessions.list");
+    }
+
+    #[test]
+    fn rpc_stdio_needs_a_running_server() {
+        let state = goblins_unix::temp_directory().unwrap();
+        let error = super::rpc_stdio(&state, std::io::empty(), std::io::sink()).unwrap_err();
+        assert!(error.to_string().contains("goblins server start"));
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn rpc_takes_a_call_or_stdio_not_both() {
+        use clap::Parser;
+        let parse = |args: &[&str]| crate::cli::Cli::try_parse_from([&["goblins"], args].concat());
+        assert!(parse(&["rpc", "--stdio"]).is_ok());
+        assert!(parse(&["rpc", "sessions.list", "{}"]).is_ok());
+        assert!(parse(&["rpc"]).is_err());
+        assert!(parse(&["rpc", "sessions.list"]).is_err());
+        assert!(parse(&["rpc", "--stdio", "sessions.list", "{}"]).is_err());
     }
 
     #[test]

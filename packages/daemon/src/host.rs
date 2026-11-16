@@ -24,10 +24,58 @@ pub enum ExecStdio<'a> {
     Tty(&'a std::os::fd::OwnedFd),
     Fds([&'a std::os::fd::OwnedFd; 3]),
 }
+const NOT_RUNNING: &str = "start the server with 'goblins server start' first";
+
+/// A raw connection to the server's host endpoint, before `initialize`.
+pub fn socket(state: &Path) -> Result<UnixStream> {
+    UnixStream::connect(state.join("host.sock")).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => NOT_RUNNING.into(),
+        _ => e.into(),
+    })
+}
+
+/// Copy bytes both ways between `socket` and `input`/`output` until either
+/// side ends. Frames are not parsed: the daemon sees an ordinary host client.
+pub fn relay(
+    socket: UnixStream,
+    input: impl Read + Send + 'static,
+    output: impl Write + Send + 'static,
+) -> io::Result<()> {
+    fn copy(mut from: impl Read, mut to: impl Write) {
+        let mut bytes = vec![0; 65536];
+        loop {
+            match from.read(&mut bytes) {
+                Ok(0) => break,
+                // Frames end without a newline, and standard output is
+                // line-buffered: flush each piece.
+                Ok(n) => {
+                    if to.write_all(&bytes[..n]).and_then(|()| to.flush()).is_err() {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(_) => break,
+            }
+        }
+    }
+    let (done, finished) = std::sync::mpsc::channel();
+    let (to_daemon, ended) = (socket.try_clone()?, done.clone());
+    std::thread::spawn(move || {
+        copy(input, to_daemon);
+        let _ = ended.send(());
+    });
+    std::thread::spawn(move || {
+        copy(socket, output);
+        let _ = done.send(());
+    });
+    // The other direction may stay blocked in a read; the caller exits.
+    let _ = finished.recv();
+    Ok(())
+}
+
 impl Client {
     pub fn connect(state: &Path) -> Result<Self> {
-        Self::connect_optional(state)?
-            .ok_or_else(|| "start the server with 'goblins server start' first".into())
+        Self::connect_optional(state)?.ok_or_else(|| NOT_RUNNING.into())
     }
     /// Absence is distinct from a live endpoint that fails initialization.
     pub fn connect_optional(state: &Path) -> Result<Option<Self>> {
@@ -279,6 +327,78 @@ pub fn decision<'a>(line: &str, snapshot: &'a Snapshot) -> Option<(&'a Permissio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Like standard output: nothing leaves before a flush.
+    struct Buffered(Vec<u8>, UnixStream);
+    impl Write for Buffered {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.1.write_all(&self.0)?;
+            self.0.clear();
+            Ok(())
+        }
+    }
+
+    fn relayed() -> (
+        UnixStream,
+        UnixStream,
+        UnixStream,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (daemon, socket) = UnixStream::pair().unwrap();
+        let (stdin, input) = UnixStream::pair().unwrap();
+        let (output, stdout) = UnixStream::pair().unwrap();
+        let output = Buffered(Vec::new(), output);
+        for end in [&daemon, &stdout] {
+            end.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+        }
+        let relay = std::thread::spawn(move || relay(socket, input, output).unwrap());
+        (daemon, stdin, stdout, relay)
+    }
+
+    #[test]
+    fn relay_passes_unterminated_bytes_both_ways() {
+        let (mut daemon, mut stdin, mut stdout, _relay) = relayed();
+        let mut bytes = [0; 5];
+        stdin.write_all(b"hello").unwrap();
+        daemon.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"hello");
+        daemon.write_all(b"reply").unwrap();
+        stdout.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"reply");
+    }
+
+    #[test]
+    fn relay_passes_more_than_one_buffer_in_order() {
+        let (mut daemon, mut stdin, mut stdout, _relay) = relayed();
+        let sent: Vec<u8> = (0..150_000u32).map(|i| (i % 251) as u8).collect();
+        let mut got = vec![0; sent.len()];
+        stdin.write_all(&sent).unwrap();
+        daemon.read_exact(&mut got).unwrap();
+        assert_eq!(got, sent);
+        daemon.write_all(&sent).unwrap();
+        got.fill(0);
+        stdout.read_exact(&mut got).unwrap();
+        assert_eq!(got, sent);
+    }
+
+    #[test]
+    fn relay_ends_when_its_input_ends() {
+        let (_daemon, stdin, _stdout, relay) = relayed();
+        drop(stdin);
+        relay.join().unwrap();
+    }
+
+    #[test]
+    fn relay_ends_when_the_daemon_closes() {
+        let (daemon, _stdin, _stdout, relay) = relayed();
+        drop(daemon);
+        relay.join().unwrap();
+    }
 
     #[test]
     fn plain_decisions_require_the_exact_token_of_a_still_pending_request() {

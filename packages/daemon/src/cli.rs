@@ -184,8 +184,16 @@ pub enum Command {
         #[command(subcommand)]
         command: HostCommand,
     },
-    /// Call a trusted host JSON-RPC method
-    Rpc { method: String, params_json: String },
+    /// Call a trusted host JSON-RPC method, or relay a whole connection with --stdio
+    Rpc {
+        /// Relay JSON-RPC frames between standard input and output and the server
+        #[arg(long, conflicts_with_all = ["method", "params_json"])]
+        stdio: bool,
+        #[arg(required_unless_present = "stdio")]
+        method: Option<String>,
+        #[arg(required_unless_present = "stdio")]
+        params_json: Option<String>,
+    },
     /// Print a shell completion script (Nix packages install Bash/Fish/Zsh scripts)
     Completions {
         #[arg(value_enum)]
