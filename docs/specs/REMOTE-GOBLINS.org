@@ -1,6 +1,6 @@
 #+title: Remote goblins
 
-Status: in progress. Planned 2026-11-15; step 1 is implemented (commit =630b599=). Each later step updates this line in its own change.
+Status: in progress. Planned 2026-11-15; steps 1 (commit =630b599=) and 2 are implemented. Each later step updates this line in its own change.
 
 This is a handoff document. It is written so that an implementer who was not part of the planning can carry it out step by step. Read it whole before starting, and follow =AGENTS.md= for testing, review and commits. Line numbers refer to master at commit =9c380b1=; find the code by the function names if they have moved.
 

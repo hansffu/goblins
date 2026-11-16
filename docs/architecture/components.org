@@ -69,6 +69,7 @@ The protocol crate has no Nix, launch or approval authority. The sandbox client 
 | Channel                                 | Participants                         | Contents and authority                                                                                        |
 |-----------------------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------|
 | =STATE/host.sock=                         | Host CLI, TUI, Emacs to controller   | JSON-RPC launch, inspect, decide, subscribe, stop, exec and messaging calls; host authority                   |
+| =goblins rpc --stdio= | Emacs to the host CLI | The same JSON-RPC, relayed unparsed between the CLI's standard input and output and =STATE/host.sock=; Emacs does not open the socket itself |
 | =/run/goblins/request.sock= | Sandbox client to its supervisor | Checked JSON-RPC; fixed policy/support enforced before relay to the daemon |
 | =attach.sock= | Frontend to daemon attachment handshake | Target, readiness and attach-client authorization; accepted stream transferred to runtime |
 | =terminal.sock= and attached streams | Frontend to supervisor terminal broker | Legacy handshake and terminal bytes; no approval authority |

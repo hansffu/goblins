@@ -826,6 +826,10 @@ history, without a terminal; print the new goblin's ID."
             (goblins-test--wait (lambda () (not goblins--server-process)))
             (should (equal goblins--notice "Server stopped"))
             (should-not goblins--snapshot)
+            ;; A stopped server's client says how to start it.
+            (goblins-refresh)
+            (goblins-test--wait
+             (lambda () (string-prefix-p "Cannot connect: start the server" goblins--notice)))
             (goblins-start-server)
             (goblins-test--wait (lambda () goblins--subscription))
             (should-not (equal goblins--instance instance))
@@ -5012,28 +5016,58 @@ programs started, each as (ARGS IDENTITY BUFFER)."
     (should-error (goblins-terminal-attach "t9" session #'ignore source) :type 'user-error)))
 
 (ert-deftest goblins-disconnect-closes-the-connection-without-waiting ()
-  (let* ((socket (make-temp-name (expand-file-name "goblins-test-" temporary-file-directory)))
-         (server (make-network-process :name "goblins-test-server" :server t
-                                       :family 'local :service socket :noquery t))
-         warnings)
+  (let (warnings)
+    (with-temp-buffer
+      ;; A connection is a relay process that stays until its input ends.
+      (setq goblins--connection
+            (make-instance 'jsonrpc-process-connection
+                           :name "goblins-test"
+                           :process (make-process :name "goblins" :command '("cat")
+                                                  :connection-type 'pipe :noquery t)))
+      (let ((process (jsonrpc--process goblins--connection))
+            (start (float-time)))
+        (cl-letf (((symbol-function 'jsonrpc--warn)
+                   (lambda (&rest args) (push args warnings))))
+          (goblins--disconnect))
+        (should-not warnings)
+        (should-not (process-live-p process))
+        (should (< (- (float-time) start) 0.3))
+        (should-not goblins--connection)))))
+
+(defun goblins-test--lost-connection (script)
+  "The loss notice of a connection whose client ran the shell SCRIPT and ended."
+  (let* ((name (make-temp-name "goblins-test-loss-"))
+         (connection
+          (make-instance
+           'jsonrpc-process-connection :name name
+           :process (lambda ()
+                      (goblins--client-process name (list "sh" "-c" script))))))
     (unwind-protect
-        (with-temp-buffer
-          (setq goblins--connection
-                (make-instance 'jsonrpc-process-connection
-                               :name "goblins-test"
-                               :process (make-network-process :name "goblins" :family 'local
-                                                              :service socket :noquery t)))
-          (let ((process (jsonrpc--process goblins--connection))
-                (start (float-time)))
-            (cl-letf (((symbol-function 'jsonrpc--warn)
-                       (lambda (&rest args) (push args warnings))))
-              (goblins--disconnect))
-            (should-not warnings)
-            (should-not (process-live-p process))
-            (should (< (- (float-time) start) 0.3))
-            (should-not goblins--connection)))
-      (delete-process server)
-      (when (file-exists-p socket) (delete-file socket)))))
+        (progn
+          ;; Wait on the client alone, so what it wrote to standard error is
+          ;; still unread, as when its sentinel runs first.
+          (let ((process (jsonrpc--process connection))
+                (deadline (+ (float-time) 10)))
+            (while (and (process-live-p process) (< (float-time) deadline))
+              (accept-process-output process 0.02 nil t))
+            (should-not (process-live-p process)))
+          (goblins--loss-notice connection))
+      (jsonrpc-shutdown connection t))))
+
+(ert-deftest goblins-a-lost-connection-reports-what-the-client-said ()
+  (goblins-test--buffer
+    (setq goblins--subscription nil)
+    ;; Never subscribed: the client's first message, without its own name.
+    (should (equal (goblins-test--lost-connection
+                    "printf '\\ngoblins: start the server first\\nmore\\n' >&2")
+                   "Cannot connect: start the server first"))
+    (should (equal (goblins-test--lost-connection "echo 'ssh: no route' >&2; exit 255")
+                   "Cannot connect: ssh: no route"))
+    ;; A silent end, and the end of a connection that had subscribed.
+    (should (equal (goblins-test--lost-connection "exit 0") "Disconnected"))
+    (setq goblins--subscription "sub")
+    (should (equal (goblins-test--lost-connection "echo 'goblins: late' >&2")
+                   "Disconnected"))))
 
 (ert-deftest goblins-pins-belong-to-one-goblin ()
   (let ((goblins--pins (make-hash-table :test #'equal)))
@@ -6296,12 +6330,13 @@ m2, and m3, which failed when beta stopped."
           goblins--sequence 99 goblins--instance "stale"
           goblins--snapshot '(:instance "stale") goblins--reconnect-attempt 7)
     (let ((goblins-reconnect-delays nil) requests events network)
-      (cl-letf (((symbol-function 'make-network-process)
+      (cl-letf (((symbol-function 'make-process)
                  (lambda (&rest args) (setq network args) 'c15-process))
                 ((symbol-function 'make-instance)
                  (lambda (class &rest args)
                    (should (eq class 'jsonrpc-process-connection))
-                   (should (eq (plist-get args :process) 'c15-process))
+                   ;; The connection is the CLI's relay, made when asked.
+                   (should (eq (funcall (plist-get args :process)) 'c15-process))
                    'c15-connection))
                 ((symbol-function 'jsonrpc--process) (lambda (_connection) 'c15-process))
                 ((symbol-function 'process-sentinel) (lambda (_process) nil))
@@ -6359,7 +6394,15 @@ m2, and m3, which failed when beta stopped."
       (should (= (plist-get result :sequence) (plist-get state :sequence)))
       (should (equal (plist-get result :instance) "i"))
       (should (= (plist-get result :attempt) 0))
-      (should (equal (plist-get (plist-get result :network) :service) "/tmp/goblins-c15-unit/host.sock")))))
+      (let ((process (plist-get result :network)))
+        (should (equal (plist-get process :command)
+                       (list goblins-executable "--state-dir" "/tmp/goblins-c15-unit"
+                             "rpc" "--stdio")))
+        (should (eq (plist-get process :connection-type) 'pipe))
+        ;; jsonrpc looks for its stderr buffer under this name.
+        (should (equal (buffer-name (plist-get process :stderr))
+                       "*goblins /tmp/goblins-c15-unit stderr*"))
+        (kill-buffer (plist-get process :stderr))))))
 
 (ert-deftest goblins-c15-initial-callback-preserves-rejection-and-error-order ()
   (dolist (state '(nil (:sequence 0 :snapshot (:instance "i"))
@@ -6388,7 +6431,9 @@ m2, and m3, which failed when beta stopped."
 
 (defun goblins-test-status-live ()
   "Use one daemon and Emacs for activity, a message thread, decisions and resume."
-  (ert-info ("activity in overview, sidebar and details") (goblins-test-activity-live))
-  (ert-info ("read messages and observe a reply without a snapshot") (goblins-test-messages-live))
-  (ert-info ("accept, deny, reconnect and close") (goblins-test-live))
-  (ert-info ("choose and resume a recorded conversation") (goblins-test-resume-live)))
+  ;; Connecting runs the CLI, so every part needs the one under test.
+  (let ((goblins-executable (or (getenv "GOBLINS_APP") goblins-executable)))
+    (ert-info ("activity in overview, sidebar and details") (goblins-test-activity-live))
+    (ert-info ("read messages and observe a reply without a snapshot") (goblins-test-messages-live))
+    (ert-info ("accept, deny, reconnect and close") (goblins-test-live))
+    (ert-info ("choose and resume a recorded conversation") (goblins-test-resume-live))))

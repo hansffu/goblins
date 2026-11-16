@@ -2,7 +2,8 @@
 
 A small Magit-style status buffer for the Goblins daemon. Requires Emacs 28.1+
 and =magit-section= (included with Magit). Uses Emacs' built-in =jsonrpc= and
-connects directly to the local host socket.
+connects to the server through the Goblins CLI (=goblins rpc --stdio=), so
+=goblins-executable= must be a build that has that command.
 
 * Load and use
 

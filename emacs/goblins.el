@@ -801,6 +801,46 @@ disconnect; the status buffer's notice already reports it."
   (let ((inhibit-message t) (message-log-max nil))
     (funcall sentinel process change)))
 
+(defun goblins--client-process (name command)
+  "Start COMMAND as the process of the jsonrpc connection called NAME.
+Its standard error goes to the buffer jsonrpc expects under exactly this
+name; without one the client's messages would join the JSON stream."
+  (let* ((default-directory (expand-file-name "~/"))
+         (stderr (get-buffer-create (format "*%s stderr*" name)))
+         (process (condition-case err
+                      (make-process :name "goblins" :command command
+                                    :connection-type 'pipe :coding 'binary
+                                    :noquery t :stderr stderr)
+                    ;; A missing executable: nothing will use the buffer.
+                    (error (kill-buffer stderr)
+                           (signal (car err) (cdr err))))))
+    (when-let* ((pipe (get-buffer-process stderr)))
+      ;; No "Process finished" line among the client's messages.
+      (set-process-sentinel pipe #'ignore)
+      (set-process-query-on-exit-flag pipe nil))
+    process))
+
+(defun goblins--loss-notice (connection)
+  "The notice for CONNECTION having ended.
+A connection that never subscribed reports what the client said on standard
+error, such as that no server is running; any other is just disconnected."
+  (let* ((stderr (ignore-errors (jsonrpc-stderr-buffer connection)))
+         (pipe (and (buffer-live-p stderr) (get-buffer-process stderr)))
+         (deadline (+ (float-time) 0.5)))
+    ;; Standard error has its own pipe, which may lag the client's exit.
+    ;; The client closed its end, so this normally stops at end of file.
+    (while (and pipe (process-live-p pipe) (< (float-time) deadline))
+      (accept-process-output pipe 0.1))
+    (or (and (not goblins--subscription)
+             (buffer-live-p stderr)
+             (with-current-buffer stderr
+               (save-excursion
+                 (goto-char (point-min))
+                 (and (re-search-forward
+                       "^\\(?:goblins: \\)?\\([^\n]*[^ \t\n][^\n]*\\)$" nil t)
+                      (concat "Cannot connect: " (match-string 1))))))
+        "Disconnected")))
+
 (defun goblins--cancel-reconnect ()
   (when goblins--reconnect-timer
     (cancel-timer goblins--reconnect-timer)
@@ -990,7 +1030,7 @@ reports in the echo area, so it suits init files and hooks."
                    (with-current-buffer buffer
                      (when (eq connection goblins--connection)
                        (if (not (jsonrpc-running-p connection))
-                           (goblins--fail "Disconnected")
+                           (goblins--fail (goblins--loss-notice connection))
                          (when (eq method 'permissions.decide)
                            (remhash (plist-get params :request) goblins--decisions))
                          (goblins--fail
@@ -1038,17 +1078,19 @@ reports in the echo area, so it suits init files and hooks."
         goblins--decisions (make-hash-table :test #'equal)
         goblins--notice "Connecting…")
   (goblins--render)
-  (let ((buffer (current-buffer)))
+  (let ((buffer (current-buffer))
+        (name (format "goblins %s" goblins--directory))
+        ;; The CLI relays the connection: the same command later reaches a
+        ;; daemon on another machine.
+        (command (list goblins-executable "--state-dir" goblins--directory
+                       "rpc" "--stdio")))
     (condition-case err
         (progn
           (setq goblins--connection
                 (make-instance
                  'jsonrpc-process-connection
-                 :name (format "goblins %s" goblins--directory)
-                 :process (make-network-process
-                           :name "goblins" :family 'local
-                           :service (expand-file-name "host.sock" goblins--directory)
-                           :coding 'binary :noquery t)
+                 :name name
+                 :process (lambda () (goblins--client-process name command))
                  :notification-dispatcher
                  (lambda (connection method params)
                    (when (buffer-live-p buffer)
@@ -1060,8 +1102,9 @@ reports in the echo area, so it suits init files and hooks."
                    (when (buffer-live-p buffer)
                      (with-current-buffer buffer
                        (when (eq connection goblins--connection)
-                         (setq goblins--connection nil)
-                         (goblins--fail "Disconnected")))))))
+                         (let ((notice (goblins--loss-notice connection)))
+                           (setq goblins--connection nil)
+                           (goblins--fail notice))))))))
           (add-function :around (process-sentinel (jsonrpc--process goblins--connection))
                         #'goblins--quiet-sentinel)
           (goblins--request
@@ -1088,8 +1131,14 @@ reports in the echo area, so it suits init files and hooks."
                             goblins--reconnect-attempt 0)
                       (goblins--note-requests)
                       (goblins--render)))))))))
-      (error (goblins--fail (format "Cannot connect: %s"
-                                    (error-message-string err)))))))
+      (error
+       ;; A client that already exited may refuse the first request; its
+       ;; own message says more than Emacs's.
+       (let ((notice (and goblins--connection
+                          (goblins--loss-notice goblins--connection))))
+         (goblins--fail (if (member notice '(nil "Disconnected"))
+                            (format "Cannot connect: %s" (error-message-string err))
+                          notice)))))))
 
 (defun goblins--host-call (source method params)
   "Call the host METHOD with PARAMS on SOURCE's connection and return the result.
