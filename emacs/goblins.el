@@ -1309,6 +1309,58 @@ Daemon refusals become `user-error's and leave the connection alone."
       (jsonrpc-error
        (user-error "%s" (or (alist-get 'jsonrpc-error-message (cdr err)) "Request failed"))))))
 
+(defun goblins--take-attachment (source name attached-p detach)
+  "Free what NAME describes for an attachment here, when it is attached.
+Call when this Emacs has no buffer attached to it, so whoever is attached is
+elsewhere, and one frontend at a time can be.  ATTACHED-P is called without
+arguments and says whether SOURCE's snapshot shows it attached.  Then ask;
+on yes call DETACH, which asks the daemon to end that attachment, and wait
+until the snapshot shows it free.  Signal a `user-error' on no, and when it
+stays attached.  Return non-nil when it was detached: attach it with
+`goblins--attach-until-held' then."
+  (when (funcall attached-p)
+    (unless (y-or-n-p (format "%s is attached elsewhere.  Detach it there and attach here? "
+                              name))
+      (user-error "%s stays attached elsewhere" name))
+    (funcall detach)
+    (let ((deadline (+ (float-time) (with-current-buffer source (goblins--wait-seconds)))))
+      (while (and (funcall attached-p) (< (float-time) deadline))
+        (accept-process-output nil 0.05))
+      (when (funcall attached-p)
+        (user-error "%s is still attached elsewhere; try again" name)))
+    t))
+
+(defun goblins--attach-until-held (source attached-p attach)
+  "Attach what `goblins--take-attachment' just detached, and return its buffer.
+ATTACH is called without arguments in SOURCE, starts the client and returns
+its terminal buffer.  The daemon shows a detached terminal as free at once but
+refuses a new client until the old one has closed its end, so a client that
+ends before ATTACHED-P says SOURCE's snapshot shows the terminal attached
+was refused: its buffer is killed and ATTACH called again.  After
+`goblins--wait-seconds' a client that still runs is left to attach, and one
+that was refused leaves no buffer and signals a `user-error'."
+  (let ((deadline (+ (float-time) (with-current-buffer source (goblins--wait-seconds))))
+        (live (lambda (buffer)
+                (process-live-p (with-current-buffer buffer
+                                  (or (bound-and-true-p ghostel--process)
+                                      (get-buffer-process buffer))))))
+        buffer held)
+    (while (not held)
+      ;; Showing the last client's buffer may have changed the current one.
+      (setq buffer (with-current-buffer source (funcall attach)))
+      (while (and (not (funcall attached-p))
+                  (funcall live buffer)
+                  (< (float-time) deadline))
+        (accept-process-output nil 0.05))
+      (if (or (funcall attached-p) (funcall live buffer))
+          (setq held t)
+        ;; Refused: nothing later may take this buffer for the terminal.
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buffer))
+        (unless (< (float-time) deadline)
+          (user-error "Still held elsewhere; try attaching again"))))
+    buffer))
+
 (defun goblins--section-shows-p (section)
   "Whether SECTION, a request section, shows its whole request: rendered
 with its details, and neither it nor a parent folded."

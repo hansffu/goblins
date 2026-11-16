@@ -5012,6 +5012,125 @@ programs started, each as (ARGS IDENTITY BUFFER)."
                      "--session" "session-a" "gribble")))
     (should-not calls)))
 
+(ert-deftest goblins-attaching-asks-before-detaching-what-is-attached-elsewhere ()
+  (goblins-test--with-terminal-daemon
+    (let* ((frees t) answer asked buffers
+           (set (lambda (agent terminal)
+                  (with-current-buffer source
+                    (setq goblins--snapshot
+                          (plist-put goblins--snapshot :sessions
+                                     (vector (goblins-test--session
+                                              "session-a" :agent_name "gribble" :cwd "/p"
+                                              :terminal_attached agent
+                                              :terminals (vector (goblins-test--terminal-record
+                                                                  "t1" "app" "host"
+                                                                  :attached terminal)))))))
+                  (setq session (goblins--snapshot-session
+                                 (buffer-local-value 'goblins--snapshot source) "session-a"))))
+           (detaches (lambda () (cl-remove-if-not
+                                 (lambda (call) (memq (car call) '(sessions.detach terminals.detach)))
+                                 calls))))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (prompt) (push prompt asked) answer))
+                ((symbol-function 'goblins--render-status-buffers) #'ignore)
+                ((symbol-function 'goblins--wait-seconds) (lambda () 0.2))
+                ((symbol-function 'goblins--host-call)
+                 (lambda (_source method params)
+                   (push (cons method params) calls)
+                   ;; The daemon ends the attachment; the snapshot then shows it free.
+                   (when frees
+                     (pcase method
+                       ('sessions.detach (funcall set nil t))
+                       ('terminals.detach (funcall set nil nil))))
+                   '(:accepted t))))
+        (unwind-protect
+            (progn
+              ;; Nobody is attached: no question.
+              (funcall set nil nil)
+              (push (goblins--attach source "session-a" #'ignore) buffers)
+              (should-not asked)
+              (should (= (length execs) 1))
+              ;; Attached elsewhere, and you say no: it stays there.
+              (funcall set t t)
+              (setq answer nil)
+              (should-error (goblins--attach source "session-a" #'ignore) :type 'user-error)
+              (should (equal asked '("gribble is attached elsewhere.  Detach it there and attach here? ")))
+              (should-not (funcall detaches))
+              (should (= (length execs) 1))
+              ;; You say yes: detached there, then attached here.
+              (setq answer t)
+              (push (goblins--attach source "session-a" #'ignore) buffers)
+              (should (equal (funcall detaches) '((sessions.detach :session "session-a"))))
+              (should (equal (seq-take (car (car execs)) 4)
+                             '("--state-dir" "/tmp/goblins-test" "attach" "session-a")))
+              ;; The same for one of its terminals.
+              (setq calls nil asked nil)
+              (push (goblins-terminal-attach "t1" session #'ignore source) buffers)
+              (should (equal asked '("app of gribble is attached elsewhere.  Detach it there and attach here? ")))
+              (should (equal (funcall detaches)
+                             '((terminals.detach :session "session-a" :terminal "t1"))))
+              (should (equal (car (car execs))
+                             '("--state-dir" "/tmp/goblins-test" "terminal" "attach" "session-a" "t1")))
+              ;; The buffer this Emacs has is shown, whatever the snapshot says.
+              (funcall set t t)
+              (setq asked nil)
+              (should (eq (goblins-terminal-attach "t1" session #'ignore source) (car buffers)))
+              (should-not asked)
+              ;; The daemon refuses a new client until the detached one has let
+              ;; go: a client that ends at once is tried again, and the one that
+              ;; holds the terminal stays.
+              (kill-buffer (pop buffers))
+              (funcall set t t)
+              (setq calls nil)
+              (let ((count (length execs)) (tries 0))
+                (cl-letf (((symbol-function 'ghostel-exec)
+                           (lambda (buffer _program args identity)
+                             (push (list args identity buffer) execs)
+                             (let ((held (> (cl-incf tries) 2)))
+                               (with-current-buffer buffer
+                                 (setq-local ghostel-identity identity)
+                                 (setq-local ghostel--process
+                                             (make-process
+                                              :name "goblins-test-attach" :buffer buffer
+                                              :command (if held '("sleep" "60") '("true"))
+                                              :noquery t)))
+                               (when held (funcall set nil t))))))
+                  (push (goblins-terminal-attach "t1" session #'ignore source) buffers))
+                (should (= (length execs) (+ count 3)))
+                (should (= (length (funcall detaches)) 1))
+                (should (process-live-p (buffer-local-value 'ghostel--process (car buffers))))
+                ;; The refused clients' buffers are gone.
+                (should-not (buffer-live-p (nth 2 (nth 1 execs))))
+                (should-not (buffer-live-p (nth 2 (nth 2 execs)))))
+              ;; When it is never let go, no refused buffer is left behind.
+              (kill-buffer (pop buffers))
+              (funcall set t t)
+              (let ((before (buffer-list)))
+                (cl-letf (((symbol-function 'ghostel-exec)
+                           (lambda (buffer _program _args identity)
+                             (with-current-buffer buffer
+                               (setq-local ghostel-identity identity)
+                               (setq-local ghostel--process
+                                           (make-process :name "goblins-test-attach"
+                                                         :buffer buffer :command '("true")
+                                                         :noquery t))))))
+                  ;; Shown as the workspace shows it, which changes the
+                  ;; current buffer; each client still starts from the daemon's.
+                  (should (equal (cadr (should-error
+                                        (goblins--attach source "session-a" #'set-buffer)
+                                        :type 'user-error))
+                                 "Still held elsewhere; try attaching again")))
+                (should-not (cl-set-difference (buffer-list) before))
+                (with-current-buffer source
+                  (should-not (goblins--terminal-buffer "session-a"))))
+              ;; One that stays attached is not attached twice.
+              (setq frees nil calls nil)
+              (let ((count (length execs)))
+                (should-error (goblins-terminal-attach "t1" session #'ignore source)
+                              :type 'user-error)
+                (should (funcall detaches))
+                (should (= (length execs) count))))
+          (mapc (lambda (buffer) (when (buffer-live-p buffer) (kill-buffer buffer))) buffers))))))
+
 (ert-deftest goblins-terminal-attach-chooses-with-completion-and-shows-an-existing-buffer ()
   (goblins-test--with-terminal-daemon
     (with-current-buffer source
@@ -5461,6 +5580,33 @@ drops what was typed before it took over the terminal."
               (goblins--host-call source 'terminals.close (list :session first :terminal "t2"))
               (goblins-test--wait (lambda () (not (goblins--session-terminal (funcall record) "t2"))))))
           (setq ghostel-used t))))
+    (ert-info ("take over an agent terminal that is attached elsewhere")
+      (when ghostel-used
+        ;; Three times over: the daemon keeps a detached stream reserved until
+        ;; its client has gone, and the attachment here must not run into that.
+        (dotimes (_ 3)
+          (let ((holder (make-process
+                         :name "holder" :buffer (generate-new-buffer " *holder*")
+                         :command (list goblins-executable "--state-dir" directory
+                                        "attach" "gribble")
+                         :connection-type 'pty :noquery t))
+                (attached (lambda ()
+                            (eq (plist-get (goblins--snapshot-session
+                                            (buffer-local-value 'goblins--snapshot source) first)
+                                           :terminal_attached)
+                                t)))
+                asked)
+            (goblins-test--wait attached)
+            (let ((terminal (cl-letf (((symbol-function 'y-or-n-p)
+                                       (lambda (prompt) (setq asked prompt) t)))
+                              (goblins--attach source first #'pop-to-buffer))))
+              (should (string-prefix-p "gribble is attached elsewhere." asked))
+              ;; The other client is told and leaves; this one has the terminal.
+              (goblins-test--wait (lambda () (not (process-live-p holder))))
+              (with-current-buffer terminal
+                (goblins-test--type-until "echo TAKEN-$((6*7))\n" "TAKEN-42"))
+              (kill-buffer terminal)
+              (goblins-test--wait (lambda () (not (funcall attached)))))))))
     (ert-info ("stop releases its files and pins; another server keeps its own identity")
       ;; Stopping the goblin kills its buffers before the pin is released, so
       ;; a later goblin with the same name is pinned afresh.
