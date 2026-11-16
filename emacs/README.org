@@ -102,10 +102,29 @@ moves to history, point returns to the top instead of selecting another request.
 Disconnects, sequence gaps and errors disable decisions until =r= reconnects.
 A timed-out decision is not automatically retried; refresh to inspect its outcome.
 
-For a daemon launched with =--state-dir=, use =C-u M-x goblins-status= to select
-that directory, or set =goblins-state-directory=. Otherwise the directory follows
-the CLI's =$XDG_RUNTIME_DIR/goblins=, =/run/user/UID/goblins=, or
-=/tmp/goblins-control-UID= fallback. Each directory gets its own status buffer.
+For a daemon launched with =--state-dir=, use =C-u M-x goblins-status= to choose it, or set =goblins-state-directory=. Otherwise the directory follows the CLI's =$XDG_RUNTIME_DIR/goblins=, =/run/user/UID/goblins=, or =/tmp/goblins-control-UID= fallback. Each daemon gets its own status buffer.
+
+** Other daemons and other machines
+
+=goblins-endpoints= names the daemons you use besides the default one. An entry with =:host= is a daemon on another machine, reached through ssh as =goblins --host= does (see /Goblins on another machine/ in the usage guide); one without is a second daemon on this machine.
+
+#+begin_src elisp
+(setq goblins-endpoints
+      '(("buildbox" :host "buildbox" :state-dir "/run/user/1000/goblins")
+        ("scratch"  :state-dir "/run/user/1000/goblins-dev/state")
+        ("big"      :host "hans@big.example" :state-dir "/var/lib/goblins"
+                    :program "/home/hans/.nix-profile/bin/goblins")))
+#+end_src
+
+- =:host= is an ssh destination, =HOST= or =USER@HOST=. A port, a jump host and connection sharing belong in =~/.ssh/config=, under a host alias.
+- =:state-dir= is the daemon's state directory on its machine. It is required with =:host= and must be absolute, because nothing is discovered.
+- =:program= is the =goblins= executable on the other machine, when it is not on the login shell's =PATH= there.
+
+With a prefix argument, =goblins-status=, =goblins-workspace=, =goblins-messages=, =goblins-switch= and =goblins-resume= ask for the daemon and complete over these names; anything else you type is taken as a state directory on this machine. Without one, a command run in a buffer whose directory is on another machine (a TRAMP directory other than =/goblins:=) uses the first endpoint with the same host and user, whatever the TRAMP method, and otherwise the default daemon.
+
+A daemon on another machine is identified as =/ssh:DESTINATION:STATE-DIR=, which is what its status buffer is called. Emacs connects when the daemon is first used and gives it fifteen seconds to answer, since a first ssh connection is slow. The server commands (=goblins-start-server=, =goblins-stop-server=) run there too. ssh must log in without asking, with a key or an agent. If the other machine's Goblins speaks another API version, the status buffer says =Incompatible Goblins daemon=.
+
+So far only what travels over that connection works on such a daemon: the status buffer and its decisions, messages and raids. Its terminals, the =/goblins:= files, launching, resuming and everything that opens a file on the other machine do not yet.
 
 This package starts a daemon only when you run =goblins-start-server=. It does not install
 dependencies, run a package manager, or alter your Emacs configuration.
@@ -266,7 +285,7 @@ the whole frame; =goblins-workspace-quit-function= restores it.
 
 - =M-x goblins-switch= completes over the running goblins, annotated with type, activity, raid, directory, pending requests, queued messages and =[term]= when a terminal is open here, and shows (or attaches) the chosen one.  With Consult installed it lists the agent terminals (narrowing key =t=, including those of goblins that have stopped) apart from the running goblins without one (=a=); set =goblins-switch-use-consult= to nil for plain completion.  Every prompt for a goblin uses the =goblins-goblin= completion category.
 - =M-x goblins-run-with-worktree= asks for a name, completing the repository's existing worktrees (a new name is accepted too), makes that worktree of the current repository with Git on the host (=DIRECTORY/REPO/NAME= beneath the server's worktrees directory, on a branch of the same name; one that exists is reused) and runs a goblin there as =goblins-run= does.  From Lisp, =(goblins-run-with-worktree "fix-login" :prompt "Fix the login.")= also sends the prompt to the new goblin as a message.  An agent terminal's =default-directory= follows its goblin's worktree, updated from each snapshot, so Magit, =project-find-file= and =find-file= open there; a goblin's info view (=I=) shows it.
-- =M-x goblins-resume= resumes a recorded conversation (see /Resuming conversations/ in the usage guide) in a new goblin with the same environment and opens its terminal.  It completes over the conversations the server's history holds and no goblin runs now, newest first, as the agent name and the chat name the agent gave it (=nikka: Fix the tests=); alike ones get their record id (=<k3f9x2ab>=).  Each is annotated with its record id, age, configuration, directory (as a warning when it is gone), Docker, the packages granted to it and those skipped last time.  A record id, a goblin id it ran as or the agent's conversation id can be typed instead.  Once the goblin has started, the echo area says what was skipped and why; its info view (=I=) shows the record it was resumed from and what was skipped.  With a prefix argument, choose the daemon state directory.
+- =M-x goblins-resume= resumes a recorded conversation (see /Resuming conversations/ in the usage guide) in a new goblin with the same environment and opens its terminal.  It completes over the conversations the server's history holds and no goblin runs now, newest first, as the agent name and the chat name the agent gave it (=nikka: Fix the tests=); alike ones get their record id (=<k3f9x2ab>=).  Each is annotated with its record id, age, configuration, directory (as a warning when it is gone), Docker, the packages granted to it and those skipped last time.  A record id, a goblin id it ran as or the agent's conversation id can be typed instead.  Once the goblin has started, the echo area says what was skipped and why; its info view (=I=) shows the record it was resumed from and what was skipped.  With a prefix argument, choose the daemon.
 - =M-x goblins-raid= is the sidebar's =r= from any goblin terminal.
 - =goblins-attention-mode= shows =Goblins!N= in the mode line while something waits for your approval: pending requests, and goblins waiting at their agent's own permission prompt (agents without =bypassPermissions=).  Click it to open the workspace.  It announces each new one with a desktop notification through Emacs's =notifications= library, or in the echo area when Emacs has no D-Bus notification service; clicking a notification shows the request or the goblin's terminal.  A goblin waiting for input is neither counted nor announced.  =goblins-attention-notify-function= announces requests (=goblins-notify-message= for the echo area only) and =goblins-attention-approval-function= agent prompts (nil for none).  For your own reaction, add a function to =goblins-request-hook=, which receives each request record once, when it becomes pending, or to =goblins-approval-hook=, which receives a goblin's session record each time its agent begins waiting at a prompt.
 - A lost connection is retried after =goblins-reconnect-delays= (1, 2, 5, 10,

@@ -613,9 +613,10 @@ With KEEP, FILTERS join the filters already set; else they replace them."
 ;;;###autoload
 (defun goblins-messages (&optional directory)
   "Show the messages goblins sent each other; RET reads the one at point.
-With a prefix argument, prompt for the daemon state DIRECTORY."
+With a prefix argument, choose the daemon DIRECTORY: an endpoint or a state
+directory."
   (interactive (list (when current-prefix-arg
-                       (read-directory-name "Goblins state directory: "))))
+                       (goblins--read-daemon "Goblins daemon"))))
   (goblins--messages-open (goblins--connect directory) nil))
 
 ;;;; The reader

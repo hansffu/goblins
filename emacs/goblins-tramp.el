@@ -67,7 +67,7 @@ Always runs locally, whatever `default-directory' is."
   (with-temp-buffer
     (let* ((default-directory temporary-file-directory)
            (code (apply #'call-process goblins-executable nil '(t nil) nil
-                        "--state-dir" directory args)))
+                        (append (goblins--daemon-arguments directory) args))))
       (unless (eq code 0)
         (error "Goblins: %s failed" (string-join args " ")))
       (goto-char (point-min))

@@ -41,7 +41,19 @@ Use an absolute path if Goblins is not on Emacs' `exec-path'."
 Set this to the directory passed to `goblins --state-dir'."
   :type '(choice (const :tag "Automatic" nil) directory))
 
-(defvar-local goblins--directory nil)
+(defcustom goblins-endpoints nil
+  "Named Goblins daemons, as a list of (NAME . PLIST).
+PLIST has :host (an ssh destination; absent for a daemon on this machine),
+:state-dir (the daemon's state directory there; required with :host) and
+:program (the goblins executable there; with :host only, default \"goblins\")."
+  :type '(alist :key-type string :value-type plist))
+
+(defvar goblins--file-prefix-override nil
+  "For tests: what `goblins--host-file' puts before a path, when non-nil.")
+
+(defvar-local goblins--directory nil
+  "The key of this buffer's daemon: its state directory, as
+/ssh:DESTINATION:STATE-DIR when the daemon is on another machine.")
 (defvar-local goblins--connection nil)
 (defvar-local goblins--server-process nil)
 (defvar-local goblins--instance nil)
@@ -323,6 +335,85 @@ all other files in a collapsed section of their own."
     (if (file-directory-p root)
         (expand-file-name "goblins" root)
       (format "/tmp/goblins-control-%s" (user-uid)))))
+
+(defun goblins--endpoint-key (entry)
+  "The daemon key of ENTRY, an element of `goblins-endpoints'."
+  (let ((host (plist-get (cdr entry) :host))
+        (state (plist-get (cdr entry) :state-dir)))
+    (cond ((not host)
+           (directory-file-name
+            ;; On this machine whatever buffer asks, so never relative to a
+            ;; remote `default-directory'.
+            (expand-file-name (or state goblins-state-directory
+                                  (goblins--default-directory))
+                              "~/")))
+          ((not (and (stringp host)
+                     (string-match-p "\\`[^:/[:space:]]+\\'" host)))
+           (user-error "Goblins endpoint %s: :host is not an ssh destination"
+                       (car entry)))
+          ((not (and (stringp state) (string-prefix-p "/" state)))
+           (user-error "Goblins endpoint %s: :host needs an absolute :state-dir"
+                       (car entry)))
+          (t (concat "/ssh:" host ":" (directory-file-name state))))))
+
+(defun goblins--endpoint (directory)
+  "The element of `goblins-endpoints' whose key is DIRECTORY, or nil."
+  (cl-find-if (lambda (entry)
+                (equal (ignore-errors (goblins--endpoint-key entry)) directory))
+              goblins-endpoints))
+
+(defun goblins--endpoint-on-machine (directory)
+  "The key of the first endpoint on the machine of remote DIRECTORY, or nil.
+Two file names are on one machine when their host and user are the same."
+  (when (and (not (string-prefix-p "/goblins:" directory))
+             (file-remote-p directory))
+    (let ((host (file-remote-p directory 'host))
+          (user (file-remote-p directory 'user)))
+      (cl-loop for entry in goblins-endpoints
+               for key = (and (plist-get (cdr entry) :host)
+                              (goblins--endpoint-key entry))
+               when (and key
+                         (equal (file-remote-p key 'host) host)
+                         (equal (file-remote-p key 'user) user))
+               return key))))
+
+(defun goblins--daemon-destination (directory)
+  "The ssh destination of daemon DIRECTORY, or nil for a local daemon."
+  (when-let* ((host (file-remote-p directory 'host)))
+    (let ((user (file-remote-p directory 'user)))
+      (if user (concat user "@" host) host))))
+
+(defun goblins--daemon-arguments (directory)
+  "The CLI arguments that select daemon DIRECTORY."
+  (let ((destination (goblins--daemon-destination directory))
+        (program (plist-get (cdr (goblins--endpoint directory)) :program)))
+    (append (and destination (list "--host" destination))
+            (and destination program (list "--remote-program" program))
+            (list "--state-dir" (file-local-name directory)))))
+
+(defun goblins--host-file (directory path)
+  "PATH, a file on the machine of daemon DIRECTORY, as an Emacs file name."
+  (concat (or goblins--file-prefix-override (file-remote-p directory) "") path))
+
+(defun goblins--wait-seconds ()
+  "How long to wait for this buffer's daemon to answer while connecting.
+A first ssh connection is slow."
+  (if (file-remote-p goblins--directory) 15 3))
+
+(defun goblins--read-daemon (prompt)
+  "Read a daemon with PROMPT and return its key.
+Complete over the names in `goblins-endpoints'; any other input is a state
+directory on this machine.  Empty input is the daemon in use."
+  (let* ((default (goblins--resolve-directory))
+         (input (completing-read (format-prompt prompt default)
+                                 (mapcar #'car goblins-endpoints)
+                                 nil nil nil nil default))
+         (entry (assoc input goblins-endpoints)))
+    (cond (entry (goblins--endpoint-key entry))
+          ;; The default, or a key typed out: already a daemon key.
+          ((file-remote-p input) input)
+          ;; A directory on this machine, also from a remote buffer.
+          (t (expand-file-name input (and (file-remote-p default-directory) "~/"))))))
 
 (defun goblins--safe (value)
   "Render VALUE on one line, escaping control and bidi formatting characters."
@@ -930,7 +1021,9 @@ prompt."
   (when (process-live-p goblins--server-process)
     (user-error "A server command is already in progress"))
   (let ((buffer (current-buffer))
-        (output (generate-new-buffer " *goblins server command*")))
+        (output (generate-new-buffer " *goblins server command*"))
+        ;; The CLI runs here even when this buffer's directory is remote.
+        (default-directory (expand-file-name "~/")))
     (when (equal action "stop") (goblins--disconnect))
     (setq goblins--notice (if (equal action "start")
                               "Starting server…"
@@ -940,8 +1033,9 @@ prompt."
         (setq goblins--server-process
               (make-process
                :name "goblins-server-command" :buffer output
-               :command (list goblins-executable "--state-dir" goblins--directory
-                              "server" action)
+               :command (cons goblins-executable
+                              (append (goblins--daemon-arguments goblins--directory)
+                                      (list "server" action)))
                :connection-type 'pipe :noquery t
                :sentinel
                (lambda (process _event)
@@ -1019,7 +1113,7 @@ reports in the echo area, so it suits init files and hooks."
   (let ((buffer (current-buffer))
         (connection goblins--connection))
     (jsonrpc-async-request
-     connection method params :timeout 3
+     connection method params :timeout (goblins--wait-seconds)
      :success-fn (lambda (result)
                    (when (buffer-live-p buffer)
                      (with-current-buffer buffer
@@ -1034,7 +1128,12 @@ reports in the echo area, so it suits init files and hooks."
                          (when (eq method 'permissions.decide)
                            (remhash (plist-get params :request) goblins--decisions))
                          (goblins--fail
-                          (format "RPC error: %s" (plist-get error :message))))))))
+                          ;; The daemon is another installation and may be
+                          ;; older or newer than this client.
+                          (if (and (eq method 'initialize)
+                                   (eql (plist-get error :code) -32002))
+                              "Incompatible Goblins daemon"
+                            (format "RPC error: %s" (plist-get error :message)))))))))
      :timeout-fn (lambda ()
                    (when (buffer-live-p buffer)
                      (with-current-buffer buffer
@@ -1080,10 +1179,11 @@ reports in the echo area, so it suits init files and hooks."
   (goblins--render)
   (let ((buffer (current-buffer))
         (name (format "goblins %s" goblins--directory))
-        ;; The CLI relays the connection: the same command later reaches a
-        ;; daemon on another machine.
-        (command (list goblins-executable "--state-dir" goblins--directory
-                       "rpc" "--stdio")))
+        ;; The CLI relays the connection, through ssh when the daemon is on
+        ;; another machine.
+        (command (cons goblins-executable
+                       (append (goblins--daemon-arguments goblins--directory)
+                               '("rpc" "--stdio")))))
     (condition-case err
         (progn
           (setq goblins--connection
@@ -1664,8 +1764,7 @@ Only launches made here are linked by the terminal command."
                       "This buffer is inside a goblin; run goblins from a local directory"
                     "Goblins requires a local working directory")))
     (goblins--require-ghostel)
-    (let* ((state-directory (or goblins--directory goblins-state-directory
-                                (goblins--default-directory)))
+    (let* ((state-directory (goblins--resolve-directory))
            (configs (goblins--configurations))
            (name (goblins--read-configuration (plist-get configs :names)))
            (location (goblins--launch-location
@@ -1739,8 +1838,7 @@ directory is in no repository."
 (defun goblins--read-worktree-name ()
   "Read a worktree name, completing the current repository's worktrees.
 A name that is not one of them is accepted too, for a new worktree."
-  (let* ((status (goblins--connect (or goblins--directory goblins-state-directory
-                                       (goblins--default-directory))))
+  (let* ((status (goblins--connect (goblins--resolve-directory)))
          (names (goblins--worktree-names (goblins--worktree-folder status))))
     (completing-read "Worktree name: " names nil nil)))
 
@@ -1756,8 +1854,7 @@ Return the goblin's terminal buffer."
   (interactive (list (goblins--read-worktree-name)))
   (unless (string-match-p goblins--worktree-name-regexp name)
     (user-error "A worktree name uses letters, digits, `.', `_' and `-', starting with a letter or digit"))
-  (let* ((state-directory (or goblins--directory goblins-state-directory
-                              (goblins--default-directory)))
+  (let* ((state-directory (goblins--resolve-directory))
          (status (goblins--connect state-directory))
          (path (goblins--worktree-path status name)))
     (unless (file-directory-p path)
@@ -1832,10 +1929,14 @@ Use \[goblins-refresh] to reconnect."
   (add-hook 'kill-buffer-hook #'goblins--cancel-reconnect nil t))
 
 (defun goblins--resolve-directory (&optional directory)
-  "Resolve DIRECTORY, the current Goblins context, or the configured default."
-  (directory-file-name
-   (expand-file-name (or directory goblins--directory goblins-state-directory
-                         (goblins--default-directory)))))
+  "Resolve the daemon to use, as its key.
+That is DIRECTORY, else the current Goblins context, else the first endpoint
+on the machine of a remote `default-directory', else the configured default."
+  (let ((key (or directory goblins--directory
+                 (goblins--endpoint-on-machine default-directory)
+                 goblins-state-directory (goblins--default-directory))))
+    ;; A remote key is already absolute; expanding it could ask TRAMP.
+    (directory-file-name (if (file-remote-p key) key (expand-file-name key)))))
 
 (defun goblins--status-buffer (&optional directory)
   "Return an initialized status buffer for DIRECTORY without connecting."
@@ -1859,7 +1960,7 @@ Unlike `goblins-status' this never displays the buffer."
     (with-current-buffer buffer
       (unless (or goblins--connection (process-live-p goblins--server-process))
         (goblins-refresh))
-      (let ((deadline (+ (float-time) 3)))
+      (let ((deadline (+ (float-time) (goblins--wait-seconds))))
         (while (and goblins--connection (not goblins--subscription)
                     (< (float-time) deadline))
           (accept-process-output nil 0.01)))
@@ -1870,7 +1971,7 @@ Unlike `goblins-status' this never displays the buffer."
 (defun goblins--ensure-connected (&optional directory)
   "Open status for DIRECTORY and await its initial snapshot."
   (goblins-status directory)
-  (let ((deadline (+ (float-time) 3)))
+  (let ((deadline (+ (float-time) (goblins--wait-seconds))))
     (while (and goblins--connection (not goblins--subscription)
                 (< (float-time) deadline))
       (accept-process-output nil 0.01)))
@@ -1894,13 +1995,10 @@ Unlike `goblins-status' this never displays the buffer."
 
 ;;;###autoload
 (defun goblins-status (&optional directory)
-  "Show Goblins status for DIRECTORY.
-With a prefix argument, prompt for the daemon state directory."
+  "Show Goblins status for DIRECTORY, a daemon key.
+With a prefix argument, choose the daemon: an endpoint or a state directory."
   (interactive (list (when current-prefix-arg
-                       (read-directory-name "Goblins state directory: "
-                                            (or goblins--directory
-                                                goblins-state-directory
-                                                (goblins--default-directory))))))
+                       (goblins--read-daemon "Goblins daemon"))))
   (pop-to-buffer (goblins--status-buffer directory))
   (unless (or goblins--connection (process-live-p goblins--server-process))
     (goblins-refresh)))

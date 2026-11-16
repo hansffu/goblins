@@ -5445,6 +5445,28 @@ programs started, each as (ARGS IDENTITY BUFFER)."
         (with-current-buffer (get-file-buffer "/goblins:gribble:/tmp/which")
           (should (equal (buffer-string) "other-daemon\n")))
         (goblins-tramp-release "gribble")))
+    (ert-info ("a daemon on another machine connects through its endpoint")
+      ;; tests/fake-ssh stands in for ssh and takes four seconds to connect,
+      ;; longer than a local daemon is given.  The other daemon runs here, so
+      ;; its files need no prefix.
+      (let* ((goblins-endpoints `(("other" :host "fake" :state-dir ,other
+                                   :program ,goblins-executable)))
+             (goblins--file-prefix-override "")
+             (key (concat "/ssh:fake:" other))
+             (started (float-time))
+             (remote (goblins--connect (goblins--endpoint-key (car goblins-endpoints)))))
+        (should (>= (- (float-time) started) 4))
+        (with-current-buffer remote
+          (should (equal goblins--directory key))
+          (should (equal (buffer-name) (format "*Goblins: %s*" key)))
+          (should (cl-some (lambda (session)
+                             (and (equal (plist-get session :agent_name) "gribble")
+                                  (equal (plist-get session :state) "running")))
+                           (append (plist-get goblins--snapshot :sessions) nil))))
+        ;; It is another daemon than the first one.
+        (should-not (equal (buffer-local-value 'goblins--instance remote)
+                           (buffer-local-value 'goblins--instance source)))
+        (kill-buffer remote)))
     (if ghostel-used "ok ghostel" "ok")))
 
 (defvar goblins-test--backtrace nil)
@@ -6428,6 +6450,167 @@ m2, and m3, which failed when beta stopped."
     (should (= (length (plist-get result :requests)) 1))
     (should (equal (plist-get result :notice) "Incompatible Goblins daemon; r to reconnect"))
     (should-not (plist-get result :instance))))
+
+(ert-deftest goblins-a-daemon-key-gives-the-cli-arguments ()
+  (let ((goblins-endpoints '(("big" :host "hans@big.example" :state-dir "/var/lib/goblins/"
+                              :program "/opt/bin/goblins")
+                             ("here" :state-dir "/run/goblins-dev" :program "ignored"))))
+    ;; A daemon on this machine: today's command line.
+    (should-not (goblins--daemon-destination "/run/goblins-dev"))
+    (should (equal (goblins--daemon-arguments "/run/goblins-dev")
+                   '("--state-dir" "/run/goblins-dev")))
+    ;; Another machine, without an endpoint entry and without a user.
+    (should (equal (goblins--daemon-destination "/ssh:buildbox:/run/user/1000/goblins")
+                   "buildbox"))
+    (should (equal (goblins--daemon-arguments "/ssh:buildbox:/run/user/1000/goblins")
+                   '("--host" "buildbox" "--state-dir" "/run/user/1000/goblins")))
+    ;; With a user, and the program its endpoint names.
+    (should (equal (goblins--daemon-arguments "/ssh:hans@big.example:/var/lib/goblins")
+                   '("--host" "hans@big.example" "--remote-program" "/opt/bin/goblins"
+                     "--state-dir" "/var/lib/goblins")))
+    (should (equal (goblins--host-file "/ssh:buildbox:/run/goblins" "/src/a")
+                   "/ssh:buildbox:/src/a"))
+    (should (equal (goblins--host-file "/run/goblins-dev" "/src/a") "/src/a"))
+    (let ((goblins--file-prefix-override ""))
+      (should (equal (goblins--host-file "/ssh:buildbox:/run/goblins" "/src/a") "/src/a")))))
+
+(ert-deftest goblins-an-endpoint-has-a-key-or-says-what-is-wrong ()
+  (should (equal (goblins--endpoint-key '("scratch" :state-dir "/run/goblins-dev/state/"))
+                 "/run/goblins-dev/state"))
+  ;; A daemon on this machine stays one, whatever buffer asks.
+  (let ((default-directory "/ssh:elsewhere:/src/"))
+    (should (equal (goblins--endpoint-key '("scratch" :state-dir "state"))
+                   (expand-file-name "state" "~/"))))
+  (should (equal (goblins--endpoint-key '("buildbox" :host "buildbox" :state-dir "/run/g/"))
+                 "/ssh:buildbox:/run/g"))
+  (should (equal (goblins--endpoint-key '("big" :host "hans@big.example" :state-dir "/var/g"))
+                 "/ssh:hans@big.example:/var/g"))
+  (dolist (entry '(("bad" :host "buildbox")
+                   ("bad" :host "buildbox" :state-dir "state")
+                   ("bad" :host "buildbox" :state-dir "~/state")
+                   ("bad" :host "box:22" :state-dir "/run/g")
+                   ("bad" :host "a/b" :state-dir "/run/g")
+                   ("bad" :host "a b" :state-dir "/run/g")
+                   ("bad" :host "" :state-dir "/run/g")))
+    (should (string-match-p "endpoint bad"
+                            (cadr (should-error (goblins--endpoint-key entry)
+                                                :type 'user-error)))))
+  ;; A broken entry does not get in the way of the others.
+  (let ((goblins-endpoints '(("bad" :host "buildbox")
+                             ("good" :host "buildbox" :state-dir "/run/g" :program "/p"))))
+    (should (equal (car (goblins--endpoint "/ssh:buildbox:/run/g")) "good"))
+    (should-not (goblins--endpoint "/run/g"))))
+
+(ert-deftest goblins-a-remote-directory-chooses-the-endpoint-on-its-machine ()
+  (let ((goblins-state-directory "/run/local-goblins")
+        (goblins-endpoints '(("scratch" :state-dir "/run/goblins-dev")
+                             ("big" :host "hans@big.example" :state-dir "/var/lib/goblins")
+                             ("buildbox" :host "buildbox" :state-dir "/run/user/1000/goblins")
+                             ("second" :host "buildbox" :state-dir "/run/second"))))
+    (with-temp-buffer
+      ;; The first endpoint on that machine, whatever the TRAMP method.
+      (dolist (directory '("/ssh:buildbox:/src/project/" "/scp:buildbox:/src/project/"))
+        (let ((default-directory directory))
+          (should (equal (goblins--resolve-directory) "/ssh:buildbox:/run/user/1000/goblins"))))
+      (let ((default-directory "/ssh:hans@big.example:/src/"))
+        (should (equal (goblins--resolve-directory) "/ssh:hans@big.example:/var/lib/goblins")))
+      ;; Another user, another machine, a goblin's files and a local
+      ;; directory all mean the configured daemon.
+      (dolist (directory '("/ssh:eve@big.example:/src/" "/ssh:big.example:/src/"
+                           "/ssh:elsewhere:/src/" "/goblins:gribble:/workspace/" "/tmp/"))
+        (let ((default-directory directory))
+          (should (equal (goblins--resolve-directory) "/run/local-goblins"))))
+      ;; An argument and the buffer's own daemon come first.
+      (let ((default-directory "/ssh:buildbox:/src/"))
+        (should (equal (goblins--resolve-directory "/ssh:buildbox:/run/second/")
+                       "/ssh:buildbox:/run/second"))
+        (setq goblins--directory "/run/mine")
+        (should (equal (goblins--resolve-directory) "/run/mine"))))))
+
+(ert-deftest goblins-choosing-a-daemon-takes-an-endpoint-name-or-a-directory ()
+  (let ((goblins-state-directory "/run/local-goblins")
+        (goblins-endpoints '(("buildbox" :host "buildbox" :state-dir "/run/g")))
+        asked)
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest arguments)
+                   (should (equal collection '("buildbox")))
+                   ;; The daemon in use is the default.
+                   (should (equal (car (last arguments)) "/run/local-goblins"))
+                   asked)))
+        (setq asked "buildbox")
+        (should (equal (goblins--read-daemon "Goblins daemon") "/ssh:buildbox:/run/g"))
+        (setq asked "/run/other/")
+        (should (equal (goblins--read-daemon "Goblins daemon") "/run/other/"))
+        (should (equal (goblins--resolve-directory (goblins--read-daemon "Goblins daemon"))
+                       "/run/other"))
+        ;; A relative directory is one on this machine, also from a buffer
+        ;; on another.
+        (setq asked "state")
+        (let ((default-directory "/tmp/"))
+          (should (equal (goblins--read-daemon "Goblins daemon") "/tmp/state")))
+        (let ((default-directory "/ssh:elsewhere:/src/"))
+          (should (equal (goblins--read-daemon "Goblins daemon")
+                         (expand-file-name "state" "~/")))))
+      ;; Empty input gives the default, which may be a remote daemon's key.
+      (setq goblins--directory "/ssh:buildbox:/run/g")
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest arguments) (car (last arguments)))))
+        (should (equal (goblins--read-daemon "Goblins daemon") "/ssh:buildbox:/run/g"))))))
+
+(ert-deftest goblins-a-remote-daemon-is-reached-through-the-cli-and-given-more-time ()
+  (let ((goblins-executable "/cli")
+        (goblins-endpoints '(("big" :host "hans@big.example" :state-dir "/var/g" :program "/p")))
+        commands)
+    (with-temp-buffer
+      (setq goblins--directory "/ssh:hans@big.example:/var/g"
+            default-directory "/ssh:hans@big.example:/src/")
+      (should (= (goblins--wait-seconds) 15))
+      (cl-letf (((symbol-function 'goblins--ensure-status-buffer) #'ignore)
+                ((symbol-function 'goblins--render) #'ignore)
+                ((symbol-function 'make-process)
+                 (lambda (&rest arguments)
+                   ;; The local CLI, not one started through TRAMP.
+                   (should-not (file-remote-p default-directory))
+                   (push (plist-get arguments :command) commands)
+                   nil))
+                ((symbol-function 'call-process)
+                 (lambda (program _in _out _display &rest arguments)
+                   (should-not (file-remote-p default-directory))
+                   (push (cons program arguments) commands)
+                   (insert "[]")
+                   0))
+                ((symbol-function 'jsonrpc-async-request)
+                 (lambda (_connection _method _params &rest arguments)
+                   (push (plist-get arguments :timeout) commands))))
+        (goblins--server-command "start")
+        (goblins-tramp--cli goblins--directory "list")
+        (goblins--request 'initialize '(:api 1) #'ignore))
+      (should (equal (reverse commands)
+                     '(("/cli" "--host" "hans@big.example" "--remote-program" "/p"
+                        "--state-dir" "/var/g" "server" "start")
+                       ("/cli" "--host" "hans@big.example" "--remote-program" "/p"
+                        "--state-dir" "/var/g" "list")
+                       15)))
+      (setq goblins--directory "/run/goblins" goblins--server-process nil)
+      (should (= (goblins--wait-seconds) 3)))))
+
+(ert-deftest goblins-an-unsupported-api-version-is-an-incompatible-daemon ()
+  (dolist (case '((initialize -32002 "Incompatible Goblins daemon")
+                  (initialize -32000 "RPC error: unsupported API version")
+                  (state.subscribe -32002 "RPC error: unsupported API version")))
+    (with-temp-buffer
+      (setq goblins--directory "/tmp/goblins-unit" goblins--connection 'connection)
+      (let (failure)
+        (cl-letf (((symbol-function 'jsonrpc-async-request)
+                   (lambda (_connection _method _params &rest arguments)
+                     (funcall (plist-get arguments :error-fn)
+                              (list :code (nth 1 case)
+                                    :message "unsupported API version"))))
+                  ((symbol-function 'jsonrpc-running-p) (lambda (_connection) t))
+                  ((symbol-function 'goblins--fail) (lambda (text) (setq failure text))))
+          (goblins--request (car case) '(:api 1) #'ignore))
+        (should (equal failure (nth 2 case)))))))
 
 (defun goblins-test-status-live ()
   "Use one daemon and Emacs for activity, a message thread, decisions and resume."

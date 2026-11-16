@@ -1939,14 +1939,11 @@ Beside it the goblin selected last: its agent terminal on the left and its
 saved windows on the right.  Without any goblin terminal the status buffer
 shows until the first agent opens.  In the workspace, open
 `goblins-workspace-menu' for moving around it.
-With a prefix argument, prompt for the daemon state directory.
+With a prefix argument, choose the daemon: an endpoint or a state directory.
 Switching or creating the workspace is delegated to
 `goblins-workspace-switch-or-create-function'."
   (interactive (list (when current-prefix-arg
-                       (read-directory-name "Goblins state directory: "
-                                            (or goblins--directory
-                                                goblins-state-directory
-                                                (goblins--default-directory))))))
+                       (goblins--read-daemon "Goblins daemon"))))
   (if (and (goblins--in-workspace-p) (not directory))
       (goblins-workspace-menu)
     (select-window (goblins--sidebar-show (goblins--workspace-open directory)))))

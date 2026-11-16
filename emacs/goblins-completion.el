@@ -188,9 +188,10 @@ terminals, then its running goblins without one."
 With Consult (see `goblins-switch-use-consult') choose among the agent
 terminals and the running goblins without one; else among the running
 goblins.  In the workspace the goblin's saved windows come back beside it.
-With a prefix argument, prompt for the daemon state DIRECTORY."
+With a prefix argument, choose the daemon DIRECTORY: an endpoint or a state
+directory."
   (interactive (list (when current-prefix-arg
-                       (read-directory-name "Goblins state directory: "))))
+                       (goblins--read-daemon "Goblins daemon"))))
   (let ((source (goblins--connect directory)))
     (if (and goblins-switch-use-consult (require 'consult nil t))
         (consult-buffer (goblins--switch-sources source))
@@ -347,10 +348,9 @@ run now; return its record."
 
 (defun goblins--choose-record (prompt)
   "Read a record to resume with PROMPT; return (SOURCE RECORD), for an
-`interactive' form.  With a prefix argument, prompt for the daemon state
-directory first."
+`interactive' form.  With a prefix argument, choose the daemon first."
   (let ((source (if current-prefix-arg
-                    (goblins--connect (read-directory-name "Goblins state directory: "))
+                    (goblins--connect (goblins--read-daemon "Goblins daemon"))
                   (goblins--default-source))))
     (list source (goblins--read-record prompt source))))
 

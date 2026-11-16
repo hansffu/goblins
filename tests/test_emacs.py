@@ -246,6 +246,10 @@ class EmacsTests(unittest.TestCase):
                "GOBLINS_APP": str(application),
                "GOBLINS_TEST_STATE": str(daemon.state),
                "GOBLINS_TEST_OTHER_STATE": str(other.state),
+               # The other daemon is also reached as one on another machine,
+               # over a link slower than a local daemon is given to answer.
+               "GOBLINS_SSH": str(Path(__file__).resolve().parent / "fake-ssh"),
+               "GOBLINS_FAKE_SSH_DELAY": "4",
                "GOBLINS_TEST_MANIFEST": str(daemon.manifest),
                "GOBLINS_TEST_SERVER_DIR": str(server_dir),
                "GOBLINS_TEST_SERVER_NAME": "goblins-test",
