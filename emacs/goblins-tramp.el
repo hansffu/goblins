@@ -771,7 +771,8 @@ program and its arguments, SESSION, DISPLAY and SOURCE are as for `goblins-shell
   "Show terminal TERMINAL (an ID) of goblin SESSION, a record of SOURCE's daemon.
 This Emacs's buffer for it is shown; without one the terminal is attached in a
 new buffer.  DISPLAY shows the buffer, by default right of the goblin's
-agent.  Return the buffer."
+agent.  Return the buffer, or nil when already attached elsewhere, after
+offering to detach it so the user can attach again."
   (goblins-tramp--require-terminals source)
   (let ((record (goblins--session-terminal session terminal))
         (buffer (goblins--session-terminal-buffer source (plist-get session :id) terminal)))
@@ -779,7 +780,9 @@ agent.  Return the buffer."
            (funcall (or display (goblins-tramp--show-for source (plist-get session :id))) buffer)
            buffer)
           ((null record) (user-error "This terminal has ended"))
-          (t (goblins-tramp--attach-terminal source session record display)))))
+          (t
+           (unless (goblins--detach-before-attach source (plist-get session :id) terminal)
+             (goblins-tramp--attach-terminal source session record display))))))
 
 ;;;###autoload
 (defun goblins-terminal-attach (&optional terminal session display source)

@@ -579,18 +579,20 @@ BUFFER's saved windows come back; outside it, pop BUFFER up."
   buffer)
 
 (defun goblins--attach (source id display)
-  "Attach a new terminal to running goblin ID of SOURCE's server, shown by DISPLAY."
+  "Attach a new terminal to running goblin ID of SOURCE's server, shown by DISPLAY.
+If attached elsewhere, offer to detach and return nil without attaching."
   (with-current-buffer source
     (let ((session (goblins--snapshot-session goblins--snapshot id)))
       (unless session (user-error "The daemon no longer retains this goblin"))
       (when (member (plist-get session :state) '("stopped" "failed"))
         (user-error "This goblin has finished"))
-      (goblins--open-terminal
-       id (plist-get session :agent_name)
-       (if-let* ((directory (goblins--session-directory session)))
-           (file-name-as-directory (goblins--host-file goblins--directory directory))
-         default-directory)
-       display))))
+      (unless (goblins--detach-before-attach source id)
+        (goblins--open-terminal
+         id (plist-get session :agent_name)
+         (if-let* ((directory (goblins--session-directory session)))
+             (file-name-as-directory (goblins--host-file goblins--directory directory))
+           default-directory)
+         display)))))
 
 (defun goblins-open-session (source id)
   "Show the terminal of session ID of SOURCE's server, attaching if needed.

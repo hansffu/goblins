@@ -4922,6 +4922,52 @@ programs started, each as (ARGS IDENTITY BUFFER)."
                    (delete-process process))
                  (kill-buffer buffer)))))))))
 
+(ert-deftest goblins-attach-offers-detach-as-a-separate-step ()
+  (goblins-test--with-terminal-daemon
+    (let (answer prompts)
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :sessions
+                         (vector (goblins-test--session
+                                  "session-a" :agent_name "gribble" :terminal_attached t
+                                  :terminals [(:id "t1" :label "shell" :attached t)])))))
+      (setq session (goblins--snapshot-session
+                     (buffer-local-value 'goblins--snapshot source) "session-a"))
+      (cl-letf (((symbol-function 'y-or-n-p)
+                 (lambda (prompt) (push prompt prompts) answer)))
+        (dolist (accept '(nil t))
+          (setq answer accept calls nil)
+          (should-not (goblins--attach source "session-a" #'ignore))
+          (should-not (goblins-terminal-attach "t1" session #'ignore source))
+          ;; Yes detaches both, no detaches neither; neither answer starts a client.
+          (should-not execs)
+          (should (equal (reverse calls)
+                         (when accept '((sessions.detach :session "session-a")
+                                        (terminals.detach :session "session-a" :terminal "t1"))))))
+        (should (equal prompts '("shell is already attached.  Detach it? "
+                                 "gribble is already attached.  Detach it? "
+                                 "shell is already attached.  Detach it? "
+                                 "gribble is already attached.  Detach it? ")))
+        ;; After the snapshot becomes free, a second invocation attaches normally.
+        (with-current-buffer source
+          (setq goblins--snapshot
+                (plist-put goblins--snapshot :sessions
+                           (vector (goblins-test--session
+                                    "session-a" :agent_name "gribble" :terminal_attached :json-false
+                                    :terminals [(:id "t1" :label "shell" :attached :json-false)])))))
+        (setq session (goblins--snapshot-session
+                       (buffer-local-value 'goblins--snapshot source) "session-a"))
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) (ert-fail "Unexpected question"))))
+          (goblins-open-session source "session-a")
+          (let ((terminal (goblins-terminal-attach "t1" session #'ignore source)))
+            (should (= (length execs) 2))
+            ;; A local buffer wins over the attached flag when shown again.
+            (plist-put session :terminal_attached t)
+            (plist-put (aref (plist-get session :terminals) 0) :attached t)
+            (goblins-open-session source "session-a")
+            (should (eq terminal (goblins-terminal-attach "t1" session #'ignore source)))
+            (should (= (length execs) 2))))))))
+
 (ert-deftest goblins-shell-creates-a-terminal-and-attaches-it ()
   (goblins-test--with-terminal-daemon
     (dolist (program '(nil "fish" ("bash" "--norc")))

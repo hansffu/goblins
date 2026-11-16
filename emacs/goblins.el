@@ -1410,6 +1410,23 @@ The goblin and its terminals keep running."
                       (append (list :session session)
                               (when terminal (list :terminal terminal)))))
 
+(defun goblins--detach-before-attach (source session &optional terminal)
+  "When SESSION or TERMINAL is already attached, offer to detach it.
+Return non-nil if it was attached, whether or not the user agreed.  The
+caller must stop without attaching; the user can attach again afterward."
+  (let* ((record (goblins--snapshot-session
+                  (buffer-local-value 'goblins--snapshot source) session))
+         (target (and terminal (goblins--session-terminal record terminal))))
+    (when (eq (if terminal (plist-get target :attached)
+                (plist-get record :terminal_attached)) t)
+      (when (y-or-n-p
+             (format "%s is already attached.  Detach it? "
+                     (if terminal (goblins--terminal-label target)
+                       (goblins--safe (plist-get record :agent_name)))))
+        (goblins-detach source session terminal)
+        (message "Detached; run the attach command again to attach here"))
+      t)))
+
 (defun goblins--request-choices (sources)
   "The pending requests of SOURCES, status buffers, as a list of
 \(CANDIDATE SOURCE RECORD).  With several SOURCES each candidate ends in its
