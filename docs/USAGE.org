@@ -540,6 +540,18 @@ Everything else on the command line is meant for the other machine: =--state-dir
   #+end_src
 - Lingering :: The server's default state directory is under =$XDG_RUNTIME_DIR=, which systemd removes, together with the user's processes, when their last session ends. Run =loginctl enable-linger= once on the other machine so the server and its goblins outlive the ssh connection.
 
+To check a new setup, try each of these against the other machine; Emacs is set up as =emacs/README.org= describes:
+
+- =goblins --host HOST list= works from a shell, also when the login shell there is fish.
+- The status buffer of a remote endpoint connects, shows approvals, and a decision reaches the server.
+- An agent terminal attaches, resizes with the window, and can be attached again after the ssh connection is killed.
+- =goblins-dired= and Magit work inside a remote goblin, and a language server started over =/goblins:= gets a clean stream.
+- =goblins-run= from a =/ssh:HOST:= project directory launches there, and Magit in the agent terminal works on the remote checkout.
+- A host-job log opens and follows the file.
+- With many goblins, the connection stays up on a slow link. The server drops a subscriber that reads too slowly.
+- With the =RemoteForward= line, =goblins-editor= in a remote goblin opens the file in the local Emacs.
+- After logging out of the other machine with lingering enabled, the server and its goblins are still there.
+
 * Agent names
 
 Configuration/preset names and agent names are separate. =run CONFIG= selects a

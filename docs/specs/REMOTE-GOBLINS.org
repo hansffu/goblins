@@ -1,6 +1,6 @@
 #+title: Remote goblins
 
-Status: in progress. Planned 2026-11-15; steps 1 (commit =630b599=), 2 (commit =65dba6f=), 3 (commit =82c4117=), 4 (commit =8e5667e=), 5 (commit =4570fde=) and 5a are implemented; step 6, the check against a real machine, is open. Each later step updates this line in its own change.
+Status: done. Planned 2026-11-15; steps 1 (commit =630b599=), 2 (commit =65dba6f=), 3 (commit =82c4117=), 4 (commit =8e5667e=), 5 (commit =4570fde=) and 5a are implemented; for step 6 the checklist is in =docs/USAGE.org= under "Goblins on another machine", and the user ran it against a real machine on 2026-11-17 and reported that everything works.
 
 This is a handoff document. It is written so that an implementer who was not part of the planning can carry it out step by step. Read it whole before starting, and follow =AGENTS.md= for testing, review and commits. Line numbers refer to master at commit =9c380b1=; find the code by the function names if they have moved.
 
