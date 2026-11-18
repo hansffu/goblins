@@ -89,7 +89,7 @@ let restored = libghostty_vt::snapshot::Decoder::new_buf(&snapshot)?.decode()?;
 
 =lisp/rexel.el= in rexel shows all of these in use (=rexel--attach-block-buffer=, =rexel--restore-snapshot=, =rexel--on-live-bytes=). Rexel passes a second argument to =ghostel-write-output= to drop replies because its server answers queries; we do not pass it.
 
-* Step 0: build spike
+* DONE Step 0: build spike
 
 Goal: the supervisor crate links libghostty-vt and one test proves the APIs this plan depends on. No behaviour changes.
 
@@ -120,7 +120,7 @@ The supervisor engine owns the emulator on its event-loop thread. The worker thr
 
 Both the Rust decoder and Ghostel 0.65.0 restored a 1.0.1 snapshot captured in the middle of =CSI 31 m=. After feeding the rest of the sequence, the next character appeared red. Ghostel 0.65.0 bundles libghostty-vt 1.0.0. This verifies the tested continuation across those patch releases. The exact failed check in upstream CI run 43535091846 was unavailable from the public log. The pinned Linux x86_64 package built locally.
 
-* Step 1: named terminals on libghostty-vt
+* DONE Step 1: named terminals on libghostty-vt
 
 Goal: =Screen= uses libghostty-vt instead of =vt100=. Only =libs/supervisor/src/screen.rs= and =Cargo.toml= change in substance; =terminal.rs= and =terminals.rs= keep calling the same methods. No wire format changes.
 
@@ -168,7 +168,7 @@ Also update: =docs/specs/SANDBOX-TERMINALS.org= (the engine, reflow on resize, w
 
 Verification: =just test-plan --changed master=; expect =full=. Run the Rust tier first (=just test-rust=), then the rest. By hand: =goblin terminal create=, run =htop= or =vim= in it, detach, reattach, resize the window.
 
-* Step 2: the main agent terminal
+* DONE Step 2: the main agent terminal
 
 Goal: the main PTY terminal has a =Screen= and behaves like a named terminal on attach and while detached.
 
@@ -202,7 +202,7 @@ Verification: =full=. By hand: start a goblin detached with Claude or Codex, wai
 
 The redraw stays in =Terminals::attach=, after the resize to the accepted frontend, because =Terminal::attach= runs before that resize and would format at the old size. The legacy listener path in =Terminal::tick= queues the redraw itself after accepting. A frontend reading a stopped payload's output now gets that screen, so a NUL the program wrote is not replayed.
 
-* Step 3: snapshot replay on the wire and the CLI
+* TODO Step 3: snapshot replay on the wire and the CLI
 
 Goal: =goblins attach --snapshot= and =goblins terminal attach --snapshot= get a binary snapshot before the raw bytes.
 
@@ -238,7 +238,7 @@ Documentation in the same commit: =docs/API.org= (the hello parameter, the frame
 
 Verification: =full=.
 
-* Step 4: ghostel bridge in Emacs
+* TODO Step 4: ghostel bridge in Emacs
 
 Goal: with an option set, agent and named-terminal buffers are ghostel bridged terminals fed by =goblins … --snapshot=.
 
