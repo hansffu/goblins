@@ -24,7 +24,7 @@ TEMPLATE = """{
         DEV_MARKER = "@MARKER@";
         # Runs inside the sandbox on entry; its exports reach the entry program.
         shellHook = ''
-          echo "hook-ran in $PWD"
+          echo "hook-ran in $PWD."
           export HOOK_VAR="from-hook-$DEV_MARKER"
         '';
       };
@@ -50,7 +50,7 @@ WORKFLOW_FLAKE = """{
         DEV_MARKER = marker;
         # Runs inside the sandbox on entry; its exports reach the entry program.
         shellHook = ''
-          echo "hook-ran in $PWD"
+          echo "hook-ran in $PWD."
           export HOOK_VAR="from-hook-$DEV_MARKER"
         '';
       };
@@ -154,7 +154,8 @@ class DevShellRefreshWorkflow(DevShellWorkflow):
 
         with step("launch from the repository root with the dev shell of sub/"):
             shell = self.run_cli(repo, "--dev-shell", "sub", "--name", "dev")
-            shell.expect(rf"(?:^|\n)hook-ran in {repo}\n")
+            # The full stop ends the path, live or in the redraw of an attach.
+            shell.expect(rf"(?:^|\n)hook-ran in {re.escape(str(repo))}\.")
             output, code = self.run_in(shell, "printf 'M=%s H=%s R=%s\\n' $DEV_MARKER $HOOK_VAR $GOBLINS_DEV_SHELL; hello")
             self.assertEqual(code, 0, output)
             self.assertIn(f"M=original H=from-hook-original R={project}", output)

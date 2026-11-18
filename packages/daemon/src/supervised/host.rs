@@ -257,7 +257,7 @@ fn the_foreground_supervisor_keeps_payload_limits_and_raises_its_own_capacity() 
             "--noprofile",
             "--norc",
             "-c",
-            "printf 'NOFILE:%s:%s\n' \"$(ulimit -Sn)\" \"$(ulimit -Hn)\"; exec sleep 600"
+            "printf 'NOFILE:%s:%s.\n' \"$(ulimit -Sn)\" \"$(ulimit -Hn)\"; exec sleep 600"
         ]);
         fs::write(&manifest, config.to_string()).unwrap();
         let log = root.0.join("server.log");
@@ -336,17 +336,18 @@ fn the_foreground_supervisor_keeps_payload_limits_and_raises_its_own_capacity() 
             goblins_jsonrpc::read(&mut terminal).unwrap()["result"]["attached"],
             true
         );
+        // The line arrives live or in the redraw of the screen, whichever
+        // comes first; the full stop ends the hard limit.
+        let expected = format!("NOFILE:{soft}:512.");
         let mut output = vec![];
-        while !output.contains(&b'\n') {
+        while !String::from_utf8_lossy(&output).contains(&expected) {
             let mut bytes = [0; 4096];
-            let n = terminal.read(&mut bytes).unwrap();
-            assert!(n > 0, "payload exited before reporting its limits");
+            let n = terminal.read(&mut bytes).unwrap_or_else(|e| {
+                panic!("{e}: {:?}", String::from_utf8_lossy(&output))
+            });
+            assert!(n > 0, "payload exited before reporting its limits: {output:?}");
             output.extend_from_slice(&bytes[..n]);
         }
-        assert_eq!(
-            String::from_utf8_lossy(&output).trim(),
-            format!("NOFILE:{soft}:512")
-        );
         assert_eq!(limits(daemon), (512, 512));
         assert_eq!(limits(supervisor), (512, 512));
         client

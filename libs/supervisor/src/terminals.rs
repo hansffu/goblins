@@ -163,15 +163,19 @@ pub(crate) struct Terminals {
     log: Option<ServerLog>,
     log_path: Option<PathBuf>,
     cursor: Option<TerminalId>,
+    /// The size the main terminal's PTY is opened with.
+    size: (u16, u16),
 }
 impl Terminals {
-    pub fn new(directory: &Path, detached: bool) -> crate::Result<Self> {
-        Self::with_listener(directory, detached, None)
+    /// The main terminal, whose PTY is opened with `size` (rows, columns).
+    pub fn new(directory: &Path, detached: bool, size: (u16, u16)) -> crate::Result<Self> {
+        Self::with_listener(directory, detached, None, size)
     }
     pub fn with_listener(
         directory: &Path,
         detached: bool,
         listener: Option<OwnedFd>,
+        size: (u16, u16),
     ) -> crate::Result<Self> {
         let path = directory.join("terminal.sock");
         let mut io = match listener {
@@ -182,6 +186,7 @@ impl Terminals {
         io.hold();
         let mut this = Self {
             log_path: Some(directory.join("server.log")),
+            size,
             ..Default::default()
         };
         this.insert(TerminalId::Main, io, true);
@@ -350,6 +355,7 @@ impl Terminals {
                 main.io.detached = true;
             }
         } else if let Some(main) = self.entries.get_mut(&TerminalId::Main) {
+            main.io.emulate(self.size.0, self.size.1);
             main.io.master(master)?;
         }
         Ok(())
@@ -411,7 +417,7 @@ impl Terminals {
                     // ioctl error does not turn an accepted stream into a
                     // second, contradictory refusal frame.
                     diagnostic = entry.io.resize(rows, cols).err().map(|e| e.to_string());
-                    if entry.pane.is_some() {
+                    if entry.io.screen().is_some() {
                         // Format for the accepted frontend's dimensions.
                         entry.io.redraw();
                         entry.io.winch();
@@ -575,7 +581,7 @@ mod tests {
     #[test]
     fn configuration_holds_the_legacy_socket_then_refuses_server_frontends() {
         let directory = unix::temp_directory().unwrap();
-        let mut terminals = Terminals::new(&directory, false).unwrap();
+        let mut terminals = Terminals::new(&directory, false, (24, 80)).unwrap();
         let mut events = VecDeque::new();
         let mut frontend = UnixStream::connect(directory.join("terminal.sock")).unwrap();
         terminals.tick(false, &mut events);
@@ -595,7 +601,7 @@ mod tests {
     fn a_stopped_payload_keeps_its_output_for_a_late_legacy_frontend() {
         let _no_forks = unix::no_forks();
         let directory = unix::temp_directory().unwrap();
-        let mut terminals = Terminals::new(&directory, false).unwrap();
+        let mut terminals = Terminals::new(&directory, false, (24, 80)).unwrap();
         let (master, slave) = unix::pty(24, 80).unwrap();
         terminals.started(master, false).unwrap();
         let mut slave = fs::File::from(slave);
@@ -615,7 +621,10 @@ mod tests {
         );
         let mut output = vec![];
         frontend.read_to_end(&mut output).unwrap();
-        assert_eq!(output, b"retained\0payload");
+        // The frontend gets the screen, where the terminal ignored the NUL.
+        let mut screen = crate::screen::Screen::new(24, 80);
+        screen.feed(&output);
+        assert_eq!(screen.visible(), ["retainedpayload"]);
         assert!(terminals.drained());
         assert!(events.iter().any(|event| matches!(event, Event::Terminal { terminal: TerminalId::Main, status, .. } if status.complete && !status.connected && !status.attached)));
         fs::remove_dir_all(directory).unwrap();
@@ -685,7 +694,7 @@ mod tests {
     fn a_server_log_drains_after_stop_before_the_runtime_ends() {
         let _no_forks = unix::no_forks();
         let directory = unix::temp_directory().unwrap();
-        let mut terminals = Terminals::new(&directory, false).unwrap();
+        let mut terminals = Terminals::new(&directory, false, (24, 80)).unwrap();
         let (output, input) = unix::pipe().unwrap();
         terminals.started(output, true).unwrap();
         let mut input = fs::File::from(input);
@@ -1189,5 +1198,140 @@ mod tests {
         assert_eq!(result(&mut events, 3).unwrap()["text"], "READY\nmore\nlast");
         terminals.call(4, 5, Call::Read { source: terminal::Source::Visible, lines: None }, &mut events);
         assert!(result(&mut events, 4).unwrap()["text"].as_str().unwrap().ends_with("last"));
+    }
+
+    /// The main terminal of a goblin whose PTY opens at `rows` by `cols`,
+    /// started on that PTY.
+    fn main(
+        directory: &Path,
+        detached: bool,
+        rows: u16,
+        cols: u16,
+    ) -> (Terminals, std::os::fd::OwnedFd, VecDeque<Event>) {
+        let mut terminals = Terminals::new(directory, detached, (rows, cols)).unwrap();
+        let (master, slave) = unix::pty(rows, cols).unwrap();
+        raw(&slave);
+        terminals.started(master, false).unwrap();
+        (terminals, slave, VecDeque::new())
+    }
+    fn main_screen(terminals: &mut Terminals) -> &mut crate::screen::Screen {
+        terminals
+            .entries
+            .get_mut(&TerminalId::Main)
+            .unwrap()
+            .io
+            .screen()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_main_terminal_launched_detached_reads_at_its_launch_size() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (mut terminals, slave, mut events) = main(&directory, true, 30, 100);
+        print(&slave, &format!("{}next", "x".repeat(100)));
+        terminals.tick(false, &mut events);
+        let screen = main_screen(&mut terminals);
+        assert_eq!(screen.size(), (30, 100));
+        assert_eq!(screen.visible(), ["x".repeat(100), "next".into()]);
+        drop(terminals);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_resize_before_the_main_pty_exists_sizes_its_screen() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let mut terminals = Terminals::new(&directory, true, (30, 100)).unwrap();
+        let mut events = VecDeque::new();
+        terminals.resize(TerminalId::Main, 40, 120, &mut events);
+        assert!(events.is_empty());
+        let (master, slave) = unix::pty(30, 100).unwrap();
+        terminals.started(master, false).unwrap();
+        assert_eq!(main_screen(&mut terminals).size(), (40, 120));
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        unix::cvt(unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCGWINSZ, &mut size) }).unwrap();
+        assert_eq!((size.ws_row, size.ws_col), (40, 120));
+        drop(terminals);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Attach a frontend to the main terminal through the runtime, at 24 by
+    /// 80, and read its screen.
+    fn attach_main(
+        terminals: &mut Terminals,
+        events: &mut VecDeque<Event>,
+    ) -> (UnixStream, crate::screen::Screen) {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        terminals.attach(TerminalId::Main, server, 24, 80, events);
+        terminals.tick(false, events);
+        let screen = frontend(&mut client, 24, 80);
+        (client, screen)
+    }
+    /// The payload has exited: the goblin has ended, and its terminals are
+    /// ticked until the runtime may end.
+    fn end(terminals: &mut Terminals, slave: std::os::fd::OwnedFd, events: &mut VecDeque<Event>) {
+        drop(slave);
+        for _ in 0..4 {
+            terminals.tick(true, events);
+        }
+        assert!(terminals.drained(), "the main entry is removed");
+        assert!(!terminals.entries.contains_key(&TerminalId::Main));
+    }
+
+    #[test]
+    fn the_main_terminal_is_removed_after_a_clean_detach_when_its_payload_exits() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (mut terminals, slave, mut events) = main(&directory, false, 24, 80);
+        print(&slave, "working\r\n");
+        terminals.tick(false, &mut events);
+        let (mut client, screen) = attach_main(&mut terminals, &mut events);
+        assert_eq!(screen.visible(), ["working"]);
+        terminals.detach(TerminalId::Main, &mut events);
+        assert_eq!(client.read(&mut [0; 1]).unwrap(), 0);
+        drop(client);
+        terminals.tick(false, &mut events);
+        let status = terminals.status(TerminalId::Main);
+        assert!(status.detached && !status.connected && !status.interrupted);
+        print(&slave, "done\r\n");
+        terminals.tick(false, &mut events);
+        assert!(!terminals.drained());
+        end(&mut terminals, slave, &mut events);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_main_terminal_is_removed_after_its_frontend_vanishes_when_its_payload_exits() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (mut terminals, slave, mut events) = main(&directory, false, 24, 80);
+        let (client, _) = attach_main(&mut terminals, &mut events);
+        client.shutdown(std::net::Shutdown::Both).unwrap();
+        terminals.tick(false, &mut events);
+        let status = terminals.status(TerminalId::Main);
+        assert!(status.interrupted && !status.connected && !status.detached);
+        assert!(!terminals.drained());
+        end(&mut terminals, slave, &mut events);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn the_main_terminal_answers_queries_only_while_nobody_is_attached() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (mut terminals, slave, mut events) = main(&directory, true, 24, 80);
+        print(&slave, "\x1b[c");
+        terminals.tick(false, &mut events);
+        assert_eq!(input_of(&slave).unwrap(), b"\x1b[?62;22c");
+        let (mut client, _) = attach_main(&mut terminals, &mut events);
+        print(&slave, "\x1b[c");
+        terminals.tick(false, &mut events);
+        let mut query = [0; 3];
+        client.read_exact(&mut query).unwrap();
+        assert_eq!(&query, b"\x1b[c");
+        assert_eq!(input_of(&slave), None, "the frontend answers");
+        drop(terminals);
+        fs::remove_dir_all(directory).unwrap();
     }
 }

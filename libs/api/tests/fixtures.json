@@ -1521,7 +1521,9 @@
     {"params": {"version": 1, "rows": 24, "cols": 100}, "valid": true, "decoded": true},
     {"params": [1, 24, 100], "valid": true, "decoded": true},
     {"params": [1, 24, 100, "app"], "valid": true, "decoded": true},
-    {"params": {"version": 1, "rows": 65535, "cols": 1, "terminal": null}, "valid": true, "decoded": true},
+    {"params": {"version": 1, "rows": 1000, "cols": 1000, "terminal": null}, "valid": true, "decoded": true},
+    {"params": {"version": 1, "rows": 1001, "cols": 80, "terminal": null}, "valid": false, "decoded": true},
+    {"params": {"version": 1, "rows": 65535, "cols": 1, "terminal": null}, "valid": false, "decoded": true},
     {"params": {"version": 1, "rows": 500, "cols": 500, "terminal": "app"}, "valid": true, "decoded": true},
     {"params": {"version": 0, "rows": 24, "cols": 80}, "valid": false, "decoded": true}
   ],

@@ -24,7 +24,9 @@ FRESH = ["--no-config", "-c", "printf 'ARGS=fresh\\n'; exec sleep 600"]
 RESUME = ["--no-config", "-c",
           "printf 'RESUMED=%s\\n' {session_id}; printf 'FIRST=%s\\n' (command -v hello); "
           "printf 'COWSAY=%s\\n' (readlink /run/goblins/packages/current/bin/cowsay); "
-          "printf 'COWTHINK=%s\\n' (readlink /run/goblins/packages/current/bin/cowthink); exec sleep 600"]
+          "printf 'COWTHINK=%s\\n' (readlink /run/goblins/packages/current/bin/cowthink); "
+          # Ends the report, so the line before it is complete also in a redraw.
+          "printf 'END\\n'; exec sleep 600"]
 
 
 def record(id, configuration="shell", agent_name="morb", **extra):
@@ -139,7 +141,7 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
             attached = Terminal([d.binary, "--runtime", manifest, "--state-dir", str(d.state), "resume", goblin],
                                 env=d.env)
             self.addCleanup(attached.close)
-            text = attached.expect(rf"Resumed morb \({line}\) as [\s\S]*?COWTHINK=\S+\n", timeout=120)[0].decode()
+            text = attached.expect(rf"Resumed morb \({line}\) as [\s\S]*?COWTHINK=\S+\nEND", timeout=120)[0].decode()
             session = next(r["id"] for r in d.rpc.call("sessions.list", {}) if r.get("recreated_from") == line)
 
         with step("the resume command gets its variable, and the packages are back in order"):

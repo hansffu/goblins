@@ -585,10 +585,13 @@ These choices settle the open details for API 1 before implementation.
   goblin with =onAttach= runs its agent without a PTY and starts a client exec on
   a new PTY per attachment once the variables it needs were set this run; its
   =terminal.sock= refuses every connection. See ADR 0016 and [[file:../API.org][API.org]].
-  The daemon owns the master and pumps bounded 64 KiB buffers. Before the first
-  consumer, and while attached, output backpressures the payload. While detached
-  or disconnected, the daemon continues draining and retains a bounded output
-  tail; older bytes may be discarded. There is no full screen or durable replay.
+  The supervisor owns the master and feeds all output through libghostty-vt, as
+  for named terminals (see [[file:SANDBOX-TERMINALS.org][SANDBOX-TERMINALS.org]]). While attached, output
+  backpressures the payload through bounded 64 KiB buffers. While nobody is
+  attached, before the first consumer too, the supervisor keeps reading into the
+  screen and answers terminal queries. An attach redraws the screen, its
+  scrollback and modes at the frontend's size, then sends live output. There is
+  no durable replay across daemon restarts.
   A sandbox may call =sessions.detach {}= on its own request endpoint (advertised
   as =terminal-detach=), with no target parameter or host authority. This returns
   ={accepted:true}= and half-closes the terminal output. The departing client
@@ -823,7 +826,8 @@ daemon-wide name-allocation rules.
   =Controller::inherits_package= so its policy can be changed independently.
 - Host and sandbox =run= attach by default. =run --detatched= (alias =--detached=)
   returns the accepted launch JSON without attaching. Initially detached
-  terminals drain into a bounded tail without waiting for a first attachment.
+  terminals are read into the screen at their launch size without waiting for a
+  first attachment.
 - Sandbox =sessions.attach {session}= resolves only descendants and upgrades the
   authenticated request connection: its framed result ={attached:true}= precedes
   raw terminal bytes. No host terminal path is exposed. Pipelined RPC input is

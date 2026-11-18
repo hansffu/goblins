@@ -50,13 +50,15 @@ The supervisor feeds each named terminal's output through libghostty-vt, sized l
 
 The emulator parses sandbox output inside the goblin's supervisor, so a fault there takes down that goblin's supervisor only.
 
+The goblin's own terminal, where its agent runs, uses the same emulator from the size its PTY was opened with, or the size of a resize that arrived before the PTY. It reads, answers queries and redraws on attach as described here. It has no =read=, =send= or =wait=, and its lifecycle is unchanged: it is not a named terminal, a detach or a vanished frontend leaves it detached or interrupted as before, and it goes when the payload has ended and nobody holds it. Clients started by =onAttach= and =exec -t= shells are not emulated.
+
 ** Full-screen programs
 
 Programs like vim, less, htop and full-screen Claude switch to the alternate screen, which has no scrollback. The emulator tracks both screens and the input modes the program sets.
 
 - Reads return the screen in use and say =alternate_screen=. While the alternate screen is active, =recent= reads its rows and joins soft wraps. The primary screen's scrollback is available again when the program leaves the alternate screen.
 - =send= encodes cursor keys for the cursor mode the program set, and wraps =text= in bracketed-paste markers when the program enabled bracketed paste.
-- An attach redraws the active screen and restores the cursor position and shape, title, scrolling region, origin mode and input modes. On the primary screen it also replays scrollback. On the alternate screen it enters that screen before drawing it. The replay uses the frontend's palette and releases any synchronized output frame. The supervisor resizes the screen and PTY to the accepted frontend before formatting the redraw. It then queues the replay and sends SIGWINCH to the foreground process group even when the size stays the same, so full-screen programs repaint.
+- An attach redraws the active screen and restores the cursor position and shape, title, scrolling region, origin mode and input modes. On the primary screen it also replays scrollback. On the alternate screen it enters that screen before drawing it. The replay uses the frontend's palette and releases any synchronized output frame. The supervisor resizes the screen and PTY to the accepted frontend before formatting the redraw. It then queues the replay and sends SIGWINCH to the foreground process group even when the size stays the same, so full-screen programs repaint. The redraw carries no parser state: an escape sequence split across the attachment, such as a query the program was writing, reaches the frontend without its start, so the frontend may show its tail and leave the query unanswered.
 
 * Attaching
 

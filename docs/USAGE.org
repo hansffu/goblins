@@ -635,10 +635,12 @@ terminal client exit 0. An unknown or already unattached session returns an erro
 
 Only one terminal can attach at a time; a competing attachment fails. Closing
 a terminal unexpectedly also leaves the sandbox available for attachment.
-Detached output retains a tail of up to 64 KiB; older bytes can be discarded so
-background writers keep running. This is raw output, not full terminal screen
-restoration or durable scrollback. An attached slow reader still backpressures
-its sandbox. Reconnect is to the same daemon only; restarting it loses sessions,
+While nobody is attached, the supervisor keeps reading the sandbox's terminal
+into a terminal emulator (libghostty-vt, up to 5,000 lines of scrollback), so
+background writers keep running. Attaching redraws that screen at your
+terminal's size, with its scrollback, the alternate screen of a full-screen
+program, the cursor and input modes, and the program is told to repaint. An
+attached slow reader still backpressures its sandbox. Reconnect is to the same daemon only; restarting it loses sessions,
 which =goblins resume= can bring back (see [[*Resuming conversations][Resuming conversations]]).
 =kill= and the existing =stop= command use the same session shutdown path.
 Session records retain a =stop_reason= identifying a host stop, the goblin that

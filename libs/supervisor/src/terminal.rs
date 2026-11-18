@@ -43,6 +43,9 @@ pub struct Terminal {
     screen: Option<Screen>,
     /// The screen was fed since `take_fed`.
     fed: bool,
+    /// The terminal lives on when its frontend leaves, and is removed by
+    /// its own rule: a named terminal's, not the main terminal's.
+    pane: bool,
 }
 fn read(source: &mut impl Read, dest: &mut Vec<u8>) -> io::Result<bool> {
     if dest.len() >= CAP {
@@ -143,6 +146,7 @@ impl Terminal {
             to_pty: vec![],
             screen: None,
             fed: false,
+            pane: false,
         })
     }
     /// A terminal for one attach client's PTY, sized for its frontend.
@@ -164,6 +168,7 @@ impl Terminal {
             to_pty: vec![],
             screen: None,
             fed: false,
+            pane: false,
         };
         terminal.resize(rows, cols)?;
         terminal.master(master)?;
@@ -174,7 +179,15 @@ impl Terminal {
     pub fn emulated(master: OwnedFd, rows: u16, cols: u16) -> Result<Self> {
         let mut terminal = Self::client(master, rows, cols)?;
         terminal.screen = Some(Screen::new(rows, cols));
+        terminal.pane = true;
         Ok(terminal)
+    }
+    /// Emulate this terminal from now on, before its PTY exists. The screen
+    /// has the size of a resize that already arrived, which the PTY gets
+    /// too, or else `rows` and `cols`, the size the PTY was opened with.
+    pub fn emulate(&mut self, rows: u16, cols: u16) {
+        let (rows, cols) = self.dimensions.unwrap_or((rows, cols));
+        self.screen = Some(Screen::new(rows, cols));
     }
     /// The screen of an emulated terminal.
     pub fn screen(&mut self) -> Option<&mut Screen> {
@@ -349,7 +362,7 @@ impl Terminal {
             {
                 self.peer.take();
                 self.hello.clear();
-                if self.screen.is_some() {
+                if self.pane {
                     // The terminal goes on: the frontend left, or finished
                     // reading what a detach told it.
                     self.detached = false;
@@ -376,10 +389,17 @@ impl Terminal {
                     let writer = peer.try_clone()?;
                     let attached = match &self.refusal {
                         Some(refusal) => Err(refusal.as_str().into()),
-                        None => self.attach(
-                            writer,
-                            json!(contract::attach_exchanges::LegacyAttach::ID),
-                        ),
+                        None => self
+                            .attach(
+                                writer,
+                                json!(contract::attach_exchanges::LegacyAttach::ID),
+                            )
+                            .map(|()| {
+                                // No frontend size here: redraw at the
+                                // current one, and have the program repaint.
+                                self.redraw();
+                                self.winch();
+                            }),
                     };
                     if let Err(error) = attached {
                         peer.set_nonblocking(true)?;
@@ -396,9 +416,11 @@ impl Terminal {
         if let Some(master) = &mut self.master
             && !self.eof
         {
-            // Before the first consumer, and while attached, preserve lossless
-            // backpressure. Detached payloads keep running: retain only a
-            // bounded tail, making room for the next read when necessary.
+            // An emulated terminal reads whenever nobody is attached: its
+            // screen keeps the output. Otherwise, before the first consumer
+            // and while attached, preserve lossless backpressure; detached
+            // payloads keep running and retain only a bounded tail, making
+            // room for the next read when necessary.
             let mut newest = Vec::new();
             let consumer = self.peer.is_some() && !self.detached;
             let tail = if self.screen.is_some() {
@@ -559,6 +581,43 @@ mod tests {
                 directory,
             }
         }
+        /// The main terminal: emulated, with a pane's lifecycle.
+        fn emulated() -> Self {
+            let directory = unix::temp_directory().unwrap();
+            let mut terminal = Terminal::new(&directory.join("terminal.sock")).unwrap();
+            terminal.emulate(24, 80);
+            let (master, payload) = UnixStream::pair().unwrap();
+            terminal.master(master.into()).unwrap();
+            Self {
+                terminal,
+                payload,
+                directory,
+            }
+        }
+        /// Attach and read everything the frontend is sent, as a screen.
+        fn screen(&mut self) -> Screen {
+            let mut peer = self.connect();
+            peer.set_nonblocking(true).unwrap();
+            let mut bytes = vec![];
+            loop {
+                self.terminal.tick().unwrap();
+                let mut chunk = [0; 65536];
+                match peer.read(&mut chunk) {
+                    Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        if self.terminal.to_peer.is_empty() {
+                            break;
+                        }
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            }
+            close(peer);
+            self.terminal.tick().unwrap();
+            let mut screen = Screen::new(24, 80);
+            screen.feed(&bytes);
+            screen
+        }
         fn connect(&mut self) -> UnixStream {
             let mut peer = UnixStream::connect(self.directory.join("terminal.sock")).unwrap();
             peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
@@ -566,6 +625,15 @@ mod tests {
             assert_eq!(rpc::read(&mut peer).unwrap()["result"]["attached"], true);
             peer
         }
+    }
+    /// Feed what a frontend reads until it pauses into a screen.
+    fn frontend(peer: &mut UnixStream) -> Screen {
+        peer.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let mut bytes = vec![];
+        let _ = peer.read_to_end(&mut bytes);
+        let mut screen = Screen::new(24, 80);
+        screen.feed(&bytes);
+        screen
     }
     /// Close a consumer's end for good: shut the connection down, so the
     /// terminal sees the end at once, even while a process another test
@@ -747,5 +815,82 @@ mod tests {
         first.read_exact(&mut bytes).unwrap();
         assert_eq!(&bytes, b"ok");
         assert!(!f.terminal.interrupted);
+    }
+
+    #[test]
+    fn the_main_terminal_keeps_detached_output_on_its_screen_and_stays_evictable() {
+        let mut f = Fixture::emulated();
+        let mut first = f.connect();
+        let _ = frontend(&mut first);
+        f.payload.write_all(b"before\r\n").unwrap();
+        f.terminal.tick().unwrap();
+        let mut bytes = [0; 8];
+        first.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"before\r\n");
+        f.terminal.detach().unwrap();
+        assert_eq!(first.read(&mut [0; 1]).unwrap(), 0);
+        close(first);
+        f.terminal.tick().unwrap();
+        // A detach of the main terminal is not a pane's: it stays detached,
+        // so the terminal can go once its payload has ended.
+        assert!(f.terminal.detached && !f.terminal.interrupted);
+        assert!(f.terminal.can_evict());
+        // Nobody reads, and the payload never blocks: the screen keeps it.
+        for n in 0..4000 {
+            f.payload
+                .write_all(format!("line {n:<74}\r\n").as_bytes())
+                .unwrap();
+            f.terminal.tick().unwrap();
+            assert!(f.terminal.to_peer.is_empty());
+        }
+        f.payload.write_all(b"while away\r\n").unwrap();
+        f.terminal.tick().unwrap();
+        let mut screen = f.screen();
+        let recent = screen.recent(3);
+        assert_eq!(recent[0].trim_end(), "line 3998");
+        assert_eq!(recent[2], "while away");
+    }
+
+    #[test]
+    fn the_main_terminal_is_interrupted_when_its_frontend_vanishes() {
+        let mut f = Fixture::emulated();
+        close(f.connect());
+        f.terminal.tick().unwrap();
+        assert!(f.terminal.interrupted && !f.terminal.detached);
+        assert!(f.terminal.can_evict());
+        f.payload.write_all(b"after\r\n").unwrap();
+        f.terminal.tick().unwrap();
+        assert_eq!(f.screen().visible(), ["after"]);
+    }
+
+    #[test]
+    fn a_full_screen_program_comes_back_with_its_alternate_screen_and_modes() {
+        let mut f = Fixture::emulated();
+        f.payload
+            .write_all(b"shell$ vim\r\n\x1b[?1049h\x1b[?2004h\x1b[?1h\x1b[Hfull screen")
+            .unwrap();
+        f.terminal.tick().unwrap();
+        let screen = f.screen();
+        assert!(screen.alternate());
+        assert_eq!(screen.visible(), ["full screen"]);
+        assert!(screen.input(Some("p"), &[]).starts_with(b"\x1b[200~"));
+        assert_eq!(screen.input(None, &["up".into()]), b"\x1bOA");
+    }
+
+    #[test]
+    fn the_main_terminal_completes_after_its_last_output() {
+        let mut f = Fixture::emulated();
+        let mut peer = f.connect();
+        let _ = frontend(&mut peer);
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        f.payload.write_all(b"goodbye\r\n").unwrap();
+        f.payload.shutdown(Shutdown::Write).unwrap();
+        for _ in 0..4 {
+            f.terminal.tick().unwrap();
+        }
+        assert!(f.terminal.complete);
+        let mut rest = vec![];
+        peer.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, b"goodbye\r\n");
     }
 }

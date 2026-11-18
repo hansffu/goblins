@@ -9022,6 +9022,51 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn an_attach_hello_outside_the_session_size_is_refused_before_the_slot() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        let socket = d.sessions["a"].directory.join("attach.sock");
+        let hello = |rows: u64, cols: u64| {
+            let mut frontend = UnixStream::connect(&socket).unwrap();
+            frontend
+                .write_all(
+                    &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                "params":{"version":1,"rows":rows,"cols":cols}}))
+                    .unwrap(),
+                )
+                .unwrap();
+            frontend
+        };
+        for (rows, cols) in [(1001, 80), (24, 1001), (65535, 65535), (0, 80)] {
+            let mut refused = hello(rows, cols);
+            d.tick().unwrap();
+            assert_eq!(
+                rpc::read(&mut refused).unwrap()["error"]["message"],
+                attach::ATTACH_SIZE,
+                "{rows}x{cols}"
+            );
+            assert!(!d.sessions["a"].record.terminal_attached);
+            assert!(received.lock().unwrap().is_empty(), "nothing reaches the runtime");
+        }
+        let _largest = hello(1000, 1000);
+        d.tick().unwrap();
+        assert!(d.sessions["a"].record.terminal_attached);
+        assert!(matches!(
+            received.lock().unwrap().pop_front(),
+            Some(Command::Attach {
+                terminal: TerminalId::Main,
+                rows: 1000,
+                cols: 1000,
+                ..
+            })
+        ));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn only_variables_set_in_this_run_are_fresh() {
         let fresh = |d: &Controller, id: &str| {
             let a = &d.sessions[id];

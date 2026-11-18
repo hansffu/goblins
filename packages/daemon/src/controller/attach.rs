@@ -35,6 +35,8 @@ const HELLOS: usize = 8;
 const NOTICE: Duration = Duration::from_secs(1);
 /// What `onDetach` may take before the client is cancelled.
 const ON_DETACH: Duration = Duration::from_secs(5);
+/// The refusal of a hello whose size is out of range.
+pub(super) const ATTACH_SIZE: &str = "attach size must be 1-1000 rows and columns";
 struct Hello {
     stream: UnixStream,
     decoder: rpc::Decoder,
@@ -226,14 +228,20 @@ impl Attach {
                 }
             };
             match parsed {
-                Ok(p) if p.version == contract::ATTACH_VERSION && p.rows > 0 && p.cols > 0 => {
+                Ok(p) if p.version != contract::ATTACH_VERSION => {
+                    refuse(&mut hello.stream, "unsupported attach.hello version");
+                    false
+                }
+                // The size of sessions.start and sessions.resize: the
+                // supervisor's emulator allocates a screen of it.
+                Ok(p) if !super::dimensions(p.rows, p.cols) => {
+                    refuse(&mut hello.stream, ATTACH_SIZE);
+                    false
+                }
+                Ok(p) => {
                     hello.size = Some((p.rows, p.cols));
                     hello.terminal = p.terminal;
                     true
-                }
-                Ok(_) => {
-                    refuse(&mut hello.stream, "unsupported attach.hello version");
-                    false
                 }
                 Err(message) => {
                     refuse(&mut hello.stream, message);

@@ -111,8 +111,13 @@ impl Engine {
     ) -> crate::Result<Self> {
         let parent = directory.parent().ok_or("missing goblin directory")?;
         let terminals = match listener {
-            Some(fd) => crate::terminals::Terminals::with_listener(parent, detached, Some(fd))?,
-            None => crate::terminals::Terminals::new(parent, detached)?,
+            Some(fd) => crate::terminals::Terminals::with_listener(
+                parent,
+                detached,
+                Some(fd),
+                dimensions,
+            )?,
+            None => crate::terminals::Terminals::new(parent, detached, dimensions)?,
         };
         let host_jobs = directory.join("host-jobs");
         let published = Published::default();
@@ -1098,7 +1103,7 @@ mod tests {
         let directory = unix::temp_directory().unwrap();
         let (worker, _, sender) = worker();
         let mut local = ready(worker);
-        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        local.terminals = crate::terminals::Terminals::new(&directory, false, (24, 80)).unwrap();
         let (master, slave) = unix::pty(24, 80).unwrap();
         local.terminals.started(master, false).unwrap();
         let mut slave = File::from(slave);
@@ -1141,7 +1146,9 @@ mod tests {
         );
         let mut output = vec![];
         frontend.read_to_end(&mut output).unwrap();
-        assert_eq!(output, b"late output");
+        let mut screen = crate::screen::Screen::new(24, 80);
+        screen.feed(&output);
+        assert_eq!(screen.visible(), ["late output"]);
         assert!(local.ended());
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -1154,7 +1161,7 @@ mod tests {
         std::fs::create_dir(&resources).unwrap();
         let (worker, _, sender) = worker();
         let mut local = ready(worker);
-        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        local.terminals = crate::terminals::Terminals::new(&directory, false, (24, 80)).unwrap();
         *local.published.lock().unwrap() =
             Some(Inheritance::fixture_in("shell", &[], resources.clone()));
         local
@@ -1194,7 +1201,7 @@ mod tests {
         let directory = unix::temp_directory().unwrap();
         let (worker, _, sender) = worker();
         let mut local = ready(worker);
-        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        local.terminals = crate::terminals::Terminals::new(&directory, false, (24, 80)).unwrap();
         let (master, slave) = unix::pty(24, 80).unwrap();
         local.terminals.started(master, false).unwrap();
         let mut slave = File::from(slave);
@@ -1280,7 +1287,7 @@ mod tests {
         })).unwrap()).unwrap();
         let (worker, _, sender) = worker();
         let mut local = ready(worker);
-        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        local.terminals = crate::terminals::Terminals::new(&directory, false, (24, 80)).unwrap();
         *local.published.lock().unwrap() =
             Some(Inheritance::fixture_in("shell", &[], resources.clone()));
         // EOF is a deterministic completion barrier; no timing/retry loop.
@@ -1398,7 +1405,7 @@ mod tests {
         }));
         let mut local = ready(worker);
         *local.published.lock().unwrap() = Some(publication);
-        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        local.terminals = crate::terminals::Terminals::new(&directory, false, (24, 80)).unwrap();
         let (master, slave) = unix::pty(24, 80).unwrap();
         local.terminals.started(master, false).unwrap();
         File::from(slave).write_all(b"scope output").unwrap();
@@ -1457,7 +1464,9 @@ mod tests {
         );
         let mut output = vec![];
         frontend.read_to_end(&mut output).unwrap();
-        assert_eq!(output, b"scope output");
+        let mut screen = crate::screen::Screen::new(24, 80);
+        screen.feed(&output);
+        assert_eq!(screen.visible(), ["scope output"]);
         assert!(local.ended());
         drop(local);
         std::fs::remove_dir_all(directory).unwrap();
@@ -1749,7 +1758,7 @@ mod tests {
             let (worker, _, results) = worker();
             // An engine whose worker has not reported Started.
             let mut local = Engine::new(worker, directory.join("host-jobs"));
-            local.terminals = terminals::Terminals::new(&directory, false).unwrap();
+            local.terminals = terminals::Terminals::new(&directory, false, (24, 80)).unwrap();
             let mut frontend = UnixStream::connect(directory.join("terminal.sock")).unwrap();
             frontend
                 .set_read_timeout(Some(std::time::Duration::from_secs(10)))
@@ -2742,7 +2751,7 @@ mod tests {
         let directory = unix::temp_directory().unwrap();
         let (flood_worker, _flood_work, _flood_results) = worker();
         let mut flood = ready(flood_worker);
-        flood.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        flood.terminals = crate::terminals::Terminals::new(&directory, false, (24, 80)).unwrap();
         let (master, slave) = unix::pty(24, 80).unwrap();
         unix::nonblocking(slave.as_raw_fd()).unwrap();
         flood.terminals.started(master, false).unwrap();
@@ -2808,8 +2817,10 @@ mod tests {
             }
         }
         assert!(eof);
-        assert_eq!(received.len(), accepted);
-        assert!(received.iter().all(|byte| *byte == b'x'));
+        // The frontend gets the screen, which holds every accepted byte.
+        let mut screen = crate::screen::Screen::new(24, 80);
+        screen.feed(&received);
+        assert_eq!(screen.recent(2), ["x".repeat(accepted)]);
         drop(frontend);
         drop(rpc);
         drop(flood);

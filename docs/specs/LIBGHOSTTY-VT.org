@@ -198,6 +198,10 @@ Also update =docs/specs/SANDBOX-TERMINALS.org= or the document that describes th
 
 Verification: =full=. By hand: start a goblin detached with Claude or Codex, wait for its interface, attach, detach, attach again, resize.
 
+** Main terminal results
+
+The redraw stays in =Terminals::attach=, after the resize to the accepted frontend, because =Terminal::attach= runs before that resize and would format at the old size. The legacy listener path in =Terminal::tick= queues the redraw itself after accepting. A frontend reading a stopped payload's output now gets that screen, so a NUL the program wrote is not replayed.
+
 * Step 3: snapshot replay on the wire and the CLI
 
 Goal: =goblins attach --snapshot= and =goblins terminal attach --snapshot= get a binary snapshot before the raw bytes.
