@@ -58,7 +58,8 @@ class NetworkWorkflow(unittest.TestCase):
             owner = self.d.start("online", agent_name="chief")["session"]
             terminal = self.terminal(owner)
             self.fetch(terminal)
-            terminal.send("readlink /proc/self/ns/net; cat /etc/resolv.conf; printf 'PROXY=%s\\n' \"${HTTPS_PROXY-unset}\"\n")
+            terminal.send("QUOTING_STYLE=literal readlink /proc/self/ns/net; cat /etc/resolv.conf; "
+                          "printf 'PROXY=%s\\n' \"${HTTPS_PROXY-unset}\"\n")
             owner_ns = terminal.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
             self.assertNotEqual(owner_ns, os.readlink("/proc/self/ns/net"))
             terminal.expect("nameserver 10.0.2.3")
@@ -74,7 +75,7 @@ class NetworkWorkflow(unittest.TestCase):
             member = self.d.member(owner, "online", agent_name="scout", key="scout")["session"]
             attached = self.terminal(member)
             self.fetch(attached)
-            attached.send("readlink /proc/self/ns/net\n")
+            attached.send("QUOTING_STYLE=literal readlink /proc/self/ns/net\n")
             member_ns = attached.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
             # Without a scope, each sandbox has its own network namespace; a
             # scope is how goblins share one.

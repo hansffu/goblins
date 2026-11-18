@@ -16,13 +16,32 @@ from daemon_support import Daemon
 from support import FLAKE, command, step
 
 PROBE = r'''
-import ctypes, json, os, socket, sys
+import json, os, socket, sys
 args = json.loads(sys.argv[1])
+results = {"fds": {}, "init_fds_hidden": 0}
+# Audit inherited descriptors before ctypes opens its own libffi descriptor.
+for pid in filter(str.isdigit, os.listdir("/proc")):
+    try:
+        if open(f"/proc/{pid}/cmdline", "rb").read().startswith(b"/run/goblins/bin/goblins-init\0"):
+            try:
+                os.listdir(f"/proc/{pid}/fd"); results["init_fds_hidden"] = -1000
+            except PermissionError:
+                results["init_fds_hidden"] += 1
+            continue
+        for fd in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                results["fds"][f"{pid}/{fd}"] = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+import ctypes
 libc = ctypes.CDLL(None, use_errno=True)
 def refused(call):
     result = call()
     return [result, ctypes.get_errno()]
-results = {"hidden": {p: os.path.lexists(p) for p in args["hidden"]}}
+results["hidden"] = {p: os.path.lexists(p) for p in args["hidden"]}
 results["caps"] = {l.split(":")[0]: int(l.split()[1], 16) for l in open("/proc/self/status") if l.startswith("Cap")}
 try:
     os.close(os.open("/dev/tty", os.O_RDWR)); results["terminal"] = True
@@ -53,22 +72,6 @@ try:
         results["host_tcp"] = True
 except OSError:
     results["host_tcp"] = False
-results["fds"], results["init_fds_hidden"] = {}, 0
-for pid in filter(str.isdigit, os.listdir("/proc")):
-    try:
-        if open(f"/proc/{pid}/cmdline", "rb").read().startswith(b"/run/goblins/bin/goblins-init\0"):
-            try:
-                os.listdir(f"/proc/{pid}/fd"); results["init_fds_hidden"] = -1000
-            except PermissionError:
-                results["init_fds_hidden"] += 1
-            continue
-        for fd in os.listdir(f"/proc/{pid}/fd"):
-            try:
-                results["fds"][f"{pid}/{fd}"] = os.readlink(f"/proc/{pid}/fd/{fd}")
-            except OSError:
-                pass
-    except OSError:
-        pass
 results["mounts"] = {f[4]: f[5].split(",") for f in map(str.split, open("/proc/self/mountinfo"))
                      if f[4].startswith("/nix/store/")}
 results["run"] = sorted(os.listdir("/run/goblins"))

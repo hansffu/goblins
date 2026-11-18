@@ -2,7 +2,7 @@
   description = "Goblins: sandboxed shells with approved live Nix package grants";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/21a67dc470149f337cecafbe965d8d252a390518";
+    nixpkgs.url = "github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396";
     # Only for the Emacs the tests run: a current Emacs and Ghostel, as the
     # Emacs package expects, independent of the developer's own Emacs.
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
