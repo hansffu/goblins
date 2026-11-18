@@ -1,6 +1,6 @@
 #+title: Terminal emulation with libghostty-vt
 
-Status: planned, 2026-11-15. Nothing is implemented. Implementation waits for a release of the Rust bindings that covers libghostty-vt 1.0 (see [[*Before you start][Before you start]]).
+The implementation uses the approved Git dependency =Uzaaft/libghostty-rs= at =483ea3d5247b214060da58ef6037a95f30ae89fb= and its pinned libghostty-vt 1.0.1. The first two steps cover build validation and named terminals. The main terminal, snapshot transport and Ghostel bridge are subsequent steps.
 
 This is a handoff document. It is written so that an implementer who was not part of the planning can carry it out step by step. Read it whole before starting, and follow =AGENTS.md= for testing, review and commits.
 
@@ -37,7 +37,7 @@ Do not reopen these; ask the user if one turns out to be impossible.
 
 * Before you start
 
-1. Check that =libghostty-vt= on crates.io has a release that builds against libghostty-vt 1.0.x and has a =snapshot= module (=Terminal::encode_snapshot=, =snapshot::Decoder=). During planning the newest release was 0.2.2 from 2026-09-28, which predates 1.0 and has neither; the repository's main branch (commit =483ea3d=, 2026-11-14) pinned =vt-1.0.1= and had both. If there is still no such release, stop and tell the user. A git dependency is possible but needs =cargoLock.outputHashes= in =nix/builders/rust.nix=, so only use one if the user says so.
+1. Use the approved Git pin =483ea3d= for =libghostty-vt=. It includes the snapshot encoder and decoder. Keep the Git source hash in =cargoLock.outputHashes= in =nix/builders/rust.nix= and the Ghostty flake revision aligned with the sys crate.
 2. Check the crate's minimum Rust version against =nix develop --command rustc --version=. At planning time the crate needed Rust 1.96 and the shell had 1.95.0. If the toolchain is too old, bumping the pinned =nixpkgs= in =flake.nix= is its own change, with its own review, full test gate and commit, before step 0.
 3. Create a worktree or continue on the branch =libghostty-vt=, which holds this document.
 
@@ -112,6 +112,14 @@ Verification: =nix develop --command cargo test -p goblins-supervisor ghostty_sp
 
 If a question has no workable answer, stop and report to the user with what you found.
 
+** Build spike results
+
+The pinned bindings compiled with Rust 1.99.0 and linked the Ghostty flake's =libghostty-vt= package using =pkg-config=. With only the PTY write callback installed, the device attributes, status and cursor queries all returned replies, including the existing =CSI ? 62 ; 22 c= device attributes. Grid references enumerate scrollback oldest first. Both plain and VT formatting include primary scrollback. VT formatting restores cursor position, pending wrap and modes. The replay supplies the title and cursor shape separately and releases synchronized output. Resize accepts zero pixel dimensions.
+
+The supervisor engine owns the emulator on its event-loop thread. The worker thread owns session operations and exchanges messages with the engine through channels. The shared Rust runtime trait permits single-threaded implementations, and the daemon keeps the =Send= bound on its own runtime objects.
+
+Both the Rust decoder and Ghostel 0.65.0 restored a 1.0.1 snapshot captured in the middle of =CSI 31 m=. After feeding the rest of the sequence, the next character appeared red. Ghostel 0.65.0 bundles libghostty-vt 1.0.0. This verifies the tested continuation across those patch releases. The exact failed check in upstream CI run 43535091846 was unavailable from the public log. The pinned Linux x86_64 package built locally.
+
 * Step 1: named terminals on libghostty-vt
 
 Goal: =Screen= uses libghostty-vt instead of =vt100=. Only =libs/supervisor/src/screen.rs= and =Cargo.toml= change in substance; =terminal.rs= and =terminals.rs= keep calling the same methods. No wire format changes.
@@ -168,7 +176,7 @@ Where:
 
 - =libs/supervisor/src/terminal.rs=: add a method that gives an existing terminal a screen (the main terminal is built by =Terminal::new= or =from_listener= before its PTY exists, unlike =emulated=). Size: the screen must have the size the PTY was opened with, or it parses output laid out for another size. =Engine::with_listener= (=libs/supervisor/src/engine.rs= around line 108) gets the launch dimensions and gives them to =Worker::start=, which opens the PTY with them (=worker.rs= around line 123); =Terminals::new= and =with_listener= do not get them today. Pass them on to =Terminals= and use them for the screen, unless a resize arrived before the PTY (the stored =dimensions=), which wins. Do not fall back to =DEFAULT_SIZE=.
 - =libs/supervisor/src/terminals.rs=, =Terminals::started= (around line 342): in the branch that is not server mode, give the main terminal its screen before =main.io.master(master)=. The server branch (=ServerLog=) and =Terminals::process= (onAttach clients) stay as they are.
-- Move the redraw into =Terminal::attach= itself (queue =screen.redraw()= into =to_peer= when a screen exists) and drop the explicit =entry.io.redraw()= in =Terminals::attach= (around line 411). That also covers the legacy listener path inside =Terminal::tick=. Keep the order: redraw at the old size, then =resize=, then =winch()=. Change the two =if entry.pane.is_some()= conditions there to "the terminal has a screen", so the main terminal's program is made to repaint as well.
+- Move the redraw into =Terminal::attach= itself (queue =screen.redraw()= into =to_peer= when a screen exists) and drop the explicit =entry.io.redraw()= in =Terminals::attach= (around line 411). That also covers the legacy listener path inside =Terminal::tick=. Keep the named-terminal order for VT replay: resize to the accepted frontend, queue the redraw, then call =winch()=. Change the two =if entry.pane.is_some()= conditions there to "the terminal has a screen", so the main terminal's program is made to repaint as well.
 
 The screen changes what the main terminal reads and replays, and nothing about its lifecycle. =terminal.rs= branches on =self.screen.is_some()= in two kinds of places today, and they must be told apart:
 
@@ -203,7 +211,7 @@ Daemon to supervisor:
 
 - =Command::Attach= in =libs/runtime/src/lib.rs= (around line 208) gains =replay=, a two-variant enum defined beside it. It crosses the supervisor protocol: =SupervisorCommandAttachParams= in =common.json= and =supervisor.openrpc.json=, the encoder in =libs/runtime/src/supervisor.rs= (around line 513), the decoder in =libs/supervisor/src/supervisor_process.rs= (around line 216), and the queue logic in =libs/runtime/src/supervisor/outbound.rs=. The compiler finds the remaining match arms.
 - Daemon: =packages/daemon/src/controller/attach.rs= reads the hello (around line 229); carry =replay= in =Hello= beside =size= and =terminal= to all three places that send =Command::Attach=: the main attachment in =attach.rs=, the named terminal in =packages/daemon/src/controller/terminals.rs= (around line 204), and the onAttach client's PTY in =attach.rs= (around line 630). The third does not have the =Hello= any more: it became =Client::Waiting= (around line 507) and then =Client::Starting= (around line 553), which keep only the stream and the size. Add =replay= to both states and carry it through to the =Command::Attach=; do not fill the field with VT there. An onAttach client's terminal has no screen, so a snapshot attachment to it gets the zero length.
-- Supervisor: =Terminals::attach= and =Terminal::attach= take the replay. =Terminal::attach= queues either =screen.redraw()= or the length and =screen.snapshot()=; the legacy listener path always uses VT. Add =Screen::snapshot(&mut self) -> Vec<u8>= on =encode_snapshot=. The resize and =winch()= after it stay for both replays.
+- Supervisor: =Terminals::attach= and =Terminal::attach= take the replay. =Terminal::attach= queues either =screen.redraw()= or the length and =screen.snapshot()=; the legacy listener path always uses VT. Add =Screen::snapshot(&mut self) -> Vec<u8>= on =encode_snapshot=. Keep the resize before VT formatting. Capture the snapshot before resizing so the frontend can resize after restoring it. Send =winch()= after queuing the replay in both cases.
 
 CLI (=packages/daemon/src/cli.rs=, =attachment.rs=, =terminal.rs=, and =relay_with= in =libs/api/src/terminal.rs=):
 

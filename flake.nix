@@ -3,6 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396";
+    # Keep this at the revision pinned by libghostty-vt-sys.
+    ghostty.url = "github:ghostty-org/ghostty/108cacb17ed8990840cd14abfce43d8ed8503ca1";
     # Only for the Emacs the tests run: a current Emacs and Ghostel, as the
     # Emacs package expects, independent of the developer's own Emacs.
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -19,6 +21,7 @@
     {
       nixpkgs,
       nixpkgs-unstable,
+      ghostty,
       agent-sandbox,
       llm-agents,
       ...
@@ -30,7 +33,8 @@
         config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
       };
       sandbox = agent-sandbox.lib.${system};
-      goblinsLib = import ./nix/lib.nix { inherit pkgs sandbox; };
+      ghostty-vt = ghostty.packages.${system}.libghostty-vt;
+      goblinsLib = import ./nix/lib.nix { inherit pkgs sandbox ghostty-vt; };
       # Development-only configurations: the dev shell's goblins and the
       # test suite's daemon. Users declare their own with the builders.
       demoGoblins = import ./nix/demo-goblins {
@@ -101,7 +105,9 @@
       devShell = pkgs.mkShell {
         # Not on PATH: `just emacs` keeps running the developer's own Emacs.
         GOBLINS_TEST_EMACS = "${testEmacs}/bin/emacs";
+        buildInputs = [ ghostty-vt ];
         packages = [
+          pkgs.pkg-config
           pkgs.rustc
           pkgs.cargo
           pkgs.rustfmt
@@ -139,6 +145,7 @@
           pkgs
           goblinsLib
           sandbox
+          ghostty-vt
           devShell
           devGoblins
           ;

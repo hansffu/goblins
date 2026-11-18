@@ -1,59 +1,23 @@
 //! The emulated screen of one terminal: what `terminals.read` returns,
 //! what `terminals.wait` matches, how keys are encoded for the modes the
 //! program set, and the redraw an attaching frontend gets.
-//! It parses untrusted sandbox output with the `vt100` crate.
+//! It parses sandbox output with libghostty-vt.
 use goblins_protocol::contract;
 use goblins_runtime::terminal::{self, LINE_CAP, SCROLLBACK, Source, TEXT_CAP};
+use libghostty_vt::{
+    Error, Terminal,
+    fmt::{Extras, Format, Formatter},
+    mode::Mode,
+    point::{Coordinate, Point},
+    render::{CursorVisualStyle, RenderState},
+    screen::{CellWide, Screen as ActiveScreen},
+};
 use serde_json::{Value, json};
+use std::{cell::RefCell, rc::Rc};
 
 pub struct Screen {
-    parser: vt100::Parser<Queries>,
-}
-
-/// The queries the emulator answers for a program nobody is attached to:
-/// device attributes, the status report and the cursor position. They are
-/// the ones a shell asks at startup and waits on; the answers are queued
-/// here for the caller to send.
-#[derive(Default)]
-struct Queries {
-    replies: Vec<u8>,
-}
-/// What the emulator says it is when asked for its device attributes: a
-/// plain VT220-class terminal with colour (`62`) and nothing else.
-const DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?62;22c";
-impl vt100::Callbacks for Queries {
-    fn unhandled_csi(
-        &mut self,
-        screen: &mut vt100::Screen,
-        i1: Option<u8>,
-        i2: Option<u8>,
-        params: &[&[u16]],
-        c: char,
-    ) {
-        // Only the plain forms: `CSI > c`, `CSI ? 6 n`, `CSI 0:1 c` and the
-        // rest are not ours.
-        if i1.is_some() || i2.is_some() || params.len() > 1 || params.iter().any(|p| p.len() > 1) {
-            return;
-        }
-        let parameter = params
-            .first()
-            .map_or(0, |p| p.first().copied().unwrap_or(0));
-        match (c, parameter) {
-            ('c', 0) => self.replies.extend_from_slice(DEVICE_ATTRIBUTES),
-            ('n', 5) => self.replies.extend_from_slice(b"\x1b[0n"),
-            ('n', 6) => {
-                // After a character in the last column the emulator waits to
-                // wrap with the cursor one past it; a terminal reports the
-                // last column, where the cursor is drawn.
-                let (row, col) = screen.cursor_position();
-                let (_, cols) = screen.size();
-                let col = col.min(cols.saturating_sub(1));
-                self.replies
-                    .extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
-            }
-            _ => (),
-        }
-    }
+    terminal: Terminal<'static, 'static>,
+    replies: Rc<RefCell<Vec<u8>>>,
 }
 
 /// What `wait` looks for in a line.
@@ -118,127 +82,135 @@ fn drop_blank(lines: &mut Vec<String>) {
 
 impl Screen {
     pub fn new(rows: u16, cols: u16) -> Self {
-        Self {
-            parser: vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK, Queries::default()),
-        }
+        let replies = Rc::new(RefCell::new(Vec::new()));
+        let mut terminal = Terminal::new(cols, rows).expect("create Ghostty terminal");
+        terminal
+            .set_scrollback_max_lines(Some(SCROLLBACK))
+            .expect("set Ghostty scrollback limit");
+        // Use the line limit for retention instead of Ghostty's default byte limit.
+        terminal
+            .set_scrollback_max_bytes(Some(usize::MAX))
+            .expect("use Ghostty scrollback line limit");
+        terminal
+            .set_continuation_max_bytes(65536)
+            .expect("set Ghostty continuation limit");
+        let reply_sink = Rc::clone(&replies);
+        terminal
+            .on_pty_write(move |_, bytes| reply_sink.borrow_mut().extend_from_slice(bytes))
+            .expect("register Ghostty PTY reply callback");
+        Self { terminal, replies }
     }
+
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.process(bytes);
+        self.terminal.vt_write(bytes);
     }
+
     /// The answers to the queries fed since this was last called.
     pub fn take_replies(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.parser.callbacks_mut().replies)
+        self.replies.take()
     }
+
     pub fn resize(&mut self, rows: u16, cols: u16) {
-        let (old_rows, old_cols) = self.size();
-        if (rows, cols) == (old_rows, old_cols) {
-            return;
+        if (rows, cols) != self.size() {
+            self.terminal
+                .resize(cols, rows, 0, 0)
+                .expect("resize Ghostty terminal");
         }
-        if rows < old_rows && !self.alternate() {
-            // The emulator drops the bottom rows. Keep the newest output:
-            // scroll what would not fit into the scrollback first, and the
-            // cursor with the text it was on.
-            let screen = self.parser.screen();
-            let (cursor_row, _) = screen.cursor_position();
-            let used = screen
-                .rows(0, old_cols)
-                .enumerate()
-                .filter(|(_, text)| !text.trim().is_empty())
-                .map(|(i, _)| i)
-                .last()
-                .unwrap_or(0)
-                .max(usize::from(cursor_row));
-            let hidden = (used + 1).saturating_sub(usize::from(rows));
-            if hidden > 0 {
-                // Scroll the screen with a parser of its own, so a sequence
-                // the program's output left open in this one stays open.
-                let mut scratch = vt100::Parser::new(old_rows, old_cols, SCROLLBACK);
-                std::mem::swap(self.parser.screen_mut(), scratch.screen_mut());
-                scratch.process(format!("\x1b[{hidden}S\x1b[{hidden}A").as_bytes());
-                std::mem::swap(self.parser.screen_mut(), scratch.screen_mut());
+    }
+
+    pub fn alternate(&self) -> bool {
+        self.terminal.active_screen().expect("read Ghostty screen") == ActiveScreen::Alternate
+    }
+
+    pub fn size(&self) -> (u16, u16) {
+        (
+            self.terminal.rows().expect("read Ghostty rows"),
+            self.terminal.cols().expect("read Ghostty columns"),
+        )
+    }
+
+    /// One physical row in either the active area or the entire screen.
+    fn row(&self, point: fn(Coordinate) -> Point, y: u32, cols: u16) -> (String, bool) {
+        let first = self
+            .terminal
+            .grid_ref(point(Coordinate { x: 0, y }))
+            .expect("read Ghostty row");
+        let row = first.row().expect("read Ghostty row attributes");
+        let wrapped = row.is_wrapped().expect("read Ghostty wrap");
+        let mut text = String::new();
+        let mut graphemes = ['\0'; 16];
+        for x in 0..cols {
+            let grid = self
+                .terminal
+                .grid_ref(point(Coordinate { x, y }))
+                .expect("read Ghostty cell");
+            let cell = grid.cell().expect("read Ghostty cell attributes");
+            if matches!(
+                cell.wide().expect("read Ghostty cell width"),
+                CellWide::SpacerHead | CellWide::SpacerTail
+            ) {
+                continue;
+            }
+            match grid.graphemes(&mut graphemes) {
+                Ok(0) => text.push(' '),
+                Ok(len) => text.extend(&graphemes[..len]),
+                Err(Error::OutOfSpace { required }) => {
+                    let mut cluster = vec!['\0'; required];
+                    let len = grid
+                        .graphemes(&mut cluster)
+                        .expect("read Ghostty grapheme cluster");
+                    text.extend(&cluster[..len]);
+                }
+                Err(error) => panic!("read Ghostty graphemes: {error}"),
             }
         }
-        self.parser.screen_mut().set_size(rows, cols);
+        text.truncate(text.trim_end_matches(' ').len());
+        (text, wrapped)
     }
-    pub fn alternate(&self) -> bool {
-        self.parser.screen().alternate_screen()
+
+    fn rows(&self) -> impl DoubleEndedIterator<Item = (String, bool)> + '_ {
+        let (rows, cols) = self.size();
+        (0..u32::from(rows)).map(move |y| self.row(Point::Active, y, cols))
     }
-    pub fn size(&self) -> (u16, u16) {
-        self.parser.screen().size()
-    }
-    /// The rows of the screen in use, top to bottom.
-    fn rows(&self) -> Vec<(String, bool)> {
-        let screen = self.parser.screen();
-        let (_, cols) = screen.size();
-        screen
-            .rows(0, cols)
-            .enumerate()
-            .map(|(i, row)| (row, screen.row_wrapped(i as u16)))
-            .collect()
-    }
+
     /// The screen's lines without trailing blank ones.
     pub fn visible(&self) -> Vec<String> {
-        let mut lines: Vec<_> = self.rows().into_iter().map(|(text, _)| text).collect();
+        let mut lines: Vec<_> = self.rows().map(|(text, _)| text).collect();
         drop_blank(&mut lines);
         lines
     }
-    /// The last `want` lines of scrollback and screen, soft-wrapped rows
-    /// joined, without trailing blank lines. On the alternate screen, which
-    /// has no scrollback, the screen.
+
+    /// The last `want` lines of scrollback and screen, with soft wraps joined.
     pub fn recent(&mut self, want: usize) -> Vec<String> {
-        let screen = self.parser.screen_mut();
-        let (height, _) = screen.size();
-        let height = usize::from(height);
-        screen.set_scrollback(usize::MAX);
-        let scrollback = screen.scrollback();
-        // Rows from the bottom up, a page at a time, until `want` lines end
-        // in them and the first of those is known to be whole.
-        let mut upward: Vec<(String, bool)> = vec![];
+        let (_, cols) = self.size();
+        let total = self
+            .terminal
+            .total_rows()
+            .expect("count Ghostty screen rows") as u32;
+        let mut upward = Vec::new();
         let mut ends = 0;
-        let mut text = false;
-        let mut offset = 0;
-        let mut held = 0;
-        loop {
-            let screen = self.parser.screen_mut();
-            screen.set_scrollback(offset);
-            let (_, cols) = screen.size();
-            let page: Vec<_> = screen
-                .rows(0, cols)
-                .enumerate()
-                .map(|(i, row)| (row, screen.row_wrapped(i as u16)))
-                .collect();
-            // The page shows combined rows [scrollback - offset, ..); the
-            // ones not seen on the earlier page are its first `fresh`.
-            let fresh = if offset == 0 {
-                page.len()
-            } else {
-                page.len().min(offset - held)
-            };
-            held = offset;
-            for row in page[..fresh].iter().rev() {
-                // Blank rows below the last text are dropped, so they end
-                // no line.
-                text = text || !row.0.trim().is_empty();
-                ends += usize::from(!row.1 && text);
-                upward.push(row.clone());
+        let mut seen_text = false;
+        for y in (0..total).rev() {
+            let (text, wrapped) = self.row(Point::Screen, y, cols);
+            seen_text |= !text.trim().is_empty();
+            if !wrapped && seen_text {
+                if ends == want {
+                    break;
+                }
+                ends += 1;
             }
-            if ends > want || offset >= scrollback {
-                break;
-            }
-            offset = (offset + height).min(scrollback);
+            upward.push((text, wrapped));
         }
-        self.parser.screen_mut().set_scrollback(0);
-        let mut lines = vec![];
+
+        let mut lines = Vec::new();
         let mut line = String::new();
-        let mut open = false;
         for (text, wrapped) in upward.into_iter().rev() {
             line.push_str(&text);
-            open = wrapped;
             if !wrapped {
                 lines.push(std::mem::take(&mut line));
             }
         }
-        if open {
+        if !line.is_empty() {
             lines.push(line);
         }
         drop_blank(&mut lines);
@@ -266,15 +238,19 @@ impl Screen {
     /// The newest line `matcher` matches among the screen's rows and the
     /// last `lines` recent lines, cut to the line limit.
     pub fn find(&mut self, matcher: &Matcher, lines: usize) -> Option<(String, bool)> {
-        let screen = self.rows();
-        let recent = self.recent(lines);
-        screen
-            .iter()
-            .map(|(text, _)| text)
+        let on_screen = self
+            .rows()
             .rev()
-            .chain(recent.iter().rev())
-            .find(|line| matcher.matches(line))
-            .map(|line| clip(line, LINE_CAP))
+            .map(|(text, _)| text)
+            .find(|line| matcher.matches(line));
+        on_screen
+            .or_else(|| {
+                self.recent(lines)
+                    .into_iter()
+                    .rev()
+                    .find(|line| matcher.matches(line))
+            })
+            .map(|line| clip(&line, LINE_CAP))
     }
     /// The text a terminal that exited leaves: its last `lines` lines.
     pub fn last_lines(&mut self, lines: usize) -> (String, bool) {
@@ -283,10 +259,12 @@ impl Screen {
     /// The bytes to write to the program for `text`, then `keys`, in the
     /// input modes it set.
     pub fn input(&self, text: Option<&str>, keys: &[String]) -> Vec<u8> {
-        let screen = self.parser.screen();
         let mut bytes = vec![];
         if let Some(text) = text {
-            let paste = screen.bracketed_paste();
+            let paste = self
+                .terminal
+                .mode(Mode::BRACKETED_PASTE)
+                .expect("read Ghostty paste mode");
             if paste {
                 bytes.extend_from_slice(b"\x1b[200~");
             }
@@ -295,95 +273,78 @@ impl Screen {
                 bytes.extend_from_slice(b"\x1b[201~");
             }
         }
+        let application_cursor = self
+            .terminal
+            .mode(Mode::DECCKM)
+            .expect("read Ghostty cursor mode");
         for key in keys {
-            if let Some(key) = terminal::key_bytes(key, screen.application_cursor()) {
+            if let Some(key) = terminal::key_bytes(key, application_cursor) {
                 bytes.extend_from_slice(&key);
             }
         }
         bytes
     }
-    /// What brings a frontend to this screen. On the normal screen it is
-    /// the scrollback as lines and then the screen's lines down to the
-    /// cursor, so the frontend keeps the history above the screen; on the
-    /// alternate screen it is that screen alone. Both end with the input
-    /// modes the program set. Best effort: the program is made to repaint
-    /// after it, and a frontend narrower than the screen wraps its lines.
+    /// Replay the active screen, plus the history on the primary screen.
     pub fn redraw(&mut self) -> Vec<u8> {
+        let mut bytes = Vec::new();
         if self.alternate() {
-            let mut bytes = b"\x1b[?1049h".to_vec();
-            bytes.extend_from_slice(&self.parser.screen().state_formatted());
-            return bytes;
+            bytes.extend_from_slice(b"\x1b[?1049h");
         }
-        let mut bytes = vec![];
-        for row in self.scrollback_formatted() {
-            bytes.extend_from_slice(&row);
-            bytes.extend_from_slice(b"\x1b[m\r\n");
+        // History needs the trailing blank rows to scroll into place before
+        // the cursor moves. Trimming keeps replays without history compact.
+        let trim = self
+            .terminal
+            .scrollback_rows()
+            .expect("count Ghostty scrollback rows")
+            == 0;
+        bytes.extend_from_slice(
+            &Formatter::new(&self.terminal)
+                .and_then(|mut formatter| {
+                    formatter
+                        .set_format(Format::Vt)?
+                        .set_trim(trim)?
+                        .set_unwrap(true)?
+                        .set_extras(
+                            Extras::ALL - Extras::PALETTE - Extras::PWD - Extras::TABSTOPS,
+                        )?;
+                    formatter.format_alloc(None)
+                })
+                .expect("format Ghostty redraw"),
+        );
+
+        // The VT formatter omits the window title and cursor shape.
+        let title = self.terminal.title().expect("read Ghostty window title");
+        if !title.is_empty() {
+            let title: String = String::from_utf8_lossy(title)
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .collect();
+            bytes.extend_from_slice(format!("\x1b]2;{title}\x1b\\").as_bytes());
         }
-        let screen = self.parser.screen();
-        let (_, cols) = screen.size();
-        let (cursor_row, cursor_column) = screen.cursor_position();
-        let rows: Vec<_> = screen.rows_formatted(0, cols).collect();
-        let last = screen
-            .rows(0, cols)
-            .enumerate()
-            .filter(|(_, text)| !text.trim().is_empty())
-            .map(|(i, _)| i)
-            .last()
-            .unwrap_or(0)
-            .max(usize::from(cursor_row));
-        for (i, row) in rows.iter().enumerate().take(last + 1) {
-            bytes.extend_from_slice(row);
-            if i < last {
-                bytes.extend_from_slice(b"\x1b[m\r\n");
-            }
+        let mut render = RenderState::new().expect("create Ghostty render state");
+        let state = render
+            .update(&self.terminal)
+            .expect("read Ghostty render state");
+        let shape = match state
+            .cursor_visual_style()
+            .expect("read Ghostty cursor shape")
+        {
+            CursorVisualStyle::Underline => 3,
+            CursorVisualStyle::Bar => 5,
+            _ => 1,
+        };
+        let steady = u8::from(!state.cursor_blinking().expect("read Ghostty cursor blink"));
+        bytes.extend_from_slice(format!("\x1b[{} q", shape + steady).as_bytes());
+
+        // Release a frame that was open when the frontend attached.
+        if self
+            .terminal
+            .mode(Mode::SYNC_OUTPUT)
+            .expect("read Ghostty synchronized output")
+        {
+            bytes.extend_from_slice(b"\x1b[?2026l");
         }
-        bytes.extend_from_slice(b"\x1b[m");
-        if last > usize::from(cursor_row) {
-            bytes.extend_from_slice(format!("\x1b[{}A", last - usize::from(cursor_row)).as_bytes());
-        }
-        bytes.push(b'\r');
-        if cursor_column >= cols {
-            // The last column was written and the line has not wrapped yet:
-            // draw its last cell again, which leaves the frontend there too.
-            // A wide character ends in a continuation cell: draw both.
-            let wide = cols > 1
-                && screen
-                    .cell(cursor_row, cols - 1)
-                    .is_some_and(vt100::Cell::is_wide_continuation);
-            let (start, width) = if wide { (cols - 2, 2) } else { (cols - 1, 1) };
-            if start > 0 {
-                bytes.extend_from_slice(format!("\x1b[{start}C").as_bytes());
-            }
-            if let Some(cell) = screen.rows_formatted(start, width).nth(usize::from(cursor_row)) {
-                bytes.extend_from_slice(&cell);
-                bytes.extend_from_slice(b"\x1b[m");
-            }
-        } else if cursor_column > 0 {
-            bytes.extend_from_slice(format!("\x1b[{cursor_column}C").as_bytes());
-        }
-        bytes.extend_from_slice(&screen.input_mode_formatted());
-        if screen.hide_cursor() {
-            bytes.extend_from_slice(b"\x1b[?25l");
-        }
-        bytes.extend_from_slice(&screen.attributes_formatted());
         bytes
-    }
-    /// The scrollback rows, oldest first, with their colours.
-    fn scrollback_formatted(&mut self) -> Vec<Vec<u8>> {
-        let screen = self.parser.screen_mut();
-        let (height, cols) = screen.size();
-        let height = usize::from(height);
-        screen.set_scrollback(usize::MAX);
-        let mut left = screen.scrollback();
-        let mut pages = vec![];
-        while left > 0 {
-            screen.set_scrollback(left);
-            let take = left.min(height);
-            pages.push(screen.rows_formatted(0, cols).take(take).collect::<Vec<_>>());
-            left -= take;
-        }
-        screen.set_scrollback(0);
-        pages.into_iter().flatten().collect()
     }
 }
 
@@ -408,6 +369,13 @@ mod tests {
         screen
     }
 
+    fn cursor(screen: &Screen) -> (u16, u16) {
+        (
+            screen.terminal.cursor_y().unwrap(),
+            screen.terminal.cursor_x().unwrap(),
+        )
+    }
+
     #[test]
     fn visible_is_the_screen_without_trailing_blank_lines() {
         let mut s = screen(4, 20, "one\r\ntwo\r\n");
@@ -430,6 +398,10 @@ mod tests {
         assert_eq!(s.visible(), ["d", "e"]);
         let read = s.read(Source::Recent, Some(3));
         assert_eq!(read["text"], "c\nd\ne");
+
+        // Erasing the last row of a wrapped line still leaves one recent line.
+        let mut erased = screen(3, 5, "older\r\nABCDEf\x1b[2K");
+        assert_eq!(erased.recent(1), ["ABCDE"]);
     }
 
     #[test]
@@ -441,12 +413,32 @@ mod tests {
         assert_eq!(recent[0], "line 80");
         assert_eq!(recent[119], "line 199");
         assert_eq!(s.recent(5000).len(), 200);
-        assert_eq!(s.parser.screen().scrollback(), 0, "the view is restored");
+        assert_eq!(
+            s.row(Point::Viewport, 0, 20),
+            s.row(Point::Active, 0, 20),
+            "the viewport stays at the active area"
+        );
+    }
+
+    #[test]
+    fn recent_retains_dense_scrollback_up_to_the_line_limit() {
+        let mut s = Screen::new(10, 120);
+        let fill = "x".repeat(114);
+        let last = SCROLLBACK + 99;
+        for i in 0..=last {
+            s.feed(format!("{i:04} {fill}\r\n").as_bytes());
+        }
+        let recent = s.recent(SCROLLBACK);
+        // Ghostty evicts complete pages and can fall short of the line limit.
+        // The default byte cap would retain only about 500 of these lines.
+        assert!((SCROLLBACK * 9 / 10..=SCROLLBACK).contains(&recent.len()));
+        assert_eq!(recent[0], format!("{:04} {fill}", last + 1 - recent.len()));
+        assert_eq!(recent.last().unwrap(), &format!("{last:04} {fill}"));
     }
 
     #[test]
     fn the_alternate_screen_is_read_like_the_visible_one() {
-        let mut s = screen(3, 20, "history\r\n\x1b[?1049hfull\x1b[2;1Hscreen");
+        let mut s = screen(3, 20, "history\r\n\x1b[?1049h\x1b[Hfull\x1b[2;1Hscreen");
         assert!(s.alternate());
         assert_eq!(s.recent(100), ["full", "screen"]);
         let read = s.read(Source::Recent, None);
@@ -509,24 +501,34 @@ mod tests {
 
     #[test]
     fn the_redraw_reproduces_the_screen_and_the_modes() {
-        let output: String = (0..20).map(|i| format!("\x1b[3{}mline {i}\x1b[m\r\n", i % 8)).collect();
+        let output: String = (0..20)
+            .map(|i| format!("\x1b[3{}mline {i}\x1b[m\r\n", i % 8))
+            .collect();
         let mut source = screen(5, 20, &format!("{output}\x1b[?2004h\x1b[?1h"));
         let redraw = source.redraw();
         let mut frontend = Screen::new(5, 20);
         frontend.feed(&redraw);
         assert_eq!(frontend.visible(), source.visible());
-        assert_eq!(
-            frontend.parser.screen().cursor_position(),
-            source.parser.screen().cursor_position()
-        );
-        assert!(frontend.parser.screen().bracketed_paste());
-        assert!(frontend.parser.screen().application_cursor());
+        assert_eq!(cursor(&frontend), cursor(&source));
+        assert!(frontend.terminal.mode(Mode::BRACKETED_PASTE).unwrap());
+        assert!(frontend.terminal.mode(Mode::DECCKM).unwrap());
         // The scrollback is in the frontend's, with colour, above the screen.
         let history = frontend.recent(1000);
         assert_eq!(history[0], "line 0");
         assert_eq!(history[19], "line 19");
-        let colour = frontend.parser.screen().cell(0, 0).map(|c| c.fgcolor());
-        assert!(colour.is_some());
+        let cell_style = |screen: &Screen| {
+            screen
+                .terminal
+                .grid_ref(Point::Screen(Coordinate { x: 0, y: 0 }))
+                .unwrap()
+                .style()
+                .unwrap()
+        };
+        assert_ne!(
+            cell_style(&source).fg_color,
+            libghostty_vt::style::StyleColor::None
+        );
+        assert_eq!(cell_style(&frontend).fg_color, cell_style(&source).fg_color);
     }
 
     #[test]
@@ -539,7 +541,7 @@ mod tests {
         assert_eq!(s.visible().last().unwrap(), "READY");
         assert_eq!(s.recent(100).first().unwrap(), "line 0");
         assert_eq!(s.recent(100).last().unwrap(), "READY");
-        assert_eq!(s.parser.screen().cursor_position(), (23, 5));
+        assert_eq!(cursor(&s), (23, 5));
         // Output that follows lands after it.
         s.feed(b"!\r\nnext");
         assert_eq!(&s.recent(2), &["READY!", "next"]);
@@ -569,7 +571,8 @@ mod tests {
         frontend.feed(&source.redraw());
         source.feed(b"Z");
         frontend.feed(b"Z");
-        // The frontend shows history above, so rows sit lower; the text is the same.
+        // Scrollback replays above the active area and the cursor stays on
+        // the same line.
         assert_eq!(frontend.recent(100), source.recent(100));
         assert_eq!(frontend.recent(100), ["x", "y   Z", "ABCDE"]);
     }
@@ -633,9 +636,23 @@ mod tests {
         frontend.feed(&redraw);
         assert!(frontend.alternate());
         assert_eq!(frontend.visible(), source.visible());
-        assert!(frontend.parser.screen().hide_cursor());
+        assert!(!frontend.terminal.mode(Mode::CURSOR_VISIBLE).unwrap());
         frontend.feed(b"\x1b[?1049l");
-        assert_eq!(frontend.visible(), Vec::<String>::new(), "no normal-screen history");
+        assert_eq!(
+            frontend.visible(),
+            Vec::<String>::new(),
+            "no normal-screen history"
+        );
+    }
+
+    #[test]
+    fn alternate_screen_redraw_keeps_content_in_a_shorter_frontend() {
+        let mut source = screen(40, 120, "\x1b[?1049h\x1b[2J\x1b[3;5HFULLSCREEN");
+        let mut frontend = Screen::new(16, 80);
+        frontend.feed(&source.redraw());
+        assert!(frontend.alternate());
+        assert_eq!(frontend.visible(), ["", "", "    FULLSCREEN"]);
+        assert_eq!(cursor(&frontend), cursor(&source));
     }
     #[test]
     fn it_answers_the_device_attributes_status_and_cursor_position_queries() {
@@ -667,31 +684,43 @@ mod tests {
     }
 
     #[test]
-    fn it_answers_nothing_else() {
+    fn it_reports_the_current_bracketed_paste_mode() {
         let mut screen = Screen::new(24, 80);
-        for query in [
-            &b"\x1b[>c"[..],
-            b"\x1b[=c",
-            b"\x1b[1c",
-            b"\x1b[0;1c",
-            b"\x1b[>0q",
-            b"\x1b[?6n",
-            b"\x1b[?5n",
-            b"\x1b[7n",
-            b"\x1b[5;6n",
-            b"\x1b[0:1c",
-            b"\x1b[6:1n",
-            b"\x1b[5:0n",
-            b"\x1b[?u",
-            b"\x1b[?1$p",
-            b"\x1b[18t",
-            b"\x1b]10;?\x07",
-            b"\x1b]11;?\x1b\\",
-            b"\x1bP+q544e\x1b\\",
-        ] {
-            screen.feed(query);
-            assert!(screen.take_replies().is_empty(), "{query:?}");
-        }
+        screen.feed(b"\x1b[?2004$p");
+        assert_eq!(screen.take_replies(), b"\x1b[?2004;2$y");
+        screen.feed(b"\x1b[?2004h\x1b[?2004$p");
+        assert_eq!(screen.take_replies(), b"\x1b[?2004;1$y");
+    }
+
+    #[test]
+    fn redraw_replays_scrollback_with_soft_wrapped_lines() {
+        let mut source = screen(
+            4,
+            8,
+            "long line in history\r\nsecond\r\nthird\r\nfourth\r\nfifth",
+        );
+        let mut frontend = Screen::new(4, 8);
+        frontend.feed(&source.redraw());
+        assert_eq!(frontend.recent(100), source.recent(100));
+        assert_eq!(
+            frontend.recent(100),
+            ["long line in history", "second", "third", "fourth", "fifth"]
+        );
+    }
+
+    #[test]
+    fn redraw_restores_the_title_and_cursor_shape_and_releases_synchronized_output() {
+        let mut source = screen(3, 20, "\x1b]2;terminal title\x07\x1b[6 q\x1b[?2026h");
+        let redraw = source.redraw();
+        let mut frontend = Screen::new(3, 20);
+        frontend.feed(&redraw);
+        assert_eq!(frontend.terminal.title().unwrap(), b"terminal title");
+        let mut render = RenderState::new().unwrap();
+        let state = render.update(&frontend.terminal).unwrap();
+        assert_eq!(state.cursor_visual_style().unwrap(), CursorVisualStyle::Bar);
+        assert!(!state.cursor_blinking().unwrap());
+        assert!(!frontend.terminal.mode(Mode::SYNC_OUTPUT).unwrap());
+        assert!(source.terminal.mode(Mode::SYNC_OUTPUT).unwrap());
     }
 
     #[test]
@@ -700,7 +729,10 @@ mod tests {
         let mut screen = Screen::new(6, 40);
         screen.feed(text.as_bytes());
         assert_eq!(screen.visible()[0], "* EXPERIMENTAL \u{b7} AI-GENERATED");
-        assert_eq!(screen.visible()[1], "\u{65e5}\u{672c}\u{8a9e} \u{e9} \u{273b} \u{1f41f} red \u{b7} end");
+        assert_eq!(
+            screen.visible()[1],
+            "\u{65e5}\u{672c}\u{8a9e} \u{e9} \u{273b} \u{1f41f} red \u{b7} end"
+        );
         // What a frontend that attaches sees is the same text, bytes and all.
         let mut frontend = Screen::new(6, 40);
         frontend.feed(&screen.redraw());
@@ -726,9 +758,11 @@ mod tests {
             b"\x1b[200~ START\x1b[201~\x1b:wq\r"
         );
         // Keys follow the text in the order given, and a letter keeps its case.
-        assert_eq!(screen.input(Some("x"), &keys(&["Y", "z"])), b"\x1b[200~x\x1b[201~Yz");
+        assert_eq!(
+            screen.input(Some("x"), &keys(&["Y", "z"])),
+            b"\x1b[200~x\x1b[201~Yz"
+        );
         // A multi-character entry that is no key is not typed.
         assert_eq!(screen.input(None, &keys(&["gg", "g"])), b"g");
     }
-
 }

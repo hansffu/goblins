@@ -407,14 +407,13 @@ impl Terminals {
                         peer,
                         serde_json::json!(contract::attach_exchanges::Reply::ID),
                     )?;
-                    if entry.pane.is_some() {
-                        entry.io.redraw();
-                    }
                     // Only an accepted consumer may change the size. An
                     // ioctl error does not turn an accepted stream into a
                     // second, contradictory refusal frame.
                     diagnostic = entry.io.resize(rows, cols).err().map(|e| e.to_string());
                     if entry.pane.is_some() {
+                        // Format for the accepted frontend's dimensions.
+                        entry.io.redraw();
                         entry.io.winch();
                     }
                     Ok(())
@@ -929,10 +928,10 @@ mod tests {
         print(&slave, "hello\x1b[c\x1b[6n");
         terminals.tick(false, &mut events);
         assert_eq!(input_of(&slave).unwrap(), b"\x1b[?62;22c\x1b[1;6R");
-        // Nothing else is answered.
+        // Ghostty also answers secondary device attributes and private CPR.
         print(&slave, "\x1b[>c\x1b[?6n\x1b]10;?\x07");
         terminals.tick(false, &mut events);
-        assert_eq!(input_of(&slave), None);
+        assert_eq!(input_of(&slave).unwrap(), b"\x1b[>1;0;0c\x1b[?1;6;1R");
         // An attached frontend answers for itself: the query reaches it.
         let id = TerminalId::Process(5);
         let (server, mut client) = UnixStream::pair().unwrap();
@@ -1131,6 +1130,31 @@ mod tests {
         terminals.tick(false, &mut events);
         assert!(!terminals.has(5), "closed even though it was not read");
         drop(client);
+    }
+
+    #[test]
+    fn attaching_to_a_cleared_screen_at_a_smaller_size_keeps_the_prompt_visible() {
+        let _no_forks = unix::no_forks();
+        let mut terminals = Terminals::default();
+        let (master, slave) = unix::pty(40, 120).unwrap();
+        raw(&slave);
+        terminals.pane(5, master, 40, 120, None).unwrap();
+        let mut events = VecDeque::new();
+        for i in 0..45 {
+            print(&slave, &format!("line {i}\r\n"));
+        }
+        print(&slave, "\x1b[H\x1b[2Jprompt> ");
+        terminals.tick(false, &mut events);
+
+        let (server, mut client) = UnixStream::pair().unwrap();
+        terminals.attach(TerminalId::Process(5), server, 24, 100, &mut events);
+        terminals.tick(false, &mut events);
+
+        let mut screen = frontend(&mut client, 24, 100);
+        assert_eq!(screen.visible(), ["prompt>"]);
+        assert_eq!(screen.recent(100).first().unwrap(), "line 0");
+        screen.feed(b"typed");
+        assert_eq!(screen.visible(), ["prompt> typed"]);
     }
 
     #[test]

@@ -102,8 +102,8 @@ pub enum Source {
         arguments: Option<Vec<String>>,
     },
 }
-/// The daemon's view of one goblin's runtime. Neither method blocks.
-pub trait Runtime: Send {
+/// The nonblocking interface to one goblin's runtime.
+pub trait Runtime {
     /// Err gives the command back when the runtime's queue is full.
     /// Cancellations, process signals, `Stop`, `SandboxSend` and
     /// `SandboxClose` are never refused.

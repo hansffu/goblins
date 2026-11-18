@@ -1,4 +1,4 @@
-{ pkgs }:
+{ pkgs, ghostty-vt }:
 let
   inherit (pkgs) lib;
   validate = import ../internal/validate.nix { inherit lib; };
@@ -162,7 +162,7 @@ assert lib.assertMsg (
   launchOptionBytes <= 262144
 ) "mkGoblins: the launchOptions of all goblins together exceed 256 KiB in the configuration manifest";
 import ../../packages/daemon/wrapper.nix {
-  inherit pkgs goblins configurations;
+  inherit pkgs ghostty-vt goblins configurations;
   worktrees = {
     directory = worktrees.directory or null;
   };

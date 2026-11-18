@@ -46,25 +46,23 @@ At most 16 terminals per goblin; creating a 17th fails with a message naming the
 
 * Emulator
 
-The supervisor feeds each terminal's output through a terminal emulator, the =vt100= crate (pure Rust, no =unsafe=), sized like the PTY with 5,000 lines of scrollback. The emulator serves reading, waiting, key encoding and the redraw on attach. While nobody is attached the supervisor keeps reading the PTY into the emulator, so a chatty program never blocks; while attached, output also goes to the frontend as today. While nobody is attached the supervisor also answers the queries a shell asks at startup and waits on, as a plain VT220-class terminal: the device attributes (=CSI c= and =CSI 0 c=: =CSI ? 62 ; 22 c=), the status report (=CSI 5 n=: =CSI 0 n=) and the cursor position (=CSI 6 n=: =CSI row ; col R=, from the emulator's cursor), and nothing else. An attached frontend answers for itself. Otherwise fish, which sends the first at startup, waits ten seconds and warns, because a query that reached only the emulator is not replayed on attach.
+The supervisor feeds each named terminal's output through libghostty-vt, sized like the PTY with up to 5,000 lines of scrollback, evicted in whole pages. The emulator serves reading, waiting, key encoding and the redraw on attach. While nobody is attached the supervisor keeps reading the PTY into the emulator, so a chatty program never blocks. While a frontend is attached it also receives live output. The supervisor answers terminal queries while detached, including the device attributes, status report, cursor position and mode queries. An attached frontend answers those queries itself. The primary screen reflows when its width changes and carries older output into scrollback when the terminal shrinks.
 
-The emulator parses untrusted sandbox output on the host, as Ghostel already does in Emacs. It runs inside the goblin's supervisor, so a fault there takes down that goblin's supervisor only.
-
-A cell takes 32 bytes, so a full scrollback at 120 columns is about 19 MB, and at the 500-column limit about 80 MB (1.3 GB for 16 terminals); a terminal that has printed little costs little.
+The emulator parses sandbox output inside the goblin's supervisor, so a fault there takes down that goblin's supervisor only.
 
 ** Full-screen programs
 
 Programs like vim, less, htop and full-screen Claude switch to the alternate screen, which has no scrollback. The emulator tracks both screens and the input modes the program sets.
 
-- Reads return the screen in use and say =alternate_screen=. While the alternate screen is active, =recent= returns the alternate screen like =visible=, since =vt100= only exposes the active screen; the normal screen's scrollback is back once the program leaves it.
+- Reads return the screen in use and say =alternate_screen=. While the alternate screen is active, =recent= reads its rows and joins soft wraps. The primary screen's scrollback is available again when the program leaves the alternate screen.
 - =send= encodes cursor keys for the cursor mode the program set, and wraps =text= in bracketed-paste markers when the program enabled bracketed paste.
-- An attach redraws the screen in use, entering the alternate screen first when it is active (=vt100= does not emit that), and restores the input modes (application cursor and keypad, bracketed paste, mouse reporting, cursor visibility). Scroll margins, origin mode and the saved cursor are not restored. The redraw is best effort: afterwards the supervisor resizes the PTY to the frontend and sends SIGWINCH to its foreground process group even when the size did not change, so full-screen programs repaint. Attaching while the alternate screen is active brings no normal-screen history into the frontend.
+- An attach redraws the active screen and restores the cursor position and shape, title, scrolling region, origin mode and input modes. On the primary screen it also replays scrollback. On the alternate screen it enters that screen before drawing it. The replay uses the frontend's palette and releases any synchronized output frame. The supervisor resizes the screen and PTY to the accepted frontend before formatting the redraw. It then queues the replay and sends SIGWINCH to the foreground process group even when the size stays the same, so full-screen programs repaint.
 
 * Attaching
 
 =attach.sock='s hello gets an optional =terminal= (ID or name): ={"version": 1, "rows", "cols", "terminal"}=. With it, the attachment is to that terminal instead of the goblin's own; without it nothing changes. One frontend per terminal at a time, independent of the goblin's own attachment; a second is refused as today.
 
-On attach the supervisor writes the redraw before live output: on the normal screen, the scrollback as lines followed by the screen, with colours where the emulator gives them; on the alternate screen, as above. The PTY is then resized to the frontend. When the frontend closes its stream, it is detached and the terminal keeps the last size. A terminal nobody has attached to yet is 40×120 unless =create= sets a size.
+On attach the supervisor writes the redraw before live output: on the normal screen, the scrollback as lines followed by the screen, with colours where the emulator gives them; on the alternate screen, as above. When the frontend closes its stream, it is detached and the terminal keeps the last size. A terminal nobody has attached to yet is 40×120 unless =create= sets a size.
 
 The attach client resizes with =terminals.resize=, not =sessions.resize=, and does not wait on =sessions.get= for an outcome: a terminal attachment has none. The stream ends when the terminal is detached or ends; the client then checks =terminals.list= once and prints =detached from tN= or =tN ended=, and exits 0.
 

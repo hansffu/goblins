@@ -5,12 +5,15 @@
   libs,
   testPackages ? [ ],
   checkEnv ? { },
+  nativeBuildInputs ? [ ],
+  buildInputs ? [ ],
 }:
 let
   root = ../../.;
   members = (builtins.fromTOML (builtins.readFile ../../Cargo.toml)).workspace.members;
 in
 pkgs.rustPlatform.buildRustPackage {
+  inherit nativeBuildInputs buildInputs;
   pname = package;
   version = "0.1.0";
   # Cargo needs every workspace manifest, but only the selected package and
@@ -50,6 +53,9 @@ pkgs.rustPlatform.buildRustPackage {
     "unset " + pkgs.lib.concatStringsSep " " (builtins.attrNames checkEnv)
   );
   cargoLock.lockFile = ../../Cargo.lock;
+  # Cargo vendors the workspace lockfile even for packages that do not link Ghostty.
+  cargoLock.outputHashes."libghostty-vt-0.2.1" =
+    "sha256-e5YkGJxvKF6kNaFlRC9M1VCftcKrk3YgnirkW/EXlCQ=";
   cargoBuildFlags = [
     "-p"
     package

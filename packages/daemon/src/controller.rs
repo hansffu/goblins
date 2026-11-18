@@ -457,7 +457,7 @@ struct Active {
     activity_at: Option<Instant>,
     created: u64,
     record: SessionRecord,
-    runtime: Option<Box<dyn Runtime>>,
+    runtime: Option<Box<dyn Runtime + Send>>,
     /// Scope selected at acceptance or requested before startup completes.
     member_scope: Option<String>,
     pending: Option<Pending>,
@@ -2130,7 +2130,7 @@ impl Controller {
                 .unwrap_or_default(),
             None => p.configuration.clone(),
         };
-        let runtime: Box<dyn Runtime> = match self.backend {
+        let runtime: Box<dyn Runtime + Send> = match self.backend {
             RuntimeBackend::Supervised => Box::new(
                 Supervised::start(
                     self.executable.clone(),

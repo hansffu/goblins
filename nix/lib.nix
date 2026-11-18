@@ -1,5 +1,5 @@
-{ pkgs, sandbox }:
+{ pkgs, sandbox, ghostty-vt }:
 {
-  builders = import ./builders { inherit pkgs sandbox; };
+  builders = import ./builders { inherit pkgs sandbox ghostty-vt; };
   inherit (sandbox) commonTools;
 }

@@ -1,10 +1,10 @@
-{ pkgs, sandbox }:
+{ pkgs, sandbox, ghostty-vt }:
 let
   mkGoblin = import ./mk-goblin.nix { inherit pkgs sandbox; };
 in
 {
   inherit mkGoblin;
-  mkGoblins = import ./mk-goblins.nix { inherit pkgs; };
+  mkGoblins = import ./mk-goblins.nix { inherit pkgs ghostty-vt; };
   mkScope = import ./mk-scope.nix { inherit pkgs; };
   mkCodexGoblin = import ./mk-codex.nix {
     inherit pkgs mkGoblin;

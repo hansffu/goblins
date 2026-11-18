@@ -1,4 +1,4 @@
-{ pkgs }:
+{ pkgs, ghostty-vt }:
 import ../../nix/builders/rust.nix {
   inherit pkgs;
   package = "goblins-controller";
@@ -6,7 +6,7 @@ import ../../nix/builders/rust.nix {
   # Actor tests execute the separate production binary; its implementation
   # libraries are absent from this package's source and Cargo graph.
   checkEnv.GOBLINS_TEST_SUPERVISOR_EXECUTABLE =
-    "${import ../supervisor-bwrap { inherit pkgs; }}/bin/goblins-supervisor-bwrap";
+    "${import ../supervisor-bwrap { inherit pkgs ghostty-vt; }}/bin/goblins-supervisor-bwrap";
   libs = [
     ../../libs/unix
     ../../libs/runtime

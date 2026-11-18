@@ -2,6 +2,7 @@
   pkgs,
   goblinsLib,
   sandbox,
+  ghostty-vt,
   agents,
   # The demo goblins the Python tests use.
   demo,
@@ -378,14 +379,14 @@ let
 in
 {
   # Each runnable Rust package builds with only its listed library sources.
-  rust-supervisor-bwrap = import ../packages/supervisor-bwrap { inherit pkgs; };
-  rust-supervisor = import ../libs/supervisor { inherit pkgs; };
+  rust-supervisor-bwrap = import ../packages/supervisor-bwrap { inherit pkgs ghostty-vt; };
+  rust-supervisor = import ../libs/supervisor { inherit pkgs ghostty-vt; };
   rust-unix = import ../libs/unix { inherit pkgs; };
   rust-runtime = import ../libs/runtime { inherit pkgs; };
   rust-api = import ../libs/api { inherit pkgs; };
   rust-jsonrpc = import ../libs/jsonrpc { inherit pkgs; };
   rust-init = import ../libs/init { inherit pkgs; };
-  rust-daemon = import ../packages/daemon { inherit pkgs; };
+  rust-daemon = import ../packages/daemon { inherit pkgs ghostty-vt; };
   rust-mount-helper = import ../packages/mount-helper { inherit pkgs; };
   rust-sandbox-cli = import ../packages/sandbox-cli { inherit pkgs; };
   rust-adapter-codex = import ../packages/adapter-codex { inherit pkgs; };
@@ -404,7 +405,7 @@ in
           ../libs
         ];
       };
-      api = import "${source}/nix/lib.nix" { inherit pkgs sandbox; };
+      api = import "${source}/nix/lib.nix" { inherit pkgs sandbox ghostty-vt; };
     in
     api.builders.mkGoblins {
       goblins = import "${source}/nix/demo-goblins" {

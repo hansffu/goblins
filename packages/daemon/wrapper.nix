@@ -1,5 +1,6 @@
 {
   pkgs,
+  ghostty-vt,
   goblins,
   configurations,
   scopes ? { },
@@ -9,8 +10,8 @@
 let
   inherit (pkgs) lib;
   helper = import ../mount-helper { inherit pkgs; };
-  controller = import ./. { inherit pkgs; };
-  supervisor = import ../supervisor-bwrap { inherit pkgs; };
+  controller = import ./. { inherit pkgs ghostty-vt; };
+  supervisor = import ../supervisor-bwrap { inherit pkgs ghostty-vt; };
   prepare =
     configuration:
     builtins.removeAttrs configuration [ "nix" ]
