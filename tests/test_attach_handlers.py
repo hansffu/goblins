@@ -72,13 +72,15 @@ class ServerAgentWorkflow(unittest.TestCase):
         self.addCleanup(terminal.close)
         return terminal
 
-    def hello(self, session, rows=24, cols=100, version=1):
+    def hello(self, session, rows=24, cols=100, version=1, replay=None):
         """A raw frontend on attach.sock that has sent its hello."""
         peer = socket.socket(socket.AF_UNIX)
         peer.settimeout(10)
         peer.connect(self.d.get(session)["attach"])
-        peer.sendall(encode({"jsonrpc": "2.0", "method": "attach.hello",
-                             "params": {"version": version, "rows": rows, "cols": cols}}))
+        params = {"version": version, "rows": rows, "cols": cols}
+        if replay is not None:
+            params["replay"] = replay
+        peer.sendall(encode({"jsonrpc": "2.0", "method": "attach.hello", "params": params}))
         self.addCleanup(peer.close)
         return peer
 
@@ -173,6 +175,21 @@ class ServerAgentWorkflow(unittest.TestCase):
             reply, _ = self.handshake(peer)
             self.assertTrue(reply["result"]["attached"])
             self.assertIn(b"CLIENT=c819", peer.recv(4096))
+
+    def test_a_snapshot_attachment_to_a_client_has_an_empty_snapshot(self):
+        d = self.d
+        session = d.start(manifest=self.client())["session"]
+        self.set_variables(session, session_id="c819")
+        peer = self.hello(session, rows=30, cols=120, replay="snapshot")
+        reply, _ = self.handshake(peer)
+        self.assertTrue(reply["result"]["attached"])
+        # The client's terminal has no screen: length 0, then its raw output.
+        received = b""
+        while b"CLIENT=c819,30x120" not in received:
+            chunk = peer.recv(4096)
+            self.assertTrue(chunk, received)
+            received += chunk
+        self.assertTrue(received.startswith(b"\0\0\0\0CLIENT=c819,30x120"), received)
 
     def test_detach_runs_on_detach_and_ends_a_stubborn_client(self):
         d, marker = self.d, self.marker

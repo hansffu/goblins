@@ -743,11 +743,13 @@ impl Engine {
                 stream,
                 rows,
                 cols,
+                replay,
             } => self.terminals.attach(
                 terminal,
                 OwnedFd::from(stream).into(),
                 rows,
                 cols,
+                replay,
                 &mut self.events,
             ),
             Command::Detach { terminal } => self.terminals.detach(terminal, &mut self.events),
@@ -1223,6 +1225,7 @@ mod tests {
                 stream: OwnedFd::from(stream).into(),
                 rows: 30,
                 cols: 100,
+                replay: goblins_runtime::Replay::Vt,
             })
             .unwrap();
         assert!(
@@ -2141,6 +2144,7 @@ mod tests {
                 stream: OwnedFd::from(stream).into(),
                 rows: 24,
                 cols: 80,
+                replay: goblins_runtime::Replay::Vt,
             }
         };
         local.send(attach(7)).unwrap();

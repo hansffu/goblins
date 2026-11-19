@@ -949,7 +949,7 @@ def check_supervisor_process_metadata():
     ]
     for variant, description in zip(expected["SupervisorSpawnKind"]["x-rust-variants"], variant_docs):
         variant["description"] = description
-    if schema.get("x-rust-external-enums")!=["SupervisorSpawnKind","SupervisorTerminalId","SupervisorTerminalSource","SupervisorTerminalCondition","SupervisorTerminalCall","SupervisorStartedFeature"]:
+    if schema.get("x-rust-external-enums")!=["SupervisorSpawnKind","SupervisorTerminalId","SupervisorTerminalSource","SupervisorTerminalCondition","SupervisorTerminalCall","SupervisorStartedFeature","AttachReplay"]:
         raise ValueError("private external enum registry differs")
     for name,value in expected.items():
         if {k:v for k,v in defs[name].items() if k!="description"}!=value:
@@ -1001,7 +1001,7 @@ def check_supervisor_terminal_metadata():
         "TerminalCondition":enum("Condition",[obj({"Match":{"type":"string"}}),obj({"Regex":{"type":"string"}}),{"type":"string","enum":["Exit"]}],condition_variants,[t for t in traits if t!="Copy"],"terminal_metadata"),
         "TerminalCall":enum("Call",call_branches,call_variants,[t for t in traits if t!="Copy"],"terminal_metadata"),
         "TerminalResult":{"type":"string","x-json-content-schema":{"oneOf":[obj({"Ok":{}}),obj({"Err":{"type":"string"}})]}},
-        "CommandAttachParams":obj({"terminal":ref("TerminalId"),"stream":ref("Descriptor"),"rows":ref("Dimension"),"cols":ref("Dimension")}),
+        "CommandAttachParams":obj({"terminal":ref("TerminalId"),"stream":ref("Descriptor"),"rows":ref("Dimension"),"cols":ref("Dimension"),"replay":{"$ref":"#/definitions/AttachReplay"}}),
         "CommandDetachParams":obj({"terminal":ref("TerminalId")}),
         "CommandResizeParams":obj({"terminal":ref("TerminalId"),"rows":ref("Dimension"),"cols":ref("Dimension")}),
         "CommandTerminalCallParams":obj({"request":ref("Sequence"),"terminal":ref("Sequence"),"call":ref("TerminalCall")}),
@@ -1320,7 +1320,7 @@ def check_private_contracts():
         "Event.Spawned":("supervisor-to-daemon","SupervisorEventSpawnedParams",["id","pid"]),
         "Event.SpawnFailed":("supervisor-to-daemon","SupervisorEventSpawnFailedParams",["id","code","message"]),
         "Event.Exited":("supervisor-to-daemon","SupervisorEventExitedParams",["id","code","signal"]),
-        'Command.Attach':('daemon-to-supervisor','SupervisorCommandAttachParams',['terminal', 'stream', 'rows', 'cols']),
+        'Command.Attach':('daemon-to-supervisor','SupervisorCommandAttachParams',['terminal', 'stream', 'rows', 'cols', 'replay']),
         'Command.Detach':('daemon-to-supervisor','SupervisorCommandDetachParams',['terminal']),
         'Command.Resize':('daemon-to-supervisor','SupervisorCommandResizeParams',['terminal', 'rows', 'cols']),
         'Command.TerminalCall':('daemon-to-supervisor','SupervisorCommandTerminalCallParams',['request', 'terminal', 'call']),

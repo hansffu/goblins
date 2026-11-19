@@ -1525,7 +1525,12 @@
     {"params": {"version": 1, "rows": 1001, "cols": 80, "terminal": null}, "valid": false, "decoded": true},
     {"params": {"version": 1, "rows": 65535, "cols": 1, "terminal": null}, "valid": false, "decoded": true},
     {"params": {"version": 1, "rows": 500, "cols": 500, "terminal": "app"}, "valid": true, "decoded": true},
-    {"params": {"version": 0, "rows": 24, "cols": 80}, "valid": false, "decoded": true}
+    {"params": {"version": 0, "rows": 24, "cols": 80}, "valid": false, "decoded": true},
+    {"params": {"version": 1, "rows": 24, "cols": 80, "replay": "vt"}, "valid": true, "decoded": true},
+    {"params": [1, 24, 80, null, "snapshot"], "valid": true, "decoded": true},
+    {"params": [1, 24, 80, "app", "snapshot"], "valid": true, "decoded": true},
+    {"params": {"version": 1, "rows": 24, "cols": 80, "replay": "png"}, "valid": false, "decoded": false},
+    {"params": [1, 24, 80, null, "snapshot", 1], "valid": false, "decoded": false}
   ],
   "attach_waiting_cases": [
     {
@@ -5936,13 +5941,18 @@
       "frame": {
         "jsonrpc": "2.0",
         "method": "Command.Attach",
-        "params": {"terminal": "Main", "stream": {"$fd": 0}, "rows": 0, "cols": 65535}
+        "params": {"terminal": "Main", "stream": {"$fd": 0}, "rows": 0, "cols": 65535, "replay": "snapshot"}
       },
       "valid": true
     },
     {
       "direction": "daemon-to-supervisor",
-      "frame": {"jsonrpc": "2.0", "method": "Command.Attach", "params": {"stream": {"$fd": 0}, "rows": 0, "cols": 65535}},
+      "frame": {"jsonrpc": "2.0", "method": "Command.Attach", "params": {"stream": {"$fd": 0}, "rows": 0, "cols": 65535, "replay": "vt"}},
+      "valid": false
+    },
+    {
+      "direction": "daemon-to-supervisor",
+      "frame": {"jsonrpc": "2.0", "method": "Command.Attach", "params": {"terminal": "Main", "stream": {"$fd": 0}, "rows": 0, "cols": 65535}},
       "valid": false
     },
     {

@@ -13,8 +13,14 @@ pub fn run(state: PathBuf, command: TerminalCommand) -> Result<i32> {
     if !client.features.iter().any(|f| f == "terminals") {
         return Err("this daemon has no terminals; restart it".into());
     }
-    if let TerminalCommand::Attach { goblin, terminal } = command {
-        return attach(client, goblin, terminal);
+    if let TerminalCommand::Attach {
+        goblin,
+        terminal,
+        snapshot,
+        size,
+    } = command
+    {
+        return attach(client, goblin, terminal, size.filter(|_| snapshot));
     }
     let output = call(&mut client, command)?;
     print!("{}", output.stdout);
@@ -221,9 +227,15 @@ fn report(terminal: &str, result: &contract::TerminalWaitReply, output: &mut Out
 }
 
 /// Connect this terminal to `terminal`. Leaving detaches; the goblin and its
-/// terminal go on.
-fn attach(mut client: Client, goblin: String, terminal: String) -> Result<i32> {
-    if unsafe { libc::isatty(0) != 1 } {
+/// terminal go on. With `snapshot`, bridge a program to it instead, at that
+/// size, starting with a binary snapshot.
+fn attach(
+    mut client: Client,
+    goblin: String,
+    terminal: String,
+    snapshot: Option<(u16, u16)>,
+) -> Result<i32> {
+    if snapshot.is_none() && unsafe { libc::isatty(0) != 1 } {
         return Err("goblins terminal attach requires terminal input".into());
     }
     let record = client.call_typed::<goblins_protocol::contract::host::SessionsGet>(
@@ -234,9 +246,13 @@ fn attach(mut client: Client, goblin: String, terminal: String) -> Result<i32> {
         &session,
         &serde_json::to_value(record)?,
         Some(&terminal),
+        snapshot,
     )?;
-    // The frontend's window is applied once the stream is relayed.
-    RESIZE.store(true, Ordering::Relaxed);
+    // The frontend's window is applied once the stream is relayed. A
+    // bridged program resizes through the daemon itself.
+    if snapshot.is_none() {
+        RESIZE.store(true, Ordering::Relaxed);
+    }
     let mut outcome = None;
     let code = goblins_protocol::terminal::relay_with(
         stream,
@@ -285,6 +301,7 @@ fn attach(mut client: Client, goblin: String, terminal: String) -> Result<i32> {
         },
         &STOP,
         &RESIZE,
+        snapshot.is_some(),
     )?;
     if let Some(outcome) = outcome {
         eprintln!("{}", plain_text(&outcome));

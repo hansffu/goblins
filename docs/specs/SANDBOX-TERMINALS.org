@@ -59,14 +59,17 @@ Programs like vim, less, htop and full-screen Claude switch to the alternate scr
 - Reads return the screen in use and say =alternate_screen=. While the alternate screen is active, =recent= reads its rows and joins soft wraps. The primary screen's scrollback is available again when the program leaves the alternate screen.
 - =send= encodes cursor keys for the cursor mode the program set, and wraps =text= in bracketed-paste markers when the program enabled bracketed paste.
 - An attach redraws the active screen and restores the cursor position and shape, title, scrolling region, origin mode and input modes. On the primary screen it also replays scrollback. On the alternate screen it enters that screen before drawing it. The replay uses the frontend's palette and releases any synchronized output frame. The supervisor resizes the screen and PTY to the accepted frontend before formatting the redraw. It then queues the replay and sends SIGWINCH to the foreground process group even when the size stays the same, so full-screen programs repaint. The redraw carries no parser state: an escape sequence split across the attachment, such as a query the program was writing, reaches the frontend without its start, so the frontend may show its tail and leave the query unanswered.
+- A frontend that emulates the terminal itself with libghostty-vt, such as Ghostel, can ask for the snapshot replay instead (=replay= ="snapshot"= in the hello, =--snapshot --size ROWSxCOLS= on the attach commands). It gets a 4-byte big-endian length and libghostty-vt's binary snapshot of the whole terminal, taken before the resize to the frontend's size, then live output. The snapshot carries the parser state, so a split sequence ends correctly. The frontend restores it, then sets its own size as the screen does; SIGWINCH follows as with the redraw. A terminal without an emulator, an =onAttach= client's, sends length 0. While an escape sequence longer than the 64 KiB continuation limit is unfinished the terminal cannot be encoded, so the attachment is refused before it is accepted or resized; attaching again works once the sequence ends.
 
 * Attaching
 
-=attach.sock='s hello gets an optional =terminal= (ID or name): ={"version": 1, "rows", "cols", "terminal"}=. With it, the attachment is to that terminal instead of the goblin's own; without it nothing changes. One frontend per terminal at a time, independent of the goblin's own attachment; a second is refused as today.
+=attach.sock='s hello gets an optional =terminal= (ID or name): ={"version": 1, "rows", "cols", "terminal"}=, and an optional =replay= (="vt"=, the default, or ="snapshot"=, see above). With it, the attachment is to that terminal instead of the goblin's own; without it nothing changes. One frontend per terminal at a time, independent of the goblin's own attachment; a second is refused as today.
 
 On attach the supervisor writes the redraw before live output: on the normal screen, the scrollback as lines followed by the screen, with colours where the emulator gives them; on the alternate screen, as above. When the frontend closes its stream, it is detached and the terminal keeps the last size. A terminal nobody has attached to yet is 40×120 unless =create= sets a size.
 
 The attach client resizes with =terminals.resize=, not =sessions.resize=, and does not wait on =sessions.get= for an outcome: a terminal attachment has none. The stream ends when the terminal is detached or ends; the client then checks =terminals.list= once and prints =detached from tN= or =tN ended=, and exits 0.
+
+The daemon records an attachment's size in =terminals.list= only once the supervisor reports the terminal attached, since a snapshot attachment can be refused without resizing anything; a =terminals.resize= sent meanwhile wins. Known limit, to be fixed with the follow-up that makes detach synchronous: =terminals.detach= frees the daemon's reservation before the supervisor has acted on it, and the daemon also accepts a delayed "not attached" report, so a second attachment can be sent while an earlier one is still unanswered. If the earlier one succeeds and the second is refused (during the detach handoff, or as a snapshot that cannot be encoded), the earlier report records the second attachment's size, which the terminal never took, until the next resize or successful attachment. Only the recorded size is wrong. A fix ties the recorded size to the size the supervisor reports, or keeps the reservation until the supervisor has answered.
 
 * API
 
@@ -115,11 +118,11 @@ goblins terminal send GOBLIN TERMINAL [--text TEXT] [--keys KEY...]
 goblins terminal run GOBLIN TERMINAL COMMAND
 goblins terminal wait GOBLIN TERMINAL (--match TEXT | --regex RE | --exit) [--timeout MS] [--lines N]
 goblins terminal close GOBLIN TERMINAL
-goblins terminal attach GOBLIN TERMINAL
+goblins terminal attach GOBLIN TERMINAL [--snapshot --size ROWSxCOLS]
 goblins terminal detach GOBLIN TERMINAL
 #+end_example
 
-=run= sends =COMMAND= as text followed by =enter=. =read= prints the text; =wait= exits 0 on a match or exit, 1 on a timeout. =attach= connects the current terminal like =goblins attach=.
+=run= sends =COMMAND= as text followed by =enter=. =read= prints the text; =wait= exits 0 on a match or exit, 1 on a timeout. =attach= connects the current terminal like =goblins attach=. =attach --snapshot --size ROWSxCOLS= bridges a program over pipes instead: the length-prefixed snapshot and raw output on standard output, input from standard input, and the end of standard input closes the connection at once with status 0, leaving the terminal running.
 
 * Sandbox CLI and skill
 

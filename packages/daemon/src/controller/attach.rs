@@ -9,6 +9,7 @@ use goblins_jsonrpc as rpc;
 use goblins_protocol::contract;
 use goblins_runtime::Command;
 use goblins_runtime::Event;
+use goblins_runtime::Replay;
 use goblins_runtime::SpawnKind;
 use goblins_runtime::Stdio;
 use goblins_runtime::config;
@@ -44,6 +45,8 @@ struct Hello {
     size: Option<(u16, u16)>,
     /// The terminal it asked for, once its hello arrived.
     terminal: Option<String>,
+    /// How it wants the screen, from its hello.
+    replay: Replay,
     notice: Instant,
 }
 
@@ -60,6 +63,7 @@ enum Client {
     Waiting {
         stream: UnixStream,
         size: (u16, u16),
+        replay: Replay,
         deadline: Instant,
         notice: Instant,
     },
@@ -67,6 +71,7 @@ enum Client {
     Starting {
         stream: UnixStream,
         size: (u16, u16),
+        replay: Replay,
         exec: u64,
     },
     Running(Box<Running>),
@@ -185,6 +190,7 @@ impl Attach {
                             decoder: rpc::Decoder::new(4096, Some(now)),
                             size: None,
                             terminal: None,
+                            replay: Replay::Vt,
                             notice: now,
                         });
                     }
@@ -241,6 +247,7 @@ impl Attach {
                 Ok(p) => {
                     hello.size = Some((p.rows, p.cols));
                     hello.terminal = p.terminal;
+                    hello.replay = p.replay.unwrap_or(Replay::Vt);
                     true
                 }
                 Err(message) => {
@@ -399,7 +406,7 @@ impl Controller {
         a.attach.hellos = own;
         for hello in terminal {
             let size = hello.size.unwrap();
-            a.attach_terminal(hello.stream, &hello.terminal.unwrap(), size);
+            a.attach_terminal(hello.stream, &hello.terminal.unwrap(), size, hello.replay);
             self.dirty = true;
         }
         let now = Instant::now();
@@ -495,6 +502,7 @@ impl Controller {
                                     stream: OwnedFd::from(hello.stream).into(),
                                     rows: size.0,
                                     cols: size.1,
+                                    replay: hello.replay,
                                 })
                             {
                                 let mut stream =
@@ -515,6 +523,7 @@ impl Controller {
                         a.attach.client = Some(Client::Waiting {
                             stream: hello.stream,
                             size,
+                            replay: hello.replay,
                             deadline: now + timeout,
                             notice: now,
                         });
@@ -542,6 +551,7 @@ impl Controller {
             Some(Client::Waiting {
                 mut stream,
                 size,
+                replay,
                 deadline,
                 notice,
             }) => {
@@ -557,7 +567,14 @@ impl Controller {
                 if missing.is_empty() {
                     let exec = self.number();
                     match a.start_client(exec, size) {
-                        Ok(()) => a.attach.client = Some(Client::Starting { stream, size, exec }),
+                        Ok(()) => {
+                            a.attach.client = Some(Client::Starting {
+                                stream,
+                                size,
+                                replay,
+                                exec,
+                            })
+                        }
                         Err(message) => refuse(
                             &mut stream,
                             &format!("cannot start the attach client: {message}"),
@@ -576,6 +593,7 @@ impl Controller {
                     a.attach.client = Some(Client::Waiting {
                         stream,
                         size,
+                        replay,
                         deadline,
                         notice: if now < notice { notice } else { now + NOTICE },
                     });
@@ -616,9 +634,15 @@ impl Controller {
             return Some(event);
         };
         let unconsumed = match (a.attach.client.take(), event) {
-            (Some(Client::Starting { stream, size, exec }), Event::Spawned { id, pid })
-                if id == exec =>
-            {
+            (
+                Some(Client::Starting {
+                    stream,
+                    size,
+                    replay,
+                    exec,
+                }),
+                Event::Spawned { id, pid },
+            ) if id == exec => {
                 // Reserve the client and its physical stream before Attach.
                 // An authoritative runtime status clears a failed reservation.
                 a.attach.client = Some(Client::Running(Box::new(Running {
@@ -640,6 +664,7 @@ impl Controller {
                             stream: OwnedFd::from(stream).into(),
                             rows: size.0,
                             cols: size.1,
+                            replay,
                         })
                         .is_ok()
                 });

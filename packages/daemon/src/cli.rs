@@ -139,6 +139,12 @@ pub enum Command {
         /// Require this daemon instance and an exact session ID (for editors)
         #[arg(long)]
         instance: Option<String>,
+        /// For a program, not a person: print a binary screen snapshot, then raw output (needs --size)
+        #[arg(long, requires = "size")]
+        snapshot: bool,
+        /// The program's terminal size, with --snapshot
+        #[arg(long, value_name = "ROWSxCOLS", value_parser = parse_size, requires = "snapshot")]
+        size: Option<(u16, u16)>,
     },
     /// Run a command inside a running goblin's sandbox (its own $SHELL by default)
     Exec {
@@ -289,7 +295,16 @@ pub enum TerminalCommand {
     /// End a terminal's program
     Close { goblin: String, terminal: String },
     /// Connect this terminal to one; leaving it detaches
-    Attach { goblin: String, terminal: String },
+    Attach {
+        goblin: String,
+        terminal: String,
+        /// For a program, not a person: print a binary screen snapshot, then raw output (needs --size)
+        #[arg(long, requires = "size")]
+        snapshot: bool,
+        /// The program's terminal size, with --snapshot
+        #[arg(long, value_name = "ROWSxCOLS", value_parser = parse_size, requires = "snapshot")]
+        size: Option<(u16, u16)>,
+    },
     /// Disconnect whoever is attached to a terminal; it keeps running
     Detach { goblin: String, terminal: String },
 }
@@ -541,6 +556,7 @@ fn completion_target(words: Vec<String>) -> Option<(Option<PathBuf>, Slot)> {
         Command::Attach {
             session,
             instance: None,
+            ..
         } if session == TARGET => Slot::Goblin,
         Command::Exec {
             goblin,
@@ -938,8 +954,64 @@ mod tests {
     fn terminal_lifecycle_host_commands() {
         assert!(
             matches!(Cli::try_parse_from(["goblins", "attach", "snikk"]).unwrap().command,
-            Some(Command::Attach { session, instance: None }) if session == "snikk")
+            Some(Command::Attach { session, instance: None, snapshot: false, size: None }) if session == "snikk")
         );
+        assert!(matches!(
+            Cli::try_parse_from([
+                "goblins",
+                "attach",
+                "snikk",
+                "--snapshot",
+                "--size",
+                "24x80"
+            ])
+            .unwrap()
+            .command,
+            Some(Command::Attach {
+                snapshot: true,
+                size: Some((24, 80)),
+                ..
+            })
+        ));
+        // Each needs the other.
+        for words in [
+            &["goblins", "attach", "snikk", "--snapshot"][..],
+            &["goblins", "attach", "snikk", "--size", "24x80"],
+            &[
+                "goblins",
+                "terminal",
+                "attach",
+                "snikk",
+                "app",
+                "--snapshot",
+            ],
+            &[
+                "goblins", "terminal", "attach", "snikk", "app", "--size", "24x80",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(words).is_err(), "{words:?}");
+        }
+        assert!(matches!(
+            Cli::try_parse_from([
+                "goblins",
+                "terminal",
+                "attach",
+                "snikk",
+                "app",
+                "--snapshot",
+                "--size",
+                "30x100"
+            ])
+            .unwrap()
+            .command,
+            Some(Command::Terminal {
+                command: TerminalCommand::Attach {
+                    snapshot: true,
+                    size: Some((30, 100)),
+                    ..
+                }
+            })
+        ));
         assert!(
             matches!(Cli::try_parse_from(["goblins", "kill", "snikk"]).unwrap().command,
             Some(Command::Kill { id_or_name, .. }) if id_or_name == "snikk")

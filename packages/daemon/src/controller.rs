@@ -8596,9 +8596,21 @@ mod tests {
                         stream,
                         rows,
                         cols,
+                        replay,
                     } => {
                         assert!([20, 30].contains(&rows));
                         assert_eq!(cols, 80);
+                        // The first client's hello asked for a snapshot,
+                        // through waiting and starting; the others did not.
+                        let snapshot = rows == 30;
+                        assert_eq!(
+                            replay,
+                            if snapshot {
+                                goblins_runtime::Replay::Snapshot
+                            } else {
+                                goblins_runtime::Replay::Vt
+                            }
+                        );
                         let mut stream = UnixStream::from(std::os::fd::OwnedFd::from(stream));
                         stream
                             .write_all(
@@ -8661,10 +8673,14 @@ mod tests {
         };
         let hello = |rows: u16| {
             let mut frontend = UnixStream::connect(&socket).unwrap();
+            let mut params = json!({"version":1,"rows":rows,"cols":80});
+            if rows == 30 {
+                params["replay"] = json!("snapshot");
+            }
             frontend
                 .write_all(
                     &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
-                        "params":{"version":1,"rows":rows,"cols":80}}))
+                        "params":params}))
                     .unwrap(),
                 )
                 .unwrap();
@@ -8966,6 +8982,7 @@ mod tests {
             stream,
             rows: 24,
             cols: 80,
+            replay: goblins_runtime::Replay::Vt,
         } = received.lock().unwrap().pop_front().unwrap()
         else {
             panic!("expected main attachment");
@@ -9060,6 +9077,46 @@ mod tests {
                 terminal: TerminalId::Main,
                 rows: 1000,
                 cols: 1000,
+                ..
+            })
+        ));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn an_attach_hello_names_its_replay_and_an_unknown_one_is_refused() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        let socket = d.sessions["a"].directory.join("attach.sock");
+        let hello = |replay: &str| {
+            let mut frontend = UnixStream::connect(&socket).unwrap();
+            frontend
+                .write_all(
+                    &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                "params":{"version":1,"rows":24,"cols":80,"replay":replay}}))
+                    .unwrap(),
+                )
+                .unwrap();
+            frontend
+        };
+        let mut unknown = hello("png");
+        d.tick().unwrap();
+        assert_eq!(
+            rpc::read(&mut unknown).unwrap()["error"]["message"],
+            "invalid attach.hello"
+        );
+        assert!(!d.sessions["a"].record.terminal_attached);
+        assert!(received.lock().unwrap().is_empty());
+        let _snapshot = hello("snapshot");
+        d.tick().unwrap();
+        assert!(matches!(
+            received.lock().unwrap().pop_front(),
+            Some(Command::Attach {
+                terminal: TerminalId::Main,
+                replay: goblins_runtime::Replay::Snapshot,
                 ..
             })
         ));

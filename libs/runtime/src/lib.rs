@@ -196,6 +196,10 @@ pub use goblins_protocol::contract::TerminalStatus;
 /// What a spawned process is for.
 pub use goblins_protocol::contract::SpawnKind;
 
+/// How an attachment brings its frontend up to date before raw output: VT
+/// text that redraws the screen, or a length-prefixed binary snapshot.
+pub use goblins_protocol::contract::Replay;
+
 /// What the daemon asks of a runtime.
 #[derive(Debug)]
 pub enum Command {
@@ -210,6 +214,7 @@ pub enum Command {
         stream: Fd,
         rows: u16,
         cols: u16,
+        replay: Replay,
     },
     Detach {
         terminal: TerminalId,

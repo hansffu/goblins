@@ -95,6 +95,13 @@ pub(super) struct Entry {
     /// Until it has started, its creation waits for the reply.
     create: Option<Create>,
     started: bool,
+    /// The size of an attachment the runtime has not yet reported attached.
+    /// The record takes it only then: a snapshot attachment can be refused
+    /// without resizing anything. A resize meanwhile supersedes it.
+    /// Known limit (docs/specs/SANDBOX-TERMINALS.org, Attaching): an attach
+    /// sent while an earlier one is unanswered, after an eager detach, can
+    /// have its size taken by the earlier one's report.
+    attaching: Option<(u16, u16)>,
 }
 
 /// One goblin's terminals.
@@ -164,6 +171,7 @@ impl Active {
         mut stream: UnixStream,
         designator: &str,
         size: (u16, u16),
+        replay: goblins_runtime::Replay,
     ) {
         let refused = (|| {
             if self.record.state != "running" {
@@ -200,16 +208,18 @@ impl Active {
         // Reserve before sending, so another hello cannot take it.
         let entry = &mut self.terminals.entries[index];
         entry.record.attached = true;
-        (entry.record.rows, entry.record.cols) = size;
+        entry.attaching = Some(size);
         if let Err(Command::Attach { stream, .. }) = runtime.send(Command::Attach {
             terminal: TerminalId::Process(exec),
             stream: OwnedFd::from(stream).into(),
             rows: size.0,
             cols: size.1,
+            replay,
         }) {
             let mut stream = UnixStream::from(OwnedFd::from(stream));
             super::attach::refuse(&mut stream, "the goblin cannot take more work right now");
             self.terminals.entries[index].record.attached = false;
+            self.terminals.entries[index].attaching = None;
         }
         self.sync_terminals();
     }
@@ -422,8 +432,9 @@ impl Controller {
                         cols: p.cols,
                     })
                     .map_err(|_| capacity())?;
-                let record = &mut a.terminals.entries[index].record;
-                (record.rows, record.cols) = (p.rows, p.cols);
+                let entry = &mut a.terminals.entries[index];
+                entry.attaching = None;
+                (entry.record.rows, entry.record.cols) = (p.rows, p.cols);
                 a.sync_terminals();
                 self.dirty = true;
                 Ok(Some(json!(contract::ServerStopResult { accepted: true })))
@@ -544,6 +555,7 @@ impl Controller {
                 rpc: rpc_id.clone(),
             }),
             started: false,
+            attaching: None,
         });
         c.waiting = Some((format!("terminal-{exec}"), rpc_id));
         Ok(None)
@@ -695,7 +707,16 @@ impl Controller {
             {
                 let a = self.sessions.get_mut(session).unwrap();
                 let index = a.terminals.by_exec(id).unwrap();
-                a.terminals.entries[index].record.attached = status.attached;
+                let entry = &mut a.terminals.entries[index];
+                entry.record.attached = status.attached;
+                // The first report saying attached after the reservation is
+                // normally the pending attachment's own; see Entry.attaching
+                // for the known limit after an eager detach.
+                if status.attached
+                    && let Some(size) = entry.attaching.take()
+                {
+                    (entry.record.rows, entry.record.cols) = size;
+                }
                 if a.sync_terminals() {
                     self.dirty = true;
                 }

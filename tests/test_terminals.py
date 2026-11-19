@@ -6,6 +6,7 @@ queries and the sandbox endpoint's validation are Rust unit tests; fish's
 startup query is a step of the interactive goblin workflow."""
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import time
@@ -31,6 +32,21 @@ def host_processes(marker):
                     and argv[1].decode(errors="replace").startswith(marker)):
                 found.append(int(entry.name))
     return found
+
+
+def read_until(stream, done, timeout=30):
+    """Bytes from a pipe until `done(received)` holds."""
+    received = b""
+    deadline = time.monotonic() + timeout
+    while not done(received):
+        left = deadline - time.monotonic()
+        if left <= 0 or not select.select([stream], [], [], left)[0]:
+            raise AssertionError(f"timed out; received {received!r}")
+        chunk = os.read(stream.fileno(), 65536)
+        if not chunk:
+            raise AssertionError(f"ended; received {received!r}")
+        received += chunk
+    return received
 
 
 class BackgroundTerminalsWorkflow(unittest.TestCase):
@@ -130,6 +146,29 @@ class BackgroundTerminalsWorkflow(unittest.TestCase):
             t.wait()
             d.wait(lambda: not self.named("full")["attached"])
             self.attach("full").expect("FULLSCREEN")
+
+        with step("a program attaches over pipes, with a snapshot first, and leaves by closing its input"):
+            self.create("--name", "piped", "--", "sh", "-c",
+                        'echo PIPED; while read line; do echo "<$line>"; done')
+            self.terminal("wait", "gribble", "piped", "--match", "PIPED")
+            bridge = subprocess.Popen(self.command("attach", "gribble", "piped", "--snapshot", "--size", "24x80"),
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.addCleanup(bridge.kill)
+            # A 4-byte big-endian length, the snapshot, then raw output.
+            head = read_until(bridge.stdout, lambda r: len(r) >= 4)
+            length = int.from_bytes(head[:4], "big")
+            received = read_until(bridge.stdout, lambda r: len(head) + len(r) >= 4 + length)
+            received = head + received
+            self.assertTrue(received[4:].startswith(b"GHOSTSNP"), received[:16])
+            d.wait(lambda: self.named("piped")["attached"])
+            bridge.stdin.write(b"bridged\n")
+            bridge.stdin.flush()
+            read_until(bridge.stdout, lambda r: b"<bridged>" in received[4 + length:] + r)
+            # The program goes on; the terminal is free for the next frontend.
+            bridge.stdin.close()
+            self.assertEqual(bridge.wait(timeout=10), 0, bridge.stderr.read())
+            d.wait(lambda: not self.named("piped")["attached"])
+            self.attach("piped").expect("<bridged>")
 
         with step("run, wait, read and send from the host"):
             self.create("--name", "sh", "--size", "30x100")

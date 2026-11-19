@@ -3,7 +3,7 @@
 use crate::{engine::EVENTS, screen::Matcher, server_log::ServerLog, terminal::Terminal};
 use goblins_protocol::contract::{self, Completion};
 use goblins_runtime::{
-    Event, TerminalId, TerminalStatus,
+    Event, Replay, TerminalId, TerminalStatus,
     terminal::{self, Call, Condition},
 };
 use serde_json::{Value, json};
@@ -398,6 +398,7 @@ impl Terminals {
         mut stream: UnixStream,
         rows: u16,
         cols: u16,
+        replay: Replay,
         events: &mut VecDeque<Event>,
     ) {
         assert!(
@@ -409,9 +410,12 @@ impl Terminals {
             Some(entry) => {
                 entry.exposed = true;
                 stream.try_clone().map_err(Into::into).and_then(|peer| {
+                    // The snapshot keeps the size the screen had: the
+                    // frontend restores it, then resizes as the screen does.
                     entry.io.attach(
                         peer,
                         serde_json::json!(contract::attach_exchanges::Reply::ID),
+                        replay == Replay::Snapshot,
                     )?;
                     // Only an accepted consumer may change the size. An
                     // ioctl error does not turn an accepted stream into a
@@ -419,7 +423,9 @@ impl Terminals {
                     diagnostic = entry.io.resize(rows, cols).err().map(|e| e.to_string());
                     if entry.io.screen().is_some() {
                         // Format for the accepted frontend's dimensions.
-                        entry.io.redraw();
+                        if replay == Replay::Vt {
+                            entry.io.redraw();
+                        }
                         entry.io.winch();
                     }
                     Ok(())
@@ -638,7 +644,7 @@ mod tests {
         let (server, mut frontend) = UnixStream::pair().unwrap();
         let id = TerminalId::Process(9);
         let mut events = VecDeque::new();
-        terminals.attach(id, server, 30, 100, &mut events);
+        terminals.attach(id, server, 30, 100, Replay::Vt, &mut events);
         terminals.resize(id, 40, 120, &mut events);
         let mut size: libc::winsize = unsafe { std::mem::zeroed() };
         unix::cvt(unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCGWINSZ, &mut size) }).unwrap();
@@ -653,7 +659,7 @@ mod tests {
         assert!(status.connected && status.detached && !status.attached);
         assert_eq!(frontend.read(&mut [0; 1]).unwrap(), 0);
         let (second, mut refused) = UnixStream::pair().unwrap();
-        terminals.attach(id, second, 20, 80, &mut events);
+        terminals.attach(id, second, 20, 80, Replay::Vt, &mut events);
         assert_eq!(
             goblins_jsonrpc::read(&mut refused).unwrap()["error"]["message"],
             "terminal is already attached"
@@ -668,7 +674,7 @@ mod tests {
         terminals.tick(false, &mut events);
         assert!(!terminals.entries[&id].io.connected());
         let (next, mut accepted) = UnixStream::pair().unwrap();
-        terminals.attach(id, next, 20, 80, &mut events);
+        terminals.attach(id, next, 20, 80, Replay::Vt, &mut events);
         terminals.tick(false, &mut events);
         assert_eq!(
             goblins_jsonrpc::read(&mut accepted).unwrap()["result"]["attached"],
@@ -680,7 +686,7 @@ mod tests {
         assert!(!terminals.entries.contains_key(&id));
         // Attaching after eviction clears the daemon's tentative reservation.
         let (missing, mut refused) = UnixStream::pair().unwrap();
-        terminals.attach(id, missing, 20, 80, &mut events);
+        terminals.attach(id, missing, 20, 80, Replay::Vt, &mut events);
         assert_eq!(
             goblins_jsonrpc::read(&mut refused).unwrap()["error"]["message"],
             "terminal already completed"
@@ -944,7 +950,7 @@ mod tests {
         // An attached frontend answers for itself: the query reaches it.
         let id = TerminalId::Process(5);
         let (server, mut client) = UnixStream::pair().unwrap();
-        terminals.attach(id, server, 24, 80, &mut events);
+        terminals.attach(id, server, 24, 80, Replay::Vt, &mut events);
         terminals.tick(false, &mut events);
         let _ = frontend(&mut client, 24, 80);
         print(&slave, "\x1b[c");
@@ -1048,7 +1054,7 @@ mod tests {
         terminals.tick(false, &mut events);
         let id = TerminalId::Process(5);
         let (server, mut client) = UnixStream::pair().unwrap();
-        terminals.attach(id, server, 24, 80, &mut events);
+        terminals.attach(id, server, 24, 80, Replay::Vt, &mut events);
         terminals.tick(false, &mut events);
         let mut screen = frontend(&mut client, 24, 80);
         assert_eq!(screen.recent(100).last().unwrap(), "line 39");
@@ -1061,7 +1067,7 @@ mod tests {
         assert_eq!(&live, b"live\r\n");
         // A second frontend is refused; detaching ends the stream only.
         let (second, mut refused) = UnixStream::pair().unwrap();
-        terminals.attach(id, second, 24, 80, &mut events);
+        terminals.attach(id, second, 24, 80, Replay::Vt, &mut events);
         assert_eq!(
             goblins_jsonrpc::read(&mut refused).unwrap()["error"]["message"],
             "terminal is already attached"
@@ -1076,7 +1082,7 @@ mod tests {
         print(&slave, "while away\r\n");
         terminals.tick(false, &mut events);
         let (server, mut client) = UnixStream::pair().unwrap();
-        terminals.attach(id, server, 24, 80, &mut events);
+        terminals.attach(id, server, 24, 80, Replay::Vt, &mut events);
         terminals.tick(false, &mut events);
         let mut screen = frontend(&mut client, 24, 80);
         assert_eq!(screen.recent(100).last().unwrap(), "while away");
@@ -1089,7 +1095,7 @@ mod tests {
         let (mut terminals, slave, mut events) = pane(5);
         let id = TerminalId::Process(5);
         let (server, mut client) = UnixStream::pair().unwrap();
-        terminals.attach(id, server, 24, 80, &mut events);
+        terminals.attach(id, server, 24, 80, Replay::Vt, &mut events);
         terminals.tick(false, &mut events);
         print(&slave, "goodbye\r\n");
         drop(slave);
@@ -1113,7 +1119,7 @@ mod tests {
         let (mut terminals, slave, mut events) = pane(5);
         let id = TerminalId::Process(5);
         let (server, client) = UnixStream::pair().unwrap();
-        terminals.attach(id, server, 24, 80, &mut events);
+        terminals.attach(id, server, 24, 80, Replay::Vt, &mut events);
         terminals.tick(false, &mut events);
         // More than a socket buffer holds, which nobody reads.
         let line = "y".repeat(79) + "\r\n";
@@ -1156,7 +1162,14 @@ mod tests {
         terminals.tick(false, &mut events);
 
         let (server, mut client) = UnixStream::pair().unwrap();
-        terminals.attach(TerminalId::Process(5), server, 24, 100, &mut events);
+        terminals.attach(
+            TerminalId::Process(5),
+            server,
+            24,
+            100,
+            Replay::Vt,
+            &mut events,
+        );
         terminals.tick(false, &mut events);
 
         let mut screen = frontend(&mut client, 24, 100);
@@ -1180,7 +1193,7 @@ mod tests {
         terminals.tick(false, &mut events);
         let id = TerminalId::Process(5);
         let (server, mut client) = UnixStream::pair().unwrap();
-        terminals.attach(id, server, 24, 100, &mut events);
+        terminals.attach(id, server, 24, 100, Replay::Vt, &mut events);
         terminals.tick(false, &mut events);
         let _ = frontend(&mut client, 24, 100);
         // The screen was cut to the frontend's size without losing READY.
@@ -1263,7 +1276,7 @@ mod tests {
         events: &mut VecDeque<Event>,
     ) -> (UnixStream, crate::screen::Screen) {
         let (server, mut client) = UnixStream::pair().unwrap();
-        terminals.attach(TerminalId::Main, server, 24, 80, events);
+        terminals.attach(TerminalId::Main, server, 24, 80, Replay::Vt, events);
         terminals.tick(false, events);
         let screen = frontend(&mut client, 24, 80);
         (client, screen)
@@ -1333,5 +1346,197 @@ mod tests {
         assert_eq!(input_of(&slave), None, "the frontend answers");
         drop(terminals);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Attach a frontend with the snapshot replay; returns its stream and
+    /// the snapshot after the handshake frame and the length.
+    fn attach_snapshot(
+        terminals: &mut Terminals,
+        id: TerminalId,
+        (rows, cols): (u16, u16),
+        events: &mut VecDeque<Event>,
+    ) -> (UnixStream, Vec<u8>) {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        terminals.attach(id, server, rows, cols, Replay::Snapshot, events);
+        terminals.tick(false, events);
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        assert_eq!(
+            goblins_jsonrpc::read(&mut client).unwrap()["result"]["attached"],
+            true
+        );
+        let mut bytes = live(terminals, &mut client, events);
+        let length = u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize;
+        assert_eq!(bytes.len(), 4 + length, "nothing follows the snapshot yet");
+        (client, bytes.split_off(4))
+    }
+    /// What reaches the frontend while the terminals are ticked, until
+    /// nothing more arrives.
+    fn live(
+        terminals: &mut Terminals,
+        client: &mut UnixStream,
+        events: &mut VecDeque<Event>,
+    ) -> Vec<u8> {
+        client
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut bytes = vec![];
+        let mut buf = [0; 65536];
+        loop {
+            terminals.tick(false, events);
+            match client.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(e) => panic!("read the frontend's stream: {e}"),
+            }
+        }
+        bytes
+    }
+    fn screen_of(terminals: &mut Terminals, id: TerminalId) -> &mut crate::screen::Screen {
+        terminals.entries.get_mut(&id).unwrap().io.screen().unwrap()
+    }
+
+    #[test]
+    fn a_snapshot_attachment_restores_a_pane_then_follows_its_output() {
+        let _no_forks = unix::no_forks();
+        let (mut terminals, slave, mut events) = pane(5);
+        let id = TerminalId::Process(5);
+        let output: String = (0..40).map(|i| format!("line {i}\r\n")).collect();
+        print(&slave, &output);
+        // Modes, and a sequence still open when the snapshot is taken.
+        print(
+            &slave,
+            "\x1b[?2004h\x1b[?1h\x1b]2;building\x1b\\prompt> \x1b[3",
+        );
+        terminals.tick(false, &mut events);
+        let before = screen_of(&mut terminals, id).state();
+        // The snapshot keeps the size the pane had; the frontend resizes
+        // after restoring it, as the pane does.
+        let (mut client, snapshot) = attach_snapshot(&mut terminals, id, (30, 100), &mut events);
+        assert!(snapshot.starts_with(b"GHOSTSNP"));
+        let mut restored = crate::screen::Screen::restore(&snapshot);
+        assert_eq!(restored.state(), before);
+        restored.resize(30, 100);
+        assert_eq!(restored.state(), screen_of(&mut terminals, id).state());
+        // The open sequence ends in the live output: the restored screen
+        // parses it as the pane did.
+        print(&slave, "1mbold\r\nlive\r\n");
+        let bytes = live(&mut terminals, &mut client, &mut events);
+        assert!(bytes.ends_with(b"live\r\n"));
+        restored.feed(&bytes);
+        let after = screen_of(&mut terminals, id).state();
+        assert_eq!(after.0[after.0.len() - 2..], ["prompt> bold", "live"]);
+        assert_eq!(restored.state(), after);
+    }
+
+    #[test]
+    fn a_snapshot_attachment_restores_the_main_terminal_on_its_alternate_screen() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (mut terminals, slave, mut events) = main(&directory, true, 24, 80);
+        print(
+            &slave,
+            "shell history\r\n\x1b[?1049h\x1b[?1h\x1b[5;10Hfull screen",
+        );
+        terminals.tick(false, &mut events);
+        let before = screen_of(&mut terminals, TerminalId::Main).state();
+        assert!(before.3, "on the alternate screen");
+        let (mut client, snapshot) =
+            attach_snapshot(&mut terminals, TerminalId::Main, (24, 80), &mut events);
+        let mut restored = crate::screen::Screen::restore(&snapshot);
+        assert_eq!(restored.state(), before);
+        print(&slave, "\x1b[?1049lback\r\n");
+        restored.feed(&live(&mut terminals, &mut client, &mut events));
+        let after = screen_of(&mut terminals, TerminalId::Main).state();
+        assert_eq!(after.0, ["shell history", "back"]);
+        assert_eq!(restored.state(), after);
+        drop(terminals);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_snapshot_attachment_is_refused_during_a_sequence_too_long_to_encode() {
+        let _no_forks = unix::no_forks();
+        let (mut terminals, slave, mut events) = pane(5);
+        let id = TerminalId::Process(5);
+        print(&slave, "before\r\n");
+        // A clipboard escape longer than the continuation limit, unfinished.
+        let mut long = b"\x1b]52;c;".to_vec();
+        long.extend(std::iter::repeat_n(b'A', 70_000));
+        let mut writer = fs::File::from(slave.try_clone().unwrap());
+        let mut written = 0;
+        while written < long.len() {
+            match writer.write(&long[written..]) {
+                Ok(n) => written += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (),
+                Err(e) => panic!("write the sequence: {e}"),
+            }
+            terminals.tick(false, &mut events);
+        }
+        for _ in 0..8 {
+            terminals.tick(false, &mut events);
+        }
+        let (server, mut client) = UnixStream::pair().unwrap();
+        terminals.attach(id, server, 30, 100, Replay::Snapshot, &mut events);
+        client.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let refusal = goblins_jsonrpc::read(&mut client).unwrap();
+        assert_eq!(refusal["error"]["code"], -32009);
+        assert!(
+            refusal["error"]["message"].as_str().unwrap().contains("long escape sequence"),
+            "{refusal}"
+        );
+        // Nothing was accepted: the size and the slot are as they were.
+        assert_eq!(screen_of(&mut terminals, id).size(), (24, 80));
+        assert!(!terminals.status(id).connected);
+        // Once the program ends the sequence, the next attachment gets it.
+        print(&slave, "\x07after\r\n");
+        terminals.tick(false, &mut events);
+        let (_client, snapshot) = attach_snapshot(&mut terminals, id, (24, 80), &mut events);
+        let mut restored = crate::screen::Screen::restore(&snapshot);
+        assert_eq!(restored.state(), screen_of(&mut terminals, id).state());
+        assert_eq!(restored.visible(), ["before", "after"]);
+    }
+
+    #[test]
+    fn a_snapshot_attachment_to_a_terminal_without_a_screen_has_length_zero() {
+        let _no_forks = unix::no_forks();
+        let mut terminals = Terminals::default();
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        raw(&slave);
+        terminals.process(9, master, 24, 80).unwrap();
+        print(&slave, "early");
+        let mut events = VecDeque::new();
+        terminals.tick(false, &mut events);
+        let (server, mut client) = UnixStream::pair().unwrap();
+        terminals.attach(
+            TerminalId::Process(9),
+            server,
+            24,
+            80,
+            Replay::Snapshot,
+            &mut events,
+        );
+        terminals.tick(false, &mut events);
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        assert_eq!(
+            goblins_jsonrpc::read(&mut client).unwrap()["result"]["attached"],
+            true
+        );
+        print(&slave, " late");
+        assert_eq!(
+            live(&mut terminals, &mut client, &mut events),
+            b"\0\0\0\0early late"
+        );
     }
 }

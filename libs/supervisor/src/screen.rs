@@ -346,6 +346,49 @@ impl Screen {
         }
         bytes
     }
+
+    /// The whole terminal state as a libghostty-vt binary snapshot, for a
+    /// frontend that restores it itself instead of parsing a redraw. It
+    /// fails while an escape sequence longer than the continuation limit is
+    /// unfinished, until the program ends it.
+    pub fn snapshot(&mut self) -> Result<Vec<u8>, String> {
+        let mut bytes = Vec::new();
+        match self.terminal.encode_snapshot(&mut bytes) {
+            Ok(()) => Ok(bytes),
+            Err(Error::InvalidValue) => Err(
+                "the terminal is in the middle of a long escape sequence; attach again".into(),
+            ),
+            Err(error) => Err(format!("cannot take the terminal's snapshot: {error}")),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Screen {
+    /// The screen a frontend restores from `snapshot`.
+    pub fn restore(snapshot: &[u8]) -> Self {
+        let terminal = libghostty_vt::snapshot::Decoder::new_buf(snapshot)
+            .and_then(|decoder| decoder.decode())
+            .expect("decode Ghostty snapshot");
+        Self {
+            terminal,
+            replies: Rc::default(),
+        }
+    }
+    /// What a restored frontend must agree on: the text with its history,
+    /// the size, the cursor, the active screen and the input modes.
+    pub fn state(&mut self) -> (Vec<String>, (u16, u16), (u16, u16), bool, [bool; 2]) {
+        (
+            self.recent(SCROLLBACK),
+            self.size(),
+            (
+                self.terminal.cursor_y().unwrap(),
+                self.terminal.cursor_x().unwrap(),
+            ),
+            self.alternate(),
+            [Mode::BRACKETED_PASTE, Mode::DECCKM].map(|mode| self.terminal.mode(mode).unwrap()),
+        )
+    }
 }
 
 #[cfg(test)]

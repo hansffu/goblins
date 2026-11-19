@@ -208,6 +208,21 @@ impl Terminal {
             self.to_peer = screen.redraw();
         }
     }
+    /// What a snapshot attachment is sent ahead of live output: the screen
+    /// as a binary snapshot behind its 4-byte big-endian length. A terminal
+    /// without a screen sends length 0 ahead of the output it kept.
+    fn snapshot(&mut self) -> Result<Vec<u8>> {
+        let (snapshot, kept) = match &mut self.screen {
+            Some(screen) => (screen.snapshot()?, &[][..]),
+            None => (Vec::new(), &self.to_peer[..]),
+        };
+        let length = u32::try_from(snapshot.len())
+            .map_err(|_| "the terminal's snapshot is too large")?;
+        let mut frame = length.to_be_bytes().to_vec();
+        frame.extend(snapshot);
+        frame.extend_from_slice(kept);
+        Ok(frame)
+    }
     /// What waits to be written to the program.
     #[cfg(test)]
     pub fn queued_input(&self) -> usize {
@@ -314,7 +329,15 @@ impl Terminal {
         self.to_pty.clear();
         Ok(())
     }
-    pub fn attach(&mut self, peer: UnixStream, id: serde_json::Value) -> Result<()> {
+    /// Accept `peer`. With `snapshot` its stream starts with the snapshot,
+    /// taken now; a screen that cannot be encoded refuses the attachment
+    /// before anything is accepted.
+    pub fn attach(
+        &mut self,
+        peer: UnixStream,
+        id: serde_json::Value,
+        snapshot: bool,
+    ) -> Result<()> {
         self.refresh_peer();
         if self.peer.is_some() || self.complete {
             return Err(if self.complete {
@@ -324,6 +347,7 @@ impl Terminal {
             }
             .into());
         }
+        let snapshot = if snapshot { Some(self.snapshot()?) } else { None };
         peer.set_nonblocking(true)?;
         self.hello = goblins_jsonrpc::encode(&goblins_jsonrpc::result(
             id,
@@ -337,6 +361,9 @@ impl Terminal {
         self.connected = true;
         self.detached = false;
         self.interrupted = false;
+        if let Some(snapshot) = snapshot {
+            self.to_peer = snapshot;
+        }
         Ok(())
     }
     fn refresh_peer(&mut self) {
@@ -393,6 +420,7 @@ impl Terminal {
                             .attach(
                                 writer,
                                 json!(contract::attach_exchanges::LegacyAttach::ID),
+                                false,
                             )
                             .map(|()| {
                                 // No frontend size here: redraw at the
@@ -552,7 +580,7 @@ mod tests {
         let mut f = Fixture::new();
         let (server, mut peer) = UnixStream::pair().unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
-        f.terminal.attach(server, serde_json::json!(123)).unwrap();
+        f.terminal.attach(server, serde_json::json!(123), false).unwrap();
         f.terminal.tick().unwrap();
         assert_eq!(
             rpc::read(&mut peer).unwrap(),
@@ -654,7 +682,7 @@ mod tests {
         let (first, first_runtime) = UnixStream::pair().unwrap();
         fixture
             .terminal
-            .attach(first_runtime, serde_json::json!(0))
+            .attach(first_runtime, serde_json::json!(0), false)
             .unwrap();
         close(first);
         // Attach is a dispatcher action and can precede the next I/O tick.
@@ -664,7 +692,7 @@ mod tests {
             .unwrap();
         fixture
             .terminal
-            .attach(second_runtime, serde_json::json!(0))
+            .attach(second_runtime, serde_json::json!(0), false)
             .unwrap();
         fixture.terminal.tick().unwrap();
         assert_eq!(rpc::read(&mut second).unwrap()["result"]["attached"], true);
@@ -697,7 +725,7 @@ mod tests {
             let output = vec![b'x'; size];
             f.terminal.to_peer.extend_from_slice(&output);
             let (server, client) = UnixStream::pair().unwrap();
-            f.terminal.attach(server, serde_json::json!(123)).unwrap();
+            f.terminal.attach(server, serde_json::json!(123), false).unwrap();
             // Disconnect before the first handshake byte can be sent.
             close(client);
             f.terminal.tick().unwrap();

@@ -40,18 +40,18 @@ impl Drop for TerminalMode {
 }
 // File status flags are shared with the caller's terminal, so restore them on
 // every normal/signal exit just as we restore termios.
-struct NonblockingOutput(i32);
+struct NonblockingOutput(RawFd, i32);
 impl NonblockingOutput {
-    fn new() -> Result<Self> {
-        let flags = cvt(unsafe { libc::fcntl(1, libc::F_GETFL) })?;
-        cvt(unsafe { libc::fcntl(1, libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
-        Ok(Self(flags))
+    fn new(fd: RawFd) -> Result<Self> {
+        let flags = cvt(unsafe { libc::fcntl(fd, libc::F_GETFL) })?;
+        cvt(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
+        Ok(Self(fd, flags))
     }
 }
 impl Drop for NonblockingOutput {
     fn drop(&mut self) {
         unsafe {
-            libc::fcntl(1, libc::F_SETFL, self.0);
+            libc::fcntl(self.0, libc::F_SETFL, self.1);
         }
     }
 }
@@ -66,6 +66,7 @@ pub fn relay(
     mut control: impl FnMut(&str, Value) -> Result<Value>,
     stop: &AtomicBool,
     resize: &AtomicBool,
+    bridge: bool,
 ) -> Result<i32> {
     relay_with(
         terminal,
@@ -84,32 +85,67 @@ pub fn relay(
         |control| wait_outcome(session, control, stop),
         stop,
         resize,
+        bridge,
     )
 }
 /// Relay the frontend's terminal to `terminal` until the stream ends. The
 /// caller says how to resize what is attached and how to find the outcome,
 /// each with `context`, whatever the caller calls the daemon with.
+///
+/// A `bridge` relays for a program over pipes instead: standard input and
+/// output are not a terminal and the program resizes through the daemon
+/// itself. The end of standard input closes the stream at once and returns
+/// 0 without the outcome, whatever input the stream has not taken; what
+/// closing the stream means is the attachment's (see `docs/API.org`).
 pub fn relay_with<C>(
+    terminal: UnixStream,
+    context: C,
+    resize_to: impl FnMut(&mut C, u16, u16) -> Result<()>,
+    outcome: impl FnOnce(&mut C) -> Result<i32>,
+    stop: &AtomicBool,
+    resize: &AtomicBool,
+    bridge: bool,
+) -> Result<i32> {
+    relay_io(
+        (0, 1),
+        terminal,
+        context,
+        resize_to,
+        outcome,
+        stop,
+        resize,
+        bridge,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn relay_io<C>(
+    (input_fd, output_fd): (RawFd, RawFd),
     mut terminal: UnixStream,
     mut context: C,
     mut resize_to: impl FnMut(&mut C, u16, u16) -> Result<()>,
     outcome: impl FnOnce(&mut C) -> Result<i32>,
     stop: &AtomicBool,
     resize: &AtomicBool,
+    bridge: bool,
 ) -> Result<i32> {
     use std::io::{Read, Write};
     terminal.set_read_timeout(None)?;
     terminal.set_nonblocking(true)?;
-    let _mode = TerminalMode::raw()?;
-    let _output_flags = NonblockingOutput::new()?;
+    let _mode = if bridge {
+        None
+    } else {
+        Some(TerminalMode::raw()?)
+    };
+    let _output_flags = NonblockingOutput::new(output_fd)?;
     let mut to_terminal = Vec::<u8>::new();
     let mut to_shell = Vec::<u8>::new();
     let mut eof = false;
+    let mut input = true;
     loop {
         if stop.load(Ordering::Relaxed) {
             return Err("terminal delivery interrupted; session remains daemon-owned".into());
         }
-        if resize.swap(false, Ordering::Relaxed) && !eof {
+        if !bridge && resize.swap(false, Ordering::Relaxed) && !eof {
             let d = size(0)?;
             // Startup may not have a PTY yet; retry the first dimensions later.
             if resize_to(&mut context, d.ws_row.max(1), d.ws_col.max(1)).is_err() {
@@ -120,8 +156,9 @@ pub fn relay_with<C>(
             break;
         }
         let mut fds = [
+            // A bridge keeps polling a full input: its hangup still counts.
             libc::pollfd {
-                fd: 0,
+                fd: if input { input_fd } else { -1 },
                 events: if !eof && to_shell.len() < 65536 {
                     libc::POLLIN
                 } else {
@@ -143,7 +180,7 @@ pub fn relay_with<C>(
                 revents: 0,
             },
             libc::pollfd {
-                fd: 1,
+                fd: output_fd,
                 events: if to_terminal.is_empty() {
                     0
                 } else {
@@ -158,14 +195,22 @@ pub fn relay_with<C>(
             }
             return Err(io::Error::last_os_error().into());
         }
-        if fds[0].revents & libc::POLLIN != 0 {
+        let mut closed = false;
+        if fds[0].events != 0 && fds[0].revents & libc::POLLIN != 0 {
             let mut bytes = [0; 8192];
             let room = bytes.len().min(65536 - to_shell.len());
-            let n = unsafe { libc::read(0, bytes.as_mut_ptr().cast(), room) };
-            if n <= 0 {
+            let n = unsafe { libc::read(input_fd, bytes.as_mut_ptr().cast(), room) };
+            if n == 0 && bridge {
+                closed = true;
+            } else if n <= 0 {
                 return Err("terminal input disconnected; session remains daemon-owned".into());
+            } else {
+                to_shell.extend_from_slice(&bytes[..n as usize]);
             }
-            to_shell.extend_from_slice(&bytes[..n as usize]);
+        } else if bridge && fds[0].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            // A closed pipe with nothing left in it, or one there is no room
+            // to read: either way the program has gone.
+            closed = true;
         }
         if !eof
             && to_terminal.len() < 65536
@@ -187,6 +232,17 @@ pub fn relay_with<C>(
                 Err(e) => return Err(e.into()),
             }
         }
+        // Decided after the stream's read: a stream that has ended, also in
+        // this same poll, keeps its outcome.
+        if closed {
+            if eof {
+                input = false;
+            } else {
+                // Offer what is queued once, without waiting for it.
+                let _ = terminal.write(&to_shell);
+                return Ok(0);
+            }
+        }
         if !eof && !to_shell.is_empty() && fds[1].revents & libc::POLLOUT != 0 {
             match terminal.write(&to_shell) {
                 Ok(n) => {
@@ -199,7 +255,7 @@ pub fn relay_with<C>(
         if !to_terminal.is_empty()
             && fds[2].revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP) != 0
         {
-            write_output(1, &mut to_terminal)?;
+            write_output(output_fd, &mut to_terminal)?;
         }
     }
     outcome(&mut context)
@@ -296,6 +352,86 @@ mod tests {
         assert_eq!(pending.len(), 1024);
         write_output(sink.as_raw_fd(), &mut pending).unwrap();
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn a_bridge_leaves_at_once_when_its_input_closes_with_input_the_stream_does_not_take() {
+        let pipe = || {
+            let mut fds = [0; 2];
+            cvt(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }).unwrap();
+            fds
+        };
+        let [input, writer] = pipe();
+        let [reader, output] = pipe();
+        // The attached side never reads what it is sent.
+        let (terminal, _deaf) = UnixStream::pair().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = relay_io(
+                (input, output),
+                terminal,
+                (),
+                |_, _, _| panic!("a bridge does not resize"),
+                |_| panic!("no outcome when the input ends"),
+                &AtomicBool::new(false),
+                &AtomicBool::new(false),
+                true,
+            );
+            done.send(result.map_err(|e| e.to_string())).unwrap();
+        });
+        // Fill the stream, the relay's queue and the pipe until nothing moves.
+        cvt(unsafe { libc::fcntl(writer, libc::F_SETFL, libc::O_NONBLOCK) }).unwrap();
+        let chunk = [b'x'; 65536];
+        let mut stalled = 0;
+        while stalled < 10 {
+            if unsafe { libc::write(writer, chunk.as_ptr().cast(), chunk.len()) } > 0 {
+                stalled = 0;
+            } else {
+                stalled += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        unsafe { libc::close(writer) };
+        let result = finished
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the bridge left at once");
+        assert_eq!(result, Ok(0));
+        unsafe {
+            libc::close(input);
+            libc::close(reader);
+            libc::close(output);
+        }
+    }
+
+    #[test]
+    fn a_bridge_whose_input_and_stream_end_together_keeps_the_outcome() {
+        let pipe = || {
+            let mut fds = [0; 2];
+            cvt(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }).unwrap();
+            fds
+        };
+        let [input, writer] = pipe();
+        let [reader, output] = pipe();
+        let (terminal, ended) = UnixStream::pair().unwrap();
+        // Both are ready at the first poll.
+        drop(ended);
+        unsafe { libc::close(writer) };
+        let result = relay_io(
+            (input, output),
+            terminal,
+            (),
+            |_, _, _| panic!("a bridge does not resize"),
+            |_| Ok(7),
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+            true,
+        );
+        assert_eq!(result.unwrap(), 7);
+        unsafe {
+            libc::close(input);
+            libc::close(reader);
+            libc::close(output);
+        }
     }
 
     fn completion_record(outcome: Value) -> Value {

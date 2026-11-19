@@ -693,7 +693,7 @@
       "x-rust-name": "CommandAttach",
       "direction": "daemon-to-supervisor",
       "paramStructure": "by-name",
-      "description": "Duplicate and transfer one frontend stream descriptor after terminal metadata and before dimensions. Preserve terminal/descriptor/rows/cols extraction order and full u16 wire ranges; no adoption.",
+      "description": "Duplicate and transfer one frontend stream descriptor after terminal metadata and before dimensions. Preserve terminal/descriptor/rows/cols/replay extraction order and full u16 wire ranges; no adoption.",
       "params": [
         {
           "name": "terminal",
@@ -721,6 +721,13 @@
           "required": true,
           "schema": {
             "$ref": "common.json#/definitions/SupervisorCommandAttachParams/properties/cols"
+          }
+        },
+        {
+          "name": "replay",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SupervisorCommandAttachParams/properties/replay"
           }
         }
       ],

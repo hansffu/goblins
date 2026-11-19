@@ -61,7 +61,7 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
         println!("{wire}");
         return Ok(0);
     }
-    relay(control, &launch.session, &wire)
+    relay(control, &launch.session, &wire, None)
 }
 
 /// `goblins resume`: recreate a recorded goblin from the current manifest,
@@ -144,19 +144,39 @@ pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool)
     if let Some(detail) = record.detail.as_deref() {
         eprintln!("{}", goblins_protocol::plain_text(detail));
     }
-    relay(control, session, &serde_json::to_value(record.clone())?)
+    relay(
+        control,
+        session,
+        &serde_json::to_value(record.clone())?,
+        None,
+    )
 }
 
-pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Result<i32> {
-    if unsafe { libc::isatty(0) != 1 } {
+/// Attach this terminal to a goblin; with `snapshot`, bridge a program to
+/// it instead, at that size, starting with a binary snapshot.
+pub fn attach(
+    state: PathBuf,
+    session: String,
+    instance: Option<String>,
+    snapshot: Option<(u16, u16)>,
+) -> Result<i32> {
+    if snapshot.is_none() && unsafe { libc::isatty(0) != 1 } {
         return Err("goblins attach requires terminal input".into());
     }
     let mut control = Client::connect(&state)?;
     let record = target(&mut control, &session, instance.as_deref())?;
     let session = record.id.as_str();
     // Apply the Ghostel window's actual dimensions once the PTY is ready.
-    RESIZE.store(true, Ordering::Relaxed);
-    relay(control, session, &serde_json::to_value(record.clone())?)
+    // A bridged program resizes through the daemon itself.
+    if snapshot.is_none() {
+        RESIZE.store(true, Ordering::Relaxed);
+    }
+    relay(
+        control,
+        session,
+        &serde_json::to_value(record.clone())?,
+        snapshot,
+    )
 }
 
 /// The record of the goblin `attach` relays to. With `instance`, the attach
@@ -182,33 +202,49 @@ fn target(
 }
 
 /// Attach to the goblin whose launch or record is `record`: a hello with this
-/// terminal's size on its `attach.sock`.
-fn relay(mut control: Client, session: &str, record: &serde_json::Value) -> Result<i32> {
-    let terminal = handshake(session, record, None)?;
+/// terminal's size on its `attach.sock`, or a snapshot bridge at that size.
+fn relay(
+    mut control: Client,
+    session: &str,
+    record: &serde_json::Value,
+    snapshot: Option<(u16, u16)>,
+) -> Result<i32> {
+    let terminal = handshake(session, record, None, snapshot)?;
     goblins_protocol::terminal::relay(
         terminal,
         session,
         |method, params| control.call(method, params),
         &STOP,
         &RESIZE,
+        snapshot.is_some(),
     )
 }
 
 /// Connect to a goblin's attach socket and be accepted: for the goblin's own
-/// terminal, or with `terminal` for one of its terminals.
+/// terminal, or with `terminal` for one of its terminals. With `snapshot`,
+/// at that size and with the snapshot replay; otherwise at this terminal's
+/// size with the VT replay.
 pub fn handshake(
     session: &str,
     record: &serde_json::Value,
     terminal: Option<&str>,
+    snapshot: Option<(u16, u16)>,
 ) -> Result<UnixStream> {
     let path = record["attach"].as_str().ok_or("missing attach path")?;
     let stream = UnixStream::connect(path)?;
-    let d = size(0)?;
+    let dimensions = match snapshot {
+        Some(dimensions) => dimensions,
+        None => {
+            let d = size(0)?;
+            (d.ws_row.max(1), d.ws_col.max(1))
+        }
+    };
     greet(
         stream,
         session,
-        (d.ws_row.max(1), d.ws_col.max(1)),
+        dimensions,
         terminal,
+        snapshot.map(|_| contract::Replay::Snapshot),
         rpc::TIMEOUT,
         || eprintln!("Starting…"),
     )
@@ -220,6 +256,7 @@ fn greet(
     session: &str,
     (rows, cols): (u16, u16),
     terminal: Option<&str>,
+    replay: Option<contract::Replay>,
     bound: std::time::Duration,
     starting: impl FnMut(),
 ) -> Result<UnixStream> {
@@ -228,6 +265,7 @@ fn greet(
         rows,
         cols,
         terminal: terminal.map(str::to_owned),
+        replay,
     };
     stream.write_all(&rpc::encode(&contract::notification::<
         contract::attach_notifications::AttachHello,
@@ -348,7 +386,9 @@ mod tests {
             goblin.write_all(payload).unwrap();
             goblin.shutdown(std::net::Shutdown::Write).unwrap();
             let mut starting = 0;
-            let accepted = greet(stream, "a", (24, 100), None, rpc::TIMEOUT, || starting += 1);
+            let accepted = greet(stream, "a", (24, 100), None, None, rpc::TIMEOUT, || {
+                starting += 1
+            });
             assert_eq!(
                 rpc::read(&mut goblin).unwrap(),
                 json!({"jsonrpc":"2.0","method":"attach.hello","params":{"version":1,"rows":24,"cols":100}})
@@ -382,14 +422,47 @@ mod tests {
                 &rpc::encode(&json!({"jsonrpc":"2.0","id":0,"result":{"attached":true}})).unwrap(),
             )
             .unwrap();
-        greet(stream, "a", (30, 120), Some("t1"), rpc::TIMEOUT, || {
-            panic!("not starting")
-        })
+        greet(
+            stream,
+            "a",
+            (30, 120),
+            Some("t1"),
+            None,
+            rpc::TIMEOUT,
+            || panic!("not starting"),
+        )
         .unwrap();
         assert_eq!(
             rpc::read(&mut goblin).unwrap()["params"],
             json!({"version":1,"rows":30,"cols":120,"terminal":"t1"})
         );
+    }
+
+    #[test]
+    fn a_snapshot_handshake_sends_its_size_and_replay_without_a_terminal() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let path = directory.join("attach.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let goblin = std::thread::spawn(move || {
+            let (mut goblin, _) = listener.accept().unwrap();
+            goblin.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+            let hello = rpc::read(&mut goblin).unwrap();
+            goblin
+                .write_all(
+                    &rpc::encode(&json!({"jsonrpc":"2.0","id":0,"result":{"attached":true}}))
+                        .unwrap(),
+                )
+                .unwrap();
+            hello
+        });
+        // The size is given, not asked of standard input.
+        handshake("a", &json!({"attach": path}), Some("t1"), Some((24, 80))).unwrap();
+        assert_eq!(
+            goblin.join().unwrap()["params"],
+            json!({"version":1,"rows":24,"cols":80,"terminal":"t1","replay":"snapshot"})
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -457,7 +530,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let greeter = std::thread::spawn(move || {
             sender.send(unsafe { libc::pthread_self() }).unwrap();
-            greet(stream, "a", (24, 80), None, rpc::TIMEOUT, || ())
+            greet(stream, "a", (24, 80), None, None, rpc::TIMEOUT, || ())
                 .map(drop)
                 .map_err(|e| e.to_string())
         });
@@ -496,7 +569,7 @@ mod tests {
         // Nothing comes back: the attach gives up after the bound.
         let (stream, _goblin) = UnixStream::pair().unwrap();
         let started = Instant::now();
-        let error = greet(stream, "a", (24, 80), None, bound, || ()).unwrap_err();
+        let error = greet(stream, "a", (24, 80), None, None, bound, || ()).unwrap_err();
         assert_eq!(error.to_string(), "terminal attachment timed out");
         assert!(started.elapsed() >= bound);
         // A slow readiness: notices well within the bound, for twice as
@@ -516,7 +589,7 @@ mod tests {
         });
         let started = Instant::now();
         let mut starting = 0;
-        greet(stream, "a", (24, 80), None, bound, || starting += 1).unwrap();
+        greet(stream, "a", (24, 80), None, None, bound, || starting += 1).unwrap();
         assert!(started.elapsed() >= bound * 2, "{:?}", started.elapsed());
         assert_eq!(starting, 1);
         goblin.join().unwrap();

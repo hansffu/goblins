@@ -455,6 +455,13 @@ fn hello(socket: &Path, terminal: Option<&str>, rows: u16, cols: u16) -> UnixStr
         .unwrap();
     frontend
 }
+fn hello_with(socket: &Path, params: Value) -> UnixStream {
+    let mut frontend = UnixStream::connect(socket).unwrap();
+    frontend
+        .write_all(&rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello","params":params})).unwrap())
+        .unwrap();
+    frontend
+}
 fn step(d: &mut Controller) {
     d.tick().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -468,19 +475,25 @@ fn a_hello_naming_a_terminal_attaches_it_beside_the_goblins_own_attachment() {
     let exec = d.sessions["a"].terminals.entries[0].exec;
     let socket = d.sessions["a"].directory.join("attach.sock");
     // The goblin has attach handlers (`capable`), yet a terminal attaches.
-    let mut frontend = hello(&socket, Some("app"), 30, 100);
+    // Positionally, with the snapshot replay.
+    let frontend = hello_with(&socket, json!([1, 30, 100, "app", "snapshot"]));
     for _ in 0..50 {
         step(&mut d);
         if !received.lock().unwrap().is_empty() {
             break;
         }
     }
-    let Command::Attach { terminal, rows, cols, .. } = take(&received) else {
+    let Command::Attach { terminal, rows, cols, replay, .. } = take(&received) else {
         panic!("expected an attach")
     };
-    assert_eq!((terminal, rows, cols), (TerminalId::Process(exec), 30, 100));
+    assert_eq!((terminal, rows, cols, replay), (TerminalId::Process(exec), 30, 100, goblins_runtime::Replay::Snapshot));
     assert!(d.sessions["a"].record.terminals[0].attached);
-    assert_eq!((d.sessions["a"].record.terminals[0].rows, d.sessions["a"].record.terminals[0].cols), (30, 100));
+    // The size is the terminal's once the supervisor reports it attached.
+    let size = |d: &Controller| (d.sessions["a"].record.terminals[0].rows, d.sessions["a"].record.terminals[0].cols);
+    assert_eq!(size(&d), (40, 120));
+    let attached = TerminalStatus { connected: true, attached: true, ..Default::default() };
+    d.process_event("a", Event::Terminal { terminal: TerminalId::Process(exec), status: attached, error: None });
+    assert_eq!(size(&d), (30, 100));
     assert!(!d.sessions["a"].record.terminal_attached, "the goblin's own attachment is untouched");
     // A second frontend for it is refused; one for t1 by ID too.
     for designator in ["app", "t1"] {
@@ -502,6 +515,51 @@ fn a_hello_naming_a_terminal_attaches_it_beside_the_goblins_own_attachment() {
     assert!(!d.sessions["a"].record.terminals[0].attached);
     drop(frontend.try_clone());
     frontend.shutdown(std::net::Shutdown::Both).unwrap();
+}
+
+#[test]
+fn a_terminal_takes_an_attachment_size_only_once_attached_and_a_resize_supersedes_it() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    create(&mut d, &received, json!({"session":"a","name":"app"}));
+    let exec = d.sessions["a"].terminals.entries[0].exec;
+    let socket = d.sessions["a"].directory.join("attach.sock");
+    let size = |d: &Controller| (d.sessions["a"].record.terminals[0].rows, d.sessions["a"].record.terminals[0].cols);
+    let report = |d: &mut Controller, attached: bool| {
+        let status = TerminalStatus { connected: attached, attached, ..Default::default() };
+        d.process_event("a", Event::Terminal { terminal: TerminalId::Process(exec), status, error: None });
+    };
+    let attach = |d: &mut Controller, rows: u16, cols: u16| {
+        let frontend = hello(&socket, Some("app"), rows, cols);
+        for _ in 0..50 {
+            step(d);
+            if !received.lock().unwrap().is_empty() {
+                break;
+            }
+        }
+        assert!(matches!(take(&received), Command::Attach { rows: r, cols: c, .. } if (r, c) == (rows, cols)));
+        frontend
+    };
+    // Refused (a snapshot the supervisor could not take): nothing was resized.
+    let _refused = attach(&mut d, 30, 100);
+    report(&mut d, false);
+    assert_eq!(size(&d), (40, 120));
+    assert!(!d.sessions["a"].record.terminals[0].attached);
+    // An older report still in flight changes nothing; the attachment's own
+    // report brings its size.
+    let _accepted = attach(&mut d, 20, 60);
+    report(&mut d, false);
+    assert_eq!(size(&d), (40, 120));
+    report(&mut d, true);
+    assert_eq!(size(&d), (20, 60));
+    report(&mut d, false);
+    // A resize made before the attachment's report is the newer size.
+    let _third = attach(&mut d, 30, 100);
+    let reply = ask(&mut d, "terminals.resize", json!({"session":"a","terminal":"t1","rows":25,"cols":90}));
+    assert_eq!(reply["result"]["accepted"], true);
+    assert!(matches!(take(&received), Command::Resize { rows: 25, cols: 90, .. }));
+    report(&mut d, true);
+    assert_eq!(size(&d), (25, 90));
 }
 
 #[test]
