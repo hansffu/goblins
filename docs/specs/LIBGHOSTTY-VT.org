@@ -71,7 +71,7 @@ let restored = libghostty_vt::snapshot::Decoder::new_buf(&snapshot)?.decode()?;
 - Other callbacks exist (=on_device_attributes=, =on_xtversion=, =on_title_changed=, =on_clipboard_write= and more). Register only what a step asks for.
 - =Terminal= carries two lifetimes and is neither =Send= nor =Sync=. Store it as =Terminal<'static, 'static>= with callbacks that own their state (for example an =Rc<RefCell<Vec<u8>>>= for replies).
 - Building: the crate's =pkg-config= feature links an installed =libghostty-vt= (static by default) instead of compiling Ghostty with Zig in the build script. Use that feature; a Nix build has no network for the default path.
-- The snapshot format is versioned separately from the library's ABI. Encoder and decoder must come from the same libghostty-vt version.
+- The snapshot format is versioned separately from the library's ABI: a snapshot starts with =GHOSTSNP= and a format version, 1 for libghostty-vt 1.0, and a decoder refuses any other. The decoder must read the encoder's format; the library versions may differ (see step 4).
 
 * Reference: ghostel's bridged terminal (0.65.0)
 
@@ -242,12 +242,12 @@ Verification: =full=.
 
 Goal: with an option set, agent and named-terminal buffers are ghostel bridged terminals fed by =goblins … --snapshot=.
 
-1. Ghostel 0.65 or later in the flake's test Emacs (=testEmacs= in =flake.nix=, from =nixpkgs-unstable=). Update that input if its ghostel is older; if nixpkgs has not caught up, override the package's source. Confirm that this ghostel's libghostty-vt is the same version as the supervisor's; if they differ, align the supervisor's pin, since the snapshot format follows the library version.
+1. Ghostel 0.65 or later in the flake's test Emacs (=testEmacs= in =flake.nix=, from =nixpkgs-unstable=). Update that input if its ghostel is older; if nixpkgs has not caught up, override the package's source. Ghostel comes from the user's own configuration, so its libghostty-vt cannot be pinned to the supervisor's. What must match is the snapshot format (=GHOSTSNP= and a format version, 1 for libghostty-vt 1.0; a decoder refuses any other). The user decided: when Ghostel cannot restore a snapshot, that attachment falls back to a redraw and says so in a message (see the filter below).
 2. =emacs/goblins.el=: =defcustom goblins-terminal-snapshot= (boolean, default nil), and one function that both attach sites call instead of =ghostel-exec=: =goblins--open-terminal= (around line 1577) and =goblins-tramp--attach-terminal= (=emacs/goblins-tramp.el= around line 701). The =exec -t= shell at =goblins-tramp.el= line 678 keeps =ghostel-exec=. With the option off the function calls =ghostel-exec= exactly as today.
 3. With the option on:
    - Make the terminal: =(ghostel-make-terminal buffer :size SIZE :send SEND :resize RESIZE)=, with =SIZE= from the window that shows the buffer.
    - Start the CLI with =make-process=: the same arguments as today plus =--snapshot --size ROWSxCOLS=, =:connection-type 'pipe=, =:coding 'binary=, =:noquery t=, a =:stderr= buffer of its own, a filter and a sentinel.
-   - Filter: collect bytes until the 4-byte length and the snapshot are complete; call =ghostel-restore-snapshot= when the length is not 0; then =ghostel-set-size= with the current size, since a restored terminal keeps the snapshot's size; then pass everything after it, and all later output, to =ghostel-write-output=. All strings are unibyte.
+   - Filter: collect bytes until the 4-byte length and the snapshot are complete; call =ghostel-restore-snapshot= when the length is not 0; then =ghostel-set-size= with the current size, since a restored terminal keeps the snapshot's size; then pass everything after it, and all later output, to =ghostel-write-output=. All strings are unibyte. When the restore fails, print a message saying why, end the CLI (which detaches), wait without blocking until the daemon no longer reports the terminal attached (at most 10 seconds), then attach again in the same buffer with =ghostel-exec= (VT replay) from a local directory. The fallback applies to that attachment only.
    - =SEND=: =process-send-string= to the CLI.
    - =RESIZE=: call =sessions.resize= or =terminals.resize= through =goblins--host-call= (see =goblins-tramp--create-terminal= for a call), then =ghostel-set-size=. Skip the call when the size is unchanged.
    - Sentinel: =ghostel-end-terminal=, show what the CLI wrote to standard error (a refused attachment's message must stay readable in the buffer, as it does today), and run what =ghostel-exit-functions= ran for this buffer before.

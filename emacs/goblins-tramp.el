@@ -633,9 +633,11 @@ right of the goblin's agent and remembers it for the goblin."
          (source (car goblin))
          (session (cdr goblin)))
     (if (goblins-tramp--terminals-p source)
-        (goblins-tramp--create-terminal
-         source session (and goblins-shell-program (ensure-list goblins-shell-program))
-         nil display)
+        (progn
+          (goblins--require-ghostel t)
+          (goblins-tramp--create-terminal
+           source session (and goblins-shell-program (ensure-list goblins-shell-program))
+           nil display))
       (goblins-tramp--exec-shell source session display))))
 
 (defun goblins-tramp--terminals-p (source)
@@ -651,8 +653,9 @@ right of the goblin's agent and remembers it for the goblin."
   "Open a Ghostel buffer named NAME for goblin SESSION of SOURCE's daemon.
 DISPLAY shows it, by default right of the goblin's agent.  START is called
 with the buffer, the daemon's directory and instance, the goblin's ID and its
-/goblins: host, and must start the program with `ghostel-exec'.  On failure the
-buffer is killed and the error re-signalled."
+/goblins: host, and must start the program with `ghostel-exec' or
+`goblins--run-attach'.  On failure the buffer is killed and the error
+re-signalled."
   (let* ((directory (buffer-local-value 'goblins--directory source))
          (instance (buffer-local-value 'goblins--instance source))
          (id (plist-get session :id))
@@ -712,12 +715,24 @@ buffer detaches the terminal, which keeps running."
                           (goblins--terminal-label record))
                   display
                   (lambda (buffer directory instance id host)
-                    (ghostel-exec buffer goblins-executable
-                                  (append (goblins--daemon-arguments directory)
-                                          (list "terminal" "attach" id terminal))
-                                  `((kind . goblins-shell) (session . ,id) (instance . ,instance)
-                                    (directory . ,directory) (host . ,host)
-                                    (terminal . ,terminal)))))))
+                    (goblins--run-attach buffer goblins-executable
+                                     (append (goblins--daemon-arguments directory)
+                                             (list "terminal" "attach" id terminal))
+                                     `((kind . goblins-shell) (session . ,id) (instance . ,instance)
+                                       (directory . ,directory) (host . ,host)
+                                       (terminal . ,terminal))
+                                     source
+                                     (lambda (size)
+                                       (list 'terminals.resize
+                                             (list :session id :terminal terminal
+                                                   :rows (cdr size) :cols (car size))))
+                                     (lambda ()
+                                       (list 'terminals.list (list :session id)
+                                             (lambda (result)
+                                               (eq (plist-get (goblins--session-terminal
+                                                               result terminal)
+                                                              :attached)
+                                                   t)))))))))
     (with-current-buffer buffer (setq-local goblins--terminal-id terminal))
     (goblins-tramp--shells-changed)
     buffer))
@@ -763,7 +778,7 @@ program and its arguments, SESSION, DISPLAY and SOURCE are as for `goblins-shell
      (let* ((argv (goblins-tramp--read-command-line))
             (name (string-trim (read-string "Name (optional): "))))
        (list argv (unless (string-empty-p name) name) (cdr goblin) nil (car goblin)))))
-  (goblins--require-ghostel)
+  (goblins--require-ghostel t)
   (let ((goblin (goblins-tramp--goblin source session "Terminal in goblin: ")))
     (goblins-tramp--create-terminal (car goblin) (cdr goblin) argv name display)))
 
@@ -793,7 +808,7 @@ terminal's ID; SESSION, DISPLAY and SOURCE are as for `goblins-shell'."
    (let ((goblin (goblins-tramp--goblin nil nil "Attach a terminal of goblin: ")))
      (goblins-tramp--require-terminals (car goblin))
      (list (goblins-tramp--read-terminal (cdr goblin)) (cdr goblin) nil (car goblin))))
-  (goblins--require-ghostel)
+  (goblins--require-ghostel t)
   (let ((goblin (goblins-tramp--goblin source session "Attach a terminal of goblin: ")))
     (goblins-tramp--show-terminal (car goblin) (cdr goblin)
                             (or terminal (goblins-tramp--read-terminal (cdr goblin)))

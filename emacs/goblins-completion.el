@@ -366,7 +366,7 @@ once the goblin has started.  DISPLAY, default `goblins--display-new-agent',
 shows the new terminal.  With a prefix argument, prompt for the daemon state
 directory."
   (interactive (goblins--choose-record "Resume conversation: "))
-  (goblins--require-ghostel)
+  (goblins--require-ghostel t)
   (let* ((daemon (buffer-local-value 'goblins--directory source))
          (configs (goblins--configurations daemon))
          (launch (goblins--host-call

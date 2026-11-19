@@ -20,6 +20,13 @@
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
 (declare-function project-root "project" (project))
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
+(declare-function ghostel-make-terminal "ghostel" (buffer-or-name &rest keys))
+(declare-function ghostel-terminal-size "ghostel" ())
+(declare-function ghostel-set-size "ghostel" (size))
+(declare-function ghostel-restore-snapshot "ghostel" (data))
+(declare-function ghostel-write-output "ghostel" (bytes &optional no-reply))
+(declare-function ghostel-end-terminal "ghostel" ())
+(declare-function ghostel-fit-window "ghostel" (window))
 (declare-function goblins--display-new-agent "goblins-views" (buffer))
 (defvar goblins--last-goblin)
 (declare-function goblins--note-selected "goblins-views" (key))
@@ -27,6 +34,7 @@
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
 (defvar ghostel--process)
+(defvar ghostel-exit-functions)
 (declare-function goblins-goblin-mode "goblins-terminal" (&optional arg))
 
 (defgroup goblins nil "Goblins agent status and approvals." :group 'tools)
@@ -1579,8 +1587,7 @@ Otherwise its details open instead."
               (let ((identity (bound-and-true-p ghostel-identity)))
                 (and (equal (alist-get 'session identity) session)
                      (equal (alist-get 'instance identity) instance)))
-              (bound-and-true-p ghostel--process)
-              (process-live-p ghostel--process))))
+              (process-live-p (goblins--terminal-process)))))
      (buffer-list))))
 
 (defun goblins--render-status-buffers ()
@@ -1874,11 +1881,276 @@ paints those with the underlined `nobreak-space' face."
 (defvar goblins-snapshot-hook nil
   "Normal hook run in a status buffer after it renders a new snapshot.")
 
-(defun goblins--require-ghostel ()
+(defcustom goblins-terminal-snapshot nil
+  "Whether agent and goblin terminal buffers restore a snapshot on attach.
+With this on, such a buffer is a Ghostel terminal without a process, fed by
+`goblins attach --snapshot' or `goblins terminal attach --snapshot': it
+restores the terminal's whole state (screens, scrollback, cursor and modes)
+from libghostty-vt's binary snapshot and then follows its output.  Off, the
+buffer runs the attach command in Ghostel's own terminal, which redraws the
+screen.  Needs Ghostel 0.65 or later.  `goblins-shell' without goblin
+terminals is not affected."
+  :type 'boolean)
+
+(defun goblins--require-ghostel (&optional attach)
+  "Signal a `user-error' unless installed Ghostel can run Goblins terminals.
+ATTACH non-nil means the caller attaches a goblin's own or named terminal,
+which with `goblins-terminal-snapshot' needs Ghostel's bridged terminals."
   ;; Require the installed module directly, bypassing Ghostel's auto-download.
   (unless (and (require 'ghostel nil t) (require 'ghostel-module nil t)
                (fboundp 'ghostel-exec))
-    (user-error "Goblins terminals require installed Ghostel with its native module")))
+    (user-error "Goblins terminals require installed Ghostel with its native module"))
+  (when (and attach goblins-terminal-snapshot
+             (not (and (fboundp 'ghostel-make-terminal) (fboundp 'ghostel-restore-snapshot)
+                       (fboundp 'ghostel-end-terminal) (fboundp 'ghostel-fit-window))))
+    (user-error "`goblins-terminal-snapshot' requires Ghostel 0.65 or later")))
+
+(defvar-local goblins--bridge nil
+  "The attach command feeding this bridged terminal, see `goblins--run-attach'.")
+
+(defvar-local goblins--bridge-size nil
+  "The size (COLS . ROWS) the daemon last gave this bridged terminal.")
+
+(defvar-local goblins--bridge-resizing nil
+  "Non-nil while a resize of this bridged terminal waits for the daemon.")
+
+(defvar-local goblins--bridge-header nil
+  "The snapshot frame still being read, as (CHUNKS NEED HAVE), or nil once read.
+CHUNKS are the bytes so far, newest first, HAVE their length, and NEED the
+frame's length, or nil while its 4-byte length is incomplete.")
+
+(defvar-local goblins--bridge-fallback nil
+  "Why this bridged terminal could not restore its snapshot, or nil.
+It then attaches again with a redraw, see `goblins--bridge-fall-back'.")
+
+(defun goblins--terminal-process (&optional buffer)
+  "The process behind Goblins terminal BUFFER, by default the current one.
+Ghostel's own process, or the attach command of a bridged terminal."
+  (with-current-buffer (or buffer (current-buffer))
+    (or (bound-and-true-p ghostel--process) goblins--bridge)))
+
+(defun goblins--run-attach (buffer program args identity source resize attached)
+  "Run PROGRAM with ARGS, a Goblins attach command, as BUFFER's terminal.
+IDENTITY becomes its `ghostel-identity'.  Without `goblins-terminal-snapshot'
+this is `ghostel-exec'.  With it BUFFER becomes a bridged Ghostel terminal:
+the command runs with --snapshot and the window's size, and once the
+snapshot is restored the attached terminal follows its windows' size through
+the connection of SOURCE, a status buffer, with the request (METHOD PARAMS)
+that RESIZE returns for a size (COLS . ROWS).  Killing BUFFER ends the
+command, which detaches.
+When Ghostel cannot restore the snapshot, as when its libghostty-vt reads
+another snapshot format, the command is ended and, once the daemon no longer
+has the terminal attached, run again with `ghostel-exec' and a redraw.
+ATTACHED returns the request (METHOD PARAMS TEST) that asks the daemon, and
+TEST is called with its result and returns non-nil while it is attached."
+  (if (not goblins-terminal-snapshot)
+      (ghostel-exec buffer program args identity)
+    (goblins--require-ghostel t)
+    (with-current-buffer
+        (ghostel-make-terminal buffer
+                               :send (lambda (bytes)
+                                       (when (process-live-p goblins--bridge)
+                                         (process-send-string goblins--bridge bytes)))
+                               :resize (lambda (size)
+                                         (goblins--bridge-resize source resize size)))
+      (let* ((size (ghostel-terminal-size))
+             (errors (generate-new-buffer (format " *%s stderr*" (buffer-name))))
+             (stderr (make-pipe-process :name "goblins-attach-stderr" :buffer errors
+                                        :noquery t :sentinel #'goblins--bridge-sentinel)))
+        (setq-local ghostel-identity identity)
+        (setq goblins--bridge-size size
+              goblins--bridge-header (list nil nil 0))
+        (add-hook 'kill-buffer-hook (lambda () (kill-buffer errors)) nil t)
+        (setq goblins--bridge
+              (make-process
+               :name "goblins-attach" :buffer buffer
+               :command (append (list program) args
+                                (list "--snapshot" "--size"
+                                      (format "%dx%d" (cdr size) (car size))))
+               :connection-type 'pipe :coding 'binary :noquery t :stderr stderr
+               :filter #'goblins--bridge-filter :sentinel #'goblins--bridge-sentinel))
+        (process-put goblins--bridge 'goblins-stderr stderr)
+        (process-put stderr 'goblins-terminal buffer)
+        (process-put stderr 'goblins-command goblins--bridge)
+        (process-put goblins--bridge 'goblins-fallback
+                     (list program args identity source attached))
+        goblins--bridge))))
+
+(defun goblins--bridge-fit (buffer)
+  "Fit bridged terminal BUFFER to the windows showing it, if any."
+  (when-let* ((window (get-buffer-window buffer t)))
+    (ghostel-fit-window window)))
+
+(defun goblins--bridge-resize (source resize size)
+  "Give this bridged terminal SIZE (COLS . ROWS) once the daemon has.
+Ask the daemon through SOURCE's connection with the request RESIZE returns,
+unless it last gave this terminal SIZE.  Until the snapshot is restored only
+the attachment's own size counts: the snapshot is taken before the daemon
+resizes the terminal to it, and the attachment is not yet this one.  One
+request at a time: Ghostel calls this while windows change size, and once a
+request is accepted the terminal is fitted again to the size the windows
+have by then.  A refused or lost request keeps the old size."
+  (cond
+   ((or goblins--bridge-header goblins--bridge-resizing
+        (not (process-live-p goblins--bridge))))
+   ((equal size goblins--bridge-size) (ghostel-set-size size))
+   (t
+    (let ((buffer (current-buffer))
+          (command goblins--bridge)
+          (connection (and (buffer-live-p source)
+                           (buffer-local-value 'goblins--connection source))))
+      (when (and connection (jsonrpc-running-p connection))
+        (pcase-let ((`(,method ,params) (funcall resize size))
+                    (settle (lambda (accepted)
+                              (when (buffer-live-p buffer)
+                                (with-current-buffer buffer
+                                  (setq goblins--bridge-resizing nil)
+                                  (when (and accepted (process-live-p command))
+                                    (setq goblins--bridge-size size)
+                                    (ghostel-set-size size)
+                                    (goblins--bridge-fit buffer)))))))
+          (setq goblins--bridge-resizing t)
+          ;; The request is sent before its callbacks are installed, so a
+          ;; lost transport signals here instead.
+          (condition-case nil
+              (jsonrpc-async-request
+               connection method params :timeout 5
+               :success-fn (lambda (_) (funcall settle t))
+               :error-fn (lambda (_) (funcall settle nil))
+               :timeout-fn (lambda () (funcall settle nil)))
+            (error (funcall settle nil)))))))))
+
+(defun goblins--bridge-length (bytes)
+  "The 4-byte big-endian length at the start of unibyte BYTES."
+  (logior (ash (aref bytes 0) 24) (ash (aref bytes 1) 16) (ash (aref bytes 2) 8) (aref bytes 3)))
+
+(defun goblins--bridge-filter (process output)
+  "Restore the snapshot that starts PROCESS's OUTPUT, then write the rest.
+The output starts with a 4-byte big-endian length and that many bytes of
+snapshot, none for a terminal without a screen; live output follows.  A
+snapshot that cannot be restored falls back to a redraw."
+  (let ((buffer (process-buffer process)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (cond
+         (goblins--bridge-fallback)
+         ((null goblins--bridge-header) (ghostel-write-output output))
+         (t
+          (pcase-let ((`(,chunks ,need ,have) goblins--bridge-header))
+            (push output chunks)
+            (setq have (+ have (length output)))
+            (when (and (null need) (>= have 4))
+              (setq chunks (list (apply #'concat (nreverse chunks)))
+                    need (+ 4 (goblins--bridge-length (car chunks)))))
+            (if (or (null need) (< have need))
+                (setq goblins--bridge-header (list chunks need have))
+              (let ((bytes (apply #'concat (nreverse chunks))))
+                (condition-case err
+                    (when (> need 4)
+                      (ghostel-restore-snapshot (substring bytes 4 need)))
+                  (error
+                   (setq goblins--bridge-fallback (error-message-string err))))
+                (setq goblins--bridge-header nil)
+                (if goblins--bridge-fallback
+                    (goblins--bridge-fall-back process)
+                  ;; A restored terminal has the snapshot's size, taken
+                  ;; before the daemon resized the terminal to this
+                  ;; attachment.
+                  (ghostel-set-size goblins--bridge-size)
+                  (when (> (length bytes) need)
+                    (ghostel-write-output (substring bytes need)))
+                  ;; The windows may have changed size since the command
+                  ;; started.
+                  (goblins--bridge-fit buffer)))))))))))
+
+(defun goblins--bridge-sentinel (process event)
+  "End the bridged terminal of PROCESS, the attach command or its stderr.
+Once the sentinels of both have run, so that Emacs has read all their
+output, the terminal shows what the command wrote to stderr, such as why an
+attachment was refused, and runs `ghostel-exit-functions'."
+  (unless (process-live-p process)
+    (process-put process 'goblins-ended event))
+  (let* ((stderr (or (process-get process 'goblins-stderr) process))
+         (command (process-get stderr 'goblins-command))
+         (buffer (process-get stderr 'goblins-terminal)))
+    (when (and (buffer-live-p buffer) command
+               (process-get stderr 'goblins-ended)
+               (process-get command 'goblins-ended))
+      (with-current-buffer buffer
+        (let ((errors (with-current-buffer (process-buffer stderr)
+                        (string-trim-right (buffer-string)))))
+          (process-put stderr 'goblins-terminal nil)
+          ;; A frame cut short is never restored; let its bytes go.
+          (setq goblins--bridge-header nil)
+          ;; A bridge falling back is followed by another attachment.
+          (unless goblins--bridge-fallback
+            (ghostel-end-terminal)
+            (ghostel-write-output
+             (encode-coding-string
+              (concat "\e[!p\r\n"
+                      (and (not (string-empty-p errors))
+                           (concat (replace-regexp-in-string "\n" "\r\n" errors) "\r\n"))
+                      "[Process exited]\r\n")
+              'utf-8))
+            (with-demoted-errors "Goblins: %S"
+              (run-hook-with-args 'ghostel-exit-functions buffer
+                                  (process-get command 'goblins-ended)))))))))
+
+(defun goblins--bridge-fall-back (process)
+  "Attach the terminal of PROCESS, a bridge that cannot restore, with a redraw.
+End PROCESS, which detaches, wait until the daemon no longer has the terminal
+attached, then run the attach command without --snapshot in Ghostel's own
+terminal, in the same buffer.  The daemon is asked one request at a time and
+without blocking; after 10 seconds, or without a connection by then, the
+attach is tried anyway, and a refusal shows in the buffer."
+  (pcase-let ((buffer (process-buffer process))
+              (`(,program ,args ,identity ,source ,attached)
+               (process-get process 'goblins-fallback))
+              (deadline (+ (float-time) 10))
+              (poll nil))
+    (message "Goblins: Ghostel cannot restore this terminal's libghostty-vt snapshot (%s); \
+attaching with a redraw instead.  Update Ghostel to restore snapshots."
+             (buffer-local-value 'goblins--bridge-fallback buffer))
+    (delete-process process)
+    (setq poll
+          (lambda ()
+            (when (buffer-live-p buffer)
+              (let ((connection (and (buffer-live-p source)
+                                     (buffer-local-value 'goblins--connection source)))
+                    (again (lambda (still)
+                             (when (buffer-live-p buffer)
+                               (if still
+                                   (run-at-time 0.2 nil poll)
+                                 (goblins--bridge-redraw buffer program args identity))))))
+                (cond
+                 ((>= (float-time) deadline)
+                  (goblins--bridge-redraw buffer program args identity))
+                 ((not (and connection (jsonrpc-running-p connection)))
+                  (funcall again t))
+                 (t
+                  (pcase-let ((`(,method ,params ,test) (funcall attached)))
+                    (condition-case nil
+                        (jsonrpc-async-request
+                         connection method params :timeout 2
+                         :success-fn (lambda (result) (funcall again (funcall test result)))
+                         :error-fn (lambda (_) (funcall again t))
+                         :timeout-fn (lambda () (funcall again t)))
+                      (error (funcall again t))))))))))
+    ;; Not from the filter: the retry starts a new process in this buffer.
+    (run-at-time 0 nil poll)))
+
+(defun goblins--bridge-redraw (buffer program args identity)
+  "Run PROGRAM with ARGS in BUFFER with `ghostel-exec', as IDENTITY.
+From a local directory, as the first attach: the buffer may be in a goblin's
+/goblins: directory or on another machine by now."
+  (with-current-buffer buffer
+    (setq goblins--bridge nil)
+    (let ((directory default-directory))
+      (setq default-directory (expand-file-name "~/"))
+      (unwind-protect
+          (let ((ghostel-kill-buffer-on-exit nil))
+            (ghostel-exec buffer program args identity))
+        (setq default-directory directory)))))
 
 (defun goblins--open-terminal (session agent-name cwd &optional display)
   "Attach a new Ghostel buffer to SESSION and return it.
@@ -1886,8 +2158,9 @@ Call in a connected status buffer.  AGENT-NAME names the buffer and CWD is its
 `default-directory'.  DISPLAY, default `goblins--display-new-agent', shows
 the new buffer.
 On failure the buffer is killed and the error re-signalled."
-  (goblins--require-ghostel)
-  (let* ((instance goblins--instance)
+  (goblins--require-ghostel t)
+  (let* ((source (current-buffer))
+         (instance goblins--instance)
          (key (list goblins--directory instance session))
          (executable goblins-executable)
          (buffer (generate-new-buffer (format "*Goblin: %s*" agent-name))))
@@ -1898,10 +2171,18 @@ On failure the buffer is killed and the error re-signalled."
           (with-current-buffer buffer (setq default-directory (expand-file-name "~/")))
           (funcall (or display #'goblins--display-new-agent) buffer)
           (let ((ghostel-kill-buffer-on-exit nil))
-            (ghostel-exec buffer executable
-                          (append (goblins--daemon-arguments (car key))
-                                  (list "attach" session "--instance" instance))
-                          `((kind . goblins) (session . ,session) (instance . ,instance))))
+            (goblins--run-attach buffer executable
+                             (append (goblins--daemon-arguments (car key))
+                                     (list "attach" session "--instance" instance))
+                             `((kind . goblins) (session . ,session) (instance . ,instance))
+                             source
+                             (lambda (size)
+                               (list 'sessions.resize
+                                     (list :session session :rows (cdr size) :cols (car size))))
+                             (lambda ()
+                               (list 'sessions.get (list :session session)
+                                     (lambda (record)
+                                       (eq (plist-get record :terminal_attached) t))))))
           (with-current-buffer buffer
             (setq default-directory cwd)
             (setq-local goblins--session-key key)
@@ -1964,7 +2245,7 @@ Only launches made here are linked by the terminal command."
                             (expand-file-name (or directory default-directory)))))
     (when (string-prefix-p "/goblins:" default-directory)
       (user-error "This buffer is inside a goblin; run goblins from a directory outside it"))
-    (goblins--require-ghostel)
+    (goblins--require-ghostel t)
     (let ((daemon (goblins--resolve-directory)))
       (goblins--check-launch-directory daemon default-directory)
       (let* ((configs (goblins--configurations daemon))

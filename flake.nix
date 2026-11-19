@@ -91,11 +91,33 @@
       testEmacs =
         let
           unstable = nixpkgs-unstable.legacyPackages.${system};
+          # Bridged terminals and snapshot restore need Ghostel 0.65 or
+          # later, newer than nixpkgs' package. It bundles libghostty-vt
+          # 1.0.0, whose snapshot format is that of the supervisor's 1.0.1.
+          ghostel =
+            e:
+            e.ghostel.overrideAttrs (
+              final: _: {
+                version = "0.66.0";
+                src = unstable.fetchFromGitHub {
+                  owner = "dakra";
+                  repo = "ghostel";
+                  tag = "v${final.version}";
+                  hash = "sha256-0uYcK7qij6gOANQEPt3PQlCFwTFLnm4QENPa+JhxU3E=";
+                };
+                zig = unstable.zig_0_17;
+                zigDeps = final.zig.fetchDeps {
+                  inherit (final) src pname version;
+                  fetchAll = true;
+                  hash = "sha256-X16YfBc8i84G2/Dd7/qPhm0lRMDJDLfWCcLeXymb4yg=";
+                };
+              }
+            );
         in
         (unstable.emacsPackagesFor unstable.emacs-nox).emacsWithPackages (e: [
           e.magit-section
           e.transient
-          e.ghostel
+          (ghostel e)
           e.evil
           e.consult
           e.embark

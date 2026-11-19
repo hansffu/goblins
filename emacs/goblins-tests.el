@@ -624,13 +624,16 @@ history, without a terminal; print the new goblin's ID."
           ;; Press Enter without typing: the configured default must launch.
           (cl-letf (((symbol-function 'read-from-minibuffer)
                      (lambda (&rest _) "")))
-            (dotimes (_ 2)
+            (push (goblins-run) terminals)
+            ;; The second is a bridged terminal fed by attach --snapshot.
+            (let ((goblins-terminal-snapshot t))
               (push (goblins-run) terminals)))
           (should (equal (with-current-buffer source (buffer-string)) "Unrelated launch notes"))
           (should-not (equal (buffer-local-value 'goblins--session-key (car terminals))
                              (buffer-local-value 'goblins--session-key (cadr terminals))))
           (with-current-buffer (car terminals)
             (should (derived-mode-p 'ghostel-mode))
+            (should (process-live-p goblins--bridge))
             (ghostel-send-string "printf ghostel-run-ok > emacs-launch.txt\n"))
           (goblins-test--wait
            (lambda () (file-exists-p (expand-file-name "emacs-launch.txt"
@@ -5100,6 +5103,381 @@ programs started, each as (ARGS IDENTITY BUFFER)."
     ;; A terminal that is gone cannot be attached.
     (should-error (goblins-terminal-attach "t9" session #'ignore source) :type 'user-error)))
 
+(defmacro goblins-test--with-bridge (&rest body)
+  "Run BODY with Ghostel's bridged-terminal functions stubbed.
+`calls' records them in order, as (FUNCTION ARGUMENT); `buffer' is a buffer
+whose bridge is `process', a live process, waiting for its snapshot frame."
+  (declare (indent 0))
+  `(let ((buffer (generate-new-buffer " *goblins test bridge*"))
+         calls)
+     (cl-letf (((symbol-function 'ghostel-restore-snapshot)
+                (lambda (data) (push (list 'restore data) calls)))
+               ((symbol-function 'ghostel-set-size)
+                (lambda (size) (push (list 'size size) calls)))
+               ((symbol-function 'ghostel-write-output)
+                (lambda (bytes &rest _) (push (list 'write bytes) calls)))
+               ((symbol-function 'ghostel-fit-window)
+                (lambda (window) (push (list 'fit window) calls)))
+               ((symbol-function 'ghostel-end-terminal)
+                (lambda () (push (list 'end nil) calls))))
+       (let ((process (make-process :name "goblins-test-bridge" :buffer buffer
+                                    :command '("sleep" "60") :noquery t)))
+         (unwind-protect
+             (progn
+               (with-current-buffer buffer
+                 (setq goblins--bridge process
+                       goblins--bridge-size '(80 . 24)
+                       goblins--bridge-header (list nil nil 0)))
+               ,@body)
+           (delete-process process)
+           (kill-buffer buffer))))))
+
+(ert-deftest goblins-bridge-reads-a-snapshot-frame-split-across-chunks ()
+  (goblins-test--with-bridge
+    ;; The length itself is split, and live output follows the snapshot in
+    ;; the same chunk.
+    (dolist (chunk '("\0\0" "\0\4SN" "APlive1" "live2"))
+      (goblins--bridge-filter process (encode-coding-string chunk 'binary)))
+    (should (equal (reverse calls)
+                   '((restore "SNAP") (size (80 . 24)) (write "live1") (write "live2"))))
+    (should-not (buffer-local-value 'goblins--bridge-header buffer))))
+
+(ert-deftest goblins-bridge-restores-nothing-for-an-empty-snapshot ()
+  (goblins-test--with-bridge
+    (goblins--bridge-filter process "\0\0\0\0hello")
+    (should (equal (reverse calls) '((size (80 . 24)) (write "hello"))))))
+
+(ert-deftest goblins-bridge-writes-nothing-for-a-frame-that-ends-its-chunk ()
+  (goblins-test--with-bridge
+    (goblins--bridge-filter process "\0\0\0\1X")
+    (should (equal (reverse calls) '((restore "X") (size (80 . 24)))))
+    ;; A snapshot frame of 256 bytes and more.
+    (with-current-buffer buffer (setq goblins--bridge-header (list nil nil 0)))
+    (setq calls nil)
+    (let ((snapshot (make-string 300 ?s)))
+      (goblins--bridge-filter process (concat "\0\0\1\54" snapshot)))
+    (should (equal (reverse calls) `((restore ,(make-string 300 ?s)) (size (80 . 24)))))))
+
+(ert-deftest goblins-bridge-asks-the-daemon-before-resizing ()
+  (goblins-test--with-bridge
+    (let ((source (generate-new-buffer " *goblins test source*"))
+          (windows '(80 . 24))
+          requests replies made)
+      (unwind-protect
+          (cl-letf (((symbol-function 'jsonrpc-running-p) (lambda (_) t))
+                    ((symbol-function 'jsonrpc-async-request)
+                     (lambda (_connection method params &rest keys)
+                       (push (list method params) requests)
+                       (push keys replies)))
+                    ((symbol-function 'get-buffer-window) (lambda (&rest _) 'window))
+                    ;; Fitting asks for the size the windows have now.
+                    ((symbol-function 'ghostel-fit-window)
+                     (lambda (_window)
+                       (push (list 'fit windows) calls)
+                       (funcall (plist-get made :resize) windows))))
+            (with-current-buffer source (setq-local goblins--connection 'connection))
+            (with-current-buffer buffer
+              (let ((resize (lambda (size)
+                              (list 'terminals.resize
+                                    (list :rows (cdr size) :cols (car size))))))
+                (setq made (list :resize (lambda (size)
+                                           (goblins--bridge-resize source resize size))))
+                ;; Before the snapshot only the attachment's own size counts:
+                ;; nothing is asked, also for an attachment that is refused.
+                (goblins--bridge-resize source resize '(100 . 30))
+                (should-not requests)
+                (should-not calls)
+                ;; Once restored, the terminal fits the windows.
+                (setq windows '(100 . 30))
+                (goblins--bridge-filter process "\0\0\0\0")
+                (should (equal requests '((terminals.resize (:rows 30 :cols 100)))))
+                (should (equal (reverse calls) '((size (80 . 24)) (fit (100 . 30)))))
+                ;; The windows go back to the old size before the daemon
+                ;; answers: one request at a time, and the answer refits.
+                (setq calls nil windows '(80 . 24))
+                (goblins--bridge-resize source resize '(80 . 24))
+                (should (= (length requests) 1))
+                (should-not calls)
+                (funcall (plist-get (pop replies) :success-fn) '(:accepted t))
+                (should (equal (reverse calls) '((size (100 . 30)) (fit (80 . 24)))))
+                (should (equal requests '((terminals.resize (:rows 24 :cols 80))
+                                          (terminals.resize (:rows 30 :cols 100)))))
+                ;; A refused request keeps the size and does not refit.
+                (setq calls nil)
+                (funcall (plist-get (pop replies) :error-fn) '(:message "no"))
+                (should-not calls)
+                (should (equal goblins--bridge-size '(100 . 30)))
+                ;; The size the daemon has is only applied.
+                (goblins--bridge-resize source resize '(100 . 30))
+                (should (equal calls '((size (100 . 30)))))
+                ;; A request whose sending fails does not block later ones.
+                (setq calls nil requests nil)
+                (cl-letf (((symbol-function 'jsonrpc-async-request)
+                           (lambda (&rest _) (error "Process goblins not running"))))
+                  (goblins--bridge-resize source resize '(90 . 20)))
+                (should-not goblins--bridge-resizing)
+                (should-not calls)
+                (goblins--bridge-resize source resize '(90 . 20))
+                (should (equal requests '((terminals.resize (:rows 20 :cols 90)))))
+                (funcall (plist-get (pop replies) :error-fn) '(:message "no"))
+                ;; Without a connection nothing is asked.
+                (setq calls nil requests nil)
+                (with-current-buffer source (setq goblins--connection nil))
+                (goblins--bridge-resize source resize '(90 . 20))
+                (should-not requests)
+                (should-not calls))))
+        (kill-buffer source)))))
+
+(defmacro goblins-test--falling-back (&rest body)
+  "Run BODY in `goblins-test--with-bridge' with a bridge that cannot restore.
+`source' is its status buffer, `replies' the pending requests' keyword
+arguments, newest first, `messages' and `execs' what was shown and run."
+  (declare (indent 0))
+  `(goblins-test--with-bridge
+     (let ((source (generate-new-buffer " *goblins test source*"))
+           (goblins-terminal-snapshot t)
+           requests replies messages execs)
+       (unwind-protect
+           (cl-letf (((symbol-function 'ghostel-restore-snapshot)
+                      (lambda (_) (error "UnsupportedVersion")))
+                     ((symbol-function 'jsonrpc-running-p) (lambda (_) t))
+                     ((symbol-function 'jsonrpc-async-request)
+                      (lambda (_connection method params &rest keys)
+                        (push (list method params) requests)
+                        (push keys replies)))
+                     ((symbol-function 'message)
+                      (lambda (format &rest args) (push (apply #'format format args) messages)))
+                     ((symbol-function 'ghostel-exec)
+                      (lambda (buffer program args identity)
+                        (push (list buffer program args identity default-directory) execs))))
+             (with-current-buffer source (setq-local goblins--connection 'connection))
+             (with-current-buffer buffer (setq default-directory "/goblins:gribble:/"))
+             (process-put process 'goblins-fallback
+                          (list "goblins" '("terminal" "attach" "a" "t1") '((kind . goblins-shell))
+                                source
+                                (lambda ()
+                                  (list 'terminals.list '(:session "a")
+                                        (lambda (result) (eq (plist-get result :attached) t))))))
+             (goblins--bridge-filter process "\0\0\0\2XYlive")
+             (goblins--bridge-filter process "more")
+             ,@body)
+         (kill-buffer source)))))
+
+(ert-deftest goblins-bridge-falls-back-to-a-redraw-when-ghostel-cannot-restore ()
+  (goblins-test--falling-back
+    ;; Nothing is drawn into the unrestored terminal, the command, whose end
+    ;; detaches, is stopped, and the user is told why.
+    (should-not calls)
+    (should-not (process-live-p process))
+    (should (string-match-p "cannot restore .*(UnsupportedVersion).*redraw" (car messages)))
+    ;; The daemon is asked, not from the filter and without waiting for it.
+    (should-not requests)
+    (goblins-test--wait (lambda () requests) 5)
+    (should (equal requests '((terminals.list (:session "a")))))
+    ;; Still attached: asked again after a while.
+    (funcall (plist-get (pop replies) :success-fn) '(:attached t))
+    (should-not execs)
+    (goblins-test--wait (lambda () replies) 5)
+    ;; A failed request counts as attached.
+    (funcall (plist-get (pop replies) :error-fn) '(:message "lost"))
+    (goblins-test--wait (lambda () replies) 5)
+    (should-not execs)
+    ;; Detached: the same buffer attaches again without --snapshot, from a
+    ;; local directory, and keeps its own.
+    (funcall (plist-get (pop replies) :success-fn) '(:attached :false))
+    (should (equal execs (list (list buffer "goblins" '("terminal" "attach" "a" "t1")
+                                     '((kind . goblins-shell)) (expand-file-name "~/")))))
+    (should (equal (buffer-local-value 'default-directory buffer) "/goblins:gribble:/"))
+    (should-not (buffer-local-value 'goblins--bridge buffer))
+    ;; The bridge's end neither ended the terminal nor ran exit hooks.
+    (should-not (assq 'end calls))))
+
+(ert-deftest goblins-bridge-fallback-stops-with-its-buffer ()
+  (goblins-test--falling-back
+    (goblins-test--wait (lambda () replies) 5)
+    (kill-buffer buffer)
+    (funcall (plist-get (pop replies) :success-fn) '(:attached :false))
+    (should-not execs)
+    (accept-process-output nil 0.5)
+    (should-not replies)
+    (setq buffer (generate-new-buffer " *goblins test bridge*"))))
+
+(ert-deftest goblins-bridge-fallback-applies-to-its-own-attachment ()
+  (goblins-test--falling-back
+    (goblins-test--wait (lambda () replies) 5)
+    ;; Another attachment starts as a snapshot attachment again.
+    (let ((other (generate-new-buffer " *goblins test other*"))
+          bridged)
+      (unwind-protect
+          (cl-letf (((symbol-function 'goblins--require-ghostel) #'ignore)
+                    ((symbol-function 'ghostel-make-terminal)
+                     (lambda (&rest _) (setq bridged t) (error "Stop here"))))
+            (should-error (goblins--run-attach other "goblins" '("attach" "b") nil source
+                                               #'ignore #'ignore))
+            (should bridged)
+            (should-not execs))
+        (kill-buffer other)))))
+
+(ert-deftest goblins-bridge-ends-only-after-both-of-its-processes ()
+  (dolist (order '((command stderr) (stderr command)))
+    (let ((buffer (generate-new-buffer " *goblins test bridge*"))
+          (errors (generate-new-buffer " *goblins test stderr*"))
+          written exits)
+      (cl-letf (((symbol-function 'ghostel-end-terminal) (lambda () (push 'end written)))
+                ((symbol-function 'ghostel-write-output)
+                 (lambda (bytes &rest _) (push bytes written))))
+        (unwind-protect
+            (let ((command (make-process :name "goblins-test-command" :buffer buffer
+                                         :command '("true") :noquery t :sentinel #'ignore))
+                  (stderr (make-pipe-process :name "goblins-test-stderr" :buffer errors
+                                             :noquery t :sentinel #'ignore)))
+              (with-current-buffer errors (insert "refused\n"))
+              (delete-process stderr)
+              (goblins-test--wait (lambda () (not (process-live-p command))))
+              (process-put command 'goblins-stderr stderr)
+              (process-put stderr 'goblins-terminal buffer)
+              (process-put stderr 'goblins-command command)
+              (with-current-buffer buffer
+                (setq goblins--bridge command
+                      ;; The command ended in the middle of a frame.
+                      goblins--bridge-header (list (list "\0\0\1\0partial") 260 11))
+                (setq-local ghostel-exit-functions
+                            (list (lambda (_buffer event) (push event exits)))))
+              (let ((processes `((command . ,command) (stderr . ,stderr))))
+                ;; Whichever sentinel runs first, the terminal waits for the
+                ;; other.
+                (goblins--bridge-sentinel (alist-get (car order) processes) "first\n")
+                (should-not written)
+                (should (buffer-local-value 'goblins--bridge-header buffer))
+                (goblins--bridge-sentinel (alist-get (cadr order) processes) "second\n")
+                (should (equal (length written) 2))
+                (should-not (buffer-local-value 'goblins--bridge-header buffer))
+                (should (string-match-p "\r\nrefused\r\n\\[Process exited\\]" (car written)))
+                (should (equal exits (list (if (eq (car order) 'command) "first\n" "second\n"))))))
+          (kill-buffer buffer)
+          (kill-buffer errors))))))
+
+(ert-deftest goblins-bridge-runs-the-snapshot-command-and-shows-why-it-ended ()
+  (let ((goblins-terminal-snapshot t)
+        (buffer (generate-new-buffer " *goblins test bridge*"))
+        written made exits ended)
+    (cl-letf (((symbol-function 'goblins--require-ghostel) #'ignore)
+              ((symbol-function 'ghostel-make-terminal)
+               (lambda (buffer &rest keys) (setq made keys) buffer))
+              ((symbol-function 'ghostel-terminal-size) (lambda () '(100 . 30)))
+              ((symbol-function 'ghostel-set-size) #'ignore)
+              ((symbol-function 'ghostel-fit-window) #'ignore)
+              ((symbol-function 'ghostel-restore-snapshot) #'ignore)
+              ((symbol-function 'ghostel-write-output)
+               (lambda (bytes &rest _) (push bytes written)))
+              ((symbol-function 'ghostel-end-terminal) (lambda () (setq ended t))))
+      (unwind-protect
+          (with-current-buffer buffer
+            (setq-local ghostel-exit-functions
+                        (list (lambda (buffer event) (push (list buffer event) exits))))
+            ;; sh gets the snapshot arguments as $0 and on.
+            (goblins--run-attach
+             buffer "sh"
+             (list "-c" "printf '\\000\\000\\000\\000out'; printf '%s %s %s\\n' \"$0\" \"$1\" \"$2\" >&2; echo refused >&2; exit 3")
+             '((kind . goblins-shell) (session . "session-a"))
+             nil #'ignore #'ignore)
+            (should (equal ghostel-identity '((kind . goblins-shell) (session . "session-a"))))
+            (should (plist-get made :send))
+            (should (plist-get made :resize))
+            (goblins-test--wait (lambda () exits))
+            (should ended)
+            (should (equal (car (last written)) "out"))
+            (should (string-match-p "\r\n--snapshot --size 30x100\r\nrefused\r\n\\[Process exited\\]"
+                                    (car written)))
+            (should (equal exits (list (list buffer "exited abnormally with code 3\n"))))
+            (should-not (process-live-p (goblins--terminal-process)))
+            ;; Typing into the ended terminal sends nothing.
+            (funcall (plist-get made :send) "x"))
+        (kill-buffer buffer)))))
+
+(ert-deftest goblins-require-ghostel-names-the-version-snapshots-need ()
+  (skip-unless (and (require 'ghostel nil t) (require 'ghostel-module nil t)))
+  (let ((goblins-terminal-snapshot t))
+    (goblins--require-ghostel t)
+    (cl-letf (((symbol-function 'ghostel-restore-snapshot) nil))
+      (should (string-match-p "snapshot.* requires Ghostel 0\\.65 or later\\'"
+                              (cadr (should-error (goblins--require-ghostel t)
+                                                  :type 'user-error))))
+      ;; Only attaching needs it.
+      (goblins--require-ghostel))
+    (let ((goblins-terminal-snapshot nil))
+      (cl-letf (((symbol-function 'ghostel-restore-snapshot) nil))
+        (goblins--require-ghostel t)))))
+
+(ert-deftest goblins-shell-without-terminals-needs-no-snapshot-ghostel ()
+  (skip-unless (and (require 'ghostel nil t) (require 'ghostel-module nil t)))
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :agent_name "gribble"))
+    (let ((goblins--pins (make-hash-table :test #'equal))
+          (goblins-terminal-snapshot t)
+          (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                              "session-a"))
+          execs calls)
+      (cl-letf (((symbol-function 'ghostel-restore-snapshot) nil)
+                ((symbol-function 'ghostel-exec)
+                 (lambda (_buffer _program args &rest _) (push args execs)))
+                ((symbol-function 'goblins--host-call)
+                 (lambda (_source method &rest _) (push method calls))))
+        ;; The exec shell runs in Ghostel's own terminal.
+        (kill-buffer (goblins-shell session #'ignore source))
+        (should (member "exec" (car execs)))
+        ;; A daemon with terminals would attach one: refused before one is
+        ;; created.
+        (with-current-buffer source (setq goblins--features '("terminals")))
+        (should-error (goblins-shell session #'ignore source) :type 'user-error)
+        (should-not calls)))))
+
+(ert-deftest goblins-terminal-attach-with-snapshots-bridges-the-cli ()
+  (goblins-test--with-terminal-daemon
+    (let ((goblins-terminal-snapshot t)
+          (make-process (symbol-function 'make-process))
+          commands requests made)
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :sessions
+                         (vector (goblins-test--session
+                                  "session-a" :agent_name "gribble"
+                                  :terminals (vector (goblins-test--terminal-record
+                                                      "t1" "app" "host"))))))
+        (setq-local goblins--connection 'connection))
+      (setq session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                               "session-a"))
+      (cl-letf (((symbol-function 'ghostel-make-terminal)
+                 (lambda (buffer &rest keys) (setq made keys) buffer))
+                ((symbol-function 'ghostel-terminal-size) (lambda () '(120 . 40)))
+                ((symbol-function 'jsonrpc-running-p) (lambda (_) t))
+                ((symbol-function 'jsonrpc-async-request)
+                 (lambda (_connection method params &rest _) (push (list method params) requests)))
+                ((symbol-function 'make-process)
+                 (lambda (&rest plist)
+                   (if (plist-get plist :filter)
+                       (progn (push (plist-get plist :command) commands)
+                              (funcall make-process :name "goblins-test-attach"
+                                       :buffer (plist-get plist :buffer)
+                                       :command '("sleep" "60") :noquery t))
+                     (apply make-process plist)))))
+        (let ((buffer (goblins-terminal-attach "t1" session #'ignore source)))
+          (unwind-protect
+              (progn
+                (should (equal (cdr (car commands))
+                               '("--state-dir" "/tmp/goblins-test" "terminal" "attach"
+                                 "session-a" "t1" "--snapshot" "--size" "40x120")))
+                (with-current-buffer buffer
+                  (should (equal (alist-get 'terminal ghostel-identity) "t1"))
+                  (cl-letf (((symbol-function 'ghostel-set-size) #'ignore))
+                    (goblins--bridge-filter goblins--bridge "\0\0\0\0"))
+                  (funcall (plist-get made :resize) '(100 . 30)))
+                (should (equal requests '((terminals.resize (:session "session-a" :terminal "t1"
+                                                             :rows 30 :cols 100)))))
+                ;; The live bridge is this Emacs's buffer for the terminal.
+                (should (eq (goblins--session-terminal-buffer source "session-a" "t1") buffer)))
+            (delete-process (goblins--terminal-process buffer))
+            (kill-buffer buffer)))))))
+
 (ert-deftest goblins-disconnect-closes-the-connection-without-waiting ()
   (let (warnings)
     (with-temp-buffer
@@ -5492,6 +5870,48 @@ drops what was typed before it took over the terminal."
               (should (string-match-p "PASTED:/tmp/goblins-clipboard/" (buffer-string)))
               (ghostel-send-string "echo AGAIN-$((6*7))\n")
               (goblins-test--wait-text "AGAIN-42"))
+            ;; With `goblins-terminal-snapshot' the buffer is a bridged
+            ;; terminal: it restores the terminal from its snapshot, then
+            ;; follows its output and types into it.
+            (kill-buffer shell)
+            (goblins-test--wait (lambda () (not (funcall attached "t1"))))
+            (let ((goblins-terminal-snapshot t))
+              (setq shell (goblins-terminal-attach "t1" (funcall record) #'pop-to-buffer source)))
+            (with-current-buffer shell
+              (should-not ghostel--process)
+              (should (process-live-p (goblins--terminal-process)))
+              (goblins-test--wait-text "AGAIN-42")
+              (ghostel-send-string "echo SNAP-$((6*7))\n")
+              (goblins-test--wait-text "SNAP-42"))
+            (goblins-test--wait (lambda () (funcall attached "t1")))
+            ;; A smaller window resizes the terminal through the daemon.
+            (let* ((rows (cdr (with-current-buffer shell (ghostel-terminal-size))))
+                   (below (with-selected-window (get-buffer-window shell)
+                            (split-window-below))))
+              (redisplay t)
+              (goblins-test--wait
+               (lambda ()
+                 (let ((size (with-current-buffer shell (ghostel-terminal-size))))
+                   (and (< (cdr size) rows)
+                        (eql (plist-get (goblins--session-terminal (funcall record) "t1") :rows)
+                             (cdr size))))))
+              (delete-window below))
+            ;; A Ghostel that cannot restore the snapshot falls back to a
+            ;; redraw in the same buffer, once the daemon has detached.
+            (kill-buffer shell)
+            (goblins-test--wait (lambda () (not (funcall attached "t1"))))
+            (let ((goblins-terminal-snapshot t))
+              (cl-letf (((symbol-function 'ghostel-restore-snapshot)
+                         (lambda (_) (error "UnsupportedVersion"))))
+                (setq shell (goblins-terminal-attach "t1" (funcall record) #'pop-to-buffer
+                                                     source))
+                (with-current-buffer shell
+                  (goblins-test--wait (lambda () (process-live-p ghostel--process)))
+                  (should-not goblins--bridge)
+                  (should (equal default-directory "/goblins:gribble:/"))
+                  (goblins-test--wait-text "SNAP-42"))))
+            (goblins-test--wait (lambda () (funcall attached "t1")))
+            (should (eq (goblins--session-terminal-buffer source first "t1") shell))
             ;; A full-screen program is redrawn on the alternate screen.
             (let ((full (goblins-terminal
                          '("sh" "-c"
@@ -5501,8 +5921,17 @@ drops what was typed before it took over the terminal."
                 (goblins-test--wait-text "FULLSCREEN"))
               (kill-buffer full)
               (goblins-test--wait (lambda () (not (funcall attached "t2"))))
-              (with-current-buffer (goblins-terminal-attach "t2" (funcall record) #'pop-to-buffer source)
-                (goblins-test--wait-text "FULLSCREEN"))
+              (let ((again (goblins-terminal-attach "t2" (funcall record) #'pop-to-buffer source)))
+                (with-current-buffer again
+                  (goblins-test--wait-text "FULLSCREEN"))
+                ;; And restored from its snapshot, alternate screen and all.
+                (kill-buffer again)
+                (goblins-test--wait (lambda () (not (funcall attached "t2"))))
+                (let ((goblins-terminal-snapshot t))
+                  (setq again (goblins-terminal-attach "t2" (funcall record) #'pop-to-buffer
+                                                       source)))
+                (with-current-buffer again
+                  (goblins-test--wait-text "FULLSCREEN")))
               ;; Closing it takes it out of the snapshot.
               (goblins--host-call source 'terminals.close (list :session first :terminal "t2"))
               (goblins-test--wait (lambda () (not (goblins--session-terminal (funcall record) "t2"))))))

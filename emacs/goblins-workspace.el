@@ -36,7 +36,6 @@
 (declare-function goblins-terminal-attach "goblins-tramp"
                   (&optional terminal session display source))
 (defvar ghostel-identity)
-(defvar ghostel--process)
 
 (defcustom goblins-workspace-name "*goblins*"
   "Name passed to `goblins-workspace-switch-or-create-function'."
@@ -527,7 +526,7 @@ that puts it under the goblin's name.  Movement passes it by."
         (name (let ((number (buffer-local-value 'goblins--shell-number shell)))
                 (format "shell%s" (if (> number 1) (format " %d" number) "")))))
     (insert (make-string (* 2 depth) ?\s)
-            (if (process-live-p (buffer-local-value 'ghostel--process shell))
+            (if (process-live-p (goblins--terminal-process shell))
                 (concat "› " name)
               (propertize (concat "› " name " · exited") 'face 'goblins-dim))
             "\n")
@@ -643,8 +642,7 @@ A paused raid's prompt reads \"! raid crew paused\", and a host command
 SHELLS are its shell buffers the sidebar lists."
   (let ((others (max 0 (- (or (plist-get session :shells) 0)
                           (cl-count-if (lambda (shell)
-                                         (process-live-p
-                                          (buffer-local-value 'ghostel--process shell)))
+                                         (process-live-p (goblins--terminal-process shell)))
                                        shells))))
         (execs (or (plist-get session :execs) 0)))
     (when (or (> others 0) (> execs 0))
