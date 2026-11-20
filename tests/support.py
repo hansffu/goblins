@@ -48,11 +48,15 @@ def command(args):
 
 
 def pinned_nixpkgs():
-    """This repository's locked nixpkgs: the flake URL naming it and its lock node."""
+    """This repository's locked nixpkgs: a flake URL pinning its locked revision, and a
+    lock node for that URL.
+
+    flake.nix names a branch, so the URL and the node's `original` use the locked
+    revision instead."""
     lock = json.loads((HERE / "flake.lock").read_text())
-    node = lock["nodes"][lock["nodes"][lock["root"]]["inputs"]["nixpkgs"]]
-    original = node["original"]
-    return f"github:{original['owner']}/{original['repo']}/{original['rev']}", node
+    locked = lock["nodes"][lock["nodes"][lock["root"]]["inputs"]["nixpkgs"]]["locked"]
+    original = {"type": "github", "owner": locked["owner"], "repo": locked["repo"], "rev": locked["rev"]}
+    return f"github:{locked['owner']}/{locked['repo']}/{locked['rev']}", {"locked": locked, "original": original}
 
 
 def lock_flake(directory):

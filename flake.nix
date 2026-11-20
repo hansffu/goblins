@@ -2,15 +2,12 @@
   description = "Goblins: sandboxed shells with approved live Nix package grants";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/1d060086d60cb76a40cf37109f979d88a5bd6396";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     # Keep this at the revision pinned by libghostty-vt-sys.
     ghostty.url = "github:ghostty-org/ghostty/108cacb17ed8990840cd14abfce43d8ed8503ca1";
-    # Only for the Emacs the tests run: a current Emacs and Ghostel, as the
-    # Emacs package expects, independent of the developer's own Emacs.
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     # Agent packages for the demo goblins, updated daily. Not following
     # nixpkgs: this is the combination numtide builds and caches.
-    llm-agents.url = "github:numtide/llm-agents.nix/69d1f4621804d13b9658ff9ac9b2a151815132cb";
+    llm-agents.url = "github:numtide/llm-agents.nix";
     agent-sandbox = {
       url = "github:archie-judd/agent-sandbox.nix/566defa1560051c4e48049389f942a6c1a53aee9";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -20,7 +17,6 @@
   outputs =
     {
       nixpkgs,
-      nixpkgs-unstable,
       ghostty,
       agent-sandbox,
       llm-agents,
@@ -90,7 +86,6 @@
       # optional integrations need, so no test depends on a local Emacs.
       testEmacs =
         let
-          unstable = nixpkgs-unstable.legacyPackages.${system};
           # Bridged terminals and snapshot restore need Ghostel 0.65 or
           # later, newer than nixpkgs' package. It bundles libghostty-vt
           # 1.0.0, whose snapshot format is that of the supervisor's 1.0.1.
@@ -99,13 +94,13 @@
             e.ghostel.overrideAttrs (
               final: _: {
                 version = "0.66.0";
-                src = unstable.fetchFromGitHub {
+                src = pkgs.fetchFromGitHub {
                   owner = "dakra";
                   repo = "ghostel";
                   tag = "v${final.version}";
                   hash = "sha256-0uYcK7qij6gOANQEPt3PQlCFwTFLnm4QENPa+JhxU3E=";
                 };
-                zig = unstable.zig_0_17;
+                zig = pkgs.zig_0_17;
                 zigDeps = final.zig.fetchDeps {
                   inherit (final) src pname version;
                   fetchAll = true;
@@ -114,7 +109,7 @@
               }
             );
         in
-        (unstable.emacsPackagesFor unstable.emacs-nox).emacsWithPackages (e: [
+        (pkgs.emacsPackagesFor pkgs.emacs-nox).emacsWithPackages (e: [
           e.magit-section
           e.transient
           (ghostel e)
