@@ -179,7 +179,12 @@ pub(crate) fn command_with_fds(
             Ok(())
         });
     }
-    let mut child = CommandChild::new(command.spawn()?);
+    let mut child = CommandChild::new(command.spawn().map_err(|e| {
+        format!(
+            "cannot run {}: {e}",
+            Path::new(command.get_program()).display()
+        )
+    })?);
     // Wake as soon as the child exits, including when it closed its output
     // earlier. Keep waitid(WNOWAIT) for process-group identity and cleanup.
     // If pidfds are restricted, output readiness still avoids most polling.
@@ -240,8 +245,11 @@ pub(crate) fn command_with_fds(
             }
         }
         if let Some(status) = status {
-            fs::write(directory.join("command.out"), &out)?;
-            fs::write(directory.join("command.err"), &err)?;
+            for (name, output) in [("command.out", &out), ("command.err", &err)] {
+                let path = directory.join(name);
+                fs::write(&path, output)
+                    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+            }
             if !status.success() {
                 return Err(format!(
                     "host command failed ({status}): {}",

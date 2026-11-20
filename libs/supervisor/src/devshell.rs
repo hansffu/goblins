@@ -124,11 +124,25 @@ fn snapshot(
     let config = fs::read_to_string(directory.join("command.err"))
         .unwrap_or_default()
         .contains("ignoring untrusted flake configuration");
-    let root = store_path(Path::new(
-        metadata["path"]
-            .as_str()
-            .ok_or("flake metadata has no source path")?,
-    ))?;
+    let source = metadata["path"]
+        .as_str()
+        .ok_or("flake metadata has no source path")?;
+    // Since Nix 2.35, metadata names a Git flake's source without copying it
+    // to the store; prefetching copies it to the same path.
+    if fs::symlink_metadata(source).is_err() {
+        let mut args = nix(&["flake", "prefetch", "--json"]);
+        args.push(flake.into());
+        let prefetched: Value =
+            serde_json::from_str(&evaluator.nix(&args, visible, directory, cancel)?)?;
+        if prefetched["storePath"].as_str() != Some(source) {
+            return Err(format!(
+                "flake source changed during evaluation: metadata named {source}, prefetch copied {}",
+                prefetched["storePath"]
+            )
+            .into());
+        }
+    }
+    let root = store_path(Path::new(source)).map_err(|e| format!("flake source {source}: {e}"))?;
     let flake = match metadata["locked"]["dir"].as_str() {
         Some(dir) if !dir.is_empty() => {
             if Path::new(dir)
