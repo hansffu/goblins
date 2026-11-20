@@ -256,6 +256,10 @@ fn relay_io<C>(
             && fds[2].revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP) != 0
         {
             write_output(output_fd, &mut to_terminal)?;
+        } else if fds[2].revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+            // Its reader has gone: poll reports that even with nothing to
+            // write, and would not wait again.
+            return Err("terminal output disconnected; session remains daemon-owned".into());
         }
     }
     outcome(&mut context)
@@ -430,6 +434,46 @@ mod tests {
         unsafe {
             libc::close(input);
             libc::close(reader);
+            libc::close(output);
+        }
+    }
+
+    #[test]
+    fn a_relay_whose_output_reader_goes_away_ends_while_idle() {
+        let pipe = || {
+            let mut fds = [0; 2];
+            cvt(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }).unwrap();
+            fds
+        };
+        let [input, writer] = pipe();
+        let [reader, output] = pipe();
+        // The goblin stays quiet and the program keeps its input open.
+        let (terminal, _quiet) = UnixStream::pair().unwrap();
+        unsafe { libc::close(reader) };
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = relay_io(
+                (input, output),
+                terminal,
+                (),
+                |_, _, _| panic!("a bridge does not resize"),
+                |_| panic!("no outcome when the output is gone"),
+                &AtomicBool::new(false),
+                &AtomicBool::new(false),
+                true,
+            );
+            done.send(result.map_err(|e| e.to_string())).unwrap();
+        });
+        let result = finished
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the relay left at once");
+        assert_eq!(
+            result,
+            Err("terminal output disconnected; session remains daemon-owned".into())
+        );
+        unsafe {
+            libc::close(input);
+            libc::close(writer);
             libc::close(output);
         }
     }

@@ -242,12 +242,8 @@ fn attach(
         goblins_protocol::contract::SessionSelectorParams { session: goblin },
     )?;
     let session = record.id.clone();
-    let stream = attachment::handshake(
-        &session,
-        &serde_json::to_value(record)?,
-        Some(&terminal),
-        snapshot,
-    )?;
+    let stream =
+        attachment::handshake(&session, record.attach.as_ref(), Some(&terminal), snapshot)?;
     // The frontend's window is applied once the stream is relayed. A
     // bridged program resizes through the daemon itself.
     if snapshot.is_none() {

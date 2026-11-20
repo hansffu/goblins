@@ -143,7 +143,7 @@ pub enum Command {
         #[arg(long, requires = "size")]
         snapshot: bool,
         /// The program's terminal size, with --snapshot
-        #[arg(long, value_name = "ROWSxCOLS", value_parser = parse_size, requires = "snapshot")]
+        #[arg(long, value_name = "ROWSxCOLS", value_parser = parse_attach_size, requires = "snapshot")]
         size: Option<(u16, u16)>,
     },
     /// Run a command inside a running goblin's sandbox (its own $SHELL by default)
@@ -323,7 +323,15 @@ impl TerminalCommand {
         }
     }
 }
+/// A named terminal's size.
 fn parse_size(text: &str) -> std::result::Result<(u16, u16), String> {
+    size_up_to(text, goblins_runtime::terminal::MAX_SIZE)
+}
+/// A goblin's own terminal size: the attach hello's range.
+fn parse_attach_size(text: &str) -> std::result::Result<(u16, u16), String> {
+    size_up_to(text, 1000)
+}
+fn size_up_to(text: &str, max: u16) -> std::result::Result<(u16, u16), String> {
     let (rows, cols) = text
         .split_once('x')
         .ok_or("a size is ROWSxCOLS, such as 40x120")?;
@@ -331,13 +339,10 @@ fn parse_size(text: &str) -> std::result::Result<(u16, u16), String> {
         rows.parse::<u16>().map_err(|e| e.to_string())?,
         cols.parse::<u16>().map_err(|e| e.to_string())?,
     );
-    if goblins_runtime::terminal::valid_size(size.0, size.1) {
+    if (1..=max).contains(&size.0) && (1..=max).contains(&size.1) {
         Ok(size)
     } else {
-        Err(format!(
-            "rows and columns are 1 to {}",
-            goblins_runtime::terminal::MAX_SIZE
-        ))
+        Err(format!("rows and columns are 1 to {max}"))
     }
 }
 
@@ -991,6 +996,26 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(words).is_err(), "{words:?}");
         }
+        // A goblin's own terminal takes the attach hello's range; a named
+        // terminal keeps its own.
+        let attach = |size: &str| {
+            Cli::try_parse_from(["goblins", "attach", "snikk", "--snapshot", "--size", size])
+        };
+        assert!(attach("40x1000").is_ok());
+        assert!(attach("40x1001").is_err());
+        assert!(
+            Cli::try_parse_from([
+                "goblins",
+                "terminal",
+                "attach",
+                "snikk",
+                "app",
+                "--snapshot",
+                "--size",
+                "40x600"
+            ])
+            .is_err()
+        );
         assert!(matches!(
             Cli::try_parse_from([
                 "goblins",

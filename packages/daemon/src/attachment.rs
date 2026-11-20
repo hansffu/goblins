@@ -6,9 +6,12 @@ use goblins_controller::host::Client;
 use goblins_jsonrpc as rpc;
 use goblins_protocol::contract;
 use goblins_protocol::terminal::size;
-use goblins_unix as unix;
 use std::{
-    io::Write, os::fd::AsRawFd, os::unix::net::UnixStream, path::PathBuf, sync::atomic::Ordering,
+    io::Write,
+    os::fd::{AsRawFd, RawFd},
+    os::unix::net::UnixStream,
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
 };
 
 /// Host launch choices; the wire request also adds nonce, cwd and terminal size.
@@ -61,7 +64,8 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
         println!("{wire}");
         return Ok(0);
     }
-    relay(control, &launch.session, &wire, None)
+    let attach = launch.attach.as_deref().ok_or("missing attach path")?;
+    relay(control, &launch.session, attach, None)
 }
 
 /// `goblins resume`: recreate a recorded goblin from the current manifest,
@@ -144,12 +148,7 @@ pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool)
     if let Some(detail) = record.detail.as_deref() {
         eprintln!("{}", goblins_protocol::plain_text(detail));
     }
-    relay(
-        control,
-        session,
-        &serde_json::to_value(record.clone())?,
-        None,
-    )
+    relay(control, session, record.attach.as_ref(), None)
 }
 
 /// Attach this terminal to a goblin; with `snapshot`, bridge a program to
@@ -171,12 +170,7 @@ pub fn attach(
     if snapshot.is_none() {
         RESIZE.store(true, Ordering::Relaxed);
     }
-    relay(
-        control,
-        session,
-        &serde_json::to_value(record.clone())?,
-        snapshot,
-    )
+    relay(control, session, record.attach.as_ref(), snapshot)
 }
 
 /// The record of the goblin `attach` relays to. With `instance`, the attach
@@ -201,15 +195,15 @@ fn target(
     Ok(record)
 }
 
-/// Attach to the goblin whose launch or record is `record`: a hello with this
-/// terminal's size on its `attach.sock`, or a snapshot bridge at that size.
+/// Attach to the goblin whose `attach.sock` is at `attach`: a hello with
+/// this terminal's size, or a snapshot bridge at that size.
 fn relay(
     mut control: Client,
     session: &str,
-    record: &serde_json::Value,
+    attach: &Path,
     snapshot: Option<(u16, u16)>,
 ) -> Result<i32> {
-    let terminal = handshake(session, record, None, snapshot)?;
+    let terminal = handshake(session, attach, None, snapshot)?;
     goblins_protocol::terminal::relay(
         terminal,
         session,
@@ -220,22 +214,32 @@ fn relay(
     )
 }
 
-/// Connect to a goblin's attach socket and be accepted: for the goblin's own
-/// terminal, or with `terminal` for one of its terminals. With `snapshot`,
-/// at that size and with the snapshot replay; otherwise at this terminal's
-/// size with the VT replay.
+/// Connect to a goblin's attach socket at `attach` and be accepted: for the
+/// goblin's own terminal, or with `terminal` for one of its terminals. With
+/// `snapshot`, at that size and with the snapshot replay, as a bridge for
+/// the program on standard input; otherwise at this terminal's size with
+/// the VT replay.
 pub fn handshake(
     session: &str,
-    record: &serde_json::Value,
+    attach: &Path,
     terminal: Option<&str>,
     snapshot: Option<(u16, u16)>,
 ) -> Result<UnixStream> {
-    let path = record["attach"].as_str().ok_or("missing attach path")?;
-    let stream = UnixStream::connect(path)?;
+    handshake_from(0, session, attach, terminal, snapshot)
+}
+/// `handshake`, with the terminal or bridged program's input at `input`.
+fn handshake_from(
+    input: RawFd,
+    session: &str,
+    attach: &Path,
+    terminal: Option<&str>,
+    snapshot: Option<(u16, u16)>,
+) -> Result<UnixStream> {
+    let stream = UnixStream::connect(attach)?;
     let dimensions = match snapshot {
         Some(dimensions) => dimensions,
         None => {
-            let d = size(0)?;
+            let d = size(input)?;
             (d.ws_row.max(1), d.ws_col.max(1))
         }
     };
@@ -244,19 +248,21 @@ pub fn handshake(
         session,
         dimensions,
         terminal,
-        snapshot.map(|_| contract::Replay::Snapshot),
+        snapshot.map(|_| input),
         rpc::TIMEOUT,
         || eprintln!("Starting…"),
     )
 }
 /// Send the hello and read its completion; `bound` limits the wait for
-/// each frame of the answer.
+/// each frame of the answer. A `bridge` asks for the snapshot replay for
+/// a program whose input is that descriptor, and gives up when the
+/// program closes it.
 fn greet(
     mut stream: UnixStream,
     session: &str,
     (rows, cols): (u16, u16),
     terminal: Option<&str>,
-    replay: Option<contract::Replay>,
+    bridge: Option<RawFd>,
     bound: std::time::Duration,
     starting: impl FnMut(),
 ) -> Result<UnixStream> {
@@ -265,12 +271,12 @@ fn greet(
         rows,
         cols,
         terminal: terminal.map(str::to_owned),
-        replay,
+        replay: bridge.map(|_| contract::Replay::Snapshot),
     };
     stream.write_all(&rpc::encode(&contract::notification::<
         contract::attach_notifications::AttachHello,
     >(params)?)?)?;
-    let hello = completion(&mut stream, session, bound, starting)?;
+    let hello = completion(&mut stream, session, bridge, bound, starting)?;
     contract::decode_completion::<contract::attach_exchanges::Reply>(hello)?;
     Ok(stream)
 }
@@ -280,6 +286,7 @@ fn greet(
 fn completion(
     stream: &mut UnixStream,
     session: &str,
+    input: Option<RawFd>,
     bound: std::time::Duration,
     mut starting: impl FnMut(),
 ) -> Result<serde_json::Value> {
@@ -288,14 +295,37 @@ fn completion(
         // rpc::read allows an unlimited idle wait for permission replies.
         // Bound each handshake frame's first byte separately; a waiting
         // notification extends the deadline to the next one. A resize's
-        // SIGWINCH interrupts the wait without ending it; Ctrl-C ends it.
+        // SIGWINCH interrupts the wait without ending it; Ctrl-C ends it,
+        // as does a bridged program closing its input.
         let deadline = std::time::Instant::now() + bound;
         loop {
             if STOP.load(Ordering::Relaxed) {
                 return Err(format!("interrupted before {session} was attached").into());
             }
             let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if unix::readable(stream.as_raw_fd(), left.as_millis() as i32)? {
+            let mut fds = [
+                libc::pollfd {
+                    fd: stream.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                // Only its closing is watched: its input waits for the relay.
+                libc::pollfd {
+                    fd: input.unwrap_or(-1),
+                    events: 0,
+                    revents: 0,
+                },
+            ];
+            if unsafe { libc::poll(fds.as_mut_ptr(), 2, left.as_millis() as i32) } < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error.into());
+                }
+            }
+            if fds[1].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                return Err(format!("input closed before {session} was attached").into());
+            }
+            if fds[0].revents != 0 {
                 break;
             }
             if left.is_zero() {
@@ -318,6 +348,7 @@ fn completion(
 mod tests {
     use super::*;
     use crate::fake_daemon::{Daemon, fixtures};
+    use goblins_unix as unix;
     use serde_json::{Value, json};
     use std::io::Read;
 
@@ -456,8 +487,14 @@ mod tests {
                 .unwrap();
             hello
         });
-        // The size is given, not asked of standard input.
-        handshake("a", &json!({"attach": path}), Some("t1"), Some((24, 80))).unwrap();
+        // The size is given, not asked of the program's input, a pipe.
+        let mut pipe = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        handshake_from(pipe[0], "a", &path, Some("t1"), Some((24, 80))).unwrap();
+        unsafe {
+            libc::close(pipe[0]);
+            libc::close(pipe[1]);
+        }
         assert_eq!(
             goblin.join().unwrap()["params"],
             json!({"version":1,"rows":24,"cols":80,"terminal":"t1","replay":"snapshot"})
@@ -559,6 +596,46 @@ mod tests {
         let attached = greeter.join().unwrap();
         unsafe { libc::sigaction(libc::SIGWINCH, &previous, std::ptr::null_mut()) };
         attached.unwrap();
+    }
+
+    #[test]
+    fn a_bridge_gives_up_when_its_program_closes_its_input() {
+        use std::time::{Duration, Instant};
+        let _no_forks = unix::no_forks();
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        let [input, writer] = fds;
+        let (stream, mut goblin) = UnixStream::pair().unwrap();
+        goblin.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+        let greeter = std::thread::spawn(move || {
+            greet(
+                stream,
+                "a",
+                (24, 80),
+                None,
+                Some(input),
+                rpc::TIMEOUT,
+                || (),
+            )
+            .map(drop)
+            .map_err(|e| e.to_string())
+        });
+        assert_eq!(
+            rpc::read(&mut goblin).unwrap()["params"]["replay"],
+            "snapshot"
+        );
+        // The goblin is still starting; the program goes away meanwhile.
+        let waiting =
+            json!({"jsonrpc":"2.0","method":"attach.waiting","params":{"missing":["session_id"]}});
+        goblin.write_all(&rpc::encode(&waiting).unwrap()).unwrap();
+        let closed = Instant::now();
+        unsafe { libc::close(writer) };
+        assert_eq!(
+            greeter.join().unwrap(),
+            Err("input closed before a was attached".into())
+        );
+        assert!(closed.elapsed() < Duration::from_secs(1));
+        unsafe { libc::close(input) };
     }
 
     #[test]

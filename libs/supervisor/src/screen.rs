@@ -129,7 +129,8 @@ impl Screen {
         )
     }
 
-    /// One physical row in either the active area or the entire screen.
+    /// One physical row in either the active area or the entire screen,
+    /// with its trailing blanks: a soft-wrapped row's are part of its line.
     fn row(&self, point: fn(Coordinate) -> Point, y: u32, cols: u16) -> (String, bool) {
         let first = self
             .terminal
@@ -164,18 +165,21 @@ impl Screen {
                 Err(error) => panic!("read Ghostty graphemes: {error}"),
             }
         }
-        text.truncate(text.trim_end_matches(' ').len());
         (text, wrapped)
     }
 
-    fn rows(&self) -> impl DoubleEndedIterator<Item = (String, bool)> + '_ {
+    /// The active area's rows, each on its own.
+    fn rows(&self) -> impl DoubleEndedIterator<Item = String> + '_ {
         let (rows, cols) = self.size();
-        (0..u32::from(rows)).map(move |y| self.row(Point::Active, y, cols))
+        (0..u32::from(rows)).map(move |y| {
+            let (text, _) = self.row(Point::Active, y, cols);
+            text.trim_end_matches(' ').to_string()
+        })
     }
 
     /// The screen's lines without trailing blank ones.
     pub fn visible(&self) -> Vec<String> {
-        let mut lines: Vec<_> = self.rows().map(|(text, _)| text).collect();
+        let mut lines: Vec<_> = self.rows().collect();
         drop_blank(&mut lines);
         lines
     }
@@ -207,11 +211,12 @@ impl Screen {
         for (text, wrapped) in upward.into_iter().rev() {
             line.push_str(&text);
             if !wrapped {
-                lines.push(std::mem::take(&mut line));
+                lines.push(line.trim_end_matches(' ').to_string());
+                line.clear();
             }
         }
         if !line.is_empty() {
-            lines.push(line);
+            lines.push(line.trim_end_matches(' ').to_string());
         }
         drop_blank(&mut lines);
         let skip = lines.len().saturating_sub(want);
@@ -238,11 +243,7 @@ impl Screen {
     /// The newest line `matcher` matches among the screen's rows and the
     /// last `lines` recent lines, cut to the line limit.
     pub fn find(&mut self, matcher: &Matcher, lines: usize) -> Option<(String, bool)> {
-        let on_screen = self
-            .rows()
-            .rev()
-            .map(|(text, _)| text)
-            .find(|line| matcher.matches(line));
+        let on_screen = self.rows().rev().find(|line| matcher.matches(line));
         on_screen
             .or_else(|| {
                 self.recent(lines)
@@ -445,6 +446,15 @@ mod tests {
         // Erasing the last row of a wrapped line still leaves one recent line.
         let mut erased = screen(3, 5, "older\r\nABCDEf\x1b[2K");
         assert_eq!(erased.recent(1), ["ABCDE"]);
+
+        // A space in the last column stays when the rows are joined.
+        let mut spaced = screen(3, 5, "abcd ef");
+        assert_eq!(spaced.recent(1), ["abcd ef"]);
+        assert_eq!(spaced.visible(), ["abcd", "ef"]);
+        assert_eq!(
+            spaced.find(&Matcher::Text("abcd ef".into()), 10),
+            Some(("abcd ef".into(), false))
+        );
     }
 
     #[test]
