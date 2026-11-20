@@ -174,7 +174,9 @@ async function openPane($: EngineInterface, id: string | null): Promise<void> {
   const newest = Object.values(all).sort((a, b) => b.createdAt - a.createdAt)[0]?.id
   const shown = await read($, selected)
   const target = id ?? (shown && all[shown] ? shown : newest)
-  if (target) void select($, target)
+  // Nothing waits on the selection, which may outlive the module: its failures
+  // are ignored, as when the module is unloaded before it finishes.
+  if (target) void select($, target).catch(() => {})
   await $.ui.open({ id: PANE, title: '✉ Goblins inbox', focus: true, closeOnEscape: true })
 }
 
